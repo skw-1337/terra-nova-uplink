@@ -1833,8 +1833,9 @@ func _live_scorch(pk: PackedByteArray) -> void:
 # the gun is beside the head, on the side the bolt starts (left for weapons 1-2, right for 3-4); for the others it
 # is where the bolt was first seen. Types 28 / 29 are the beam's trail, barely visible in the game (drawn, they were
 # a cloud of orange balls); the other class 6 types are the impacts' sparks.
-const MUZZLE := Vector3(0.4, -0.03, -0.05)     # camera space, x to the side of the hand that fired
-const DUST_PX := 0.004                         # dust radius per unit of distance (about 2 pixels)
+const MUZZLE := Vector3(0.4, -0.06, -0.05)     # camera space, x to the side of the hand that fired (fitted on the game's beam)
+const DUST_PX := 0.002                         # dust radius per unit of distance: ~1.5 pixel of the game's picture (its
+                                               # dots along a laser's path; bigger and glowing, they made a second laser)
 const STREAK := 1.5                            # length of a laser bolt in flight
 const FLASH_MS := 25                           # the beam from the gun, as the bolt leaves (the game: 1 frame)
 func _live_fx(idx: int, e) -> void:
@@ -1880,8 +1881,8 @@ func _live_fx(idx: int, e) -> void:
 		mi.transform = Transform3D.IDENTITY             # the slot may have held a stretched beam
 		if beam:
 			var cy := CylinderMesh.new()                # unit length, stretched from the gun to the bolt
-			cy.top_radius = 0.013
-			cy.bottom_radius = 0.013
+			cy.top_radius = 0.005                       # (fitted: ~8 pixels of the game wide at the edge of the view, 4 at the bolt)
+			cy.bottom_radius = 0.005
 			cy.height = 1.0
 			cy.radial_segments = 6
 			cy.rings = 1
@@ -1911,11 +1912,17 @@ func _live_fx(idx: int, e) -> void:
 			m.emission_enabled = true
 			m.emission = m.albedo_color
 			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0][kind]
+			if kind == 3 or kind == 5:                  # dust: plain dots of the game's red / blue, no glow
+				m.emission_enabled = false
+				m.albedo_color = Color(0.78, 0.06, 0.04) if kind == 3 else Color(0.3, 0.42, 0.95)
 			m.disable_fog = true
 			fx_mats[kind] = m
 		mi.material_override = fx_mats[kind]
 		mi.set_meta("kind", kind)
-	var pos := Vector3(e[3], e[5] - GAME_Z, e[4])
+	# shots, dust and sparks at their true height (the camera is the player's height + the eye's, like the game's
+	# view): the units' offset (GAME_Z, their feet below their entity) put a laser's dust trail below its path, a
+	# second laser going askew from under the crosshair
+	var pos := Vector3(e[3], e[5], e[4])
 	var fresh: bool = mi.get_meta("seen", -10) != live_seen - 1    # a new shot in this slot
 	mi.set_meta("seen", live_seen)
 	if beam:

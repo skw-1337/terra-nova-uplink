@@ -248,6 +248,70 @@ def hud_loop():
 if HUD:
     import threading
     threading.Thread(target=hud_loop, daemon=True).start()
+
+
+# Ecrans du jeu hors de sa 3D (menus, ecran de mort, briefing, video, pause) : le compteur d'images 3D (COPIES) ne
+# bouge plus. La fenetre DOSBox est alors capturee (PrintWindow, meme cachee derriere le visualiseur) et envoyee au
+# visualiseur en JPEG, qui l'affiche a la place de sa 3D (port 47823) :
+#   'MOD' + n (u32) + mode (u8 : 0 = 3D, 1 = ecran du jeu) + cadre de la souris du jeu (i16 l, h), 5 fois par seconde
+#   'SCR' + image (u32) + morceau (u16) + nombre (u16) + JPEG (60 Ko par morceau), a chaque changement (et chaque s)
+#   'MIS' + n (u32) + nom de la mission (MISSnn.RES), au retour dans la 3D : le visualiseur charge la nouvelle
+def menu_loop():
+    import ctypes, ctypes.wintypes as wt, io, collections
+    from PIL import Image
+    u32, g32 = ctypes.windll.user32, ctypes.windll.gdi32
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except OSError:
+        pass
+    hwnd = tnre.dosbox_window()
+
+    class BIH(ctypes.Structure):
+        _fields_ = [('biSize', wt.DWORD), ('biWidth', wt.LONG), ('biHeight', wt.LONG), ('biPlanes', wt.WORD),
+                    ('biBitCount', wt.WORD), ('biCompression', wt.DWORD), ('biSizeImage', wt.DWORD), ('a', wt.LONG),
+                    ('b', wt.LONG), ('c', wt.DWORD), ('d', wt.DWORD)]
+
+    def grab():
+        r = wt.RECT(); u32.GetClientRect(hwnd, ctypes.byref(r)); w, h = r.right, r.bottom
+        if w < 16 or h < 16: return None
+        hdc = u32.GetDC(hwnd); mdc = g32.CreateCompatibleDC(hdc); bmp = g32.CreateCompatibleBitmap(hdc, w, h)
+        g32.SelectObject(mdc, bmp); u32.PrintWindow(hwnd, mdc, 3)
+        bi = BIH(ctypes.sizeof(BIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0); buf = ctypes.create_string_buffer(w * h * 4)
+        g32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+        g32.DeleteObject(bmp); g32.DeleteDC(mdc); u32.ReleaseDC(hwnd, hdc)
+        return Image.frombuffer('RGBA', (w, h), buf, 'raw', 'BGRA', 0, 1).convert('RGB')
+
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    last_c, last_t, mode, n, img_n, prev, sent_t, mod_t = d32(COPIES), time.time(), 0, 0, 0, None, 0.0, 0.0
+    while True:
+        c = d32(COPIES); now = time.time()
+        if c != last_c: last_c, last_t = c, now
+        if mode == 0 and now - last_t > 0.5: mode = 1
+        elif mode == 1 and now - last_t < 0.1:
+            mode = 0
+            noms = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', g.read(0x340000, 0x140000), re.I))
+            if noms:
+                tx.sendto(b'MIS' + struct.pack('<I', n) + noms.most_common(1)[0][0].encode(), ('127.0.0.1', 47823))
+        if now - mod_t > 0.2:
+            fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (640, 480)
+            tx.sendto(b'MOD' + struct.pack('<IBhh', n, mode, fw, fh), ('127.0.0.1', 47823)); n += 1; mod_t = now
+        if mode == 0:
+            prev = None; time.sleep(0.05); continue
+        im = grab()
+        if im is None: time.sleep(0.1); continue
+        small = im.resize((960, max(1, round(960 * im.height / im.width))), Image.BILINEAR)
+        sig = small.resize((64, 36)).tobytes()
+        if sig != prev or now - sent_t > 1.0:
+            buf = io.BytesIO(); small.save(buf, 'JPEG', quality=88); data = buf.getvalue()
+            parts = [data[k:k + 60000] for k in range(0, len(data), 60000)]
+            for k, part in enumerate(parts):
+                tx.sendto(b'SCR' + struct.pack('<IHH', img_n, k, len(parts)) + part, ('127.0.0.1', 47823))
+            img_n += 1; prev, sent_t = sig, now
+        time.sleep(0.05)
+
+
+if HUD:
+    threading.Thread(target=menu_loop, daemon=True).start()
 u16 = lambda a: struct.unpack('<H', g.read(a, 2))[0]
 s16 = lambda a: struct.unpack('<h', g.read(a, 2))[0]
 i32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]

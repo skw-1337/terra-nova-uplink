@@ -2,3 +2,5 @@
 *.import
 export/
 /*.png
+live/base.txt
+live/__pycache__/

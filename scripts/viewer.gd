@@ -116,6 +116,14 @@ var play_dx := 0.0
 var play_dy := 0.0
 var play_held := {}
 var play_started := false        # the first click in the window only takes the mouse
+# the game's own screen when it is not in its 3D (menus, death screen, briefing, video, pause): the bridge captures
+# the DOSBox window and sends it (see live_bridge.py menu_loop); shown over everything, the mouse goes to the game
+var menu_mode := false
+var menu_rect: TextureRect
+var menu_tex: ImageTexture
+var menu_frame := Vector2i(640, 480)  # the game's mouse range on that screen
+var menu_parts := {}
+var menu_img_n := -1
 var play_cursor := Vector2i(-1, -1)
 var play_cursor_sent := Vector2i(-1, -1)
 const SCANCODES := {
@@ -483,7 +491,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			var cell: int = trs[i][1]
 			if not veg_cells.has(cell):
 				veg_cells[cell] = []
-			veg_cells[cell].append([mm, i])
+			veg_cells[cell].append([mm, i, trs[i][0]])
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		if mat != null:
@@ -1193,6 +1201,16 @@ void fragment() {
 	hud_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	hud_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(hud_rect)
+	var ml := CanvasLayer.new()                    # the game's screen out of its 3D: over the view and the HUD
+	ml.layer = 10
+	add_child(ml)
+	menu_rect = TextureRect.new()
+	menu_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	menu_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	menu_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_rect.visible = false
+	ml.add_child(menu_rect)
 
 
 func _hud_update() -> void:
@@ -1204,6 +1222,34 @@ func _hud_update() -> void:
 			continue
 		var tag := pk.slice(0, 3).get_string_from_ascii()
 		var frame := pk.decode_u32(3)
+		if tag == "MIS":                                 # back in the game's 3D: another mission?
+			var mf := pk.slice(7).get_string_from_ascii().to_upper()
+			if not current.is_empty() and current["entry"]["file"].get_file().to_upper() != mf:
+				_load_by_label(mf)
+			continue
+		if tag == "MOD" and pk.size() >= 12:
+			menu_frame = Vector2i(maxi(1, pk.decode_s16(8)), maxi(1, pk.decode_s16(10)))
+			_set_menu_mode(pk[7] == 1)
+			continue
+		if tag == "SCR" and pk.size() > 11:
+			if frame != menu_img_n:
+				menu_parts.clear()
+				menu_img_n = frame
+			menu_parts[pk.decode_u16(7)] = pk.slice(11)
+			if menu_parts.size() == pk.decode_u16(9):
+				var jpg := PackedByteArray()
+				for k in menu_parts.size():
+					jpg.append_array(menu_parts.get(k, PackedByteArray()))
+				var im := Image.new()
+				if im.load_jpg_from_buffer(jpg) == OK:
+					if menu_tex == null or menu_tex.get_size() != Vector2(im.get_size()):
+						menu_tex = ImageTexture.create_from_image(im)
+						menu_rect.texture = menu_tex
+					else:
+						menu_tex.update(im)
+					menu_rect.visible = menu_mode
+				menu_parts.clear()
+			continue
 		if tag == "PAL" and pk.size() >= 15 + 768:
 			last_pal = pk                               # the bridge sends every game frame: only the latest is shown
 		elif tag == "HUZ":
@@ -1284,6 +1330,30 @@ func _play_release_all() -> void:
 	play_started = false
 
 
+# In and out of the game's own screen (menus...): shown over everything, the mouse freed for the game's cursor (it is
+# drawn in the picture); back in the 3D, the mouse is taken again for looking around.
+func _set_menu_mode(on: bool) -> void:
+	if on == menu_mode:
+		return
+	menu_mode = on
+	if menu_rect != null:
+		menu_rect.visible = on and menu_tex != null
+	if not play:
+		return
+	if on:
+		play_started = true
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	elif play_started:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+# Window position -> the game's mouse range on its own screen (menus), the picture stretched over the window.
+func _menu_game_pos(p: Vector2) -> Vector2i:
+	var vs := get_viewport().get_visible_rect().size
+	return Vector2i(clampi(int(p.x / vs.x * menu_frame.x), 0, menu_frame.x - 1),
+			clampi(int(p.y / vs.y * menu_frame.y), 0, menu_frame.y - 1))
+
+
 # Window position -> the game's 320 x 400 screen (the HUD image is stretched over the whole window).
 func _play_game_pos(p: Vector2) -> Vector2i:
 	var vs := get_viewport().get_visible_rect().size
@@ -1297,6 +1367,20 @@ func _input(event: InputEvent) -> void:
 	# the view, clicks at the view's centre) and cursor (the game's own cursor follows the mouse, clicks where it
 	# is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if menu_mode and (event is InputEventMouseButton or event is InputEventMouseMotion):
+		var mp := _menu_game_pos(event.position)          # the game's own screen: its cursor follows the mouse
+		if event is InputEventMouseMotion:
+			var c := PackedByteArray([0x50, 0, 0, 0, 0])
+			c.encode_s16(1, mp.x)
+			c.encode_s16(3, mp.y)
+			_play_send(c)
+		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
+			var b := PackedByteArray([0x43, 1 if event.button_index == MOUSE_BUTTON_LEFT else 2, 1 if event.pressed else 0, 0, 0, 0, 0])
+			b.encode_s16(3, mp.x)
+			b.encode_s16(5, mp.y)
+			_play_send(b)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton:
 		if not play_started:
 			if event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -1626,11 +1710,10 @@ func _live_vegetation(game_map: PackedByteArray) -> void:
 		if game_map[i] == veg_values[i]:
 			continue
 		veg_values[i] = game_map[i]
-		if game_map[i] == 0:
-			for it in veg_cells.get(i, []):
-				var mm: MultiMesh = it[0]
-				var t := mm.get_instance_transform(it[1])
-				mm.set_instance_transform(it[1], Transform3D(Basis.IDENTITY.scaled(Vector3.ZERO), t.origin))
+		for it in veg_cells.get(i, []):                 # emptied: hidden; filled again (mission restarted): back
+			var mm: MultiMesh = it[0]
+			var t0: Transform3D = it[2]
+			mm.set_instance_transform(it[1], t0 if game_map[i] != 0 else Transform3D(Basis.IDENTITY.scaled(Vector3.ZERO), t0.origin))
 
 
 # Burnt ground: the game sets bit 0x40 of a vertex's tile where a tree was destroyed or a blast hit (its ground map
@@ -1968,6 +2051,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 	if e[0] == 1 and e[2] == 0:
 		_make_corpse(node, m)
 		return
+	if node.has_meta("corpse"):                      # alive again: the mission was restarted
+		node.remove_meta("corpse")
 	# units (classes 1-3) and buildings set up in play (a deployed turret): the game's own height, already real
 	# (no extra lift: a probe hovers by itself)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):

@@ -1836,8 +1836,7 @@ func _live_scorch(pk: PackedByteArray) -> void:
 const MUZZLE := Vector3(0.4, -0.03, -0.05)     # camera space, x to the side of the hand that fired
 const DUST_PX := 0.004                         # dust radius per unit of distance (about 2 pixels)
 const STREAK := 1.5                            # length of a laser bolt in flight
-const FLASH_MS := 45                           # the beam from the gun, as the bolt leaves
-const BEAM_REACH := 10.0
+const FLASH_MS := 25                           # the beam from the gun, as the bolt leaves (the game: 1 frame)
 func _live_fx(idx: int, e) -> void:
 	var cls: int = e[0]
 	var typ: int = e[1]
@@ -1927,12 +1926,15 @@ func _live_fx(idx: int, e) -> void:
 			mi.set_meta("side", -1.0 if rel.x < 0.0 else 1.0)
 			mi.set_meta("tail", pos)
 			mi.set_meta("born", Time.get_ticks_msec())
-		# as it leaves: one straight beam from the gun to the point aimed at (the game's flash), then a short
-		# streak flying on (a held trigger fires every 0.1 s: beams for the whole flight overlapped)
+		# the player's own bolt: like the game, one beam from the gun to the bolt for a single game frame as it
+		# leaves, then nothing (the bolt flies unseen to its impact; a held trigger fires every 0.125 s and the
+		# streak drawn after the flash made two lasers in the air). Others' bolts: a short streak flying on
 		var tail: Vector3 = mi.get_meta("tail")
-		if mi.get_meta("mine") and Time.get_ticks_msec() - int(mi.get_meta("born")) < FLASH_MS:
+		if mi.get_meta("mine"):
+			if Time.get_ticks_msec() - int(mi.get_meta("born")) >= FLASH_MS:
+				mi.visible = false
+				return
 			tail = cam * Vector3(MUZZLE.x * float(mi.get_meta("side")), MUZZLE.y, MUZZLE.z)
-			pos = cam.origin - cam.basis.z * BEAM_REACH  # the view's axis is the crosshair
 		elif pos.distance_to(tail) > STREAK:
 			tail = pos + (tail - pos).normalized() * STREAK
 		var seg := pos - tail

@@ -1921,7 +1921,7 @@ func _live_fx(idx: int, e) -> void:
 	mi.set_meta("seen", live_seen)
 	if beam:
 		var cam := camera.global_transform
-		if fresh:
+		if fresh or not mi.has_meta("tail"):           # (a slot that held a spark the frame before: a new bolt)
 			var rel := cam.affine_inverse() * pos       # where the bolt starts, in camera space
 			mi.set_meta("mine", rel.length() < 2.5)
 			mi.set_meta("side", -1.0 if rel.x < 0.0 else 1.0)

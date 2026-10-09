@@ -356,46 +356,79 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
     return last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh
 
 
-# Le curseur des menus : le jeu le redessine a son rythme et DOSBox l'affiche avec ~60 ms de retard, puis la
-# capture. Le visualiseur affiche donc la fleche du jeu lui-meme comme curseur de la souris (sans retard), et celle du
-# jeu est videe le temps des menus : son image (descripteur juste avant la position du curseur : pointeur, type,
-# largeur, hauteur, pas ; indices 0xfc-0xfe, 0 transparent), restauree en revenant dans la 3D et a l'arret.
-# Ses couleurs et sa pointe sont relevees une fois sur l'image, la souris immobile (l'image a alors rattrape).
+# Le curseur des ecrans du jeu (menus, panneau d'options d'une mission) : le jeu le redessine a son rythme et DOSBox
+# l'affiche avec ~60 ms de retard, puis la capture. Le visualiseur affiche donc la fleche du jeu lui-meme comme
+# curseur de la souris (sans retard), et celle du jeu est rendue invisible : son image (descripteur juste avant la
+# position du curseur : pointeur, type, ?, largeur, hauteur, pas), brute (les menus : indices 0xfc-0xfe, 0
+# transparent) videe, ou compressee (le panneau d'options : RLE) remplacee par un flux valide tout transparent (des
+# zeros la cassaient : le jeu semait des morceaux de fleche). Remise en revenant dans la 3D et a l'arret (et au
+# demarrage si un pont arrete net l'a laissee : fichier CUR_FILE). Ses couleurs et sa pointe sont relevees une fois
+# sur l'image, la souris immobile (l'image a alors rattrape).
 #   'CUR' + n (u32) + largeur, hauteur, pointe x, y (i16) + RGBA
-CUR_FILE = os.path.join(os.environ.get('TEMP', '.'), 'tn_curseur_menus.bin')   # (si le pont meurt fleche videe)
-curseur = {'orig': {}, 'rgba': None, 'pos': None, 'still': 0.0, 'cur_t': 0.0, 'vide': set(), 'non': False, 'own': False}
-# (seulement hors mission : dans le panneau d'options d'une mission, le jeu remet sa fleche lui-meme et, videe a
-# moitie, elle laissait des trainees ; le jeu qui la remet apres qu'on l'a videe : on la lui laisse jusqu'a la 3D)
+CUR_FILE = os.path.join(os.environ.get('TEMP', '.'), 'tn_curseurs.bin')
+curseur = {'orig': {}, 'img': {}, 'pos': None, 'still': 0.0, 'cur_t': 0.0, 'vide': set(), 'non': set(), 'own': False,
+           'last': None}
+
+
+def rle_decode(f, w, h):
+    import numpy as np
+    idx = np.zeros(w * h, np.uint8); i = o = 0; n = w * h
+    while o < n and i < len(f):
+        c = f[i]; i += 1
+        if c == 0:
+            cnt, v = f[i], f[i + 1]; i += 2; idx[o:o + cnt] = v; o += cnt
+        elif c < 0x80:
+            seg = f[i:i + c]; idx[o:o + len(seg)] = list(seg)[:n - o]; i += c; o += c
+        elif c > 0x80:
+            o += c & 0x7F
+        else:
+            wv = struct.unpack_from('<H', f, i)[0]; i += 2
+            if wv == 0: break
+            if wv & 0x8000 == 0: o += wv
+            elif wv & 0x4000 == 0:
+                k = wv & 0x3FFF; seg = f[i:i + k]; idx[o:o + len(seg)] = list(seg)[:n - o]; i += k; o += k
+            else:
+                k = wv & 0x3FFF; idx[o:o + k] = f[i]; i += 1; o += k
+    return idx[:n].reshape(h, w)
+
+
+def rle_vide(n):
+    out = b''
+    while n > 0:
+        k = min(n, 127); out += bytes([0x80 | k]); n -= k
+    return out + b'\x80\x00\x00'
 
 
 def cursor_hide(ech, tx, now):
     import numpy as np
     st = curseur
     st['own'] = False
-    if st['non']:
-        return
-    e = A_MASTER + struct.unpack('<H', g.read(A_PID + 2, 2))[0] * 0x25
-    if any(g.read(e + 0x0F, 8)):                     # en mission (panneau d'options) : la fleche du jeu
-        return
     ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
-    if not (0x400000 <= ptr < 0x4000000 and 8 <= w <= 64 and 8 <= h <= 64 and row >= w):
+    if not (0x400000 <= ptr < 0x4000000 and 4 <= w <= 64 and 4 <= h <= 64 and row >= w) or ptr in st['non']:
         return
-    bm = g.read(ptr, row * h)
-    if any(0 < v < 0xf0 for v in bm):              # pas une image brute (la fleche des menus : 0xfc-0xfe) : une
-        return                                      # image compressee (RLE), videe elle cassait le curseur du jeu
-    if any(bm) and ptr in st['vide']:                  # le jeu l'a remise : on la lui laisse
-        st['non'] = True
-        print('menus : le jeu remet sa fleche, laissee', file=sys.stderr, flush=True)
-        return
-    if any(bm):
-        st['orig'][ptr] = (bm, row * h)
-        if not os.path.exists(CUR_FILE):
-            open(CUR_FILE, 'wb').write(struct.pack('<IHHH', ptr, w, h, row) + bm)
+    if ptr in st['orig']:
+        orig, vide = st['orig'][ptr]
+        cur = g.read(ptr, len(vide))
+        if ptr in st['vide'] and cur != vide:            # le jeu l'a remise : on la lui laisse
+            st['non'].add(ptr); st['vide'].discard(ptr)
+            print('menus : le jeu remet sa fleche, laissee', file=sys.stderr, flush=True)
+            return
+    else:
+        bm = g.read(ptr, row * h)
+        brute = all(v == 0 or v >= 0xf0 for v in bm)
+        if not any(bm): return
+        vide = bytes(row * h) if brute else rle_vide(w * h)
+        orig = g.read(ptr, len(vide))
+        idx = np.frombuffer(bm, np.uint8).reshape(h, row)[:, :w] if brute else rle_decode(g.read(ptr, 4096), w, h)
+        st['orig'][ptr] = (orig, vide); st['idx_' + str(ptr)] = idx
+        with open(CUR_FILE, 'ab') as f:
+            f.write(struct.pack('<IH', ptr, len(vide)) + orig + vide)
+    orig, vide = st['orig'][ptr]
     pos = g.read(m_cur, 4)
     if pos != st['pos']: st['pos'], st['still'] = pos, now
-    if st['rgba'] is None:
-        if not any(bm) or now - st['still'] < 0.25: return    # la fleche visible et immobile : on la releve
-        idx = np.frombuffer(bm, np.uint8).reshape(h, row)[:, :w]
+    if ptr not in st['img']:
+        if ptr in st['vide'] or now - st['still'] < 0.25: return    # la fleche visible et immobile : on la releve
+        idx = st['idx_' + str(ptr)]
         cx, cy = struct.unpack('<hh', pos)
         H, W = ech.shape[:2]
         best = None
@@ -418,33 +451,35 @@ def cursor_hide(ech, tx, now):
             cols = zone[idx == v].reshape(-1, 3)
             u, c = np.unique(cols, axis=0, return_counts=True)
             rgba[idx == v, :3] = u[c.argmax()]; rgba[idx == v, 3] = 255
-        st['rgba'], st['hot'] = rgba, (hx, hy)
+        st['img'][ptr] = (rgba, (hx, hy))
         print('menus : curseur releve (%d x %d, pointe %d, %d)' % (w, h, hx, hy), file=sys.stderr, flush=True)
-    if any(bm):
-        g.write(ptr, bytes(row * h))                           # la fleche du jeu : videe
+    if ptr not in st['vide']:
+        g.write(ptr, vide)                                     # la fleche du jeu : invisible
         st['vide'].add(ptr)
     st['own'] = True
-    if now - st['cur_t'] > 1.0:
-        st['cur_t'] = now
-        r = st['rgba']
-        tx.sendto(b'CUR' + struct.pack('<I4h', 0, r.shape[1], r.shape[0], *st['hot']) + r.tobytes(), ('127.0.0.1', 47823))
+    if now - st['cur_t'] > 1.0 or st['last'] != ptr:
+        st['cur_t'], st['last'] = now, ptr
+        r, hot = st['img'][ptr]
+        tx.sendto(b'CUR' + struct.pack('<I4h', 0, r.shape[1], r.shape[0], *hot) + r.tobytes(), ('127.0.0.1', 47823))
 
 
 def cursor_restore():
-    for ptr, (bm, n) in curseur['orig'].items():
-        if ptr in curseur['vide']:
-            g.write(ptr, bm)
-    curseur['vide'].clear(); curseur['non'] = False; curseur['own'] = False
+    for ptr in list(curseur['vide']):
+        orig, vide = curseur['orig'][ptr]
+        if g.read(ptr, len(vide)) == vide:
+            g.write(ptr, orig)
+    curseur['vide'].clear(); curseur['non'].clear(); curseur['own'] = False
 
 
 def cursor_repare():
-    """au demarrage : une fleche laissee videe par un pont arrete net, remise depuis la copie gardee"""
+    """au demarrage : les fleches laissees invisibles par un pont arrete net, remises depuis les copies gardees"""
     if not os.path.exists(CUR_FILE): return
-    f = open(CUR_FILE, 'rb').read()
-    fp, fw_, fh_, frow = struct.unpack_from('<IHHH', f)
-    ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
-    if fp == ptr and (fw_, fh_, frow) == (w, h, row) and not any(g.read(ptr, row * h)):
-        g.write(ptr, f[10:]); print('menus : fleche du jeu remise')
+    f = open(CUR_FILE, 'rb').read(); i = 0
+    while i + 6 <= len(f):
+        ptr, n = struct.unpack_from('<IH', f, i); orig, vide = f[i + 6:i + 6 + n], f[i + 6 + n:i + 6 + 2 * n]; i += 6 + 2 * n
+        if len(vide) == n and g.read(ptr, n) == vide:
+            g.write(ptr, orig); print('menus : fleche du jeu remise (%#x)' % ptr)
+    os.remove(CUR_FILE)
 
 
 import atexit

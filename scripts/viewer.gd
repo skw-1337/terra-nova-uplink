@@ -10,6 +10,7 @@ const OLDSCHOOL = preload("res://oldschool.gdshader")
 const SMOKE = preload("res://smoke.gdshader")
 const PUFF = preload("res://puff.gdshader")
 const ANIM = preload("res://anim.gdshader")
+const BEAM = preload("res://beam.gdshader")
 const WATER = preload("res://water.gdshader")
 const SKY_SHADER = preload("res://sky.gdshader")
 const SKY_DISTANCE := 2400.0             # sky sprites: far away, following the camera
@@ -1833,8 +1834,13 @@ func _live_scorch(pk: PackedByteArray) -> void:
 # the gun is beside the head, on the side the bolt starts (left for weapons 1-2, right for 3-4); for the others it
 # is where the bolt was first seen. Types 28 / 29 are the beam's trail, barely visible in the game (drawn, they were
 # a cloud of orange balls); the other class 6 types are the impacts' sparks.
-const MUZZLE := Vector3(0.4, -0.06, -0.05)     # camera space, x to the side of the hand that fired (fitted on the game's beam)
-const DUST_PX := 0.002                         # dust radius per unit of distance: ~1.5 pixel of the game's picture (its
+const MUZZLE := Vector3(0.417, -0.089, -0.3)   # camera space, x to the side of the hand that fired (fitted on the game's beam)
+const MUZZLE_W := 0.0167                       # half width of the player's beam at the gun and at the bolt (world units)
+const BOLT_W := 0.0053
+const DUST_DOTS := 3                           # dots drawn for each dust particle, scattered DUST_SPREAD across and
+const DUST_SPREAD := 0.055                     # DUST_DROP up and down (radians from the camera: measured on the game's
+const DUST_DROP := 0.025                       # picture, ~15 x 7 pixels around each particle)
+const DUST_PX := 0.0027                        # dust radius per unit of distance: ~2 pixels of the game's picture (its
                                                # dots along a laser's path; bigger and glowing, they made a second laser)
 const STREAK := 1.5                            # length of a laser bolt in flight
 const FLASH_MS := 25                           # the beam from the gun, as the bolt leaves (the game: 1 frame)
@@ -1880,13 +1886,9 @@ func _live_fx(idx: int, e) -> void:
 	if mi.get_meta("kind", -1) != kind:
 		mi.transform = Transform3D.IDENTITY             # the slot may have held a stretched beam
 		if beam:
-			var cy := CylinderMesh.new()                # unit length, stretched from the gun to the bolt
-			cy.top_radius = 0.005                       # (fitted: ~8 pixels of the game wide at the edge of the view, 4 at the bolt)
-			cy.bottom_radius = 0.005
-			cy.height = 1.0
-			cy.radial_segments = 6
-			cy.rings = 1
-			mi.mesh = cy
+			mi.mesh = ImmediateMesh.new()               # a ribbon rebuilt every frame from the gun to the bolt
+		elif kind == 3 or kind == 5:
+			mi.mesh = ImmediateMesh.new()               # dust: its scattered dots, rebuilt every frame
 		elif kind == 6:
 			var cn := CylinderMesh.new()                # missile: a little cone, nose ahead
 			cn.top_radius = 0.0
@@ -1902,6 +1904,13 @@ func _live_fx(idx: int, e) -> void:
 			sp.radial_segments = 4 if kind == 3 or kind == 5 else 8
 			sp.rings = 2 if kind == 3 or kind == 5 else 4
 			mi.mesh = sp
+		if beam and not fx_mats.has(kind):
+			var bm := ShaderMaterial.new()
+			bm.shader = BEAM
+			if kind == 4:                               # the ion rifle's blue beam
+				bm.set_shader_parameter("core", Color(0.45, 0.6, 1.0))
+				bm.set_shader_parameter("edge", Color(0.06, 0.12, 0.45))
+			fx_mats[kind] = bm
 		if not fx_mats.has(kind):
 			var m := StandardMaterial3D.new()
 			m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -1914,7 +1923,8 @@ func _live_fx(idx: int, e) -> void:
 			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0][kind]
 			if kind == 3 or kind == 5:                  # dust: plain dots of the game's red / blue, no glow
 				m.emission_enabled = false
-				m.albedo_color = Color(0.78, 0.06, 0.04) if kind == 3 else Color(0.3, 0.42, 0.95)
+				m.albedo_color = Color(0.5, 0.01, 0.01) if kind == 3 else Color(0.3, 0.42, 0.95)
+				m.cull_mode = BaseMaterial3D.CULL_DISABLED  # (its dots are quads facing the camera)
 			m.disable_fog = true
 			fx_mats[kind] = m
 		mi.material_override = fx_mats[kind]
@@ -1927,41 +1937,79 @@ func _live_fx(idx: int, e) -> void:
 	mi.set_meta("seen", live_seen)
 	if beam:
 		var cam := camera.global_transform
-		if fresh or not mi.has_meta("tail"):           # (a slot that held a spark the frame before: a new bolt)
+		# a new bolt: a new slot, or this one taken again by the next bolt (it jumps back towards the gun)
+		var near := pos.distance_to(cam.origin)
+		if fresh or not mi.has_meta("tail") or near < float(mi.get_meta("near", 0.0)) - 1.0:
 			var rel := cam.affine_inverse() * pos       # where the bolt starts, in camera space
 			mi.set_meta("mine", rel.length() < 2.5)
 			mi.set_meta("side", -1.0 if rel.x < 0.0 else 1.0)
 			mi.set_meta("tail", pos)
 			mi.set_meta("born", Time.get_ticks_msec())
+		mi.set_meta("near", near)
 		# the player's own bolt: like the game, one beam from the gun to the bolt for a single game frame as it
 		# leaves, then nothing (the bolt flies unseen to its impact; a held trigger fires every 0.125 s and the
 		# streak drawn after the flash made two lasers in the air). Others' bolts: a short streak flying on
 		var tail: Vector3 = mi.get_meta("tail")
+		var w_tail := 0.004
+		var w_bolt := 0.004
 		if mi.get_meta("mine"):
 			if Time.get_ticks_msec() - int(mi.get_meta("born")) >= FLASH_MS:
 				mi.visible = false
 				return
 			tail = cam * Vector3(MUZZLE.x * float(mi.get_meta("side")), MUZZLE.y, MUZZLE.z)
+			w_tail = MUZZLE_W                           # (fitted on the game's beam: 34 pixels wide at the edge of
+			w_bolt = BOLT_W                             # the view, 4 at the bolt, a straight taper)
 		elif pos.distance_to(tail) > STREAK:
 			tail = pos + (tail - pos).normalized() * STREAK
 		var seg := pos - tail
 		if seg.length() < 0.05:
 			mi.visible = false
 			return
-		var b := Basis(Quaternion(Vector3.UP, seg.normalized())) * Basis.from_scale(Vector3(1.0, seg.length(), 1.0))
-		mi.global_transform = Transform3D(b, tail + seg * 0.5)
+		# a ribbon facing the camera, as wide as the game's at both ends
+		var across := seg.cross(cam.origin - (tail + pos) * 0.5).normalized()
+		var im := mi.mesh as ImmediateMesh
+		im.clear_surfaces()
+		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, fx_mats[kind])
+		var corners := [[tail - across * w_tail, 0.0], [tail + across * w_tail, 1.0], [pos + across * w_bolt, 1.0],
+				[tail - across * w_tail, 0.0], [pos + across * w_bolt, 1.0], [pos - across * w_bolt, 0.0]]
+		for c in corners:
+			im.surface_set_uv(Vector2(0.0, c[1]))
+			im.surface_add_vertex(c[0])
+		im.surface_end()
+		mi.global_transform = Transform3D.IDENTITY
+		mi.extra_cull_margin = 4.0
 		mi.visible = true
 		return
-	if pos.distance_to(camera.position) < (0.8 if kind == 3 or kind == 5 else 1.5):   # at the gun: inside the cockpit
+	if pos.distance_to(camera.position) < (0.3 if kind == 3 or kind == 5 else 1.5):   # at the gun: inside the cockpit
 		mi.visible = false
 		return
 	if kind == 6:
 		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail
 	if kind == 3 or kind == 5:
-		# the game draws its dust as dots of a pixel or two at any distance: as small balls of a fixed size, the
-		# trail along a shot, right in front of the camera, grew into a big red cone
-		var k := pos.distance_to(camera.position) * DUST_PX / 0.014
-		mi.transform = Transform3D(Basis.IDENTITY.scaled(Vector3(k, k, k)), pos)
+		# the game draws a dust particle (it does not move) as dots of a pixel scattered around it, mostly below,
+		# drawn again elsewhere when it draws a new random number (the bridge sends it in the heading): near the
+		# camera they spread over the view's lower left, far away they make a dense cloud at the impact (measured on
+		# the game's picture; dots right on the particles made a thin second laser along the shot)
+		var d := pos.distance_to(camera.position)
+		var hs := d * DUST_PX
+		var cb := camera.global_transform.basis
+		var im := mi.mesh as ImmediateMesh
+		im.clear_surfaces()
+		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, fx_mats[kind])
+		var rnd := int(e[6])
+		for j in DUST_DOTS:
+			var r1 := float(((idx + 1) * 2654435761 + rnd * 40503 + j * 7919) % 100000) / 100000.0
+			var r2 := float(((idx + 3) * 1103515245 + rnd * 12345 + j * 104729) % 100000) / 100000.0
+			var r3 := float(((idx + 7) * 69069 + rnd * 2891 + j * 31337) % 100000) / 100000.0
+			# (a spread of a few pixels of the game whatever the distance: wider than tall, a little below)
+			var c := pos + (cb.x * (r1 - 0.5) * 2.0 * DUST_SPREAD + cb.y * ((r2 - 0.6) * 2.0 * DUST_DROP)) * d * (0.3 + 0.7 * r3)
+			var q := [c - cb.x * hs - cb.y * hs, c + cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs,
+					c - cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs, c - cb.x * hs + cb.y * hs]
+			for v in q:
+				im.surface_add_vertex(v)
+		im.surface_end()
+		mi.global_transform = Transform3D.IDENTITY
+		mi.extra_cull_margin = 2.0
 	elif kind == 2 or kind == 7:
 		mi.transform = Transform3D(Basis.IDENTITY, pos)
 	else:                                           # other shots: a bolt along its flight

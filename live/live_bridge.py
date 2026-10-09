@@ -1,7 +1,7 @@
 # Pont vers Terra Nova Viewer (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
 # (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
 # Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
-#   python live_bridge.py [--fov 91.5] [--eye 0.28] [--hz 120] [--once] [--launch [--res 1600x900]]
+#   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance le visualiseur dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, time, zlib
@@ -9,7 +9,7 @@ import tnre
 
 g = tnre.Guest()
 arg = lambda k, d: float(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else d
-FOV, EYE, HZ = arg('--fov', 100.0), arg('--eye', 0.28), arg('--hz', 120.0)   # oeil : 0.4 au-dessus du sol (le joueur est a 0.12)
+FOV, EYE, HZ = arg('--fov', 100.0), arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
 NENT = 300                               # entrees lues dans la table des entites
 HUD, PLAY = '--hud' in sys.argv, '--play' in sys.argv   # avant --launch, qui les passe au visualiseur
 CAM = None
@@ -515,6 +515,8 @@ while True:
         ex, ey, ez = struct.unpack_from('<iii', tab, o + 0x0F)
         if ex == 0 and ey == 0: continue
         eh = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
+        if tab[o + 1] == 6 and tab[o + 2] in (28, 29):   # poussiere : le cap porte le champ que le jeu retire au
+            eh = float(struct.unpack_from('<H', tab, o + 7)[0])   # hasard (il disperse ses points autour d'elle)
         if tab[o + 1] == 6 and tab[o + 2] == 33:     # morceau d'armure : le cap porte l'armure du soldat mort
             eh = float(armure_debris(ex / 65536, ey / 65536, vivants))
         body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], 1 if tab[o] else 0, ex / 65536, ey / 65536, ez / 65536, eh))

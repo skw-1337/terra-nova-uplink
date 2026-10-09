@@ -472,14 +472,66 @@ def cursor_restore():
 
 
 def cursor_repare():
-    """au demarrage : les fleches laissees invisibles par un pont arrete net, remises depuis les copies gardees"""
-    if not os.path.exists(CUR_FILE): return
-    f = open(CUR_FILE, 'rb').read(); i = 0
-    while i + 6 <= len(f):
-        ptr, n = struct.unpack_from('<IH', f, i); orig, vide = f[i + 6:i + 6 + n], f[i + 6 + n:i + 6 + 2 * n]; i += 6 + 2 * n
-        if len(vide) == n and g.read(ptr, n) == vide:
-            g.write(ptr, orig); print('menus : fleche du jeu remise (%#x)' % ptr)
-    os.remove(CUR_FILE)
+    """au demarrage : les fleches laissees invisibles par un pont arrete net, remises depuis les copies gardees
+    (CUR_FILE), puis depuis les fichiers du jeu : une image de curseur de RESGAME / RESCUSTM (en-tete de 0x1c octets,
+    puis ses pixels) retrouvee en memoire avec des pixels vides est remise, si c'est la seule de son en-tete a y manquer"""
+    if os.path.exists(CUR_FILE):
+        f = open(CUR_FILE, 'rb').read(); i = 0
+        while i + 6 <= len(f):
+            ptr, n = struct.unpack_from('<IH', f, i); orig, vide = f[i + 6:i + 6 + n], f[i + 6 + n:i + 6 + 2 * n]
+            i += 6 + 2 * n
+            if len(vide) == n and g.read(ptr, n) == vide:
+                g.write(ptr, orig); print('menus : fleche du jeu remise (%#x)' % ptr)
+        os.remove(CUR_FILE)                          # (les fleches videes ensuite y seront notees a nouveau)
+    dossier = jeu_data()
+    if not dossier: return
+    cand = {}
+    entete = re.compile(b'\x00\x00\x00\x00[\x02\x04]\x00\x01\x00', re.S)
+    for nom in ('RESGAME.RES', 'RESCUSTM.RES'):
+        fn = os.path.join(dossier, nom)
+        if not os.path.exists(fn): continue
+        b = open(fn, 'rb').read()
+        for m in entete.finditer(b):
+            k = m.start(); typ = b[k + 4]; w, h, row = struct.unpack_from('<HHH', b, k + 8)
+            if not (4 <= w <= 64 and 4 <= h <= 64 and row >= w): continue
+            px = b[k + 0x1c:k + 0x1c + row * h] if typ == 2 else b[k + 0x1c:k + 0x1c + 4096]
+            if typ == 4:                             # le flux compresse : jusqu'a sa fin (0x80 0 0)
+                e = px.find(b'\x80\x00\x00'); px = px[:e + 3] if e >= 0 else b''
+            if px: cand.setdefault(b[k:k + 0x1c], set()).add(px)
+    for hdr, imgs in cand.items():
+        n = max(len(px) for px in imgs)
+        intactes, vides = set(), []
+        for st in range(0x400000, 0x4000000, 0x100000):
+            blk = g.read(st, 0x100000 + 0x1c + n)
+            if not blk: continue
+            k = blk.find(hdr)
+            while 0 <= k < 0x100000:
+                for px in imgs:
+                    if blk[k + 0x1c:k + 0x1c + len(px)] == px: intactes.add(px); break
+                else:
+                    cur = blk[k + 0x1c:k + 0x1c + n]
+                    if not any(cur) or (cur[0] >= 0x80 and b'\x80\x00\x00' in cur[:12]): vides.append(st + k + 0x1c)
+                k = blk.find(hdr, k + 1)
+        # une image videe : celle des fichiers qui manque en memoire (les autres de meme en-tete y sont intactes)
+        reste = imgs - intactes
+        if len(reste) == 1 and len(vides) == 1:
+            g.write(vides[0], next(iter(reste)))
+            print('menus : fleche du jeu remise depuis les fichiers (%#x)' % vides[0])
+
+
+def jeu_data():
+    """dossier TNOVA/DATA du jeu, d'apres l'executable de DOSBox (son dossier ou un parent)"""
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, g.pid)
+    buf = ctypes.create_unicode_buffer(1024); n = ctypes.c_ulong(1024)
+    ok = k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)); k32.CloseHandle(h)
+    if not ok: return None
+    d = os.path.dirname(buf.value)
+    for _ in range(3):
+        if os.path.isdir(os.path.join(d, 'TNOVA', 'DATA')): return os.path.join(d, 'TNOVA', 'DATA')
+        d = os.path.dirname(d)
+    return None
 
 
 import atexit

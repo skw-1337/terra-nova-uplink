@@ -4,7 +4,7 @@
 #   python live_bridge.py [--fov 91.5] [--eye 0.28] [--hz 120] [--once] [--launch [--res 1600x900]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance le visualiseur dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
-import math, re, select, socket, struct, sys, time, zlib
+import math, os, re, select, socket, struct, sys, time, zlib
 import tnre
 
 g = tnre.Guest()
@@ -254,13 +254,15 @@ if HUD:
 # bouge plus. La fenetre DOSBox est alors capturee (PrintWindow, meme cachee derriere le visualiseur) et envoyee au
 # visualiseur en JPEG, qui l'affiche a la place de sa 3D (port 47823) :
 #   'MOD' + n (u32) + mode (u8 : 0 = 3D, 1 = ecran du jeu) + cadre de la souris du jeu (i16 l, h), 5 fois par seconde
-#   'SCR' + image (u32) + morceau (u16) + nombre (u16) + PNG (60 Ko par morceau), a chaque changement (et chaque s) :
+#   'SCR' + image (u32) + morceau (u16) + nombre (u16) + [largeur, hauteur de l'ecran, x, y, l, h de la zone (u16) +
+#   RGB zlib de la zone] (60 Ko par morceau) : la zone qui a change (le curseur qui bouge : un petit paquet), l'ecran
+#   entier chaque seconde ou quand sa taille change, jusqu'a ~40 fois par seconde. Les morceaux d'un gros envoi sont
+#   espaces : le tampon de reception de Windows (~64 Ko) debordait et le visualiseur n'avait jamais l'image entiere
 #   l'ecran du jeu a sa definition (le cadre de sa souris, 640 x 480 dans les menus), chaque pixel repris au centre
 #   de son bloc dans la fenetre DOSBox agrandie ; le visualiseur l'agrandit net
 #   'MIS' + n (u32) + nom de la mission (MISSnn.RES), au retour dans la 3D : le visualiseur charge la nouvelle
 def menu_loop():
-    import ctypes, ctypes.wintypes as wt, io, collections
-    from PIL import Image
+    import ctypes, ctypes.wintypes as wt
     u32, g32 = ctypes.windll.user32, ctypes.windll.gdi32
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -288,35 +290,142 @@ def menu_loop():
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     last_c, last_t, mode, n, img_n, prev, sent_t, mod_t = d32(COPIES), time.time(), 0, 0, 0, None, 0.0, 0.0
     fw, fh = 640, 480
+    global menu_beat
     while True:
+        menu_beat = time.time()
+        try:
+            last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh = menu_step(
+                grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh)
+        except Exception as ex:                   # une capture ratee (changement de mode video...) : on continue
+            print('menus :', repr(ex), file=sys.stderr, flush=True); time.sleep(0.2)
+
+
+def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh):
+    import collections, os
+    import numpy as np
+    if True:
         c = d32(COPIES); now = time.time()
         if c != last_c: last_c, last_t = c, now
-        if mode == 0 and now - last_t > 0.5: mode = 1
-        elif mode == 1 and now - last_t < 0.1:
+        # un ecran du jeu : sa 3D arretee, ou sa souris dans un cadre de menu (640 x 480 ; la 3D de TN+ tourne encore
+        # au debut de certains ecrans, comme la base : leur image passait alors par le HUD, assombrie)
+        fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (640, 480)
+        menu = now - last_t > 0.5 or fw >= 640
+        if mode == 0 and menu: mode = 1
+        elif mode == 1 and not menu and now - last_t < 0.1:
             mode = 0
+            if PLAY: cursor_restore()                  # la fleche du jeu, de retour pour la 3D
             noms = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', g.read(0x340000, 0x140000), re.I))
             if noms:
                 tx.sendto(b'MIS' + struct.pack('<I', n) + noms.most_common(1)[0][0].encode(), ('127.0.0.1', 47823))
+        if os.environ.get('TN_DEBUG') and mode != getattr(menu_step, 'dbg', None):
+            menu_step.dbg = mode
+            print('menus : mode %d (3D arretee %.1f s, cadre %d x %d)' % (mode, now - last_t, fw, fh), file=sys.stderr, flush=True)
         if now - mod_t > 0.2:
-            fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (640, 480)
             tx.sendto(b'MOD' + struct.pack('<IBhh', n, mode, fw, fh), ('127.0.0.1', 47823)); n += 1; mod_t = now
         if mode == 0:
-            prev = None; time.sleep(0.05); continue
+            time.sleep(0.05); return last_c, last_t, mode, n, img_n, None, sent_t, mod_t, fw, fh
         im = grab()
-        if im is None: time.sleep(0.1); continue
+        if im is None:
+            time.sleep(0.1); return last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh
         H, W = im.shape[:2]
         tw, th = (fw, fh) if fw >= 640 and fh >= 400 else (W // 2, H // 2)   # (en mission en pause : moitie de la fenetre)
         ech = im[((np.arange(th) + 0.5) * H / th).astype(int)][:, ((np.arange(tw) + 0.5) * W / tw).astype(int)]
-        sig = ech.tobytes()
-        if sig != prev or now - sent_t > 1.0:
-            buf = io.BytesIO(); Image.fromarray(np.ascontiguousarray(ech)).save(buf, 'PNG', compress_level=1); data = buf.getvalue()
+        if PLAY and (tw, th) == (fw, fh):
+            cursor_hide(ech, tx, now)
+        x0, y0, x1, y1 = 0, 0, tw, th                     # tout l'ecran
+        if prev is not None and prev.shape == ech.shape and now - sent_t < 1.0:
+            ch = (ech != prev).any(2)
+            if not ch.any():
+                x1 = 0
+            else:
+                ys, xs = np.nonzero(ch.any(1))[0], np.nonzero(ch.any(0))[0]
+                x0, y0, x1, y1 = int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1
+        if x1 > x0:
+            zone = np.ascontiguousarray(ech[y0:y1, x0:x1])
+            data = struct.pack('<6H', tw, th, x0, y0, x1 - x0, y1 - y0) + zlib.compress(zone.tobytes(), 1)
             parts = [data[k:k + 60000] for k in range(0, len(data), 60000)]
             for k, part in enumerate(parts):
+                if k: time.sleep(0.008)
                 tx.sendto(b'SCR' + struct.pack('<IHH', img_n, k, len(parts)) + part, ('127.0.0.1', 47823))
-            img_n += 1; prev, sent_t = sig, now
-        time.sleep(0.05)
+            img_n += 1
+            if (x0, y0, x1, y1) == (0, 0, tw, th): sent_t = now
+            prev = ech.copy()
+        time.sleep(max(0.0, 0.012 - (time.time() - now)))
+    return last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh
 
 
+# Le curseur des menus : le jeu le redessine a son rythme et DOSBox l'affiche avec ~60 ms de retard, puis la
+# capture. Le visualiseur affiche donc la fleche du jeu lui-meme comme curseur de la souris (sans retard), et celle du
+# jeu est videe le temps des menus : son image (descripteur juste avant la position du curseur : pointeur, type,
+# largeur, hauteur, pas ; indices 0xfc-0xfe, 0 transparent), restauree en revenant dans la 3D et a l'arret.
+# Ses couleurs et sa pointe sont relevees une fois sur l'image, la souris immobile (l'image a alors rattrape).
+#   'CUR' + n (u32) + largeur, hauteur, pointe x, y (i16) + RGBA
+CUR_FILE = os.path.join(os.environ.get('TEMP', '.'), 'tn_curseur_menus.bin')   # (si le pont meurt fleche videe)
+curseur = {'orig': {}, 'rgba': None, 'pos': None, 'still': 0.0, 'cur_t': 0.0}
+
+
+def cursor_hide(ech, tx, now):
+    import numpy as np
+    st = curseur
+    ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
+    if not (0x400000 <= ptr < 0x4000000 and 8 <= w <= 64 and 8 <= h <= 64 and row >= w):
+        return
+    bm = g.read(ptr, row * h)
+    if any(bm):
+        st['orig'][ptr] = (bm, row * h)
+        if not os.path.exists(CUR_FILE):
+            open(CUR_FILE, 'wb').write(struct.pack('<IHHH', ptr, w, h, row) + bm)
+    elif ptr not in st['orig'] and os.path.exists(CUR_FILE):
+        f = open(CUR_FILE, 'rb').read()                        # videe par un pont mort : celle du fichier
+        fp, fw_, fh_, frow = struct.unpack_from('<IHHH', f)
+        if fp == ptr and (fw_, fh_, frow) == (w, h, row):
+            st['orig'][ptr] = (f[10:], row * h); bm = f[10:]
+            g.write(ptr, bm)
+    pos = g.read(m_cur, 4)
+    if pos != st['pos']: st['pos'], st['still'] = pos, now
+    if st['rgba'] is None:
+        if not any(bm) or now - st['still'] < 0.25: return    # la fleche visible et immobile : on la releve
+        idx = np.frombuffer(bm, np.uint8).reshape(h, row)[:, :w]
+        cx, cy = struct.unpack('<hh', pos)
+        H, W = ech.shape[:2]
+        best = None
+        for hy in range(0, 8):
+            for hx in range(0, 8):
+                x0, y0 = cx - hx, cy - hy
+                if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H: continue
+                zone = ech[y0:y0 + h, x0:x0 + w]
+                sc = 0
+                for v in np.unique(idx[idx != 0]):
+                    cols = zone[idx == v].reshape(-1, 3)
+                    u, c = np.unique(cols, axis=0, return_counts=True)
+                    sc += c.max()
+                if best is None or sc > best[0]: best = (sc, hx, hy)
+        if best is None or best[0] < 0.9 * (idx != 0).sum(): return
+        _, hx, hy = best
+        zone = ech[cy - hy:cy - hy + h, cx - hx:cx - hx + w]
+        rgba = np.zeros((h, w, 4), np.uint8)
+        for v in np.unique(idx[idx != 0]):
+            cols = zone[idx == v].reshape(-1, 3)
+            u, c = np.unique(cols, axis=0, return_counts=True)
+            rgba[idx == v, :3] = u[c.argmax()]; rgba[idx == v, 3] = 255
+        st['rgba'], st['hot'] = rgba, (hx, hy)
+        print('menus : curseur releve (%d x %d, pointe %d, %d)' % (w, h, hx, hy), file=sys.stderr, flush=True)
+    if any(bm):
+        g.write(ptr, bytes(row * h))                           # la fleche du jeu : videe
+    if now - st['cur_t'] > 1.0:
+        st['cur_t'] = now
+        r = st['rgba']
+        tx.sendto(b'CUR' + struct.pack('<I4h', 0, r.shape[1], r.shape[0], *st['hot']) + r.tobytes(), ('127.0.0.1', 47823))
+
+
+def cursor_restore():
+    for ptr, (bm, n) in curseur['orig'].items():
+        g.write(ptr, bm)
+
+
+import atexit
+atexit.register(cursor_restore)
+menu_beat = time.time()
 if HUD:
     threading.Thread(target=menu_loop, daemon=True).start()
 u16 = lambda a: struct.unpack('<H', g.read(a, 2))[0]
@@ -376,6 +485,10 @@ while True:
     if '--once' in sys.argv or n % int(HZ * 2) == 0:
         print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
         if '--once' in sys.argv: break
+    if HUD and time.time() - menu_beat > 3:     # fil des menus fige (capture bloquee) : un neuf prend la suite
+        menu_beat = time.time()
+        print('menus : fil relance', file=sys.stderr, flush=True)
+        threading.Thread(target=menu_loop, daemon=True).start()
     if PLAY:
         handle_input()
     if time.time() - nuages_t > 0.1:

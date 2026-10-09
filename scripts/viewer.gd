@@ -121,6 +121,9 @@ var play_started := false        # the first click in the window only takes the 
 var menu_mode := false
 var menu_rect: TextureRect
 var menu_tex: ImageTexture
+var menu_img: Image                # the game's screen as received (zones of it are updated)
+var menu_cursor: Image             # the game's arrow, shown as the mouse cursor on its screens (no lag)
+var menu_cursor_hot := Vector2i.ZERO
 var menu_frame := Vector2i(640, 480)  # the game's mouse range on that screen
 var menu_parts := {}
 var menu_img_n := -1
@@ -1206,7 +1209,23 @@ void fragment() {
 	add_child(ml)
 	menu_rect = TextureRect.new()
 	menu_rect.stretch_mode = TextureRect.STRETCH_SCALE
-	menu_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR   # (its picture already blown up crisp, see SCR)
+	menu_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	# the game's own pixels (640 x 480 in its menus) blown up crisp: each pixel flat, only its edges blended over one
+	# window pixel ("sharp bilinear"), so that uneven scales do not give uneven pixels
+	var msh := Shader.new()
+	msh.code = """shader_type canvas_item;
+void fragment() {
+	vec2 src = vec2(textureSize(TEXTURE, 0));
+	vec2 t = UV * src;
+	vec2 sc = 1.0 / max(fwidth(t), vec2(1e-4));
+	vec2 c = fract(t) - 0.5;
+	vec2 r = max(0.5 - 0.5 / sc, vec2(0.0));
+	vec2 f = (c - clamp(c, -r, r)) * sc + 0.5;
+	COLOR = texture(TEXTURE, (floor(t) + f) / src);
+}"""
+	var mmat := ShaderMaterial.new()
+	mmat.shader = msh
+	menu_rect.material = mmat
 	menu_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	menu_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	menu_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1228,6 +1247,17 @@ func _hud_update() -> void:
 			if not current.is_empty() and current["entry"]["file"].get_file().to_upper() != mf:
 				_load_by_label(mf)
 			continue
+		if tag == "CUR" and pk.size() >= 15:
+			var cw := pk.decode_s16(7)
+			var ch := pk.decode_s16(9)
+			if cw > 0 and ch > 0 and pk.size() >= 15 + cw * ch * 4:
+				var img := Image.create_from_data(cw, ch, false, Image.FORMAT_RGBA8, pk.slice(15, 15 + cw * ch * 4))
+				var hot := Vector2i(pk.decode_s16(11), pk.decode_s16(13))
+				if menu_cursor == null or img.get_data() != menu_cursor.get_data() or hot != menu_cursor_hot:
+					menu_cursor = img
+					menu_cursor_hot = hot
+					_menu_cursor_apply()
+			continue
 		if tag == "MOD" and pk.size() >= 12:
 			menu_frame = Vector2i(maxi(1, pk.decode_s16(8)), maxi(1, pk.decode_s16(10)))
 			_set_menu_mode(pk[7] == 1)
@@ -1241,20 +1271,28 @@ func _hud_update() -> void:
 				var jpg := PackedByteArray()
 				for k in menu_parts.size():
 					jpg.append_array(menu_parts.get(k, PackedByteArray()))
-				var im := Image.new()
-				var ok := im.load_png_from_buffer(jpg) if jpg.slice(1, 4).get_string_from_ascii() == "PNG" else im.load_jpg_from_buffer(jpg)
-				if ok == OK:
-					# the game's own pixels (640 x 480 in its menus): blown up to a whole multiple at least the window's
-					# size, then smoothly down to it -- crisp, with even pixels
-					var vs := get_viewport().get_visible_rect().size
-					var k := clampi(int(ceil(maxf(vs.x / im.get_width(), vs.y / im.get_height()))), 1, 6)
-					im.resize(im.get_width() * k, im.get_height() * k, Image.INTERPOLATE_NEAREST)
-					if menu_tex == null or menu_tex.get_size() != Vector2(im.get_size()):
-						menu_tex = ImageTexture.create_from_image(im)
-						menu_rect.texture = menu_tex
-					else:
-						menu_tex.update(im)
-					menu_rect.visible = menu_mode
+				# the game's screen size, then the zone that changed (x, y, w, h) and its RGB pixels (zlib)
+				if jpg.size() > 12:
+					var sw := jpg.decode_u16(0)
+					var sh := jpg.decode_u16(2)
+					var zx := jpg.decode_u16(4)
+					var zy := jpg.decode_u16(6)
+					var zw := jpg.decode_u16(8)
+					var zh := jpg.decode_u16(10)
+					var raw := jpg.slice(12).decompress(zw * zh * 3, FileAccess.COMPRESSION_DEFLATE)
+					var whole := zx == 0 and zy == 0 and zw == sw and zh == sh
+					if raw.size() == zw * zh * 3 and (whole or (menu_img != null and menu_img.get_size() == Vector2i(sw, sh))):
+						var zone := Image.create_from_data(zw, zh, false, Image.FORMAT_RGB8, raw)
+						if whole:
+							menu_img = zone
+						else:
+							menu_img.blit_rect(zone, Rect2i(0, 0, zw, zh), Vector2i(zx, zy))
+						if menu_tex == null or menu_tex.get_size() != Vector2(menu_img.get_size()):
+							menu_tex = ImageTexture.create_from_image(menu_img)
+							menu_rect.texture = menu_tex
+						else:
+							menu_tex.update(menu_img)
+						menu_rect.visible = menu_mode
 				menu_parts.clear()
 			continue
 		if tag == "PAL" and pk.size() >= 15 + 768:
@@ -1342,6 +1380,8 @@ func _play_release_all() -> void:
 func _set_menu_mode(on: bool) -> void:
 	if on == menu_mode:
 		return
+	if OS.has_environment("TN_DEBUG"):
+		print("menus : mode ", on, " (image ", menu_tex != null, ")")
 	menu_mode = on
 	if menu_rect != null:
 		menu_rect.visible = on and menu_tex != null
@@ -1349,9 +1389,29 @@ func _set_menu_mode(on: bool) -> void:
 		return
 	if on:
 		play_started = true
+		_menu_cursor_apply()
+	else:
+		Input.set_custom_mouse_cursor(null)
+		if play_started:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+# On the game's screens: its arrow (sent by the bridge, which hides the game's own) as the mouse cursor, stretched
+# like the picture; until it is known, the game's cursor in the picture (the mouse hidden).
+func _menu_cursor_apply() -> void:
+	if not (play and menu_mode):
+		return
+	if menu_cursor == null:
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
-	elif play_started:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		return
+	var vs := get_viewport().get_visible_rect().size
+	var k := Vector2(clampf(vs.x / menu_frame.x, 1.0, 4.0), clampf(vs.y / menu_frame.y, 1.0, 4.0))
+	var im := menu_cursor.duplicate() as Image
+	im.resize(maxi(1, roundi(im.get_width() * k.x)), maxi(1, roundi(im.get_height() * k.y)), Image.INTERPOLATE_NEAREST)
+	var hot := (Vector2(menu_cursor_hot) * k).floor()
+	hot = hot.clamp(Vector2.ZERO, Vector2(im.get_width() - 1, im.get_height() - 1))
+	Input.set_custom_mouse_cursor(im, Input.CURSOR_ARROW, hot)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
 # Window position -> the game's mouse range on its own screen (menus), the picture stretched over the window.

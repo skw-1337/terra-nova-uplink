@@ -60,8 +60,8 @@ func sprite_width(cls: int, sub: int) -> float:
 			var kind := f.decode_u16(0)
 			var e := 4 + 8 * f.decode_u16(2)
 			if (kind == 2 or kind == 3) and e + 4 <= f.size():
-				return 2.0 * f.decode_s32(e) / 65536.0
-	return 1.0 / 6.0
+				return f.decode_s32(e) / 65536.0         # measured against the game: its sprite is as wide as this radius
+	return 1.0 / 12.0
 
 
 # ------------------------------------------------------------------ soldiers
@@ -114,7 +114,7 @@ func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dicti
 			if o + 0x1c > f.size() or not (f[o + 4] == 2 or f[o + 4] == 4):
 				views.clear()
 				break
-			var img := _bitmap(f.slice(o), pal)
+			var img := _bitmap(f.slice(o), pal, 0x20)     # a limb view's pixels start 4 bytes past the usual header
 			if img == null:
 				views.clear()
 				break
@@ -147,6 +147,36 @@ func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dicti
 # "Fumee" objects (buildings type 61, whose model entry is only an editor placeholder).
 const SMOKE_ANIM := 1186
 const SMOKE_TYPE := 61
+
+
+# An effect animation (explosions, fire: RESTNOBJ 1162-1193), all its frames in a texture array; its frames share
+# one size and one anchor (header +16 / +18: the point standing on the effect's position, near the bottom).
+func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
+	var key := "a%d/%s" % [rid, pal_key]
+	if tex_cache.has(key):
+		return tex_cache[key]
+	var out := {}
+	var images: Array[Image] = []
+	var size := Vector2i.ZERO
+	var anchor := Vector2.ZERO
+	for fr in LGRes.frames(res.data(rid)):
+		var f: PackedByteArray = fr
+		var img := _bitmap(f, pal)
+		if img == null:
+			continue
+		if size == Vector2i.ZERO:
+			size = img.get_size()
+			anchor = Vector2(f.decode_u16(16), f.decode_u16(18))
+		if img.get_size() != size:
+			continue
+		img.generate_mipmaps()
+		images.append(img)
+	if not images.is_empty():
+		var arr := Texture2DArray.new()
+		arr.create_from_images(images)
+		out = {"tex": arr, "frames": images.size(), "size": Vector2(size), "anchor": anchor}
+	tex_cache[key] = out
+	return out
 
 
 func smoke_anim(pal: PackedColorArray, pal_key: String) -> Dictionary:
@@ -203,6 +233,13 @@ func load_sky(path: String, pal: PackedColorArray) -> Dictionary:
 	if f152.size() > 0 and f152[0].size() > 0x1c and f152[0].decode_u16(8) == 256 and f152[0].decode_u16(10) == 256:
 		var img := _bitmap(f152[0], pal)
 		img.convert(Image.FORMAT_RGB8)
+		var lightest := Color.BLACK                  # the horizon's colour: the clouds lighten into it
+		for y in range(0, 256, 4):
+			for x in range(0, 256, 4):
+				var c := img.get_pixel(x, y)
+				if c.get_luminance() > lightest.get_luminance():
+					lightest = c
+		out["light"] = lightest
 		img.generate_mipmaps()
 		out["clouds"] = ImageTexture.create_from_image(img)
 	var lay: PackedByteArray = LGRes.frames(r.data(153))[0]
@@ -374,8 +411,8 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 
 # LG bitmap (28-byte frame header, then pixels): type 2 = raw 8-bit, type 4 = run-length (RSD).
 # Color 0 is transparent.
-static func _bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
-	if f.size() < 0x1c:
+static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x1c) -> Image:
+	if f.size() < data_at:
 		return null
 	var typ := f[4]
 	var w := f.decode_u16(8)
@@ -388,10 +425,10 @@ static func _bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
 	if typ == 2:
 		for y in h:
 			for x in w:
-				var p := 0x1c + y * row + x
+				var p := data_at + y * row + x
 				idx[y * w + x] = f[p] if p < f.size() else 0
 	else:
-		var i := 0x1c
+		var i := data_at
 		var o := 0
 		var n := w * h
 		while o < n and i < f.size():

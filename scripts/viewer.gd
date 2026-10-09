@@ -6,7 +6,11 @@ const Terrain = preload("res://scripts/terrain.gd")
 const TNObjects = preload("res://scripts/tn_objects.gd")
 const GROUND = preload("res://terrain.gdshader")
 const LIMB = preload("res://limb.gdshader")
+const OLDSCHOOL = preload("res://oldschool.gdshader")
 const SMOKE = preload("res://smoke.gdshader")
+const PUFF = preload("res://puff.gdshader")
+const ANIM = preload("res://anim.gdshader")
+const WATER = preload("res://water.gdshader")
 const SKY_SHADER = preload("res://sky.gdshader")
 const SKY_DISTANCE := 2400.0             # sky sprites: far away, following the camera
 const SKY_PIXEL := 0.0024                # their angular size per image pixel (radians)
@@ -35,6 +39,8 @@ var pal_key := ""
 var world: Node3D
 var camera: Camera3D
 var ui: CanvasLayer
+var oldschool_rect: ColorRect      # live mode, "old school": the game's pixels and palette over the 3D view (F12)
+var oldschool_key := ""
 var panel: PanelContainer
 var list: ItemList
 var info: Label
@@ -53,6 +59,81 @@ var env: Environment
 var sun: DirectionalLight3D
 var sky_root: Node3D
 var mats := {}
+# --live: the camera follows the running game (sent by _MODS/re/live_bridge.py over UDP, port 47821:
+# x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
+const LIVE_PORT := 47821
+const GAME_Z := 0.12          # the game's heights are this much above the ground (units, shots)
+var live := false
+var udp: PacketPeerUDP
+var live_seen := 0
+var live_shot := ""
+var live_shot_frame := 60
+var live_nodes := []          # one node per mission entity, in file order
+var live_off := -1            # game entity table index of the first mission entity
+var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
+var live_fx := {}             # game entity index -> glowing sprite: shots (class 5) and their sparks (class 6)
+var live_piles := {}          # game entity index -> pile of armour pieces of a burst suit (6/33)
+var fx_mats := {}
+var puffs := []               # live smoke puffs: [node, start msec]; type 6/29 (jetpack exhaust, laser trail)
+var puff_mat: ShaderMaterial
+var puff_mesh: QuadMesh
+var veg_cells := {}           # vegetation cell (cx * 128 + cy) -> [[multimesh, instance]]: what to hide when it goes
+var veg_values := PackedByteArray()
+var scorch_decals := {}         # live mode: burnt ground vertex (y * 513 + x) -> its decal (destroyed tree, blast)
+var scorch_prev := PackedByteArray()
+var ground_mats := []        # ground materials of the map, for the sky they mirror
+var sky_clouds: Texture2D
+var sky_haze := Color(0.7, 0.76, 0.84)
+# --hud: the game's own screen (cockpit, HUD) over the view, its 3D window transparent (port 47823: 'PAL' palette +
+# 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
+# off-centre like the game's, whose view centre (the crosshair) is 51 % down its 3D window
+const HUD_PORT := 47823
+const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
+const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
+const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
+const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
+const LIVE_FOG_BEGIN := 250.0   # live mode: depth fog from here to there (game units), like the game's haze
+const LIVE_FOG_END := 700.0
+const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
+const VIEW_CENTRE := 0.51        # the view's centre (the crosshair, screen row 144) in the 3D window, measured on lock boxes
+var hud := false
+var hud_udp: PacketPeerUDP
+var hud_img: Image
+var hud_tex: ImageTexture
+var hud_pal_img: Image
+var hud_pal: ImageTexture
+var hud_rect: TextureRect
+var hud_parts := {}
+var hud_frame := -1
+var hud_win := Rect2i()           # 3D window in the game's 320 x 400 screen
+# --play: keyboard and mouse go to the game through the bridge (port 47824): keys as PC scancodes of their physical
+# position ('K'), mouse moves ('M', the bridge turns them into the look), left / right buttons ('B'). A click in the
+# window captures the mouse; Pause gives it back (also when the window loses the focus).
+const PLAY_PORT := 47824
+var play := false
+var play_udp: PacketPeerUDP
+var play_dx := 0.0
+var play_dy := 0.0
+var play_held := {}
+var play_started := false        # the first click in the window only takes the mouse
+var play_cursor := Vector2i(-1, -1)
+var play_cursor_sent := Vector2i(-1, -1)
+const SCANCODES := {
+	KEY_ESCAPE: 0x01, KEY_1: 0x02, KEY_2: 0x03, KEY_3: 0x04, KEY_4: 0x05, KEY_5: 0x06, KEY_6: 0x07, KEY_7: 0x08,
+	KEY_8: 0x09, KEY_9: 0x0A, KEY_0: 0x0B, KEY_MINUS: 0x0C, KEY_EQUAL: 0x0D, KEY_BACKSPACE: 0x0E, KEY_TAB: 0x0F,
+	KEY_Q: 0x10, KEY_W: 0x11, KEY_E: 0x12, KEY_R: 0x13, KEY_T: 0x14, KEY_Y: 0x15, KEY_U: 0x16, KEY_I: 0x17,
+	KEY_O: 0x18, KEY_P: 0x19, KEY_BRACKETLEFT: 0x1A, KEY_BRACKETRIGHT: 0x1B, KEY_ENTER: 0x1C, KEY_A: 0x1E,
+	KEY_S: 0x1F, KEY_D: 0x20, KEY_F: 0x21, KEY_G: 0x22, KEY_H: 0x23, KEY_J: 0x24, KEY_K: 0x25, KEY_L: 0x26,
+	KEY_SEMICOLON: 0x27, KEY_APOSTROPHE: 0x28, KEY_QUOTELEFT: 0x29, KEY_BACKSLASH: 0x2B, KEY_Z: 0x2C, KEY_X: 0x2D,
+	KEY_C: 0x2E, KEY_V: 0x2F, KEY_B: 0x30, KEY_N: 0x31, KEY_M: 0x32, KEY_COMMA: 0x33, KEY_PERIOD: 0x34,
+	KEY_SLASH: 0x35, KEY_KP_MULTIPLY: 0x37, KEY_SPACE: 0x39, KEY_CAPSLOCK: 0x3A, KEY_F1: 0x3B, KEY_F2: 0x3C,
+	KEY_F3: 0x3D, KEY_F4: 0x3E, KEY_F5: 0x3F, KEY_F6: 0x40, KEY_F7: 0x41, KEY_F8: 0x42, KEY_F9: 0x43, KEY_F10: 0x44,
+	KEY_NUMLOCK: 0x45, KEY_SCROLLLOCK: 0x46, KEY_KP_7: 0x47, KEY_KP_8: 0x48, KEY_KP_9: 0x49, KEY_KP_SUBTRACT: 0x4A,
+	KEY_KP_4: 0x4B, KEY_KP_5: 0x4C, KEY_KP_6: 0x4D, KEY_KP_ADD: 0x4E, KEY_KP_1: 0x4F, KEY_KP_2: 0x50, KEY_KP_3: 0x51,
+	KEY_KP_0: 0x52, KEY_KP_PERIOD: 0x53, KEY_SECTION: 0x56, KEY_F11: 0x57, KEY_F12: 0x58,
+	KEY_KP_ENTER: 0xE01C, KEY_KP_DIVIDE: 0xE035, KEY_HOME: 0xE047, KEY_UP: 0xE048, KEY_PAGEUP: 0xE049,
+	KEY_LEFT: 0xE04B, KEY_RIGHT: 0xE04D, KEY_END: 0xE04F, KEY_DOWN: 0xE050, KEY_PAGEDOWN: 0xE051,
+	KEY_INSERT: 0xE052, KEY_DELETE: 0xE053}
 
 
 func _ready() -> void:
@@ -67,7 +148,69 @@ func _ready() -> void:
 	objects_ok = objects.setup(data.data_dir())
 	_fill_list()
 	var args := OS.get_cmdline_user_args()
-	if "--clean" in args:                     # screenshots: no labels, zones, panel or help line
+	if "--live" in args:
+		live = true
+		var fl := CanvasLayer.new()                     # frames per second, top right, over the game's HUD
+		fl.layer = 20
+		add_child(fl)
+		fps_label = Label.new()
+		fps_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		fps_label.offset_left = -110
+		fps_label.offset_right = -8
+		fps_label.offset_top = 6
+		fps_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		fps_label.add_theme_font_size_override("font_size", 18)
+		fps_label.add_theme_color_override("font_color", Color(1, 1, 0.4))
+		fps_label.add_theme_color_override("font_outline_color", Color.BLACK)
+		fps_label.add_theme_constant_override("outline_size", 4)
+		fl.add_child(fps_label)
+		var rl := CanvasLayer.new()                     # old school mode: the game's look over the 3D view, under its HUD (F12)
+		rl.layer = -1
+		add_child(rl)
+		oldschool_rect = ColorRect.new()
+		oldschool_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		oldschool_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var rm := ShaderMaterial.new()
+		rm.shader = OLDSCHOOL
+		oldschool_rect.material = rm
+		oldschool_rect.visible = false                      # shown once the planet's palette is known
+		rl.add_child(oldschool_rect)
+		# colours of the running game: its 3D is darker and more saturated than this viewer's look (fitted on the
+		# same view, 3D pixels only: mean error 61 -> 16 / 255); the HUD on top is not affected
+		# done on the lights (terrain, objects), not on the whole image: the sky and the water keep their light. The
+		# ground's light is mostly the sky's ambient, which only its sky contribution scales (not its energy), and
+		# the blurred sky reflection Godot adds to every surface: off
+		sun.light_energy = LIVE_LIGHT
+		env.ambient_light_sky_contribution = LIVE_AMBIENT
+		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+		env.adjustment_enabled = true
+		env.adjustment_saturation = 1.4
+		# the game's view ends in its haze: depth fog (its colour is the planet's haze, set with the sky)
+		env.fog_mode = Environment.FOG_MODE_DEPTH
+		env.fog_depth_begin = LIVE_FOG_BEGIN
+		env.fog_depth_end = LIVE_FOG_END
+		env.fog_density = 1.0
+		env.fog_sky_affect = 0.0
+		udp = PacketPeerUDP.new()
+		udp.bind(LIVE_PORT, "127.0.0.1")
+		var ls := args.find("--shot")
+		if ls >= 0 and ls + 1 < args.size():
+			live_shot = args[ls + 1]
+		var lf := args.find("--shot-frame")
+		if lf >= 0 and lf + 1 < args.size():
+			live_shot_frame = int(args[lf + 1])
+	if live and "--hud" in args:
+		_hud_setup()
+	if live and "--play" in args:
+		play = true
+		play_udp = PacketPeerUDP.new()
+		play_udp.set_dest_address("127.0.0.1", PLAY_PORT)
+	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
+		env.glow_enabled = true               # over the whole picture, it made it too bright)
+		env.glow_intensity = 0.8
+		env.glow_bloom = 0.0
+		env.glow_hdr_threshold = 1.3          # (the explosions' own pictures, at most white, do not glow)
+	if "--clean" in args or live:             # screenshots: no labels, zones, panel or help line
 		labels_on = false
 		zones_on = false
 		panel.visible = false
@@ -125,11 +268,8 @@ func _build_scene() -> void:
 	terrain_mat.vertex_color_is_srgb = true
 	terrain_mat.roughness = 1.0
 	mats["terrain"] = terrain_mat
-	var water := StandardMaterial3D.new()
-	water.albedo_color = Color(0.2, 0.42, 0.66, 0.72)
-	water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	water.roughness = 0.15
-	water.metallic = 0.2
+	var water := ShaderMaterial.new()          # the sky mirrored on ripples (its clouds set with the sky)
+	water.shader = WATER
 	mats["water"] = water
 	for key in ["friend", "enemy", "building", "decor", "tree", "rock", "zone"]:
 		var m := StandardMaterial3D.new()
@@ -239,6 +379,7 @@ func _load(index: int) -> void:
 	for c in world.get_children():
 		c.queue_free()
 	var pl: Dictionary = m["planet_data"]
+	ground_mats.clear()
 	var det_mat: Material = mats["terrain"]
 	var out_mat: Material = mats["terrain"]
 	if pl["ok"]:                          # real ground textures (else: average colors)
@@ -262,8 +403,18 @@ func _load(index: int) -> void:
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	var nveg := _add_vegetation(m)
 	var counts := {}
+	live_nodes.clear()
+	live_off = -1
+	live_extra.clear()
+	live_fx.clear()
+	live_piles.clear()
+	scorch_decals.clear()                     # (their nodes went with the old world)
+	scorch_prev = PackedByteArray()
+	anims.clear()
+	smoke_pending.clear()
 	for e in mis["entities"]:
-		_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"])
+		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"]))
+		live_nodes[-1].set_meta("mission", true)       # placed from the file: buildings stay on the ground
 		counts[e["cls"]] = counts.get(e["cls"], 0) + 1
 	for z in mis["zones"]:
 		_add_zone(m, z)
@@ -275,7 +426,7 @@ func _load(index: int) -> void:
 	print(info.text.replace("\n", " | "))
 	var args := OS.get_cmdline_user_args()
 	var s := args.find("--shot")
-	if s >= 0 and s + 1 < args.size():
+	if s >= 0 and s + 1 < args.size() and not live:
 		_screenshot(args[s + 1])
 
 
@@ -299,8 +450,10 @@ func _add_vegetation(m: Dictionary) -> int:
 				var key := Vector2i(it["cls"], it["sub"])
 				if not groups.has(key):
 					groups[key] = []
-				groups[key].append(Transform3D(Basis.IDENTITY, Vector3(x, TNData.height_at(m, x, y), y)))
+				groups[key].append([Transform3D(Basis.IDENTITY, Vector3(x, TNData.height_at(m, x, y), y)), cx * 128 + cy])
 				n += 1
+	veg_cells.clear()
+	veg_values = vmap.duplicate()
 	for key in groups:                # key = (class, type)
 		var mesh: Mesh = null
 		var mat: Material = null
@@ -326,7 +479,11 @@ func _add_vegetation(m: Dictionary) -> int:
 		var trs: Array = groups[key]
 		mm.instance_count = trs.size()
 		for i in trs.size():
-			mm.set_instance_transform(i, trs[i])
+			mm.set_instance_transform(i, trs[i][0])
+			var cell: int = trs[i][1]
+			if not veg_cells.has(cell):
+				veg_cells[cell] = []
+			veg_cells[cell].append([mm, i])
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		if mat != null:
@@ -487,11 +644,80 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
+	# water tiles: the bluish ones of the planet's set (their mean colour)
+	var wt := Image.create(64, 1, false, Image.FORMAT_R8)
+	var tc: PackedColorArray = pl["tile_color"]
+	for i in mini(64, tc.size()):
+		var c := tc[i]
+		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25:
+			wt.set_pixel(i, 0, Color(1, 0, 0))
+	sm.set_shader_parameter("water_tiles", ImageTexture.create_from_image(wt))
+	var t0 := Time.get_ticks_msec()
+	sm.set_shader_parameter("relief", ImageTexture.create_from_image(_relief_image(grid["h"], grid["n"], step)))
+	sm.set_shader_parameter("has_relief", true)
+	print("relief %dx%d : %d ms" % [grid["n"], grid["n"], Time.get_ticks_msec() - t0])
+	ground_mats.append(sm)
+	_sky_to(sm)
 	return sm
 
 
+# Relief of a height grid for the ground shader: hollows darker, crests lighter. The height minus its blur at two
+# sizes (about 3 and 12 world units), each scaled by its spread over the map; one texel per grid vertex, 0.5 =
+# unchanged (the shader adds 0.5).
+func _relief_image(h: PackedFloat32Array, n: int, step: float) -> Image:
+	var fine := _box_blur(h, n, maxi(1, roundi(3.0 / step)))
+	var wide := _box_blur(h, n, maxi(1, roundi(12.0 / step)))
+	var s1 := 0.0
+	var s2 := 0.0
+	for i in n * n:
+		s1 += (h[i] - fine[i]) * (h[i] - fine[i])
+		s2 += (h[i] - wide[i]) * (h[i] - wide[i])
+	s1 = maxf(sqrt(s1 / (n * n)), 1e-4)
+	s2 = maxf(sqrt(s2 / (n * n)), 1e-4)
+	var data := PackedByteArray()
+	data.resize(n * n)
+	for i in n * n:
+		var m := 1.0 + clampf((h[i] - fine[i]) / s1 * 0.07 + (h[i] - wide[i]) / s2 * 0.07, -0.3, 0.2)
+		data[i] = clampi(roundi((m - 0.5) * 255.0), 0, 255)
+	return Image.create_from_data(n, n, false, Image.FORMAT_R8, data)
+
+
+# Box blur of an n x n grid, radius r (edges clamped), in two passes of running sums.
+func _box_blur(src: PackedFloat32Array, n: int, r: int) -> PackedFloat32Array:
+	var tmp := PackedFloat32Array()
+	tmp.resize(n * n)
+	var out := PackedFloat32Array()
+	out.resize(n * n)
+	var w := float(2 * r + 1)
+	for y in n:
+		var row := y * n
+		var acc := 0.0
+		for k in range(-r, r + 1):
+			acc += src[row + clampi(k, 0, n - 1)]
+		for x in n:
+			tmp[row + x] = acc / w
+			acc += src[row + mini(x + r + 1, n - 1)] - src[row + maxi(x - r, 0)]
+	for x in n:
+		var acc := 0.0
+		for k in range(-r, r + 1):
+			acc += tmp[clampi(k, 0, n - 1) * n + x]
+		for y in n:
+			out[y * n + x] = acc / w
+			acc += tmp[mini(y + r + 1, n - 1) * n + x] - tmp[maxi(y - r, 0) * n + x]
+	return out
+
+
+# The sky's clouds and haze to a material that mirrors them (water plane, water tiles of the ground).
+func _sky_to(sm: ShaderMaterial) -> void:
+	sm.set_shader_parameter("has_clouds", sky_clouds != null)
+	if sky_clouds != null:
+		sm.set_shader_parameter("clouds", sky_clouds)
+	sm.set_shader_parameter("haze", Vector3(sky_haze.r, sky_haze.g, sky_haze.b))
+	sm.set_shader_parameter("reflect_gain", 0.8)
+
+
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
-		label: bool, z: float = 0.0) -> void:
+		label: bool, z: float = 0.0) -> MeshInstance3D:
 	var name: String = data.type_name(cls, sub)
 	var low := name.to_lower()
 	var ground := TNData.height_at(m, x, y)
@@ -558,6 +784,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		top -= box.size.y * 0.5
 	mi.position = Vector3(x, ground + lift, y)
 	mi.rotation.y = -heading
+	mi.set_meta("lift", lift)
 	world.add_child(mi)
 	if label:
 		var l := Label3D.new()
@@ -571,6 +798,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		l.add_to_group("labels")
 		l.visible = labels_on
 		mi.add_child(l)
+	return mi
 
 
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
@@ -585,31 +813,64 @@ func _add_soldier(holder: Node3D, suit: int) -> float:
 			return 0.0
 		limbs[sg[2]] = ld
 	var p := _soldier_pose(suit, segs, limbs)
-	var top := 0.0
+	var parts := []
 	for sg in segs:
 		var ld: Dictionary = limbs[sg[2]]
-		var a: Vector3 = p[sg[0]]
-		var b: Vector3 = p[sg[1]]
-		# (right, up, forward) -> node axes (forward = +X, right = +Z)
-		var ga := Vector3(a.z, a.y, a.x)
-		var gb := Vector3(b.z, b.y, b.x)
-		var dir := gb - ga
-		var sc: float = dir.length() / ld["len"]
-		var yn := dir.normalized()
-		var fw := Vector3(1, 0, 0)
-		if absf(fw.dot(yn)) > 0.95:
-			fw = Vector3(0, 1, 0)
-		var xn := (fw - yn * fw.dot(yn)).normalized()
-		var zn := xn.cross(yn)
 		var seg := MeshInstance3D.new()
 		seg.mesh = _limb_quad(ld)
 		seg.material_override = _limb_mat(suit, sg[2], ld)
-		seg.transform = Transform3D(Basis(xn * sc, yn * sc, zn * sc), ga)
-		seg.extra_cull_margin = ld["size"].x * sc
 		seg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		holder.add_child(seg)
+		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x)])
+	holder.set_meta("soldier", parts)
+	holder.set_meta("suit", suit)
+	return _pose_soldier(holder, p) + 0.1
+
+
+# Facing of a left / right pair of joints, in node axes (forward = +X, right = +Z): level, square to the pair.
+func _facing(left: Vector3, right: Vector3) -> Vector3:
+	var r := right - left                             # (right, up, forward)
+	var f := r.cross(Vector3.UP)
+	f.y = 0.0
+	if f.length() < 0.0001:
+		return Vector3(1, 0, 0)
+	f = f.normalized()
+	return Vector3(f.z, 0.0, f.x)
+
+
+# Puts a soldier's limbs on its 16 joints, (right, up, forward) from the ground under it: its pose at load, then
+# in live mode the game's own joints every frame (walking, arms, aiming). Returns the highest joint.
+func _pose_soldier(holder: Node3D, p: Array) -> float:
+	var top := 0.0
+	# the body's right, which sets each limb's front (the views turn around the bone): the hips' line for the legs
+	# and feet, the shoulders' for the torso and arms (joints 6 / 7 hips, 10 / 11 shoulders). Front = right x bone:
+	# a leg hanging down faces forward, a foot (the same leg turned forward at the ankle) faces up
+	var r_hips := _node_axes(p[7] - p[6])
+	var r_top := _node_axes(p[11] - p[10])
+	for part in holder.get_meta("soldier"):
+		var a: Vector3 = p[part[1]]
+		var b: Vector3 = p[part[2]]
+		var ga := _node_axes(a) * Vector3(1.0, SUIT_SQUASH, 1.0)
+		var gb := _node_axes(b) * Vector3(1.0, SUIT_SQUASH, 1.0)
+		var dir := _node_axes(b - a)                     # (scale from the true bone)
+		var sc: float = maxf(dir.length(), 0.001) / part[3]
+		var yn := dir.normalized() if dir.length() > 0.0001 else Vector3.DOWN
+		var r: Vector3 = r_hips if maxi(part[1], part[2]) <= 8 else r_top
+		var side := r - yn * r.dot(yn)
+		if side.length() < 0.2 * r.length():             # bone along the body's right (arm held out sideways):
+			side = (Vector3.UP - yn * yn.y) * signf(r.dot(yn))   # its front is still the body's forward
+		side = side.normalized()
+		var xn := side.cross(yn).normalized()
+		var seg: MeshInstance3D = part[0]
+		seg.transform = Transform3D(Basis(xn * sc, yn * sc, xn.cross(yn) * sc), ga)
+		seg.extra_cull_margin = part[4] * sc
 		top = maxf(top, maxf(ga.y, gb.y))
-	return top + 0.1
+	return top
+
+
+# (right, up, forward) -> node axes (forward = +X, up = +Y, right = +Z)
+func _node_axes(v: Vector3) -> Vector3:
+	return Vector3(v.z, v.y, v.x)
 
 
 var captured_poses = null
@@ -677,27 +938,40 @@ func _add_mech(holder: Node3D) -> float:
 		p[6 + i] = Vector3(side * 0.3, hip_y, 0.0)
 	p[9] = Vector3(0.0, hip_y + 0.3, 0.0)
 	p[8] = Vector3(0.0, hip_y - 0.08, 0.0)
-	var top := 0.0
+	var parts := []
 	for sg in segs:
 		var md: Dictionary = objects.model(Vector2i(877 + sg[2], 0), pal, pal_key)
 		if md.is_empty():
 			return 0.0
-		var a: Vector3 = p[sg[0]]
-		var b: Vector3 = p[sg[1]]
+		var part := MeshInstance3D.new()
+		part.mesh = md["mesh"]
+		holder.add_child(part)
+		parts.append([part, sg[0], sg[1]])
+	holder.set_meta("mech", parts)
+	return _pose_mech(holder, p) + 0.1
+
+
+# Puts a mech's parts (3D models, not stretched) on its joints: this standing pose at load, the game's own
+# joints every frame in live mode (it walks like the suits). Returns the highest joint.
+func _pose_mech(holder: Node3D, p: Array) -> float:
+	var top := 0.0
+	var f_hips := _facing(p[6], p[7])
+	for part in holder.get_meta("mech"):
+		var a: Vector3 = p[part[1]]
+		var b: Vector3 = p[part[2]]
 		var ga := Vector3(a.z, a.y, a.x)
 		var gb := Vector3(b.z, b.y, b.x)
-		var down := (gb - ga).normalized()          # model y (mesh -Y) runs from joint a to b
+		var d := gb - ga
+		var down := d.normalized() if d.length() > 0.0001 else Vector3.DOWN   # model y (mesh -Y) runs from a to b
 		var yn := -down
-		var fw := Vector3(1, 0, 0)
+		var fw := f_hips
 		if absf(fw.dot(yn)) > 0.95:
 			fw = Vector3(0, 1, 0)
 		var xn := (fw - yn * fw.dot(yn)).normalized()
-		var part := MeshInstance3D.new()
-		part.mesh = md["mesh"]
-		part.transform = Transform3D(Basis(xn, yn, xn.cross(yn)), ga)
-		holder.add_child(part)
+		var node: MeshInstance3D = part[0]
+		node.transform = Transform3D(Basis(xn, yn, xn.cross(yn)), ga)
 		top = maxf(top, maxf(ga.y, gb.y))
-	return top + 0.1
+	return top
 
 
 func _limb_quad(ld: Dictionary) -> ArrayMesh:
@@ -717,14 +991,15 @@ func _limb_quad(ld: Dictionary) -> ArrayMesh:
 	return mesh
 
 
-func _limb_mat(suit: int, part: int, ld: Dictionary) -> ShaderMaterial:
-	var k := "limb%d/%d/%s" % [suit, part, pal_key]
+func _limb_mat(suit: int, part: int, ld: Dictionary, shade := -1.0) -> ShaderMaterial:
+	var k := "limb%d/%d/%s/%.2f" % [suit, part, pal_key, shade]
 	if mats.has(k):
 		return mats[k]
 	var sm := ShaderMaterial.new()
 	sm.shader = LIMB
 	sm.set_shader_parameter("views", ld["tex"])
 	sm.set_shader_parameter("view_count", ld["views"])
+	sm.set_shader_parameter("shade", shade if shade >= 0.0 else (LIVE_SUIT_SHADE if live else 1.0))
 	mats[k] = sm
 	return sm
 
@@ -812,6 +1087,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_F4:
 				veg_on = not veg_on
 				get_tree().call_group("vegetation", "set_visible", veg_on)
+			KEY_F12:
+				_oldschool_toggle()
+
+
+func _oldschool_toggle() -> void:
+	if oldschool_rect != null and oldschool_key != "":
+		oldschool_rect.visible = not oldschool_rect.visible
 
 
 # The mission's sky (see TNObjects.load_sky): shader sky with the cloud texture and the haze color
@@ -844,6 +1126,15 @@ func _set_sky(path: String, light: Vector2) -> void:
 	mat.set_shader_parameter("haze", Vector3(haze.r, haze.g, haze.b))
 	env.sky.sky_material = mat
 	env.fog_light_color = haze
+	mat.set_shader_parameter("gain", LIVE_SKY if live else 1.0)
+	mat.set_shader_parameter("desat", 1.0 / env.adjustment_saturation if live and env.adjustment_enabled else 1.0)
+	if sk.get("light") != null:                         # the clouds lighten towards the horizon
+		var lt: Color = sk["light"]
+		mat.set_shader_parameter("light", Vector3(lt.r, lt.g, lt.b))
+	sky_clouds = sk["clouds"]
+	sky_haze = haze
+	for sm in ground_mats + [mats["water"]]:
+		_sky_to(sm)
 	var sprites: Array = sk["items"].duplicate()
 	if sk.get("moon") != null:
 		var moon: Dictionary = sk["moon"].duplicate()
@@ -871,8 +1162,840 @@ func _set_sky(path: String, light: Vector2) -> void:
 		sky_root.add_child(mi)
 
 
+func _hud_setup() -> void:
+	hud = true
+	hud_udp = PacketPeerUDP.new()
+	var err := hud_udp.bind(HUD_PORT, "127.0.0.1", 1 << 22)   # ~256 KB of screen per frame
+	if err != OK:
+		push_warning("HUD port %d: error %d" % [HUD_PORT, err])
+	hud_img = Image.create(320, 400, false, Image.FORMAT_RG8)
+	hud_tex = ImageTexture.create_from_image(hud_img)
+	hud_pal_img = Image.create(256, 1, false, Image.FORMAT_RGB8)
+	hud_pal = ImageTexture.create_from_image(hud_pal_img)
+	var sh := Shader.new()
+	sh.code = """shader_type canvas_item;
+uniform sampler2D pal : filter_nearest;
+void fragment() {
+	vec4 t = texture(TEXTURE, UV);
+	COLOR = vec4(texture(pal, vec2((floor(t.r * 255.0 + 0.5) + 0.5) / 256.0, 0.5)).rgb, t.g);
+}"""
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	mat.set_shader_parameter("pal", hud_pal)
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	hud_rect = TextureRect.new()
+	hud_rect.texture = hud_tex
+	hud_rect.material = mat
+	hud_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	hud_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	hud_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	hud_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hud_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(hud_rect)
+
+
+func _hud_update() -> void:
+	var last_pal := PackedByteArray()
+	var last_huz := PackedByteArray()
+	while hud_udp.get_available_packet_count() > 0:
+		var pk := hud_udp.get_packet()
+		if pk.size() < 9:
+			continue
+		var tag := pk.slice(0, 3).get_string_from_ascii()
+		var frame := pk.decode_u32(3)
+		if tag == "PAL" and pk.size() >= 15 + 768:
+			last_pal = pk                               # the bridge sends every game frame: only the latest is shown
+		elif tag == "HUZ":
+			last_huz = pk
+		elif tag == "HUD":
+			if frame != hud_frame:
+				hud_parts.clear()
+				hud_frame = frame
+			hud_parts[pk.decode_u16(7)] = pk.slice(9)
+			if hud_parts.size() == 5:
+				var buf := PackedByteArray()
+				for row in [0, 80, 160, 240, 320]:
+					if not hud_parts.has(row):
+						return
+					buf.append_array(hud_parts[row])
+				if buf.size() == 320 * 400 * 2:
+					hud_img.set_data(320, 400, false, Image.FORMAT_RG8, buf)
+					hud_tex.update(hud_img)
+					if OS.has_environment("TN_DEBUG") and frame % 20 == 0:
+						print("hud image ", frame, " win ", hud_win)
+				hud_parts.clear()
+	if not last_pal.is_empty():
+		hud_win = Rect2i(last_pal.decode_s16(7), last_pal.decode_s16(9), last_pal.decode_s16(11), last_pal.decode_s16(13))
+		hud_pal_img.set_data(256, 1, false, Image.FORMAT_RGB8, last_pal.slice(15, 15 + 768))
+		hud_pal.update(hud_pal_img)
+	if not last_huz.is_empty():
+		var raw := last_huz.slice(7).decompress(320 * 400 * 2, FileAccess.COMPRESSION_DEFLATE)
+		if raw.size() == 320 * 400 * 2:
+			hud_img.set_data(320, 400, false, Image.FORMAT_RG8, raw)
+			hud_tex.update(hud_img)
+
+
+# The game's 3D window (in its 320 x 400 screen, stretched over the window) with the view centre 36 % down it:
+# off-centre frustum, the horizontal field of view over the whole width (true 16:9: the 3D spans the screen).
+func _hud_camera(fov: float) -> void:
+	if hud_win.size.y <= 0:
+		return
+	var vs := get_viewport().get_visible_rect().size
+	var near := 0.05
+	var w := 2.0 * near * tan(deg_to_rad(fov) / 2.0)
+	var yc := (hud_win.position.y + VIEW_CENTRE * hud_win.size.y) / 400.0 * vs.y
+	camera.projection = Camera3D.PROJECTION_FRUSTUM
+	camera.keep_aspect = Camera3D.KEEP_WIDTH
+	camera.near = near
+	camera.size = w
+	camera.frustum_offset = Vector2(0, (yc - vs.y / 2.0) / vs.x * w)
+
+
+func _play_scancode(e: InputEventKey) -> int:
+	var k := e.physical_keycode
+	match k:
+		KEY_CTRL:
+			return 0xE01D if e.location == KEY_LOCATION_RIGHT else 0x1D
+		KEY_SHIFT:
+			return 0x36 if e.location == KEY_LOCATION_RIGHT else 0x2A
+		KEY_ALT:
+			return 0xE038 if e.location == KEY_LOCATION_RIGHT else 0x38
+	return SCANCODES.get(k, 0)
+
+
+func _play_send(bytes: PackedByteArray) -> void:
+	play_udp.put_packet(bytes)
+
+
+func _play_key(sc: int, down: bool) -> void:
+	var b := PackedByteArray([0x4B, sc & 0xFF, sc >> 8, 1 if down else 0])
+	_play_send(b)
+	if down:
+		play_held[sc] = true
+	else:
+		play_held.erase(sc)
+
+
+func _play_release_all() -> void:
+	for sc in play_held.keys():
+		_play_key(sc, false)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	play_started = false
+
+
+# Window position -> the game's 320 x 400 screen (the HUD image is stretched over the whole window).
+func _play_game_pos(p: Vector2) -> Vector2i:
+	var vs := get_viewport().get_visible_rect().size
+	return Vector2i(clampi(int(p.x / vs.x * 320.0), 0, 319), clampi(int(p.y / vs.y * 400.0), 0, 399))
+
+
+func _input(event: InputEvent) -> void:
+	if not play:
+		return
+	# Two modes, swapped by Y (the freelook key) or Pause, which stay in the viewer: look (mouse captured, it turns
+	# the view, clicks at the view's centre) and cursor (the game's own cursor follows the mouse, clicks where it
+	# is: the HUD's buttons, the map, free aiming).
+	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if event is InputEventMouseButton:
+		if not play_started:
+			if event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+				play_started = true
+				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click only takes the mouse
+		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
+			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
+			if captured:
+				_play_send(PackedByteArray([0x42, bt, 1 if event.pressed else 0]))
+			else:
+				var gp := _play_game_pos(event.position)
+				var b := PackedByteArray([0x43, bt, 1 if event.pressed else 0, 0, 0, 0, 0])
+				b.encode_s16(3, gp.x)
+				b.encode_s16(5, gp.y)
+				_play_send(b)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion:
+		if captured:
+			play_dx += event.relative.x
+			play_dy += event.relative.y
+		elif play_started:
+			play_cursor = _play_game_pos(event.position)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey:
+		if event.physical_keycode == KEY_F12:           # the viewer's own: old school mode on / off
+			if event.pressed and not event.echo:
+				_oldschool_toggle()
+		elif event.physical_keycode == KEY_PAUSE or event.physical_keycode == KEY_Y:
+			if event.pressed and not event.echo and play_started:
+				if captured:                                # cursor mode, starting on the view's centre
+					Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # the game draws its own cursor
+					var vs := get_viewport().get_visible_rect().size
+					Input.warp_mouse(Vector2(vs.x * 0.5, vs.y * (hud_win.position.y + VIEW_CENTRE * hud_win.size.y) / 400.0))
+				else:
+					Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		elif not event.echo:
+			var sc := _play_scancode(event)
+			if sc != 0:
+				_play_key(sc, event.pressed)
+		get_viewport().set_input_as_handled()
+
+
+func _notification(what: int) -> void:
+	if play and what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_play_release_all()
+
+
+func _live_update() -> void:
+	if play and (absf(play_dx) >= 1.0 or absf(play_dy) >= 1.0):
+		var dx := clampi(int(play_dx), -32000, 32000)
+		var dy := clampi(int(play_dy), -32000, 32000)
+		play_dx -= dx
+		play_dy -= dy
+		var b := PackedByteArray([0x4D, 0, 0, 0, 0])
+		b.encode_s16(1, dx)
+		b.encode_s16(3, dy)
+		_play_send(b)
+	if play and play_cursor != play_cursor_sent and play_cursor.x >= 0 and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		var c := PackedByteArray([0x50, 0, 0, 0, 0])
+		c.encode_s16(1, play_cursor.x)
+		c.encode_s16(3, play_cursor.y)
+		_play_send(c)
+		play_cursor_sent = play_cursor
+	if hud:
+		_hud_update()
+	_puffs_update()
+	_anims_update()
+	if fps_label != null:
+		fps_label.text = "%d fps" % Engine.get_frames_per_second()
+	if oldschool_rect != null and pal_key != oldschool_key and pal.size() >= 256:
+		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
+		for i in 256:
+			pimg.set_pixel(i, 0, pal[i])
+		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
+		if oldschool_key == "":
+			oldschool_rect.visible = not ("--smooth" in OS.get_cmdline_user_args())
+		oldschool_key = pal_key
+	var pk := PackedByteArray()
+	while udp.get_available_packet_count() > 0:
+		var q := udp.get_packet()
+		if q.size() == 4 + 128 * 128 and q.slice(0, 4).get_string_from_ascii() == "VEGM":
+			_live_vegetation(q.slice(4))
+		elif q.size() >= 8 and q.slice(0, 4).get_string_from_ascii() == "SCOR":
+			_live_scorch(q.slice(4))
+		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
+			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
+				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
+						Vector2(q.decode_float(4), q.decode_float(8)))
+		else:
+			pk = q
+	if pk.size() < 24:
+		return
+	var h := pk.decode_float(12)
+	camera.position = Vector3(pk.decode_float(0), pk.decode_float(8), pk.decode_float(4))
+	camera.keep_aspect = Camera3D.KEEP_WIDTH        # the game gives its horizontal field of view
+	camera.fov = pk.decode_float(20)
+	yaw = atan2(-cos(h), -sin(h))                   # game heading 0 = +x, then towards +y (Godot +z)
+	pitch = pk.decode_float(16)
+	camera.rotation = Vector3(pitch, yaw, 0)
+	if hud:
+		_hud_camera(camera.fov)
+	live_seen += 1
+	if play and OS.has_environment("TN_PLAYTEST") and (live_seen == 100 or live_seen == 220):
+		var ev := InputEventKey.new()          # tests: Forward held for 120 frames, as if typed in the window
+		ev.physical_keycode = KEY_W
+		ev.pressed = live_seen == 100
+		Input.parse_input_event(ev)
+	if pk.size() >= 32 and not current.is_empty():
+		_live_units(pk)
+	if live_shot != "" and live_seen == live_shot_frame:
+		_screenshot(live_shot)
+
+
+# Game entities after the camera: count, player index, then 32 bytes each: index, class, type, active (int32),
+# x, y, z (game units), heading (radians). The mission file's entities are a run of the game's table (in the same
+# order, after the player): found once by their class / type, then moved, turned, hidden when gone. A destroyed
+# entity's slot is reused (shots, sparks), so the run is the best match, not a perfect one.
+func _live_units(pk: PackedByteArray) -> void:
+	var n := pk.decode_s32(24)
+	var player := pk.decode_s32(28)
+	var ents := {}
+	for k in n:
+		var o := 32 + 32 * k
+		if o + 32 > pk.size():
+			break
+		ents[pk.decode_s32(o)] = [pk.decode_s32(o + 4), pk.decode_s32(o + 8), pk.decode_s32(o + 12),
+			pk.decode_float(o + 16), pk.decode_float(o + 20), pk.decode_float(o + 24), pk.decode_float(o + 28)]
+	var joints := {}                                   # game index -> 16 joints (after the entities)
+	var jo := 32 + 32 * n
+	if pk.size() >= jo + 4:
+		var nj := pk.decode_s32(jo)
+		jo += 4
+		for k in nj:
+			if jo + 196 > pk.size():
+				break
+			var jp: Array[Vector3] = []
+			for q in 16:
+				jp.append(Vector3(pk.decode_float(jo + 4 + 12 * q), pk.decode_float(jo + 8 + 12 * q), pk.decode_float(jo + 12 + 12 * q)))
+			joints[pk.decode_s32(jo)] = jp
+			jo += 196
+	var mis: Array = current["mission"]["entities"]
+	if live_off < 0:
+		var best_n := 0
+		for off in 64:
+			var hits := 0
+			for k in mis.size():
+				var e = ents.get(off + k)
+				if e != null and e[0] == mis[k]["cls"] and e[1] == mis[k]["sub"]:
+					hits += 1
+			if hits > best_n:
+				best_n = hits
+				live_off = off
+		if best_n < mini(3, mis.size()):
+			live_off = -1                               # not found yet: units still drawn where the file puts them
+			# (a few survivors in place pin it: late in a mission most of the file's units are dead and their slots
+			# reused, and the run is still at the same index)
+		else:
+			print("live: mission entities at game index ", live_off, " (", best_n, " / ", mis.size(), " in place)")
+	var m: Dictionary = current["map"]
+	if live_off >= 0:
+		for k in live_nodes.size():
+			var e = ents.get(live_off + k)
+			if e != null and (e[0] != mis[k]["cls"] or e[1] != mis[k]["sub"]):
+				e = null                                # its slot holds something else now: it was destroyed
+			var node: Node3D = live_nodes[k]
+			if node.has_meta("corpse"):
+				continue
+			if e == null and node.get_meta("alive", false) and (node.has_meta("soldier") or node.has_meta("mech")):
+				_make_corpse(node, m)                    # killed, and its slot already reused
+				continue
+			_live_place(node, e, m)
+			if e != null and e[2] != 0:
+				node.set_meta("alive", true)
+	for idx in live_fx:
+		live_fx[idx].visible = false
+	for idx in live_piles:
+		live_piles[idx].visible = false
+	for idx in live_extra:
+		live_extra[idx].visible = false
+	puff_units.clear()
+	if ents.has(player):                             # the player's own jetpack only: around the other soldiers the
+		var u = ents[player]                         # weapons' dust settles at their feet too (thousands of 6/29 in a
+		puff_units.append(Vector3(u[3], u[5], u[4]))  # fight), which made puffs fill the screen; the game shows none
+	for idx in ents:
+		var e = ents[idx]
+		if (e[0] == 5 or e[0] == 6) and e[2] != 0:
+			_live_fx(idx, e)
+			if live_shot != "" and OS.has_environment("TN_FXSHOT") and live_shot_frame > live_seen + 20:
+				live_shot_frame = live_seen + 20           # tests: capture as soon as a shot flies
+			continue
+		var k: int = idx - live_off
+		var mine: bool = live_off >= 0 and k >= 0 and k < mis.size() and e[0] == mis[k]["cls"] and e[1] == mis[k]["sub"]
+		if idx == player or mine or e[0] > 4:
+			continue                                    # units, vehicles, probes, buildings set up in play (turrets),
+		# and decor: when a tree or bush is hit, the game empties its vegetation cell and makes every plant of the
+		# cell a decor entity, intact (drawn like the plant); a destroyed one leaves the table, its ground burnt
+		var ct := Vector2i(e[0], e[1])
+		if live_extra.has(idx) and live_extra[idx].get_meta("ct") != ct:
+			var old: Node3D = live_extra[idx]           # slot reused by another unit
+			if old.has_meta("soldier") or old.has_meta("mech"):
+				_make_corpse(old, m)                    # the soldier that was there died: its body stays
+			else:
+				old.queue_free()
+			live_extra.erase(idx)
+		if not live_extra.has(idx) and e[2] != 0:
+			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0)
+			live_extra[idx].set_meta("ct", ct)
+		if live_extra.has(idx):
+			_live_place(live_extra[idx], e, m)
+	for idx in joints:                                 # soldiers the game draws: its own animation
+		var node: Node3D = live_extra.get(idx)
+		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
+			node = live_nodes[idx - live_off]
+		if node != null and node.visible and node.has_meta("soldier"):
+			_pose_soldier(node, joints[idx])
+		elif node != null and node.visible and node.has_meta("mech"):
+			_pose_mech(node, joints[idx])
+
+
+# A burst suit (6/33): one entity, drawn by the game as a pile of the suit's armour pieces (its limb sprites: torso,
+# thighs, shins, arms, feet) lying flat every which way around it, ~0.6 unit across (seen on the running game).
+# The entity is thrown up when the soldier dies and bounces to rest (its height: the whole pile follows it). Where
+# each piece lies is not decoded: spread from the entity's number. The suit is the one of the soldier killed there
+# (the bridge puts it in the heading; else the nearest death seen here).
+const PILE_RADIUS := 0.3                      # (measured: a compact pile, ~0.5 unit across)
+const PILE_SHADE := 0.8                       # lighter than the standing suits (their light grey, on the game)
+const PILE_SCALE := 0.0027                    # world units per sprite pixel (measured: smaller than standing suits')
+
+
+func _live_debris(idx: int, e) -> void:
+	var holder: Node3D = live_piles.get(idx)
+	var game_suit := int(round(e[6]))
+	var key := "pile%d" % game_suit
+	var m: Dictionary = current["map"]
+	if holder == null or holder.get_meta("kind", "") != key:
+		if holder != null:
+			holder.queue_free()
+		var suit := game_suit if game_suit >= 0 and game_suit < TNObjects.MECH_SUIT else 1
+		var best := 4.0 if game_suit < 0 else 0.0
+		for d in dead_suits:
+			var dd: float = Vector2(d[0].x, d[0].z).distance_to(Vector2(e[3], e[4]))
+			if dd < best:
+				best = dd
+				suit = d[1]
+		holder = Node3D.new()
+		holder.set_meta("kind", key)
+		world.add_child(holder)
+		live_piles[idx] = holder
+		var g0 := TNData.height_at(m, e[3], e[4])
+		var segs: Array = objects.skeleton(suit) if objects_ok else []
+		var k := 0
+		for sg in segs:
+			var part: int = sg[2]
+			var ld: Dictionary = objects.limb(suit, part, pal, pal_key)
+			if ld.is_empty():
+				continue
+			var h1 := float(((idx + 1) * 2654435761 + k * 40503) % 100000) / 100000.0
+			var h2 := float(((idx + 7) * 1103515245 + k * 12345) % 100000) / 100000.0
+			var h3 := float(((idx + 3) * 69069 + k * 2891336453) % 100000) / 100000.0
+			k += 1
+			if part != 5 and fmod(h1 * 13.7 + h2 * 5.3, 1.0) > 0.62:
+				continue                                     # ~7 pieces, like the game's piles
+			var r := PILE_RADIUS * (0.2 + 0.8 * sqrt(h1)) * (0.5 if part == 5 else 1.0)    # the torso nearer the middle
+			var a := TAU * h2
+			var off := Vector3(r * cos(a), 0.0, r * sin(a))
+			var yaw := TAU * h3
+			var dir := Vector3(cos(yaw), 0.0, sin(yaw))                   # the piece's bone, lying flat
+			var half: float = float(ld["len"]) * PILE_SCALE * 0.5
+			var ground := TNData.height_at(m, e[3] + off.x, e[4] + off.z) - g0
+			var seg := MeshInstance3D.new()
+			seg.mesh = _limb_quad(ld)
+			seg.material_override = _limb_mat(suit, part, ld, PILE_SHADE)
+			seg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			seg.extra_cull_margin = 1.0
+			# Y = the bone (lying), X = its front (up: seen from above), from joint a: the piece centred on its spot
+			seg.transform = Transform3D(Basis(Vector3.UP * PILE_SCALE, dir * PILE_SCALE, Vector3.UP.cross(dir) * PILE_SCALE),
+					off - dir * half + Vector3(0.0, ground + 0.03, 0.0))
+			# lying: across the screen, tilted up to ~45 deg either way
+			var tilt := (fmod(h1 * 7.31 + h3 * 3.17, 1.0) - 0.5) * 1.6
+			var spin0 := (PI * 0.5 if h2 < 0.5 else PI * 1.5) + tilt
+			seg.set_instance_shader_parameter("spin", spin0)
+			seg.set_meta("rest", seg.position)
+			seg.set_meta("spin0", spin0)
+			seg.set_meta("fly", Vector3(off.x * 0.5, 0.05 + 0.2 * h3, off.z * 0.5))   # its own flight off the pile
+			seg.set_meta("turn", (h1 - 0.5) * 14.0)                               # radians per second, in the air
+			holder.add_child(seg)
+	# the pile follows its entity: thrown up, then at rest on the ground. In the air (seen on the running game) its
+	# pieces fly apart, higher and wider, turning, and fall back together onto the pile
+	var gc := TNData.height_at(m, e[3], e[4])
+	var lift := maxf(0.0, e[5] - GAME_Z - gc + 0.12)
+	holder.position = Vector3(e[3], gc + lift, e[4])
+	var k2 := clampf(lift / 0.3, 0.0, 1.0)
+	var t := Time.get_ticks_msec() / 1000.0
+	for seg in holder.get_children():
+		if not seg.has_meta("rest"):
+			continue
+		var rest: Vector3 = seg.get_meta("rest")
+		var fly: Vector3 = seg.get_meta("fly")
+		seg.position = rest + fly * k2
+		var spin: float = seg.get_meta("spin0")
+		if k2 > 0.02:                                   # turning while in the air, keeping its last angle on landing
+			spin += float(seg.get_meta("turn")) * (t - float(seg.get_meta("t", t)))
+			seg.set_meta("spin0", spin)
+		seg.set_meta("t", t)
+		(seg as MeshInstance3D).set_instance_shader_parameter("spin", fposmod(spin, TAU))
+	holder.visible = true
+
+
+# A dead soldier: the game does not keep a body, the suit bursts into pieces lying around (type 6/33, see
+# _live_debris). The soldier is hidden; where it fell and its suit are kept, for the pieces.
+func _make_corpse(node: Node3D, m: Dictionary) -> void:
+	node.visible = false
+	if node.has_meta("corpse"):
+		return
+	node.set_meta("corpse", true)
+	if node.has_meta("suit"):
+		dead_suits.append([node.position, int(node.get_meta("suit"))])
+
+
+# The game's vegetation map, as it is now: a tree or bush hit empties its whole 4 x 4 cell (measured: shot tree ->
+# its cell's value 3 -> 0), its plants become decor entities (drawn as such). The plants of a cell emptied in the
+# game are hidden here.
+func _live_vegetation(game_map: PackedByteArray) -> void:
+	if veg_values.size() != game_map.size():
+		return
+	for i in game_map.size():
+		if game_map[i] == veg_values[i]:
+			continue
+		veg_values[i] = game_map[i]
+		if game_map[i] == 0:
+			for it in veg_cells.get(i, []):
+				var mm: MultiMesh = it[0]
+				var t := mm.get_instance_transform(it[1])
+				mm.set_instance_transform(it[1], Transform3D(Basis.IDENTITY.scaled(Vector3.ZERO), t.origin))
+
+
+# Burnt ground: the game sets bit 0x40 of a vertex's tile where a tree was destroyed or a blast hit (its ground map
+# in memory, read by the bridge), and draws burnt debris lying there: the game's burnt picture (RESTNOBJ 1161 frame
+# 9) as a decal on the ground, turned at random. Packet: count, then vertex indices (y * 513 + x, game y = Godot z).
+const SCORCH_REF := Vector2i(1161, 9)
+const SCORCH_WIDTH := 1.3
+
+
+func _live_scorch(pk: PackedByteArray) -> void:
+	if current.is_empty() or pk == scorch_prev:
+		return
+	scorch_prev = pk
+	var now := {}
+	var n := mini(pk.decode_u32(0), (pk.size() - 4) / 4)
+	for k in n:
+		now[pk.decode_u32(4 + 4 * k)] = true
+	for v in scorch_decals.keys():
+		if not now.has(v):
+			scorch_decals[v].queue_free()
+			scorch_decals.erase(v)
+	var sp: Dictionary = objects.sprite(SCORCH_REF, pal, pal_key) if objects_ok else {}
+	if sp.is_empty():
+		return
+	var m: Dictionary = current["map"]
+	for v in now:
+		if scorch_decals.has(v):
+			continue
+		var x := float(v % 513)
+		var y := float(v / 513)
+		var dc := Decal.new()
+		dc.texture_albedo = sp["texture"]
+		dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH * float(sp["aspect"]))
+		dc.position = Vector3(x, TNData.height_at(m, x, y) + 0.3, y)
+		dc.rotation.y = float((v * 2654435761) % 6283) / 1000.0
+		dc.cull_mask = 1
+		world.add_child(dc)
+		scorch_decals[v] = dc
+
+
+# Shots (class 5) and their effects (class 6), which the game keeps a fraction of a second in its entity table, at
+# their real position (no ground snapping). The laser (5/4) is a bolt flying ~55 u/s straight at the crosshair from
+# 1 unit in front of the eye; the game draws it as a red beam from the gun to the bolt. For the player's own shots
+# the gun is beside the head, on the side the bolt starts (left for weapons 1-2, right for 3-4); for the others it
+# is where the bolt was first seen. Types 28 / 29 are the beam's trail, barely visible in the game (drawn, they were
+# a cloud of orange balls); the other class 6 types are the impacts' sparks.
+const MUZZLE := Vector3(0.4, -0.03, -0.05)     # camera space, x to the side of the hand that fired
+const DUST_PX := 0.004                         # dust radius per unit of distance (about 2 pixels)
+const STREAK := 1.5                            # length of a laser bolt in flight
+const FLASH_MS := 45                           # the beam from the gun, as the bolt leaves
+const BEAM_REACH := 10.0
+func _live_fx(idx: int, e) -> void:
+	var cls: int = e[0]
+	var typ: int = e[1]
+	var pos0 := Vector3(e[3], e[5] - GAME_Z, e[4])
+	if cls == 6 and typ == 29 and _live_puff(idx, pos0, e):
+		return                                          # at a unit's feet: its jetpack's smoke
+	if cls == 6 and typ == 33:
+		_live_debris(idx, e)
+		return
+	if cls == 6 and FX_ANIMS.has(typ):
+		var now := Time.get_ticks_msec()
+		if now - int(anim_seen.get(idx, -100000)) > 400 and not _anim_near(pos0, now):
+			_spawn_anim(pos0, FX_ANIMS[typ])            # plays once, longer than the entity lives
+			if typ == 23:
+				smoke_pending.append([pos0, now])        # a tree's black smoke, unless it was a soldier (see below)
+		anim_seen[idx] = now
+		return
+	if cls == 6 and typ == 25:
+		if puff_seen.get(idx, -10) != live_seen - 1:
+			_spawn_puff(pos0, 3.5)                        # explosion (missile impact): a big grey puff
+		puff_seen[idx] = live_seen
+		return
+	# kinds: 0 other shot, 1 red beam (laser 5/4), 2 orange spark, 3 red dust (6/29), 4 blue beam (5/11),
+	# 5 blue dust (6/28), 6 missile (5/10), 7 red particle shot (5/6), 8 green plasma (5/22 the enemies' slow
+	# green streak ~0.35 unit long along its flight, in the planet palette's green; 5/25 its spray), 9 tracer
+	# (5/23 machine gun bullet, and 6/7 its fading streak: a thin white line ~0.25 unit long along its flight),
+	# matched on the running game
+	var kind: int = 0
+	if cls == 5:
+		kind = {4: 1, 11: 4, 10: 6, 6: 7, 22: 8, 25: 8, 23: 9}.get(typ, 0)
+	else:
+		kind = {29: 3, 28: 5, 7: 9}.get(typ, 2)
+	var beam := kind == 1 or kind == 4
+	var mi: MeshInstance3D = live_fx.get(idx)
+	if mi == null:
+		mi = MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		world.add_child(mi)
+		live_fx[idx] = mi
+	if mi.get_meta("kind", -1) != kind:
+		mi.transform = Transform3D.IDENTITY             # the slot may have held a stretched beam
+		if beam:
+			var cy := CylinderMesh.new()                # unit length, stretched from the gun to the bolt
+			cy.top_radius = 0.013
+			cy.bottom_radius = 0.013
+			cy.height = 1.0
+			cy.radial_segments = 6
+			cy.rings = 1
+			mi.mesh = cy
+		elif kind == 6:
+			var cn := CylinderMesh.new()                # missile: a little cone, nose ahead
+			cn.top_radius = 0.0
+			cn.bottom_radius = 0.045
+			cn.height = 0.32
+			cn.radial_segments = 6
+			cn.rings = 1
+			mi.mesh = cn
+		else:
+			var sp := SphereMesh.new()
+			sp.radius = {0: 0.2, 2: 0.05, 3: 0.014, 5: 0.014, 7: 0.02, 8: 0.045, 9: 0.008}[kind]
+			sp.height = sp.radius * {0: 4.0, 8: 8.0, 9: 32.0}.get(kind, 2.0)
+			sp.radial_segments = 4 if kind == 3 or kind == 5 else 8
+			sp.rings = 2 if kind == 3 or kind == 5 else 4
+			mi.mesh = sp
+		if not fx_mats.has(kind):
+			var m := StandardMaterial3D.new()
+			m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			var green := pal[137] if pal.size() > 137 else Color(0.1, 0.8, 0.1)
+			m.albedo_color = [Color(1.0, 0.85, 0.6), Color(1.0, 0.12, 0.08), Color(1.0, 0.75, 0.3), Color(1.0, 0.25, 0.15),
+					Color(0.15, 0.3, 1.0), Color(0.3, 0.45, 1.0), Color(1.0, 0.72, 0.15), Color(1.0, 0.2, 0.12), green,
+					Color(1.0, 0.97, 0.85)][kind]
+			m.emission_enabled = true
+			m.emission = m.albedo_color
+			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0][kind]
+			m.disable_fog = true
+			fx_mats[kind] = m
+		mi.material_override = fx_mats[kind]
+		mi.set_meta("kind", kind)
+	var pos := Vector3(e[3], e[5] - GAME_Z, e[4])
+	var fresh: bool = mi.get_meta("seen", -10) != live_seen - 1    # a new shot in this slot
+	mi.set_meta("seen", live_seen)
+	if beam:
+		var cam := camera.global_transform
+		if fresh:
+			var rel := cam.affine_inverse() * pos       # where the bolt starts, in camera space
+			mi.set_meta("mine", rel.length() < 2.5)
+			mi.set_meta("side", -1.0 if rel.x < 0.0 else 1.0)
+			mi.set_meta("tail", pos)
+			mi.set_meta("born", Time.get_ticks_msec())
+		# as it leaves: one straight beam from the gun to the point aimed at (the game's flash), then a short
+		# streak flying on (a held trigger fires every 0.1 s: beams for the whole flight overlapped)
+		var tail: Vector3 = mi.get_meta("tail")
+		if mi.get_meta("mine") and Time.get_ticks_msec() - int(mi.get_meta("born")) < FLASH_MS:
+			tail = cam * Vector3(MUZZLE.x * float(mi.get_meta("side")), MUZZLE.y, MUZZLE.z)
+			pos = cam.origin - cam.basis.z * BEAM_REACH  # the view's axis is the crosshair
+		elif pos.distance_to(tail) > STREAK:
+			tail = pos + (tail - pos).normalized() * STREAK
+		var seg := pos - tail
+		if seg.length() < 0.05:
+			mi.visible = false
+			return
+		var b := Basis(Quaternion(Vector3.UP, seg.normalized())) * Basis.from_scale(Vector3(1.0, seg.length(), 1.0))
+		mi.global_transform = Transform3D(b, tail + seg * 0.5)
+		mi.visible = true
+		return
+	if pos.distance_to(camera.position) < (0.8 if kind == 3 or kind == 5 else 1.5):   # at the gun: inside the cockpit
+		mi.visible = false
+		return
+	if kind == 6:
+		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail
+	if kind == 3 or kind == 5:
+		# the game draws its dust as dots of a pixel or two at any distance: as small balls of a fixed size, the
+		# trail along a shot, right in front of the camera, grew into a big red cone
+		var k := pos.distance_to(camera.position) * DUST_PX / 0.014
+		mi.transform = Transform3D(Basis.IDENTITY.scaled(Vector3(k, k, k)), pos)
+	elif kind == 2 or kind == 7:
+		mi.transform = Transform3D(Basis.IDENTITY, pos)
+	else:                                           # other shots: a bolt along its flight
+		var dir := Vector3.ZERO
+		if not fresh:
+			var prev: Vector3 = mi.get_meta("prev", pos)
+			if prev.distance_to(pos) > 0.01 and prev.distance_to(pos) < 20.0:
+				dir = (pos - prev).normalized()
+		if dir == Vector3.ZERO:
+			dir = -camera.global_transform.basis.z
+		mi.look_at_from_position(pos, pos + dir, Vector3.UP if absf(dir.y) < 0.99 else Vector3.FORWARD)
+		mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
+	mi.set_meta("prev", pos)
+	mi.visible = true
+
+
+# Type 6/29 is a smoke puff: the jetpack drops one at the player's feet every frame, the laser a few along its
+# trail. The game keeps the entity only a moment, so each new one starts a puff that lives on its own here.
+const PUFF_LIFE := 1.2
+var puff_seen := {}
+
+# Effects the game draws as an animation (class 6 type -> RESTNOBJ resource, world units per pixel, frames per
+# second), matched on the running game: 23 = a tree blown up (a fireball as big as the tree, turning to brown
+# smoke, ~0.9 s).
+const FX_ANIMS := {23: [1193, 0.012, 16.0]}
+var anims := []                  # [node, start msec, duration]
+var smoke_pending := []          # blasts (6/23) waiting to know whether a suit burst there: [position, msec]
+var anim_seen := {}
+var anim_mats := {}
+
+
+func _spawn_anim(pos: Vector3, fx: Array) -> void:
+	var rid: int = fx[0]
+	var ad: Dictionary = objects.anim(rid, pal, pal_key) if objects_ok else {}
+	if ad.is_empty():
+		return
+	var sc: float = fx[1]
+	if not anim_mats.has(rid):
+		var am := ShaderMaterial.new()
+		am.shader = ANIM
+		am.set_shader_parameter("frames", ad["tex"])
+		am.set_shader_parameter("frame_count", ad["frames"])
+		am.set_shader_parameter("fps", fx[2])
+		var w: float = ad["size"].x * sc
+		var h: float = ad["size"].y * sc
+		var a: Vector2 = ad["anchor"] * sc
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for c in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 0), Vector2(1, 1), Vector2(0, 1)]:
+			st.set_uv(c)
+			st.add_vertex(Vector3(c.x * w - a.x, a.y - c.y * h, 0.0))
+		anim_mats[rid] = [am, st.commit(), float(ad["frames"]) / fx[2]]
+	var mi := MeshInstance3D.new()
+	mi.mesh = anim_mats[rid][1]
+	mi.material_override = anim_mats[rid][0]
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.extra_cull_margin = 2.0
+	mi.position = pos
+	world.add_child(mi)
+	anims.append([mi, Time.get_ticks_msec(), anim_mats[rid][2]])
+
+
+# The game makes two effects of a blown-up tree at the same spot, drawn as one fireball: one animation per spot.
+func _anim_near(pos: Vector3, now: int) -> bool:
+	for an in anims:
+		if now - int(an[1]) < 1000 and (an[0] as Node3D).position.distance_to(pos) < 1.0:
+			return true
+	return false
+
+
+# The black smoke a blown-up tree sends up as its fireball dies (the game's own is a swarm of class 6 particles,
+# like a laser's trail, which this viewer draws as dust): dark puffs rising from it into a cloud.
+func _smoke_column(pos: Vector3) -> void:
+	for k in 22:
+		var r := float((k * 7919 + int(pos.x * 100.0)) % 1000) / 1000.0
+		var r2 := float((k * 104729 + int(pos.z * 100.0)) % 1000) / 1000.0
+		var top := float(k) / 21.0                       # the later ones higher and spread wider: a cloud on top
+		var off := Vector3((r - 0.5) * (0.3 + 1.2 * top), 0.5 + 1.6 * top, (r2 - 0.5) * (0.3 + 1.2 * top))
+		var vel := Vector3((r2 - 0.5) * 0.6, 0.7 + 0.4 * r, (r - 0.5) * 0.6)
+		_spawn_puff(pos + off, 0.45 + 0.3 * r, 0.5 + 0.035 * k, vel, 0.3, 2.2)
+
+
+func _anims_update() -> void:
+	var now := Time.get_ticks_msec()
+	# a blast where a suit burst (its pile, 6/33, appears with it) has no smoke column: only a tree's has
+	for k in range(smoke_pending.size() - 1, -1, -1):
+		if now - int(smoke_pending[k][1]) < 250:
+			continue
+		var at: Vector3 = smoke_pending[k][0]
+		var suit_there := false
+		for idx in live_piles:
+			var pl: Node3D = live_piles[idx]
+			if pl.visible and Vector2(pl.position.x, pl.position.z).distance_to(Vector2(at.x, at.z)) < 2.0:
+				suit_there = true
+		if not suit_there:
+			_smoke_column(at)
+		smoke_pending.remove_at(k)
+	for k in range(anims.size() - 1, -1, -1):
+		var age := (now - int(anims[k][1])) / 1000.0
+		var mi: MeshInstance3D = anims[k][0]
+		if age >= float(anims[k][2]):
+			mi.queue_free()
+			anims.remove_at(k)
+		else:
+			mi.set_instance_shader_parameter("age", age)
+var fps_label: Label
+var dead_suits := []       # [position, suit] of the soldiers killed: their pieces of armour around
+var puff_units := []      # positions of the units this update (jetpacks)
+func _live_puff(idx: int, pos: Vector3, e) -> bool:
+	if not puff_units.any(func(u): return Vector2(u.x, u.z).distance_to(Vector2(e[3], e[4])) < 0.25):
+		return false                                # not right under a unit: a weapon's red dust
+	var fresh: bool = puff_seen.get(idx, -10) != live_seen - 1
+	puff_seen[idx] = live_seen
+	if fresh:
+		_spawn_puff(pos, 1.0)
+	return true
+
+
+func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, tint := 1.0, dense := 1.0) -> void:
+	if puff_mat == null:
+		var sm: Dictionary = objects.smoke_anim(pal, pal_key) if objects_ok else {}
+		if sm.is_empty():
+			return
+		puff_mat = ShaderMaterial.new()
+		puff_mat.shader = PUFF
+		puff_mat.set_shader_parameter("frames", sm["tex"])
+		puff_mat.set_shader_parameter("frame_count", sm["frames"])
+		puff_mat.set_shader_parameter("life", PUFF_LIFE)
+		puff_mesh = QuadMesh.new()
+		puff_mesh.size = Vector2(1.0, 1.0)
+	var mi := MeshInstance3D.new()
+	mi.mesh = puff_mesh
+	mi.material_override = puff_mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.extra_cull_margin = 2.0
+	world.add_child(mi)
+	mi.position = pos
+	mi.visible = delay <= 0.0
+	mi.set_instance_shader_parameter("size", size)
+	mi.set_instance_shader_parameter("tint", tint)
+	mi.set_instance_shader_parameter("dense", dense)
+	puffs.append([mi, Time.get_ticks_msec() + int(delay * 1000.0), pos, vel])
+
+
+func _puffs_update() -> void:
+	var now := Time.get_ticks_msec()
+	var keep := []
+	for p in puffs:
+		var age := (now - int(p[1])) / 1000.0
+		if age >= PUFF_LIFE:
+			p[0].queue_free()
+			continue
+		keep.append(p)
+		if age < 0.0:                                   # not started yet
+			continue
+		p[0].position = p[2] + p[3] * age
+		p[0].set_instance_shader_parameter("age", age)
+		p[0].visible = p[0].position.distance_to(camera.position) > 0.6   # not inside the cockpit
+	puffs = keep
+
+
+func _live_place(node: Node3D, e, m: Dictionary) -> void:
+	if node == null:
+		return
+	if e == null or (e[2] == 0 and e[0] != 1):
+		node.visible = false
+		return
+	node.visible = true
+	if e[0] == 1 and e[2] == 0:
+		_make_corpse(node, m)
+		return
+	# units (classes 1-3) and buildings set up in play (a deployed turret): the game's own height, already real
+	# (no extra lift: a probe hovers by itself)
+	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
+		node.position = Vector3(e[3], e[5] - GAME_Z, e[4])
+	else:
+		node.position = Vector3(e[3], TNData.height_at(m, e[3], e[4]) + float(node.get_meta("lift", 0.0)), e[4])
+	if e[0] != 2:
+		node.basis = Basis(Vector3.UP, -e[6])           # (a body tipped over is set back up)
+		return
+	# vehicles lie on the ground like the game draws them (its entity has only a heading): the slope under them,
+	# eased so that bumps do not shake them
+	var x: float = e[3]
+	var y: float = e[4]
+	var n := Vector3(TNData.height_at(m, x - 0.6, y) - TNData.height_at(m, x + 0.6, y), 1.2,
+			TNData.height_at(m, x, y - 0.6) - TNData.height_at(m, x, y + 0.6)).normalized()
+	var up: Vector3 = node.get_meta("up", n)
+	up = up.lerp(n, 0.2).normalized()
+	node.set_meta("up", up)
+	var yawed := Basis(Vector3.UP, -e[6])
+	node.basis = Basis(Quaternion(Vector3.UP, up)) * yawed
+
+
 func _process(delta: float) -> void:
 	sky_root.position = camera.position
+	if live:
+		_live_update()
+		sky_root.position = camera.position
+		return
 	if list.has_focus() and not look:
 		return
 	var b := camera.global_transform.basis

@@ -1,0 +1,341 @@
+# Pont vers Terra Nova Viewer (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
+# (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
+# Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
+#   python live_bridge.py [--fov 91.5] [--eye 0.28] [--hz 120] [--once] [--launch [--res 1600x900]]
+#   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance le visualiseur dessus en mode
+#   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
+import math, re, select, socket, struct, sys, time, zlib
+import tnre
+
+g = tnre.Guest()
+arg = lambda k, d: float(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else d
+FOV, EYE, HZ = arg('--fov', 100.0), arg('--eye', 0.28), arg('--hz', 120.0)   # oeil : 0.4 au-dessus du sol (le joueur est a 0.12)
+NENT = 300                               # entrees lues dans la table des entites
+HUD, PLAY = '--hud' in sys.argv, '--play' in sys.argv   # avant --launch, qui les passe au visualiseur
+CAM = None
+if '--cam' in sys.argv:
+    _c = [float(v) for v in sys.argv[sys.argv.index('--cam') + 1].split(',')]
+    CAM = (_c[0], _c[1], _c[2], math.radians(_c[3]), math.radians(_c[4]))
+
+# "8b15 (....) c1fa10 8d04d500000000 01d0 c1e002 01d0 05 (....) 668b15 (....) 668b401b 01d0 66a3 (....) 66a1 (....) 66a3 (....)"
+SIG = re.compile(re.escape(bytes.fromhex('8b15')) + b'(....)' + re.escape(bytes.fromhex('c1fa108d04d50000000001d0c1e00201d005')) +
+                 b'(....)' + re.escape(bytes.fromhex('668b15')) + b'(....)' + re.escape(bytes.fromhex('668b401b01d066a3')) +
+                 b'(....)' + re.escape(bytes.fromhex('66a1')) + b'(....)' + re.escape(bytes.fromhex('66a3')) + b'(....)', re.S)
+code = g.read(0x200000, 0x140000)
+caps = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 7)] for m in SIG.finditer(code)]
+caps = [c for c in caps if all(0x300000 <= v < 0x500000 for v in c)]   # le code reloge (pas une copie brute)
+assert caps, 'signature camera introuvable'
+cap = caps[0]
+A_PID, A_MASTER, A_HEADYAW, A_CAMHEAD, A_PITCH, A_CAMPITCH = cap
+print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage camera %#x' % (A_PID, A_MASTER, A_CAMHEAD, A_PITCH, A_CAMPITCH))
+# exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
+FR = A_MASTER == 0x3C32F0
+SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
+print('exe %s' % ('francais' if FR else 'anglais'))
+
+viewer = None
+if '--launch' in sys.argv:
+    import collections, os, subprocess
+    data = g.read(0x340000, 0x140000)
+    names = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', data, re.I))
+    assert names, 'mission en cours introuvable (pas encore en mission ?)'
+    mission = names.most_common(1)[0][0]
+    res = sys.argv[sys.argv.index('--res') + 1] if '--res' in sys.argv else '1600x900'
+    godot = os.environ.get('GODOT', r'C:\Tools\Godot\Godot_v4.7.2-stable_win64.exe')
+    vpath = os.environ.get('TN_VIEWER', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # le depot
+    print('mission', mission, '-> visualiseur', res)
+    pos = ['--position', os.environ['TN_POS']] if 'TN_POS' in os.environ else []   # tests : fenetre hors ecran
+    viewer = subprocess.Popen([godot, '--path', vpath, '--resolution', res] + pos + ['--', '--live', '--mission', mission] + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+# HUD (--hud) : l'ecran du jeu 320 x 400 (tampon factice du mode HD) avec la 3D rendue transparente, comme le fait
+# le code HD pour poser sa 3D (un pixel de la fenetre 3D est de la 3D s'il est egal au pixel de l'image HD a la
+# colonne double). Port 47823 : un paquet 'PAL' (palette 768 o + fenetre 3D FX0 FY0 FW FH en mots), puis 5 paquets
+# 'HUD' de 80 lignes (index, alpha) par image, ~30 par seconde.
+HUD = '--hud' in sys.argv
+HB, SB, VA, FX, FY, FWV, FHV, FWWV, FSI = 0x466100, 0x46612C, 0x466134, 0x4661A8, 0x4661AC, 0x4661B0, 0x4661B4, 0x4661B8, 0x466208
+PAL = 0x44AF40 if FR else 0x44AE90        # palette de l'ecran du jeu
+VEG = 0x3C5ECC if FR else 0x3C5E1C        # carte de vegetation en cours (128 x 128) : un arbre detruit vide sa case
+veg_prev, veg_t, veg_sent = None, 0.0, 0.0
+# carte du sol de la mission (513 x 513 sommets de 3 octets : tuile, hauteur), pointee depuis les donnees fixes : le
+# jeu allume le bit 0x40 de la tuile d'un sommet brule (arbre detruit, explosion) ; le pointeur valable est celui
+# dont la hauteur sous le joueur est la sienne
+SOL_PTRS = (0x36F5BA, 0x36FDC2) if FR else (0x36F50A, 0x36FD12)
+BRULE = re.compile(b'[' + bytes([0x40]) + b'-' + bytes([0x7f]) + bytes([0xc0]) + b'-' + bytes([0xff]) + b']', re.S)
+brule_prev, brule_t, brule_sent = None, 0.0, 0.0
+# nuages : decalage de la texture du ciel (texels 16.16, u puis v), qui avance avec le vent ; la position du joueur
+# s'y ajoute a l'affichage (plafond a 44 unites au-dessus de l'oeil, 1 texel par unite)
+NUAGES = 0x427E6C if FR else 0x427DBC
+nuages_t = 0.0
+# soldats morts : leur corps eclate en morceaux d'armure (entites 6/33) ; une table par numero de soldat n garde leur
+# position apres la mort (0x38337F + n * 0x14E dans l'exe francais), la fiche soldat leur armure (+0xDE)
+CORPS = 0x38337F if FR else 0x3832CF
+corps_t, corps = 0.0, []
+
+
+def armure_debris(x, y, vivants):
+    best, arm = 3.0, -1
+    for n, cx, cy in corps:
+        if n in vivants: continue
+        d = math.hypot(cx - x, cy - y)
+        if d < best:
+            best, arm = d, n
+    if arm < 0: return -1
+    return struct.unpack('<I', g.read(SOLDATS + arm * 0x582 + 0xDE, 4))[0]
+d32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
+hud_t = 0.0
+
+# Zoom du jeu (touches HUD zoom + / -) : la camera principale (0x38FB24 dans l'exe anglais, 0x38FBD4 en francais)
+# tient un zoom effectif, et tan(champ / 2) suit 1 / zoom ; le plus petit zoom vu (vue normale) vaut --fov.
+A_ZOOM = next((a for a in (0x38FB24, 0x38FBD4) if 0.05 < d32(a) / 65536 < 20
+               and 5 < struct.unpack('<H', g.read(a + 0x18, 2))[0] * 360 / 65536 < 90), None)
+
+
+ZOOM_NORMAL = 0.88916                      # zoom de la vue normale (0xE3A0), ou le champ vaut --fov
+
+
+def fov_now():
+    # le jeu tient tan(demi-champ) = 1 / zoom (l'angle a +0x18) : le champ suit le zoom lu, sans reference a suivre
+    # (le plus petit zoom vu servait de reference : une valeur basse passagere zoomait la vue de Godot pour de bon)
+    z = d32(A_ZOOM) / 65536 if A_ZOOM else 0
+    if not 0.05 < z < 50: return FOV
+    return math.degrees(2 * math.atan(math.tan(math.radians(FOV / 2)) * ZOOM_NORMAL / z))
+hud_n = 0
+hud_copies = -1
+COPIES = 0x46613C                          # compteur d'images affichees du code HD
+
+# Jouer depuis la fenetre du visualiseur (--play) : il renvoie clavier et souris sur le port 47824.
+#   'K' + scancode (u16, 0xE0xx = touche etendue) + appui (u8) -> touche postee a la fenetre DOSBox (position physique,
+#        donc presets / remappage de TNPlus inchanges ; Alt en WM_SYSKEY comme le ferait Windows)
+#   'M' + dx, dy (i16)  -> regard comme le freelook de TNPlus : cap += dx * 12, tangage += dy * 8 (bornes du jeu),
+#        curseur du jeu tenu au centre de la vue (ou partent les tirs)
+#   'B' + bouton (1 gauche, 2 droit) + appui -> evenement dans la file de la lib souris du jeu (tir, verrouillage)
+#   'P' + x, y (i16)  -> regard coupe (Y ou Pause dans le visualiseur) : curseur du jeu a cette position de son
+#        ecran 320 x 400 (boutons du HUD, carte, visee libre)
+#   'C' + bouton + appui + x, y -> clic a cette position
+PLAY = '--play' in sys.argv
+SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -7187, 6127
+if PLAY:
+    import ctypes
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.bind(('127.0.0.1', 47824))
+    rx.setblocking(False)
+    u32w = ctypes.windll.user32
+    win = tnre.dosbox_window()
+    code2 = g.read(0x2f0000, 0x20000)
+    m_lect, m_fil = [struct.unpack('<I', v)[0] for v in re.search(rb'\x0f\xbf\x35(....)\xc1\xe6\x04\x8d\xb6(....)', code2, re.S).groups()]
+    m_taille = struct.unpack('<I', re.search(rb'\x0f\xbf\x3d(....)\xa1(....)\x47\xc1\xf8\x10', code2, re.S).group(2))[0] + 2
+    m_horloge = struct.unpack('<I', re.search(rb'\x8b\x0d(....)\x8b\x09\x89\x8e', g.read(0x300000, 0x40000), re.S).group(1))[0]
+    big = g.read(0x200000, 0x140000)
+    reloge = lambda ms: [[struct.unpack('<I', v)[0] for v in m.groups()] for m in ms if all(0x300000 <= struct.unpack('<I', v)[0] < 0x500000 for v in m.groups())][0]
+    m_warp, m_cur = reloge(re.finditer(rb'\x84\xd2\x0f\x85....\x80\x3d(....)\x00\x74\x23\x8b\x15(....)\xa1', big, re.S))   # souris : warp, curseur
+    m_frame = reloge(re.finditer(rb'\x8b\x04\x24\x8b\x15(....)\xa3(....)\xa1', big, re.S))[1]                              # cadre du curseur
+    alt = False
+    print('jouer : fenetre DOSBox %#x, file souris %#x, curseur %#x, cadre %#x' % (win, m_fil, m_cur, m_frame))
+
+
+def centre():
+    w, h = struct.unpack('<hh', g.read(m_frame, 4))
+    return (w // 2, int(round(h * 0.36))) if 200 <= w <= 640 and 200 <= h <= 480 else (160, 72)
+
+
+def mouse_evt(ev, bt, pos=None):
+    x, y = pos or centre()
+    g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')
+    w = struct.unpack('<H', g.read(m_lect - 4, 2))[0]
+    n = struct.unpack('<H', g.read(m_taille, 2))[0]
+    t = g.dword(g.dword(m_horloge))
+    g.write(m_fil + 16 * w, struct.pack('<hhBIB', x, y, ev, t & 0xffffffff, bt).ljust(16, bytes(1)))
+    g.write(m_lect - 4, struct.pack('<H', (w + 1) % n))
+
+
+def post_key(sc, down):
+    global alt
+    if sc in (0x38, 0xE038): alt = down
+    vk = u32w.MapVirtualKeyW(sc & 0xFF, 1) or 0
+    if sc & 0xE000:
+        vk = {0x48: 0x26, 0x50: 0x28, 0x4B: 0x25, 0x4D: 0x27, 0x49: 0x21, 0x51: 0x22, 0x47: 0x24, 0x4F: 0x23,
+              0x52: 0x2D, 0x53: 0x2E, 0x1D: 0xA3, 0x38: 0xA5, 0x1C: 0x0D, 0x35: 0x6F}.get(sc & 0xFF, vk)
+    lp = 1 | ((sc & 0xFF) << 16) | ((1 << 24) if sc & 0xE000 else 0) | ((1 << 29) if alt or sc in (0x38, 0xE038) else 0)
+    if not down: lp |= 0xC0000000
+    sys_ = alt or sc in (0x38, 0xE038)
+    msg = (0x104 if down else 0x105) if sys_ else (0x100 if down else 0x101)
+    u32w.PostMessageW(ctypes.c_void_p(win), msg, vk, ctypes.c_ssize_t(lp - (1 << 32) if lp >= 1 << 31 else lp).value)
+
+
+def handle_input():
+    look = False
+    while True:
+        try:
+            pk, _ = rx.recvfrom(64)
+        except (BlockingIOError, OSError):
+            break
+        if pk[:1] == b'K' and len(pk) >= 4:
+            sc, down = struct.unpack('<HB', pk[1:4])
+            post_key(sc, bool(down))
+        elif pk[:1] == b'M' and len(pk) >= 5:
+            dx, dy = struct.unpack('<hh', pk[1:5])
+            e = A_MASTER + u16(A_PID + 2) * 0x25
+            if dx:
+                g.write(e + 0x1B, struct.pack('<H', (u16(e + 0x1B) + dx * SENS_X) & 0xffff))
+            if dy:
+                g.write(A_PITCH, struct.pack('<h', max(PITCH_MIN, min(PITCH_MAX, s16(A_PITCH) + dy * SENS_Y))))
+            look = True
+        elif pk[:1] == b'B' and len(pk) >= 3:
+            btn, down = pk[1], pk[2]
+            if btn == 1: mouse_evt(2 if down else 4, 1 if down else 0)
+            elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0)
+        elif pk[:1] == b'P' and len(pk) >= 5:
+            g.write(m_cur, pk[1:5]); g.write(m_warp, b'\x01')
+        elif pk[:1] == b'C' and len(pk) >= 7:
+            btn, down = pk[1], pk[2]
+            pos = struct.unpack('<hh', pk[3:7])
+            if btn == 1: mouse_evt(2 if down else 4, 1 if down else 0, pos)
+            elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0, pos)
+    if look:                                  # le curseur du jeu reste au centre : on vise ou on regarde
+        x, y = centre()
+        g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')
+
+
+hud_rate, hud_rect = None, None
+
+
+def send_hud():
+    import numpy as np
+    global hud_n, hud_copies, hud_rate, hud_rect
+    sbuf = d32(SB)
+    if sbuf <= 0: return False
+    # l'ecran du jeu et l'image HD doivent etre de la MEME image : juste apres un affichage (compteur qui avance),
+    # avant le rendu suivant (ACTIVE), et rien de change pendant la lecture ; sinon la 3D du jeu passerait au travers
+    c = d32(COPIES)
+    if c == hud_copies or d32(0x466104): return False
+    hud_copies = c                            # une seule tentative par image (elle ne se represente pas)
+    scr = np.frombuffer(g.read(sbuf, 640 * 400), np.uint8).reshape(400, 640)[:, :320]
+    alpha = np.full((400, 320), 255, np.uint8)
+    fx0, fy0, fw, fh, fww, fside = d32(FX), d32(FY), d32(FWV), d32(FHV), d32(FWWV), d32(FSI)
+    if 0 < fw <= 320 and 0 < fh <= 400 and fww > 0:
+        hd = np.frombuffer(g.read(d32(HB), fww * fh), np.uint8).reshape(fh, fww)
+        if d32(COPIES) != c or d32(0x466104): return False
+        cols = np.arange(fx0, fx0 + fw)
+        idx = 2 * cols - 2 * fx0 + fside
+        ok = (idx >= 0) & (idx < fww)
+        win = scr[fy0:fy0 + fh, fx0:fx0 + fw]
+        same = np.zeros_like(win, bool)
+        same[:, ok] = win[:, ok] == hd[:, idx[ok]]
+        if same.mean() < 0.7: return False       # images qui ne correspondent pas : on garde le HUD precedent
+        # un pixel du cadre du cockpit tombe parfois par hasard sur la couleur de la 3D derriere lui : transparent une
+        # image, il faisait des trous qui scintillent sur les bords du cadre. Transparent seulement apres 3 images de
+        # suite egales a la 3D ; un element du HUD qui apparait (lock, reticule) reste opaque des la premiere.
+        if hud_rect != (fx0, fy0, fw, fh):
+            hud_rect, hud_rate = (fx0, fy0, fw, fh), np.full((fh, fw), 0.6, np.float32)
+        hud_rate = hud_rate * 0.7 + same * 0.3
+        alpha[fy0:fy0 + fh, fx0:fx0 + fw][same & (hud_rate > 0.6)] = 0
+    else:
+        fx0 = fy0 = fw = fh = 0
+    hud_n += 1
+    s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + g.read(PAL, 768), ('127.0.0.1', 47823))
+    rg = np.dstack([scr, alpha]).tobytes()
+    z = zlib.compress(rg, 1)                  # cockpit et fenetre transparente : ~10x plus petit, un seul paquet
+    if len(z) > 65000: return True            # (Windows ne garde que 64 Ko en attente sur la socket)
+    s.sendto(b'HUZ' + struct.pack('<I', hud_n) + z, ('127.0.0.1', 47823))
+    return True
+def hud_loop():
+    while True:
+        if not send_hud(): time.sleep(0.0005)
+
+
+if HUD:
+    import threading
+    threading.Thread(target=hud_loop, daemon=True).start()
+u16 = lambda a: struct.unpack('<H', g.read(a, 2))[0]
+s16 = lambda a: struct.unpack('<h', g.read(a, 2))[0]
+i32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
+n = 0
+while True:
+    e = A_MASTER + u16(A_PID + 2) * 0x25
+    x, y, z = i32(e + 0x0F) / 65536, i32(e + 0x13) / 65536, i32(e + 0x17) / 65536
+    # cap de la vue principale = cap du joueur + tete, comme le jeu le calcule : la variable cap camera sert aussi aux
+    # vues laterales (triple camera, cockpit) et la lire au mauvais moment faisait sauter la vue de 52 deg
+    head = ((u16(e + 0x1B) + u16(A_HEADYAW)) & 0xffff) / 65536 * 2 * math.pi
+    pitch = -s16(A_CAMPITCH) / 65536 * 2 * math.pi    # le jeu : positif = vers le bas
+    # entites du jeu (table de 0x25 octets) : classes 0 a 4 (decor, unites, vehicules, sondes, batiments), 5 = tirs
+    # et 6 = eclats d'impact (ephemeres : envoyes seulement actifs)
+    tab = g.read(A_MASTER, 0x25 * NENT)
+    body = []
+    if time.time() - corps_t > 0.5:
+        corps_t = time.time()
+        raw = g.read(CORPS, 200 * 0x14E)
+        corps = [(n, *(v / 65536 for v in struct.unpack_from('<ii', raw, n * 0x14E))) for n in range(200)]
+    vivants = {struct.unpack_from('<H', tab, 0x25 * i + 3)[0] for i in range(NENT) if tab[0x25 * i] and tab[0x25 * i + 1] == 1}
+    for i in range(NENT):
+        o = 0x25 * i
+        if tab[o + 1] > 6 or (tab[o + 1] >= 5 and tab[o] == 0): continue
+        ex, ey, ez = struct.unpack_from('<iii', tab, o + 0x0F)
+        if ex == 0 and ey == 0: continue
+        eh = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
+        if tab[o + 1] == 6 and tab[o + 2] == 33:     # morceau d'armure : le cap porte l'armure du soldat mort
+            eh = float(armure_debris(ex / 65536, ey / 65536, vivants))
+        body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], 1 if tab[o] else 0, ex / 65536, ey / 65536, ez / 65536, eh))
+    pid = u16(A_PID + 2)
+    # animation des soldats : le jeu calcule a chaque image les 16 articulations de chaque armure affichee (fiche
+    # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
+    # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py)
+    joints = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if i == pid or not tab[o] or tab[o + 1] != 1: continue
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        if nf > 200: continue
+        jr = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
+        j = [struct.unpack_from('<3i', jr, 12 * k) for k in range(16)]
+        x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
+        if any(abs(v[0] - x0) > 2 << 16 or abs(v[1] - y0) > 2 << 16 for v in j) or any(v == (0, 0, 0) for v in j):
+            continue                          # pas affiche : articulations pas a jour
+        cap = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
+        av, dr = (math.cos(cap), math.sin(cap)), (-math.sin(cap), math.cos(cap))
+        q = [((v[0] - x0) / 65536, (v[1] - y0) / 65536, v[2] / 65536) for v in j]
+        sg = 1 if q[9][2] > q[8][2] else -1
+        sol = min(w[2] * sg for w in q[:4])
+        joints.append(struct.pack('<i48f', i, *[c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]))
+    cam = (x, y, z + EYE, head, pitch)
+    if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
+    s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),
+             ('127.0.0.1', 47821))
+    if '--once' in sys.argv or n % int(HZ * 2) == 0:
+        print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
+        if '--once' in sys.argv: break
+    if PLAY:
+        handle_input()
+    if time.time() - nuages_t > 0.1:
+        nuages_t = time.time()
+        s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
+    if time.time() - brule_t > 0.5:           # sommets brules : lus 2 fois par seconde, envoyes s'ils changent (et toutes les 2 s)
+        brule_t = time.time()
+        carte = None
+        for a in SOL_PTRS:
+            pc = struct.unpack('<I', g.read(a, 4))[0]
+            if 0x400000 <= pc < 0x4000000 and 0 <= x < 512 and 0 <= y < 512:
+                h = struct.unpack('<h', g.read(pc + 3 * (int(y) * 513 + int(x)) + 1, 2))[0] / 384
+                if abs(h - z) < 1.5:
+                    carte = pc
+                    break
+        if carte is not None:
+            tuiles = g.read(carte, 513 * 513 * 3)[0::3]
+            br = [m.start() for m in BRULE.finditer(tuiles)][:15000]
+            if br != brule_prev or brule_t - brule_sent > 2.0:
+                s.sendto(b'SCOR' + struct.pack('<I%dI' % len(br), len(br), *br), ('127.0.0.1', 47821))
+                brule_prev, brule_sent = br, brule_t
+    if time.time() - veg_t > 0.25:            # vegetation : lue 4 fois par seconde, envoyee si elle change (et chaque seconde)
+        veg_t = time.time()
+        vg = g.read(VEG, 128 * 128)
+        if vg != veg_prev or veg_t - veg_sent > 1.0:
+            s.sendto(b'VEGM' + vg, ('127.0.0.1', 47821))
+            veg_prev, veg_sent = vg, veg_t
+    n += 1
+    if viewer is not None and viewer.poll() is not None:
+        break
+    if PLAY:
+        select.select([rx], [], [], 1 / HZ)   # clavier / souris traites des leur arrivee
+    else:
+        time.sleep(1 / HZ)

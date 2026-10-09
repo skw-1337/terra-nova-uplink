@@ -17,7 +17,7 @@ const CAMPAIGN := [37, 38, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 10, 11, 12, 13, 34
 const FRIENDLY := ["SFC", "Nikola", "Strike Force", "Centauri"]
 const DETAIL_N := 513        # detailed grid: 513 x 513, 1 unit apart, covers 0..512
 const COARSE_N := 257        # outer grid: 257 x 257, 4 units apart, covers -256..768
-const HEIGHT_SCALE := 0.6875 / 256.0
+const HEIGHT_SCALE := 1.0 / 384.0   # measured on the running game: units stand 0.12 above it on every map
 const BASE_PALETTE := [0, 0, 0, 156, 189, 189, 135, 163, 163, 103, 135, 131, 87, 119, 115, 72, 104, 96,
 		63, 95, 83, 51, 83, 67, 43, 75, 59, 39, 67, 47, 31, 59, 39, 29, 55, 37, 28, 50, 35, 26, 46, 33,
 		24, 41, 30, 23, 37, 28, 7, 28, 16]

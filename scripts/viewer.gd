@@ -124,6 +124,7 @@ var menu_tex: ImageTexture
 var menu_img: Image                # the game's screen as received (zones of it are updated)
 var menu_cursor: Image             # the game's arrow, shown as the mouse cursor on its screens (no lag)
 var menu_cursor_hot := Vector2i.ZERO
+var menu_cursor_own := false       # the bridge hides the game's arrow: ours is shown
 var menu_frame := Vector2i(640, 480)  # the game's mouse range on that screen
 var menu_parts := {}
 var menu_img_n := -1
@@ -1260,6 +1261,10 @@ func _hud_update() -> void:
 			continue
 		if tag == "MOD" and pk.size() >= 12:
 			menu_frame = Vector2i(maxi(1, pk.decode_s16(8)), maxi(1, pk.decode_s16(10)))
+			var own := pk.size() >= 13 and pk[12] == 1
+			if own != menu_cursor_own:
+				menu_cursor_own = own
+				_menu_cursor_apply()
 			_set_menu_mode(pk[7] == 1)
 			continue
 		if tag == "SCR" and pk.size() > 11:
@@ -1401,7 +1406,8 @@ func _set_menu_mode(on: bool) -> void:
 func _menu_cursor_apply() -> void:
 	if not (play and menu_mode):
 		return
-	if menu_cursor == null:
+	if menu_cursor == null or not menu_cursor_own:
+		Input.set_custom_mouse_cursor(null)
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		return
 	var vs := get_viewport().get_visible_rect().size

@@ -253,7 +253,8 @@ if HUD:
 # Ecrans du jeu hors de sa 3D (menus, ecran de mort, briefing, video, pause) : le compteur d'images 3D (COPIES) ne
 # bouge plus. La fenetre DOSBox est alors capturee (PrintWindow, meme cachee derriere le visualiseur) et envoyee au
 # visualiseur en JPEG, qui l'affiche a la place de sa 3D (port 47823) :
-#   'MOD' + n (u32) + mode (u8 : 0 = 3D, 1 = ecran du jeu) + cadre de la souris du jeu (i16 l, h), 5 fois par seconde
+#   'MOD' + n (u32) + mode (u8 : 0 = 3D, 1 = ecran du jeu) + cadre de la souris du jeu (i16 l, h) + curseur du
+#   visualiseur (u8 : 1 = la fleche du jeu est videe, voir cursor_hide), 5 fois par seconde
 #   'SCR' + image (u32) + morceau (u16) + nombre (u16) + [largeur, hauteur de l'ecran, x, y, l, h de la zone (u16) +
 #   RGB zlib de la zone] (60 Ko par morceau) : la zone qui a change (le curseur qui bouge : un petit paquet), l'ecran
 #   entier chaque seconde ou quand sa taille change, jusqu'a ~40 fois par seconde. Les morceaux d'un gros envoi sont
@@ -321,7 +322,8 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
             menu_step.dbg = mode
             print('menus : mode %d (3D arretee %.1f s, cadre %d x %d)' % (mode, now - last_t, fw, fh), file=sys.stderr, flush=True)
         if now - mod_t > 0.2:
-            tx.sendto(b'MOD' + struct.pack('<IBhh', n, mode, fw, fh), ('127.0.0.1', 47823)); n += 1; mod_t = now
+            tx.sendto(b'MOD' + struct.pack('<IBhhB', n, mode, fw, fh, 1 if (PLAY and curseur['own']) else 0),
+                      ('127.0.0.1', 47823)); n += 1; mod_t = now
         if mode == 0:
             time.sleep(0.05); return last_c, last_t, mode, n, img_n, None, sent_t, mod_t, fw, fh
         im = grab()
@@ -361,26 +363,34 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
 # Ses couleurs et sa pointe sont relevees une fois sur l'image, la souris immobile (l'image a alors rattrape).
 #   'CUR' + n (u32) + largeur, hauteur, pointe x, y (i16) + RGBA
 CUR_FILE = os.path.join(os.environ.get('TEMP', '.'), 'tn_curseur_menus.bin')   # (si le pont meurt fleche videe)
-curseur = {'orig': {}, 'rgba': None, 'pos': None, 'still': 0.0, 'cur_t': 0.0}
+curseur = {'orig': {}, 'rgba': None, 'pos': None, 'still': 0.0, 'cur_t': 0.0, 'vide': set(), 'non': False, 'own': False}
+# (seulement hors mission : dans le panneau d'options d'une mission, le jeu remet sa fleche lui-meme et, videe a
+# moitie, elle laissait des trainees ; le jeu qui la remet apres qu'on l'a videe : on la lui laisse jusqu'a la 3D)
 
 
 def cursor_hide(ech, tx, now):
     import numpy as np
     st = curseur
+    st['own'] = False
+    if st['non']:
+        return
+    e = A_MASTER + struct.unpack('<H', g.read(A_PID + 2, 2))[0] * 0x25
+    if any(g.read(e + 0x0F, 8)):                     # en mission (panneau d'options) : la fleche du jeu
+        return
     ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
     if not (0x400000 <= ptr < 0x4000000 and 8 <= w <= 64 and 8 <= h <= 64 and row >= w):
         return
     bm = g.read(ptr, row * h)
+    if any(0 < v < 0xf0 for v in bm):              # pas une image brute (la fleche des menus : 0xfc-0xfe) : une
+        return                                      # image compressee (RLE), videe elle cassait le curseur du jeu
+    if any(bm) and ptr in st['vide']:                  # le jeu l'a remise : on la lui laisse
+        st['non'] = True
+        print('menus : le jeu remet sa fleche, laissee', file=sys.stderr, flush=True)
+        return
     if any(bm):
         st['orig'][ptr] = (bm, row * h)
         if not os.path.exists(CUR_FILE):
             open(CUR_FILE, 'wb').write(struct.pack('<IHHH', ptr, w, h, row) + bm)
-    elif ptr not in st['orig'] and os.path.exists(CUR_FILE):
-        f = open(CUR_FILE, 'rb').read()                        # videe par un pont mort : celle du fichier
-        fp, fw_, fh_, frow = struct.unpack_from('<IHHH', f)
-        if fp == ptr and (fw_, fh_, frow) == (w, h, row):
-            st['orig'][ptr] = (f[10:], row * h); bm = f[10:]
-            g.write(ptr, bm)
     pos = g.read(m_cur, 4)
     if pos != st['pos']: st['pos'], st['still'] = pos, now
     if st['rgba'] is None:
@@ -412,6 +422,8 @@ def cursor_hide(ech, tx, now):
         print('menus : curseur releve (%d x %d, pointe %d, %d)' % (w, h, hx, hy), file=sys.stderr, flush=True)
     if any(bm):
         g.write(ptr, bytes(row * h))                           # la fleche du jeu : videe
+        st['vide'].add(ptr)
+    st['own'] = True
     if now - st['cur_t'] > 1.0:
         st['cur_t'] = now
         r = st['rgba']
@@ -420,11 +432,25 @@ def cursor_hide(ech, tx, now):
 
 def cursor_restore():
     for ptr, (bm, n) in curseur['orig'].items():
-        g.write(ptr, bm)
+        if ptr in curseur['vide']:
+            g.write(ptr, bm)
+    curseur['vide'].clear(); curseur['non'] = False; curseur['own'] = False
+
+
+def cursor_repare():
+    """au demarrage : une fleche laissee videe par un pont arrete net, remise depuis la copie gardee"""
+    if not os.path.exists(CUR_FILE): return
+    f = open(CUR_FILE, 'rb').read()
+    fp, fw_, fh_, frow = struct.unpack_from('<IHHH', f)
+    ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
+    if fp == ptr and (fw_, fh_, frow) == (w, h, row) and not any(g.read(ptr, row * h)):
+        g.write(ptr, f[10:]); print('menus : fleche du jeu remise')
 
 
 import atexit
 atexit.register(cursor_restore)
+if PLAY:
+    cursor_repare()
 menu_beat = time.time()
 if HUD:
     threading.Thread(target=menu_loop, daemon=True).start()

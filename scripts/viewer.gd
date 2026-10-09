@@ -1638,6 +1638,7 @@ func _live_units(pk: PackedByteArray) -> void:
 	if ents.has(player):                             # the player's own jetpack only: around the other soldiers the
 		var u = ents[player]                         # weapons' dust settles at their feet too (thousands of 6/29 in a
 		puff_units.append(Vector3(u[3], u[5], u[4]))  # fight), which made puffs fill the screen; the game shows none
+	_pulsar_trails(ents)
 	for idx in ents:
 		var e = ents[idx]
 		if (e[0] == 5 or e[0] == 6) and e[2] != 0:
@@ -1853,6 +1854,11 @@ func _live_fx(idx: int, e) -> void:
 	if cls == 6 and typ == 33:
 		_live_debris(idx, e)
 		return
+	if cls == 5 and typ == 5:
+		_live_pulsar(idx, e)
+		return
+	if cls == 6 and typ == 28 and pulsar_dust.has(idx):
+		return                                          # a pulsar bolt's trail: drawn with its bolt
 	if cls == 6 and FX_ANIMS.has(typ):
 		var now := Time.get_ticks_msec()
 		if now - int(anim_seen.get(idx, -100000)) > 400 and not _anim_near(pos0, now):
@@ -1875,7 +1881,7 @@ func _live_fx(idx: int, e) -> void:
 	if cls == 5:
 		kind = {4: 1, 11: 4, 10: 6, 6: 7, 22: 8, 25: 8, 23: 9}.get(typ, 0)
 	else:
-		kind = {29: 3, 28: 5, 7: 9}.get(typ, 2)
+		kind = {29: 3, 28: 5, 7: 9, 5: 10}.get(typ, 2)
 	var beam := kind == 1 or kind == 4
 	var mi: MeshInstance3D = live_fx.get(idx)
 	if mi == null:
@@ -1899,7 +1905,7 @@ func _live_fx(idx: int, e) -> void:
 			mi.mesh = cn
 		else:
 			var sp := SphereMesh.new()
-			sp.radius = {0: 0.2, 2: 0.05, 3: 0.014, 5: 0.014, 7: 0.02, 8: 0.045, 9: 0.008}[kind]
+			sp.radius = {0: 0.2, 2: 0.05, 3: 0.014, 5: 0.014, 7: 0.02, 8: 0.045, 9: 0.008, 10: 0.02}[kind]
 			sp.height = sp.radius * {0: 4.0, 8: 8.0, 9: 32.0}.get(kind, 2.0)
 			sp.radial_segments = 4 if kind == 3 or kind == 5 else 8
 			sp.rings = 2 if kind == 3 or kind == 5 else 4
@@ -1917,10 +1923,10 @@ func _live_fx(idx: int, e) -> void:
 			var green := pal[137] if pal.size() > 137 else Color(0.1, 0.8, 0.1)
 			m.albedo_color = [Color(1.0, 0.85, 0.6), Color(1.0, 0.12, 0.08), Color(1.0, 0.75, 0.3), Color(1.0, 0.25, 0.15),
 					Color(0.15, 0.3, 1.0), Color(0.3, 0.45, 1.0), Color(1.0, 0.72, 0.15), Color(1.0, 0.2, 0.12), green,
-					Color(1.0, 0.97, 0.85)][kind]
+					Color(1.0, 0.97, 0.85), Color(0.99, 0.25, 0.25)][kind]
 			m.emission_enabled = true
 			m.emission = m.albedo_color
-			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0][kind]
+			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0, 1.0][kind]
 			if kind == 3 or kind == 5:                  # dust: plain dots of the game's red / blue, no glow
 				m.emission_enabled = false
 				m.albedo_color = Color(0.5, 0.01, 0.01) if kind == 3 else Color(0.3, 0.42, 0.95)
@@ -2010,7 +2016,7 @@ func _live_fx(idx: int, e) -> void:
 		im.surface_end()
 		mi.global_transform = Transform3D.IDENTITY
 		mi.extra_cull_margin = 2.0
-	elif kind == 2 or kind == 7:
+	elif kind == 2 or kind == 7 or kind == 10:
 		mi.transform = Transform3D(Basis.IDENTITY, pos)
 	else:                                           # other shots: a bolt along its flight
 		var dir := Vector3.ZERO
@@ -2023,6 +2029,78 @@ func _live_fx(idx: int, e) -> void:
 		mi.look_at_from_position(pos, pos + dir, Vector3.UP if absf(dir.y) < 0.99 else Vector3.FORWARD)
 		mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
 	mi.set_meta("prev", pos)
+	mi.visible = true
+
+
+# The pulsar (5/5): five bolts in a quincunx, each trailed by a few 6/28 particles flying with it (0.03-0.12 unit
+# behind). The game draws the bolt and each of its particles as a small bar lying flat on the screen, a light red
+# core (252,64,64) in a dark red outline (123,1,1), ~0.022 x 0.012 unit: each bolt makes a short chain of bars
+# (measured on its picture). Its impacts (6/5): small light red marks.
+const PULSAR_BAR := Vector2(0.011, 0.006)        # half size of a pulsar bar (world units)
+var pulsar_parts := {}                          # pulsar bolt index -> its particles this frame (bolt first)
+var pulsar_dust := {}                           # 6/28 particles trailing a pulsar bolt: not drawn as dust
+var pulsar_mat: ShaderMaterial
+
+
+func _pulsar_trails(ents: Dictionary) -> void:
+	pulsar_parts.clear()
+	pulsar_dust.clear()
+	for idx in ents:
+		var e = ents[idx]
+		if e[0] == 5 and e[1] == 5 and e[2] != 0:
+			pulsar_parts[idx] = [Vector3(e[3], e[5], e[4])]
+	if pulsar_parts.is_empty():
+		return
+	for idx in ents:
+		var e = ents[idx]
+		if not (e[0] == 6 and e[1] == 28 and e[2] != 0):
+			continue
+		var p := Vector3(e[3], e[5], e[4])
+		var best := -1
+		var bd := 0.4
+		for b in pulsar_parts:
+			var d: float = p.distance_to(pulsar_parts[b][0])
+			if d < bd:
+				bd = d
+				best = b
+		if best >= 0:
+			pulsar_dust[idx] = true
+			pulsar_parts[best].append(p)
+
+
+func _live_pulsar(idx: int, e) -> void:
+	var mi: MeshInstance3D = live_fx.get(idx)
+	if mi == null or mi.get_meta("kind", -1) != 11:
+		if mi != null:
+			mi.queue_free()
+		mi = MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.mesh = ImmediateMesh.new()
+		mi.set_meta("kind", 11)
+		world.add_child(mi)
+		live_fx[idx] = mi
+	if pulsar_mat == null:
+		pulsar_mat = ShaderMaterial.new()
+		pulsar_mat.shader = BEAM
+		pulsar_mat.set_shader_parameter("core", Color(0.988, 0.251, 0.251))
+		pulsar_mat.set_shader_parameter("edge", Color(0.482, 0.004, 0.004))
+		pulsar_mat.set_shader_parameter("core_frac", 0.4)
+		pulsar_mat.set_shader_parameter("core_frac_x", 0.75)
+	var cam := camera.global_transform
+	var bx := cam.basis.x * PULSAR_BAR.x
+	var by := cam.basis.y * PULSAR_BAR.y
+	var im := mi.mesh as ImmediateMesh
+	im.clear_surfaces()
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, pulsar_mat)
+	for c in pulsar_parts.get(idx, [Vector3(e[3], e[5], e[4])]):
+		if c.distance_to(cam.origin) < 0.25:
+			continue
+		for v in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]:
+			im.surface_set_uv(Vector2(v[0] * 0.5 + 0.5, v[1] * 0.5 + 0.5))
+			im.surface_add_vertex(c + bx * v[0] + by * v[1])
+	im.surface_end()
+	mi.global_transform = Transform3D.IDENTITY
+	mi.extra_cull_margin = 2.0
 	mi.visible = true
 
 

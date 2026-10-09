@@ -1206,6 +1206,7 @@ void fragment() {
 	add_child(ml)
 	menu_rect = TextureRect.new()
 	menu_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	menu_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR   # (its picture already blown up crisp, see SCR)
 	menu_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	menu_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	menu_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1241,7 +1242,13 @@ func _hud_update() -> void:
 				for k in menu_parts.size():
 					jpg.append_array(menu_parts.get(k, PackedByteArray()))
 				var im := Image.new()
-				if im.load_jpg_from_buffer(jpg) == OK:
+				var ok := im.load_png_from_buffer(jpg) if jpg.slice(1, 4).get_string_from_ascii() == "PNG" else im.load_jpg_from_buffer(jpg)
+				if ok == OK:
+					# the game's own pixels (640 x 480 in its menus): blown up to a whole multiple at least the window's
+					# size, then smoothly down to it -- crisp, with even pixels
+					var vs := get_viewport().get_visible_rect().size
+					var k := clampi(int(ceil(maxf(vs.x / im.get_width(), vs.y / im.get_height()))), 1, 6)
+					im.resize(im.get_width() * k, im.get_height() * k, Image.INTERPOLATE_NEAREST)
 					if menu_tex == null or menu_tex.get_size() != Vector2(im.get_size()):
 						menu_tex = ImageTexture.create_from_image(im)
 						menu_rect.texture = menu_tex

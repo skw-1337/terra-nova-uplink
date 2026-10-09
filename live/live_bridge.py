@@ -254,7 +254,9 @@ if HUD:
 # bouge plus. La fenetre DOSBox est alors capturee (PrintWindow, meme cachee derriere le visualiseur) et envoyee au
 # visualiseur en JPEG, qui l'affiche a la place de sa 3D (port 47823) :
 #   'MOD' + n (u32) + mode (u8 : 0 = 3D, 1 = ecran du jeu) + cadre de la souris du jeu (i16 l, h), 5 fois par seconde
-#   'SCR' + image (u32) + morceau (u16) + nombre (u16) + JPEG (60 Ko par morceau), a chaque changement (et chaque s)
+#   'SCR' + image (u32) + morceau (u16) + nombre (u16) + PNG (60 Ko par morceau), a chaque changement (et chaque s) :
+#   l'ecran du jeu a sa definition (le cadre de sa souris, 640 x 480 dans les menus), chaque pixel repris au centre
+#   de son bloc dans la fenetre DOSBox agrandie ; le visualiseur l'agrandit net
 #   'MIS' + n (u32) + nom de la mission (MISSnn.RES), au retour dans la 3D : le visualiseur charge la nouvelle
 def menu_loop():
     import ctypes, ctypes.wintypes as wt, io, collections
@@ -271,6 +273,8 @@ def menu_loop():
                     ('biBitCount', wt.WORD), ('biCompression', wt.DWORD), ('biSizeImage', wt.DWORD), ('a', wt.LONG),
                     ('b', wt.LONG), ('c', wt.DWORD), ('d', wt.DWORD)]
 
+    import numpy as np
+
     def grab():
         r = wt.RECT(); u32.GetClientRect(hwnd, ctypes.byref(r)); w, h = r.right, r.bottom
         if w < 16 or h < 16: return None
@@ -279,10 +283,11 @@ def menu_loop():
         bi = BIH(ctypes.sizeof(BIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0); buf = ctypes.create_string_buffer(w * h * 4)
         g32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
         g32.DeleteObject(bmp); g32.DeleteDC(mdc); u32.ReleaseDC(hwnd, hdc)
-        return Image.frombuffer('RGBA', (w, h), buf, 'raw', 'BGRA', 0, 1).convert('RGB')
+        return np.frombuffer(buf, np.uint8).reshape(h, w, 4)[:, :, 2::-1]
 
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     last_c, last_t, mode, n, img_n, prev, sent_t, mod_t = d32(COPIES), time.time(), 0, 0, 0, None, 0.0, 0.0
+    fw, fh = 640, 480
     while True:
         c = d32(COPIES); now = time.time()
         if c != last_c: last_c, last_t = c, now
@@ -299,10 +304,12 @@ def menu_loop():
             prev = None; time.sleep(0.05); continue
         im = grab()
         if im is None: time.sleep(0.1); continue
-        small = im.resize((960, max(1, round(960 * im.height / im.width))), Image.BILINEAR)
-        sig = small.resize((64, 36)).tobytes()
+        H, W = im.shape[:2]
+        tw, th = (fw, fh) if fw >= 640 and fh >= 400 else (W // 2, H // 2)   # (en mission en pause : moitie de la fenetre)
+        ech = im[((np.arange(th) + 0.5) * H / th).astype(int)][:, ((np.arange(tw) + 0.5) * W / tw).astype(int)]
+        sig = ech.tobytes()
         if sig != prev or now - sent_t > 1.0:
-            buf = io.BytesIO(); small.save(buf, 'JPEG', quality=88); data = buf.getvalue()
+            buf = io.BytesIO(); Image.fromarray(np.ascontiguousarray(ech)).save(buf, 'PNG', compress_level=1); data = buf.getvalue()
             parts = [data[k:k + 60000] for k in range(0, len(data), 60000)]
             for k, part in enumerate(parts):
                 tx.sendto(b'SCR' + struct.pack('<IHH', img_n, k, len(parts)) + part, ('127.0.0.1', 47823))

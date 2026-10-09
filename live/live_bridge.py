@@ -359,8 +359,8 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
 # Le curseur des ecrans du jeu (menus, panneau d'options d'une mission) : le jeu le redessine a son rythme et DOSBox
 # l'affiche avec ~60 ms de retard, puis la capture. Le visualiseur affiche donc la fleche du jeu lui-meme comme
 # curseur de la souris (sans retard), et celle du jeu est rendue invisible : son image (descripteur juste avant la
-# position du curseur : pointeur, type, ?, largeur, hauteur, pas), brute (les menus : indices 0xfc-0xfe, 0
-# transparent) videe, ou compressee (le panneau d'options : RLE) remplacee par un flux valide tout transparent (des
+# position du curseur : pointeur, type, ?, largeur, hauteur, pas), brute (type 2, les menus ; 0 transparent) videe,
+# ou compressee (type 4, le panneau d'options : RLE) remplacee par un flux valide tout transparent (des
 # zeros la cassaient : le jeu semait des morceaux de fleche). Remise en revenant dans la 3D et a l'arret (et au
 # demarrage si un pont arrete net l'a laissee : fichier CUR_FILE). Ses couleurs et sa pointe sont relevees une fois
 # sur l'image, la souris immobile (l'image a alors rattrape).
@@ -404,7 +404,7 @@ def cursor_hide(ech, tx, now):
     st = curseur
     st['own'] = False
     ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
-    if not (0x400000 <= ptr < 0x4000000 and 4 <= w <= 64 and 4 <= h <= 64 and row >= w) or ptr in st['non']:
+    if not (0x400000 <= ptr < 0x4000000 and 4 <= w <= 64 and 4 <= h <= 64 and row >= w and typ in (2, 4))             or ptr in st['non']:
         return
     if ptr in st['orig']:
         orig, vide = st['orig'][ptr]
@@ -415,7 +415,7 @@ def cursor_hide(ech, tx, now):
             return
     else:
         bm = g.read(ptr, row * h)
-        brute = all(v == 0 or v >= 0xf0 for v in bm)
+        brute = typ == 2                                 # type de l'image : 2 brute, 4 compressee (RLE)
         if not any(bm): return
         vide = bytes(row * h) if brute else rle_vide(w * h)
         orig = g.read(ptr, len(vide))

@@ -121,6 +121,9 @@ var play_started := false        # the first click in the window only takes the 
 # the DOSBox window and sends it (see live_bridge.py menu_loop); shown over everything, the mouse goes to the game
 var menu_mode := false
 var menu_rect: TextureRect
+var hd_movie: VideoStreamPlayer               # a cutscene in HD (movies_hd\, made by tools/upscale_movies.py on the
+var hd_movie_box: AspectRatioContainer        # player's own files) over the game's own, while the game plays it
+var hd_movie_name := ""
 var menu_tex: ImageTexture
 var menu_img: Image                # the game's screen as received (zones of it are updated)
 var menu_cursor: Image             # the game's arrow, shown as the mouse cursor on its screens (no lag)
@@ -163,6 +166,9 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if "--live" in args:
 		live = true
+		if "--native" in args:                          # the screen's own resolution: fullscreen on the main screen
+			get_window().current_screen = DisplayServer.get_primary_screen()
+			get_window().mode = Window.MODE_FULLSCREEN
 		var fl := CanvasLayer.new()                     # frames per second, top right, over the game's HUD
 		fl.layer = 20
 		add_child(fl)
@@ -1233,6 +1239,22 @@ void fragment() {
 	menu_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	menu_rect.visible = false
 	ml.add_child(menu_rect)
+	var mbg := ColorRect.new()
+	mbg.color = Color.BLACK
+	mbg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	mbg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hd_movie_box = AspectRatioContainer.new()
+	hd_movie_box.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hd_movie_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hd_movie_box.visible = false
+	hd_movie = VideoStreamPlayer.new()
+	hd_movie.expand = true
+	hd_movie.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hd_movie_box.add_child(hd_movie)
+	mbg.visible = false
+	ml.add_child(mbg)
+	ml.add_child(hd_movie_box)
+	hd_movie_box.set_meta("bg", mbg)
 
 
 func _hud_update() -> void:
@@ -1244,6 +1266,9 @@ func _hud_update() -> void:
 			continue
 		var tag := pk.slice(0, 3).get_string_from_ascii()
 		var frame := pk.decode_u32(3)
+		if tag == "MOV":                                 # the game's cutscene: its HD version, if made
+			_hd_movie_play(pk.slice(7).get_string_from_ascii().to_upper())
+			continue
 		if tag == "MIS":                                 # back in the game's 3D: another mission?
 			var mf := pk.slice(7).get_string_from_ascii().to_upper()
 			if not current.is_empty() and current["entry"]["file"].get_file().to_upper() != mf:
@@ -1383,9 +1408,31 @@ func _play_release_all() -> void:
 
 # In and out of the game's own screen (menus...): shown over everything, the mouse freed for the game's cursor (it is
 # drawn in the picture); back in the 3D, the mouse is taken again for looking around.
+func _hd_movie_play(movie: String) -> void:
+	if movie == hd_movie_name or hd_movie == null:
+		return
+	hd_movie_name = movie
+	if OS.has_environment("TN_DEBUG"):
+		print("cinematique HD : ", movie)
+	var path := ProjectSettings.globalize_path("res://movies_hd/%s.ogv" % movie) if movie != "" else ""
+	if path == "" or not FileAccess.file_exists(path):
+		hd_movie.stop()
+		hd_movie_box.visible = false
+		hd_movie_box.get_meta("bg").visible = false
+		return
+	var st := VideoStreamTheora.new()
+	st.file = path
+	hd_movie.stream = st
+	hd_movie.play()
+	hd_movie_box.visible = true
+	hd_movie_box.get_meta("bg").visible = true
+
+
 func _set_menu_mode(on: bool) -> void:
 	if on == menu_mode:
 		return
+	if not on:
+		_hd_movie_play("")
 	if OS.has_environment("TN_DEBUG"):
 		print("menus : mode ", on, " (image ", menu_tex != null, ")")
 	menu_mode = on
@@ -2284,6 +2331,10 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	if hd_movie_box != null and hd_movie_box.visible and hd_movie.get_video_texture() != null:
+		var vsz := hd_movie.get_video_texture().get_size()
+		if vsz.y > 0:
+			hd_movie_box.ratio = vsz.x / vsz.y           # the video at its own proportions, black around
 	sky_root.position = camera.position
 	if live:
 		_live_update()

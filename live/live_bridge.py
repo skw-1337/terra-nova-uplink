@@ -1,7 +1,7 @@
 # Pont vers Terra Nova Viewer (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
 # (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
 # Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
-#   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900]]
+#   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance le visualiseur dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, time, zlib
@@ -38,14 +38,15 @@ if '--launch' in sys.argv:
     import collections, os, subprocess
     data = g.read(0x340000, 0x140000)
     names = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', data, re.I))
-    assert names, 'mission en cours introuvable (pas encore en mission ?)'
-    mission = names.most_common(1)[0][0]
+    mission = names.most_common(1)[0][0] if names else None   # lance depuis les menus : la mission suit ('MIS')
     res = sys.argv[sys.argv.index('--res') + 1] if '--res' in sys.argv else '1600x900'
     godot = os.environ.get('GODOT', r'C:\Tools\Godot\Godot_v4.7.2-stable_win64.exe')
     vpath = os.environ.get('TN_VIEWER', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # le depot
     print('mission', mission, '-> visualiseur', res)
     pos = ['--position', os.environ['TN_POS']] if 'TN_POS' in os.environ else []   # tests : fenetre hors ecran
-    viewer = subprocess.Popen([godot, '--path', vpath, '--resolution', res] + pos + ['--', '--live', '--mission', mission] + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))
+    taille = ['--', '--live', '--native'] if res == 'native' else ['--resolution', res] + pos + ['--', '--live']   # native : plein ecran
+    viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))
+    print('visualiseur pid %d' % viewer.pid, flush=True)
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -88,8 +89,7 @@ hud_t = 0.0
 
 # Zoom du jeu (touches HUD zoom + / -) : la camera principale (0x38FB24 dans l'exe anglais, 0x38FBD4 en francais)
 # tient un zoom effectif, et tan(champ / 2) suit 1 / zoom ; le plus petit zoom vu (vue normale) vaut --fov.
-A_ZOOM = next((a for a in (0x38FB24, 0x38FBD4) if 0.05 < d32(a) / 65536 < 20
-               and 5 < struct.unpack('<H', g.read(a + 0x18, 2))[0] * 360 / 65536 < 90), None)
+A_ZOOM = 0x38FBD4 if FR else 0x38FB24     # (lance depuis les menus : pas encore de camera a reconnaitre)
 
 
 ZOOM_NORMAL = 0.88916                      # zoom de la vue normale (0xE3A0), ou le champ vaut --fov
@@ -315,16 +315,32 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
         elif mode == 1 and not menu and now - last_t < 0.1:
             mode = 0
             if PLAY: cursor_restore()                  # la fleche du jeu, de retour pour la 3D
-            noms = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', g.read(0x340000, 0x140000), re.I))
-            if noms:
-                tx.sendto(b'MIS' + struct.pack('<I', n) + noms.most_common(1)[0][0].encode(), ('127.0.0.1', 47823))
+            menu_step.mis_t = 0.0
         if os.environ.get('TN_DEBUG') and mode != getattr(menu_step, 'dbg', None):
             menu_step.dbg = mode
             print('menus : mode %d (3D arretee %.1f s, cadre %d x %d)' % (mode, now - last_t, fw, fh), file=sys.stderr, flush=True)
         if now - mod_t > 0.2:
             tx.sendto(b'MOD' + struct.pack('<IBhhB', n, mode, fw, fh, 1 if (PLAY and curseur['own']) else 0),
                       ('127.0.0.1', 47823)); n += 1; mod_t = now
+        # cinematique en cours : le nom du dernier fichier ouvert par DOS (zone de DOS, vers 0x2B4E) est son .SMK
+        # pendant qu'elle joue ; le visualiseur passe alors sa version HD (movies_hd\, faite chez le joueur) s'il l'a
+        if now - getattr(menu_step, 'mov_t', 0.0) > 0.2:
+            menu_step.mov_t = now
+            mm = re.search(rb'([A-Z0-9_]{1,8})\.SMK\x00', g.read(0x2A00, 0x200) or b'') if mode == 1 else None
+            nom = mm.group(1).decode() if mm else ''
+            if nom != getattr(menu_step, 'mov', '') or now - getattr(menu_step, 'mov_sent', 0.0) > 1.0:
+                menu_step.mov, menu_step.mov_sent = nom, now
+                if os.environ.get('TN_DEBUG') and nom != getattr(menu_step, 'mov_dbg', None):
+                    menu_step.mov_dbg = nom; print('cinematique : %r' % nom, file=sys.stderr, flush=True)
+                tx.sendto(b'MOV' + struct.pack('<I', n) + nom.encode(), ('127.0.0.1', 47823))
         if mode == 0:
+            # la mission en cours, redite chaque seconde (le visualiseur ne recharge que si elle change) : un seul
+            # envoi au retour dans la 3D pouvait se perdre, ou lire le nom de la mission d'avant
+            if now - getattr(menu_step, 'mis_t', 0.0) > 1.0:
+                menu_step.mis_t = now
+                noms = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', g.read(0x340000, 0x140000), re.I))
+                if noms:
+                    tx.sendto(b'MIS' + struct.pack('<I', n) + noms.most_common(1)[0][0].encode(), ('127.0.0.1', 47823))
             time.sleep(0.05); return last_c, last_t, mode, n, img_n, None, sent_t, mod_t, fw, fh
         im = grab()
         if im is None:
@@ -475,18 +491,20 @@ def cursor_repare():
     """au demarrage : les fleches laissees invisibles par un pont arrete net, remises depuis les copies gardees
     (CUR_FILE), puis depuis les fichiers du jeu : une image de curseur de RESGAME / RESCUSTM (en-tete de 0x1c octets,
     puis ses pixels) retrouvee en memoire avec des pixels vides est remise, si c'est la seule de son en-tete a y manquer"""
+    entete = re.compile(b'\x00\x00\x00\x00[\x02\x04]\x00\x01\x00', re.S)
     if os.path.exists(CUR_FILE):
         f = open(CUR_FILE, 'rb').read(); i = 0
         while i + 6 <= len(f):
             ptr, n = struct.unpack_from('<IH', f, i); orig, vide = f[i + 6:i + 6 + n], f[i + 6 + n:i + 6 + 2 * n]
             i += 6 + 2 * n
-            if len(vide) == n and g.read(ptr, n) == vide:
+            # une fleche videe de ce jeu-ci : son en-tete juste avant (un autre jeu lance depuis peut avoir des zeros
+            # a cette adresse, qu'il ne faut pas remplir)
+            if len(vide) == n and entete.match(g.read(ptr - 0x1c, 0x1c) or b'') and g.read(ptr, n) == vide:
                 g.write(ptr, orig); print('menus : fleche du jeu remise (%#x)' % ptr)
         os.remove(CUR_FILE)                          # (les fleches videes ensuite y seront notees a nouveau)
     dossier = jeu_data()
     if not dossier: return
     cand = {}
-    entete = re.compile(b'\x00\x00\x00\x00[\x02\x04]\x00\x01\x00', re.S)
     for nom in ('RESGAME.RES', 'RESCUSTM.RES'):
         fn = os.path.join(dossier, nom)
         if not os.path.exists(fn): continue
@@ -534,8 +552,41 @@ def jeu_data():
     return None
 
 
+# le visualiseur au premier plan : lance depuis TNPlus pendant que DOSBox a le focus, Windows le laissait derriere
+# (DOSBox en plein ecran gardait alors la souris, cachee) ; ramene devant chaque fois que DOSBox reprend le focus
+# (changement de mode video...), pas quand le joueur passe a une autre application
+devant_t, devant_hw = 0.0, None
+
+
+def devant():
+    global devant_t, devant_hw
+    import ctypes, ctypes.wintypes as wt
+    u = tnre.u32
+    devant_t = time.time()
+    if devant_hw is None or not u.IsWindowVisible(devant_hw):
+        trouve = []
+
+        @ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_void_p, ctypes.c_void_p)
+        def cb(h, _):
+            q = wt.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(q))
+            if q.value == viewer.pid and u.IsWindowVisible(h): trouve.append(h)
+            return True
+        u.EnumWindows(cb, 0)
+        devant_hw = trouve[0] if trouve else None
+    fg = u.GetForegroundWindow()
+    if devant_hw is None or fg == devant_hw: return
+    q = wt.DWORD(); t_fg = u.GetWindowThreadProcessId(fg, ctypes.byref(q)) if fg else 0
+    if fg and q.value != g.pid: return                   # une autre application : on la laisse
+    t_moi = tnre.k32.GetCurrentThreadId()
+    if t_fg: u.AttachThreadInput(t_moi, t_fg, True)
+    u.BringWindowToTop(devant_hw); u.SetForegroundWindow(devant_hw)
+    if t_fg: u.AttachThreadInput(t_moi, t_fg, False)
+
+
 import atexit
 atexit.register(cursor_restore)
+if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi
+    atexit.register(lambda: viewer.poll() is None and viewer.terminate())
 if PLAY:
     cursor_repare()
 menu_beat = time.time()
@@ -634,6 +685,8 @@ while True:
     n += 1
     if viewer is not None and viewer.poll() is not None:
         break
+    if viewer is not None and time.time() - devant_t > 0.5:
+        devant()
     if PLAY:
         select.select([rx], [], [], 1 / HZ)   # clavier / souris traites des leur arrivee
     else:

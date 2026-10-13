@@ -198,7 +198,7 @@ def handle_input():
         g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')
 
 
-hud_rate, hud_rect = None, None
+hud_rate, hud_rect, hud_fixe = None, None, {}
 
 
 def send_hud():
@@ -227,10 +227,19 @@ def send_hud():
         # un pixel du cadre du cockpit tombe parfois par hasard sur la couleur de la 3D derriere lui : transparent une
         # image, il faisait des trous qui scintillent sur les bords du cadre. Transparent seulement apres 3 images de
         # suite egales a la 3D ; un element du HUD qui apparait (lock, reticule) reste opaque des la premiere.
+        # Le cadre reste pourtant egal a la 3D tant qu'elle a sa couleur (le gris du cadre sur la brume de
+        # l'horizon) : des pixels du cadre devenaient transparents en marchant. Un pixel qui ne change pas depuis 30
+        # images et qui a differe de la 3D pendant ce temps fait partie du cadre (ou d'un element fixe du HUD) : opaque.
         if hud_rect != (fx0, fy0, fw, fh):
             hud_rect, hud_rate = (fx0, fy0, fw, fh), np.full((fh, fw), 0.6, np.float32)
+            hud_fixe.update(val=win.copy(), n=np.zeros((fh, fw), np.int32), diff=np.zeros((fh, fw), bool))
+        bouge = win != hud_fixe['val']
+        hud_fixe['val'] = win.copy()
+        hud_fixe['n'][bouge] = 0; hud_fixe['diff'][bouge] = False
+        hud_fixe['n'] += 1; hud_fixe['diff'] |= ~same
+        cadre = (hud_fixe['n'] > 30) & hud_fixe['diff']
         hud_rate = hud_rate * 0.7 + same * 0.3
-        alpha[fy0:fy0 + fh, fx0:fx0 + fw][same & (hud_rate > 0.6)] = 0
+        alpha[fy0:fy0 + fh, fx0:fx0 + fw][same & (hud_rate > 0.6) & ~cadre] = 0
     else:
         fx0 = fy0 = fw = fh = 0
     hud_n += 1

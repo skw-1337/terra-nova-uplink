@@ -636,8 +636,9 @@ while True:
         jr = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
         j = [struct.unpack_from('<3i', jr, 12 * k) for k in range(16)]
         x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
-        if any(abs(v[0] - x0) > 2 << 16 or abs(v[1] - y0) > 2 << 16 for v in j) or any(v == (0, 0, 0) for v in j):
-            continue                          # pas affiche : articulations pas a jour
+        if any(math.hypot(v[0] - x0, v[1] - y0) > 0.45 * 65536 for v in j) or any(v == (0, 0, 0) for v in j):
+            continue                          # pas affiche : articulations pas a jour (une armure tient dans 0,25 ;
+                                              # au-dela Godot etire le maillage en gros bloc noir)
         cap = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
         av, dr = (math.cos(cap), math.sin(cap)), (-math.sin(cap), math.cos(cap))
         q = [((v[0] - x0) / 65536, (v[1] - y0) / 65536, v[2] / 65536) for v in j]

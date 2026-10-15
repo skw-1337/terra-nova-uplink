@@ -5,7 +5,7 @@ shader_type canvas_item;
 uniform bool ir = false;
 // the game's HUD (palette index in red, as sent by the bridge) and this view's frame in its 320 x 400 screen: where
 // the game draws over its small view this view lets the HUD through: a tooltip (black, index 0, with green letters
-// next to it) and, in the top label_rows rows, the game's labels (indices label_a / label_b: the probe's compass,
+// next to it), the game's mouse cursor and, in the top label_rows rows, the game's labels (indices label_a / label_b: the probe's compass,
 // lavender letters with a dark blue outline; the target camera's red name)
 uniform sampler2D hud : filter_nearest;
 uniform vec4 frame = vec4(0.0, 0.0, 320.0, 400.0);
@@ -24,6 +24,11 @@ float idx(vec2 p) {
 
 bool over(vec2 p) {
 	return idx(p) == 0.0;
+}
+
+bool cursor(vec2 p) {
+	// the game's mouse cursor, marked by the bridge (HUD alpha 254)
+	return abs(texture(hud, p / vec2(320.0, 400.0)).g * 255.0 - 254.0) < 0.5;
 }
 
 vec3 ramp(float l) {
@@ -61,6 +66,9 @@ vec3 nearest(vec3 c) {
 void fragment() {
 	vec2 p = frame.xy + UV * frame.zw;
 	if (over(p) || over(p + vec2(1.0, 0.0)) || over(p - vec2(1.0, 0.0)) || over(p + vec2(0.0, 1.0)) || over(p - vec2(0.0, 1.0))) {
+		discard;
+	}
+	if (cursor(p)) {
 		discard;
 	}
 	if (p.y < frame.y + label_rows) {

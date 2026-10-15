@@ -277,6 +277,8 @@ def send_hud():
         alpha[fy0:fy0 + fh, fx0:fx0 + fw][same & (hud_rate > 0.6) & ~cadre] = 0
     else:
         fx0 = fy0 = fw = fh = 0
+    if PLAY:
+        curseur_hud(scr, alpha)
     hud_n += 1
     s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + g.read(PAL, 768), ('127.0.0.1', 47823))
     rg = np.dstack([scr, alpha]).tobytes()
@@ -284,6 +286,46 @@ def send_hud():
     if len(z) > 65000: return True            # (Windows ne garde que 64 Ko en attente sur la socket)
     s.sendto(b'HUZ' + struct.pack('<I', hud_n) + z, ('127.0.0.1', 47823))
     return True
+# Le curseur du jeu dans sa 3D (souris liberee, Y ou Pause) : dessine dans l'ecran du jeu, donc dans le HUD, mais les
+# vues annexes de Godot (equipier, sonde, cible) le recouvraient. Ses pixels sont marques alpha 254 (opaques pour le
+# HUD) et les vues annexes les laissent passer. Son image (descripteur juste avant sa position : pointeur, type 2
+# brute / 4 RLE, largeur, hauteur, pas) est retrouvee dans l'ecran autour de sa position (pointe relevee une fois).
+cur3d = {}
+
+
+def curseur_hud(scr, alpha):
+    import numpy as np
+    try:
+        ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
+        if not (0x400000 <= ptr < 0x4000000 and 2 <= w <= 64 and 2 <= h <= 64 and row >= w and typ in (2, 4)): return
+        cx, cy = struct.unpack('<hh', g.read(m_cur, 4))
+        if ptr not in cur3d:
+            idx = (np.frombuffer(g.read(ptr, row * h), np.uint8).reshape(h, row)[:, :w] if typ == 2
+                   else rle_decode(g.read(ptr, 4096), w, h))
+            if not idx.any(): return                     # (la fleche videe des menus)
+            cur3d[ptr] = [idx, None]
+        idx, hot = cur3d[ptr]
+        m = idx != 0
+        def place(hx, hy):
+            x0, y0 = cx - hx, cy - hy
+            if x0 < 0 or y0 < 0 or x0 + w > 320 or y0 + h > 400: return None
+            z = scr[y0:y0 + h, x0:x0 + w]
+            return (x0, y0) if (z[m] == idx[m]).mean() > 0.9 else None
+        at = place(*hot) if hot else None
+        if at is None and hot is None:
+            for hy in range(h):
+                for hx in range(w):
+                    at = place(hx, hy)
+                    if at: cur3d[ptr][1] = (hx, hy); break
+                if at: break
+        if at is None: return
+        x0, y0 = at
+        zone = alpha[y0:y0 + h, x0:x0 + w]
+        zone[m & (zone == 255)] = 254
+    except Exception:
+        return
+
+
 def hud_loop():
     while True:
         if not send_hud(): time.sleep(0.0005)
@@ -715,8 +757,18 @@ while True:
         panneau = 2 if cible else (3 if tab[0x25 * vi + 1] == 3 else 1)
         zoom = d32(CAMS + (0xBA * 2 if panneau == 3 else 0)) / 65536
         if not 0.2 < zoom < 20: zoom = 1.0
-        vues[panneau] = (time.time(), vi, vx, vy, vz, cap_v, tang_v, zoom)
-    sv = [(k, v) for k, v in vues.items() if time.time() - v[0] < 0.4]
+        # garde l'ecart a l'unite (le point de vue n'est capte qu'au hasard du dessin : relu tel quel, la vue avancait
+        # par saccades) ; la position est reprise a chaque tour dans la table, le cap de l'unite + l'ecart (la cible :
+        # son cap tel quel, il vise la cible et non l'avant du joueur)
+        ex_, ey_, ez_ = (v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vi + 0x0F))
+        ecap = struct.unpack_from('<H', tab, 0x25 * vi + 0x1B)[0] / 65536 * 2 * math.pi
+        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, vz - ez_, cap_v if cible else cap_v - ecap, tang_v, zoom)
+    sv = []
+    for k, v in vues.items():
+        if time.time() - v[0] > 0.4 or not tab[0x25 * v[1]]: continue
+        ex_, ey_, ez_ = (c / 65536 for c in struct.unpack_from('<3i', tab, 0x25 * v[1] + 0x0F))
+        ecap = struct.unpack_from('<H', tab, 0x25 * v[1] + 0x1B)[0] / 65536 * 2 * math.pi
+        sv.append((k, (v[0], v[1], ex_ + v[2], ey_ + v[3], ez_ + v[4], v[5] if k == 2 else ecap + v[5], v[6], v[7])))
     cd = cadres() if sv else []
     if cd:                                    # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
         s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *(cd[-1] if k == 3 else cd[0]))

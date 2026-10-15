@@ -226,6 +226,9 @@ func _ready() -> void:
 		# ground's light is mostly the sky's ambient, which only its sky contribution scales (not its energy), and
 		# the blurred sky reflection Godot adds to every surface: off
 		sun.light_energy = LIVE_LIGHT
+		# no cast shadows: the game has none (seen beside it: hills and units darkened ground the game leaves lit, and
+		# the sprites, drawn unlit like the game's, stood bright inside them)
+		sun.shadow_enabled = false
 		env.ambient_light_sky_contribution = LIVE_AMBIENT
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 		env.adjustment_enabled = true
@@ -2035,11 +2038,31 @@ func _live_vegetation(game_map: PackedByteArray) -> void:
 
 
 # Burnt ground: the game sets bit 0x40 of a vertex's tile where a tree was destroyed or a blast hit (its ground map
-# in memory, read by the bridge), and draws burnt debris lying there: the game's burnt picture (RESTNOBJ 1161 frame
-# 9) as a decal on the ground, turned at random. Packet: count, then vertex indices (y * 513 + x, game y = Godot z).
-const SCORCH_REF := Vector2i(1161, 9)
+# in memory, read by the bridge), and draws it as a black patch ~1.5 units wide (seen after a grenade). Here a soft
+# round dark blotch as a decal on the ground, turned at random (the burnt tree picture laid flat, used before, made
+# long tree-shaped streaks). Packet: count, then vertex indices (y * 513 + x, game y = Godot z).
 const SCORCH_WIDTH := 1.6
-const SCORCH_TINT := Color(0.22, 0.17, 0.14)
+const SCORCH_TINT := Color(0.13, 0.1, 0.08)
+var scorch_tex: ImageTexture
+
+
+func _scorch_texture() -> ImageTexture:
+	if scorch_tex != null:
+		return scorch_tex
+	var n := 64
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var noise := FastNoiseLite.new()
+	noise.frequency = 0.12
+	for y in n:
+		for x in n:
+			var d := Vector2(x - n / 2.0 + 0.5, y - n / 2.0 + 0.5).length() / (n / 2.0)
+			var edge := 0.72 + 0.3 * noise.get_noise_2d(x, y)          # a ragged rim
+			var a := clampf((edge - d) / 0.08, 0.0, 1.0)
+			var g := 0.6 + 0.4 * noise.get_noise_2d(x * 3.0 + 100.0, y * 3.0)
+			img.set_pixel(x, y, Color(g, g, g, a))
+	img.generate_mipmaps()
+	scorch_tex = ImageTexture.create_from_image(img)
+	return scorch_tex
 
 
 func _live_scorch(pk: PackedByteArray) -> void:
@@ -2054,9 +2077,6 @@ func _live_scorch(pk: PackedByteArray) -> void:
 		if not now.has(v):
 			scorch_decals[v].queue_free()
 			scorch_decals.erase(v)
-	var sp: Dictionary = objects.sprite(SCORCH_REF, pal, pal_key) if objects_ok else {}
-	if sp.is_empty():
-		return
 	var m: Dictionary = current["map"]
 	for v in now:
 		if scorch_decals.has(v):
@@ -2064,10 +2084,9 @@ func _live_scorch(pk: PackedByteArray) -> void:
 		var x := float(v % 513)
 		var y := float(v / 513)
 		var dc := Decal.new()
-		dc.texture_albedo = sp["texture"]
-		dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH * float(sp["aspect"]))
-		dc.modulate = SCORCH_TINT                     # the game's burnt ground is near black (its sprite's colours
-		# alone left a faint reddish speck where a grenade leaves a black patch ~1.5 units wide)
+		dc.texture_albedo = _scorch_texture()
+		dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH)
+		dc.modulate = SCORCH_TINT
 		dc.position = Vector3(x, TNData.height_at(m, x, y) + 0.3, y)
 		dc.rotation.y = float((v * 2654435761) % 6283) / 1000.0
 		dc.cull_mask = 1

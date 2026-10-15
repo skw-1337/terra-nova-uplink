@@ -1854,6 +1854,8 @@ func _sub_views(q: PackedByteArray) -> void:
 		if (sv["vp"] as SubViewport).size != px:
 			(sv["vp"] as SubViewport).size = px
 		(tr.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
+		(tr.material as ShaderMaterial).set_shader_parameter("hud", hud_tex)
+		(tr.material as ShaderMaterial).set_shader_parameter("frame", Vector4(r.position.x, r.position.y, r.size.x, r.size.y))
 		var idx := q.decode_s32(o + 1)
 		var cam: Camera3D = sv["cam"]
 		var h := q.decode_float(o + 17)

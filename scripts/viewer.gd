@@ -7,6 +7,7 @@ const TNObjects = preload("res://scripts/tn_objects.gd")
 const GROUND = preload("res://terrain.gdshader")
 const LIMB = preload("res://limb.gdshader")
 const OLDSCHOOL = preload("res://oldschool.gdshader")
+const INFRARED = preload("res://infrared.gdshader")
 const SMOKE = preload("res://smoke.gdshader")
 const PUFF = preload("res://puff.gdshader")
 const ANIM = preload("res://anim.gdshader")
@@ -41,6 +42,8 @@ var world: Node3D
 var camera: Camera3D
 var ui: CanvasLayer
 var oldschool_rect: ColorRect      # live mode, "old school": the game's pixels and palette over the 3D view (F12)
+var ir_rect: ColorRect            # live mode: the game's infrared view (its orange ramp), under the HUD
+var ir_on := false
 var oldschool_key := ""
 var panel: PanelContainer
 var list: ItemList
@@ -194,6 +197,17 @@ func _ready() -> void:
 		oldschool_rect.material = rm
 		oldschool_rect.visible = false                      # shown once the planet's palette is known
 		rl.add_child(oldschool_rect)
+		var il := CanvasLayer.new()                     # the game's infrared view, under the old school mode and the HUD
+		il.layer = -2
+		add_child(il)
+		ir_rect = ColorRect.new()
+		ir_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		ir_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var im := ShaderMaterial.new()
+		im.shader = INFRARED
+		ir_rect.material = im
+		ir_rect.visible = false
+		il.add_child(ir_rect)
 		# colours of the running game: its 3D is darker and more saturated than this viewer's look (fitted on the
 		# same view, 3D pixels only: mean error 61 -> 16 / 255); the HUD on top is not affected
 		# done on the lights (terrain, objects), not on the whole image: the sky and the water keep their light. The
@@ -988,6 +1002,14 @@ func _pose_mech(holder: Node3D, p: Array) -> float:
 			fw = Vector3(0, 1, 0)
 		var xn := (fw - yn * fw.dot(yn)).normalized()
 		var node: MeshInstance3D = part[0]
+		if part[2] <= 1:                            # a foot (ankle -> toe): a flat pad, its y along the segment laid
+			# level, its x up (it hangs below the ankle), its sole on the toe's level (laid along the slanting segment
+			# it was a big tilted block)
+			var flat := Vector3(d.x, 0.0, d.z)
+			var yf := -(flat.normalized() if flat.length() > 0.0001 else f_hips)
+			var sole: float = node.mesh.get_aabb().position.x
+			node.transform = Transform3D(Basis(Vector3.UP, yf, Vector3.UP.cross(yf)), Vector3(ga.x, gb.y - sole, ga.z))
+			continue
 		node.transform = Transform3D(Basis(xn, yn, xn.cross(yn)), ga)
 		top = maxf(top, maxf(ga.y, gb.y))
 	return top
@@ -1586,6 +1608,13 @@ func _live_update() -> void:
 			_live_vegetation(q.slice(4))
 		elif q.size() >= 8 and q.slice(0, 4).get_string_from_ascii() == "SCOR":
 			_live_scorch(q.slice(4))
+		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
+			ir_on = q[4] == 1                               # the game's infrared view (key I)
+			var old := oldschool_rect != null and oldschool_rect.visible
+			if ir_rect != null:
+				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
+			if oldschool_rect != null:
+				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
@@ -1630,18 +1659,20 @@ func _live_units(pk: PackedByteArray) -> void:
 		ents[pk.decode_s32(o)] = [pk.decode_s32(o + 4), pk.decode_s32(o + 8), pk.decode_s32(o + 12),
 			pk.decode_float(o + 16), pk.decode_float(o + 20), pk.decode_float(o + 24), pk.decode_float(o + 28)]
 	var joints := {}                                   # game index -> 16 joints (after the entities)
+	var feet := {}                                     # game index -> height of its lowest foot
 	var jo := 32 + 32 * n
 	if pk.size() >= jo + 4:
 		var nj := pk.decode_s32(jo)
 		jo += 4
 		for k in nj:
-			if jo + 196 > pk.size():
+			if jo + 200 > pk.size():
 				break
 			var jp: Array[Vector3] = []
 			for q in 16:
-				jp.append(Vector3(pk.decode_float(jo + 4 + 12 * q), pk.decode_float(jo + 8 + 12 * q), pk.decode_float(jo + 12 + 12 * q)))
+				jp.append(Vector3(pk.decode_float(jo + 8 + 12 * q), pk.decode_float(jo + 12 + 12 * q), pk.decode_float(jo + 16 + 12 * q)))
 			joints[pk.decode_s32(jo)] = jp
-			jo += 196
+			feet[pk.decode_s32(jo)] = pk.decode_float(jo + 4)
+			jo += 200
 	var mis: Array = current["mission"]["entities"]
 	if live_off < 0:
 		var best_n := 0
@@ -1668,7 +1699,10 @@ func _live_units(pk: PackedByteArray) -> void:
 				e = null                                # its slot holds something else now: it was destroyed
 			var node: Node3D = live_nodes[k]
 			if node.has_meta("corpse"):
-				continue
+				if e == null or e[2] == 0:
+					continue
+				node.remove_meta("corpse")              # active again in its own slot: the mission was restarted
+				node.set_meta("alive", false)           # (killed units stayed hidden after "Retry the mission")
 			if e == null and node.get_meta("alive", false) and (node.has_meta("soldier") or node.has_meta("mech")):
 				_make_corpse(node, m)                    # killed, and its slot already reused
 				continue
@@ -1720,6 +1754,8 @@ func _live_units(pk: PackedByteArray) -> void:
 			_pose_soldier(node, joints[idx])
 		elif node != null and node.visible and node.has_meta("mech"):
 			_pose_mech(node, joints[idx])
+			node.position.y = feet[idx]              # on its feet: the walker's entity is 0.23 to 0.39 above them
+			# as it walks (a suit's: 0.15), so GAME_Z left it floating
 
 
 # A burst suit (6/33): one entity, drawn by the game as a pile of the suit's armour pieces (its limb sprites: torso,
@@ -1908,6 +1944,13 @@ func _live_fx(idx: int, e) -> void:
 		return                                          # a pulsar bolt's trail: drawn with its bolt
 	if cls == 6 and FX_ANIMS.has(typ):
 		var now := Time.get_ticks_msec()
+		if typ == 20:                                   # a blast's billows: the game scatters its 6/20 (up to 8 at
+			if now - int(anim_seen.get(idx, -100000)) > 400:   # one spot) around it, each its own fireball
+				var rng := RandomNumberGenerator.new()
+				rng.seed = idx * 7919 + now
+				_spawn_anim(pos0 + Vector3(rng.randf_range(-1.5, 1.5), rng.randf_range(0.0, 0.4), rng.randf_range(-1.5, 1.5)), FX_ANIMS[typ])
+			anim_seen[idx] = now
+			return
 		if now - int(anim_seen.get(idx, -100000)) > 400 and not _anim_near(pos0, now):
 			_spawn_anim(pos0, FX_ANIMS[typ])            # plays once, longer than the entity lives
 			if typ == 23:
@@ -1927,6 +1970,9 @@ func _live_fx(idx: int, e) -> void:
 	var kind: int = 0
 	if cls == 5:
 		kind = {4: 1, 11: 4, 10: 6, 6: 7, 22: 8, 25: 8, 23: 9}.get(typ, 0)
+		if kind == 0:
+			return                                      # other shots (5/24, 5/26, 5/27 on the hover tanks, 5/29...):
+			# nothing the game draws, at most a dot (a 0.8 unit glowing ball hid the walkers in a fight)
 	else:
 		kind = {29: 3, 28: 5, 7: 9, 5: 10}.get(typ, 2)
 	var beam := kind == 1 or kind == 4
@@ -2158,8 +2204,9 @@ var puff_seen := {}
 
 # Effects the game draws as an animation (class 6 type -> RESTNOBJ resource, world units per pixel, frames per
 # second), matched on the running game: 23 = a tree blown up (a fireball as big as the tree, turning to brown
-# smoke, ~0.9 s).
-const FX_ANIMS := {23: [1193, 0.012, 16.0]}
+# smoke, ~0.9 s); 20 = the orange-brown billows of a grenade or missile blast (several at one spot, about a walker's
+# body wide), with the grey puff of 6/25.
+const FX_ANIMS := {23: [1193, 0.012, 16.0], 20: [1177, 0.007, 12.0]}
 var anims := []                  # [node, start msec, duration]
 var smoke_pending := []          # blasts (6/23) waiting to know whether a suit burst there: [position, msec]
 var anim_seen := {}

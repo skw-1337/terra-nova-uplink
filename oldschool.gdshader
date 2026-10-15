@@ -8,6 +8,19 @@ uniform sampler2D pal_tex : filter_nearest;   // 256 x 1, the planet's palette
 uniform vec2 grid = vec2(848.0, 400.0);
 uniform float dither = 0.0;                   // ordered dither amplitude (0 = none, like the game; it crawls)
 uniform int first_index = 17;
+uniform bool ir = false;                      // the game's infrared view: its orange ramp (as infrared.gdshader)
+
+vec3 ir_ramp(float l) {
+	const vec3 C[6] = {vec3(0.0), vec3(155.0, 75.0, 0.0) / 255.0, vec3(255.0, 139.0, 27.0) / 255.0,
+			vec3(255.0, 171.0, 87.0) / 255.0, vec3(255.0, 207.0, 155.0) / 255.0, vec3(1.0)};
+	const float T[6] = {0.0, 0.22, 0.42, 0.62, 0.82, 1.0};
+	for (int i = 1; i < 6; i++) {
+		if (l <= T[i]) {
+			return mix(C[i - 1], C[i], (l - T[i - 1]) / (T[i] - T[i - 1]));
+		}
+	}
+	return C[5];
+}
 
 const float BAYER[16] = {0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0};
 
@@ -38,6 +51,9 @@ void fragment() {
 			best = d;
 			out_col = p;
 		}
+	}
+	if (ir) {
+		out_col = ir_ramp(clamp(dot(out_col, vec3(0.299, 0.587, 0.114)) * 1.15, 0.0, 1.0));
 	}
 	COLOR = vec4(out_col, 1.0);
 }

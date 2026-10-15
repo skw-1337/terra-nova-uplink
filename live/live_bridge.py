@@ -68,6 +68,9 @@ brule_prev, brule_t, brule_sent = None, 0.0, 0.0
 # nuages : decalage de la texture du ciel (texels 16.16, u puis v), qui avance avec le vent ; la position du joueur
 # s'y ajoute a l'affichage (plafond a 44 unites au-dessus de l'oeil, 1 texel par unite)
 NUAGES = 0x427E6C if FR else 0x427DBC
+# vue infrarouge du jeu (touche I) : 1 = IR (0x45F588 dans l'exe francais ; anglais suppose a -0xB0 comme le reste
+# de ces donnees, pas verifie)
+INFRA = 0x45F588 if FR else 0x45F4D8
 nuages_t = 0.0
 # soldats morts : leur corps eclate en morceaux d'armure (entites 6/33) ; une table par numero de soldat n garde leur
 # position apres la mort (0x38337F + n * 0x14E dans l'exe francais), la fiche soldat leur armure (+0xDE)
@@ -387,8 +390,8 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
 # position du curseur : pointeur, type, ?, largeur, hauteur, pas), brute (type 2, les menus ; 0 transparent) videe,
 # ou compressee (type 4, le panneau d'options : RLE) remplacee par un flux valide tout transparent (des
 # zeros la cassaient : le jeu semait des morceaux de fleche). Remise en revenant dans la 3D et a l'arret (et au
-# demarrage si un pont arrete net l'a laissee : fichier CUR_FILE). Ses couleurs et sa pointe sont relevees une fois
-# sur l'image, la souris immobile (l'image a alors rattrape).
+# demarrage si un pont arrete net l'a laissee : fichier CUR_FILE). Sa pointe est relevee une fois sur l'image, la
+# souris immobile (l'image a alors rattrape) ; ses couleurs suivent la palette du jeu.
 #   'CUR' + n (u32) + largeur, hauteur, pointe x, y (i16) + RGBA
 CUR_FILE = os.path.join(os.environ.get('TEMP', '.'), 'tn_curseurs.bin')
 curseur = {'orig': {}, 'img': {}, 'pos': None, 'still': 0.0, 'cur_t': 0.0, 'vide': set(), 'non': set(), 'own': False,
@@ -451,9 +454,11 @@ def cursor_hide(ech, tx, now):
     orig, vide = st['orig'][ptr]
     pos = g.read(m_cur, 4)
     if pos != st['pos']: st['pos'], st['still'] = pos, now
+    idx = st['idx_' + str(ptr)]
+    pal = np.frombuffer(g.read(PAL, 768), np.uint8).reshape(256, 3)
     if ptr not in st['img']:
         if ptr in st['vide'] or now - st['still'] < 0.25: return    # la fleche visible et immobile : on la releve
-        idx = st['idx_' + str(ptr)]
+        if pal[idx[idx != 0]].max() < 40: return     # ecran en fondu (palette au noir) : pointe pas lisible
         cx, cy = struct.unpack('<hh', pos)
         H, W = ech.shape[:2]
         best = None
@@ -471,20 +476,22 @@ def cursor_hide(ech, tx, now):
         if best is None or best[0] < 0.9 * (idx != 0).sum(): return
         _, hx, hy = best
         zone = ech[cy - hy:cy - hy + h, cx - hx:cx - hx + w]
-        rgba = np.zeros((h, w, 4), np.uint8)
-        for v in np.unique(idx[idx != 0]):
-            cols = zone[idx == v].reshape(-1, 3)
-            u, c = np.unique(cols, axis=0, return_counts=True)
-            rgba[idx == v, :3] = u[c.argmax()]; rgba[idx == v, 3] = 255
-        st['img'][ptr] = (rgba, (hx, hy))
+        st['img'][ptr] = (hx, hy)
         print('menus : curseur releve (%d x %d, pointe %d, %d)' % (w, h, hx, hy), file=sys.stderr, flush=True)
+        if os.environ.get('TN_DEBUG'):
+            from PIL import Image
+            Image.fromarray(pal[idx]).resize((w * 8, h * 8), 0).save(os.path.join(os.environ.get('TEMP', '.'), 'tn_curseur_%x.png' % ptr))
     if ptr not in st['vide']:
         g.write(ptr, vide)                                     # la fleche du jeu : invisible
         st['vide'].add(ptr)
     st['own'] = True
-    if now - st['cur_t'] > 1.0 or st['last'] != ptr:
-        st['cur_t'], st['last'] = now, ptr
-        r, hot = st['img'][ptr]
+    # ses couleurs : la palette du jeu du moment (relevees une fois sur l'image, elles restaient celles de l'ecran
+    # du releve : une fleche relevee pendant un fondu restait noire)
+    r = np.zeros((h, w, 4), np.uint8)
+    r[..., :3] = pal[idx]; r[..., 3] = np.where(idx != 0, 255, 0)
+    if now - st['cur_t'] > 1.0 or st['last'] != (ptr, r.tobytes()):
+        st['cur_t'], st['last'] = now, (ptr, r.tobytes())
+        hot = st['img'][ptr]
         tx.sendto(b'CUR' + struct.pack('<I4h', 0, r.shape[1], r.shape[0], *hot) + r.tobytes(), ('127.0.0.1', 47823))
 
 
@@ -635,7 +642,7 @@ while True:
     pid = u16(A_PID + 2)
     # animation des soldats : le jeu calcule a chaque image les 16 articulations de chaque armure affichee (fiche
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
-    # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py)
+    # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds
     joints = []
     for i in range(NENT):
         o = 0x25 * i
@@ -645,7 +652,9 @@ while True:
         jr = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
         j = [struct.unpack_from('<3i', jr, 12 * k) for k in range(16)]
         x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
-        if any(math.hypot(v[0] - x0, v[1] - y0) > 0.45 * 65536 for v in j) or any(v == (0, 0, 0) for v in j):
+        mech = tab[o + 2] == 9                     # le mech (type 9, squelette 886) : 10 articulations, grande foulee
+        used = j[:10] if mech else j
+        if any(math.hypot(v[0] - x0, v[1] - y0) > (0.9 if mech else 0.45) * 65536 for v in used) or any(v == (0, 0, 0) for v in used):
             continue                          # pas affiche : articulations pas a jour (une armure tient dans 0,25 ;
                                               # au-dela Godot etire le maillage en gros bloc noir)
         cap = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
@@ -653,7 +662,7 @@ while True:
         q = [((v[0] - x0) / 65536, (v[1] - y0) / 65536, v[2] / 65536) for v in j]
         sg = 1 if q[9][2] > q[8][2] else -1
         sol = min(w[2] * sg for w in q[:4])
-        joints.append(struct.pack('<i48f', i, *[c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]))
+        joints.append(struct.pack('<if48f', i, sol * sg, *[c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]))
     cam = (x, y, z + EYE, head, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),
@@ -670,6 +679,7 @@ while True:
     if time.time() - nuages_t > 0.1:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
+        s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
     if time.time() - brule_t > 0.5:           # sommets brules : lus 2 fois par seconde, envoyes s'ils changent (et toutes les 2 s)
         brule_t = time.time()
         carte = None

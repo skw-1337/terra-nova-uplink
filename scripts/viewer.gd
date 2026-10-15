@@ -510,7 +510,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			if not sp.is_empty():
 				var low: String = data.type_name(key.x, key.y).to_lower()
 				var rock := low.contains("roch") or low.contains("rock")
-				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * (ROCK_SCALE if rock else 1.0))
+				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * (ROCK_SCALE if rock else 1.0), ROCK_TALL if rock else 1.0)
 				mat = _sprite_mat(ref, sp)
 		elif TNObjects.is_model(ref):
 			var md: Dictionary = objects.model(ref, pal, pal_key)
@@ -543,9 +543,10 @@ func _add_vegetation(m: Dictionary) -> int:
 	return n
 
 
-# Rocks are drawn twice their radius wide by the game (seen on a ridge: "width = radius" was measured on a tree, and
-# left the rocks half sunk behind the crest)
-const ROCK_SCALE := 2.0
+# Rocks are drawn a little wider than their radius by the game ("width = radius" was measured on a tree; a decor rock
+# seen at 1.5 and 5 units: 1.2 x, the same at both distances). Trees and bushes not checked again (few on Panama).
+const ROCK_SCALE := 1.2
+const ROCK_TALL := 1.5     # and 1.5 x taller than their picture's proportions (same rock, both distances)
 
 
 # Simple stand-in shapes, standing on their base, when the game data has no sprite / model.
@@ -584,9 +585,9 @@ func _placeholder(shape: String) -> Mesh:
 
 
 # Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground.
-func _sprite_quad(sp: Dictionary, width: float) -> QuadMesh:
+func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0) -> QuadMesh:
 	var q := QuadMesh.new()
-	q.size = Vector2(width, width * sp["aspect"])
+	q.size = Vector2(width, width * sp["aspect"] * tall)
 	q.center_offset = Vector3(0, q.size.y * 0.5, 0)
 	return q
 
@@ -813,7 +814,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
-			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * (ROCK_SCALE if low.contains("roch") or low.contains("rock") else 1.0))
+			var rock := low.contains("roch") or low.contains("rock")
+			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * (ROCK_SCALE if rock else 1.0), ROCK_TALL if rock else 1.0)
 			mi.mesh = q
 			mi.material_override = _sprite_mat(ref, sp)
 			top = q.size.y
@@ -2486,6 +2488,9 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 	# (no extra lift: a probe hovers by itself)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
 		node.position = Vector3(e[3], e[5] - GAME_Z, e[4])
+	elif e[0] == 0 and not node.has_meta("mission"):
+		node.position = Vector3(e[3], e[5], e[4])        # decor made in play (a hit plant, rubble): the game's height
+		# (a rock left 0.13 above the map's ground there)
 	else:
 		node.position = Vector3(e[3], TNData.height_at(m, e[3], e[4]) + float(node.get_meta("lift", 0.0)), e[4])
 	if e[0] != 2:

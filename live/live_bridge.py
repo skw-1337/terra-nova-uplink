@@ -77,8 +77,9 @@ INFRA = 0x38A3FE if FR else 0x38A34E
 # tour ; une position qui n'est pas celle du joueur est celle d'une vue annexe : son entite (mot a +0x5A : equipier
 # ou sonde) dit laquelle, et donne le cap. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
 # (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
-#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap (f32)]
+#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap, tangage (f32)]
 VUEPT = 0x41EC18 if FR else 0x41EB68
+OEIL = 0x38FBCC if FR else 0x38FB1C    # hauteur de l'oeil ajoutee par le jeu (16.16)
 vues = {}                                 # panneau -> (temps, entite, x, y, z, cap)
 nuages_t = 0.0
 # soldats morts : leur corps eclate en morceaux d'armure (entites 6/33) ; une table par numero de soldat n garde leur
@@ -684,14 +685,16 @@ while True:
         vp = g.read(VUEPT, 0x68)
         vx, vy, vz = (v / 65536 for v in struct.unpack_from('<3i', vp, 0))
         if abs(vx - x) < 0.05 and abs(vy - y) < 0.05: continue
-        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A), regardant selon son cap
+        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A)
         if not 0 <= vi < NENT or not tab[0x25 * vi] or tab[0x25 * vi + 1] not in (1, 2, 3): continue
-        cap_v = struct.unpack_from('<H', tab, 0x25 * vi + 0x1B)[0] / 65536 * 2 * math.pi
-        cap_v += math.pi / 2                  # a cap force a 0, la vue du jeu regarde vers 80-90 deg (mesure) ; les autres
-                                              # caps ne collent pas encore (hauteur / position de la camera a revoir)
-        vues[3 if tab[0x25 * vi + 1] == 3 else 1] = (time.time(), vi, vx, vy, vz, cap_v)
+        # le jeu y ecrit lui-meme cap (+0xC) et tangage (+0x16, positif = vers le bas) de la vue (routine 0x275260 de
+        # l'exe anglais : cap de l'unite + reglage du panneau + visee), hauteur = z de l'unite + [0x38FB1C] + 0,1875
+        cap_v = struct.unpack_from('<H', vp, 0xC)[0] / 65536 * 2 * math.pi
+        tang_v = -struct.unpack_from('<h', vp, 0x16)[0] / 65536 * 2 * math.pi
+        vz += EYE - (d32(OEIL) / 65536 + 0.1875)  # meme oeil que la vue principale (EYE, ajuste sur le jeu)
+        vues[3 if tab[0x25 * vi + 1] == 3 else 1] = (time.time(), vi, vx, vy, vz, cap_v, tang_v)
     sv = [(k, v) for k, v in vues.items() if time.time() - v[0] < 0.4]
-    s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi4f', k, v[1], *v[2:]) for k, v in sv), ('127.0.0.1', 47821))
+    s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi5f', k, v[1], *v[2:]) for k, v in sv), ('127.0.0.1', 47821))
     cam = (x, y, z + EYE, head, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),

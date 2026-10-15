@@ -49,7 +49,7 @@ var ir_on := false
 # drawn here by Godot over the game's own small views. Panel -> its picture in the game's 320 x 400 screen (the
 # squadmate's name under it left out; the probe's icons above and its button bar below left to the game's HUD).
 const SUB_RECTS := {1: Rect2(17, 277, 82, 87), 3: Rect2(217, 272, 82, 81)}
-const SUB_FOV := 90.0             # horizontal, degrees
+const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
 var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
@@ -1632,8 +1632,7 @@ func _live_update() -> void:
 			if oldschool_rect != null:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
-			if OS.has_environment("TN_SUBVIEWS"):            # side views: in progress (the squadmate's camera does not
-				_sub_views(q)                                # face the game's direction yet), off unless asked
+			_sub_views(q)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
@@ -1792,8 +1791,8 @@ func _sub_views(q: PackedByteArray) -> void:
 		add_child(sub_layer)
 	var n := q[4]
 	for j in n:
-		var o := 5 + 21 * j
-		if o + 21 > q.size():
+		var o := 5 + 25 * j
+		if o + 25 > q.size():
 			break
 		var panel := q[o]
 		if not SUB_RECTS.has(panel):
@@ -1826,15 +1825,17 @@ func _sub_views(q: PackedByteArray) -> void:
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
 		tr.size = r.size * k
-		var px := Vector2i(maxi(16, roundi(tr.size.x)), maxi(16, roundi(tr.size.y)))
+		# rendered 1.2 x taller, then squeezed into the frame: the game's 3D library draws with a vertical scale of
+		# 0.833 (its pixel ratio, as the main view): same width of view, more of it up and down
+		var px := Vector2i(maxi(16, roundi(tr.size.x)), maxi(16, roundi(tr.size.y * 1.2)))
 		if (sv["vp"] as SubViewport).size != px:
 			(sv["vp"] as SubViewport).size = px
 		(tr.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		var idx := q.decode_s32(o + 1)
 		var cam: Camera3D = sv["cam"]
 		var h := q.decode_float(o + 17)
-		cam.position = Vector3(q.decode_float(o + 5), q.decode_float(o + 13) - SUB_EYE_DROP, q.decode_float(o + 9))
-		cam.rotation = Vector3(0.0, atan2(-cos(h), -sin(h)), 0.0)
+		cam.position = Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
+		cam.rotation = Vector3(q.decode_float(o + 21), atan2(-cos(h), -sin(h)), 0.0)
 		var node: Node3D = _live_node(idx)
 		if node != sv["node"]:
 			_sub_hide(sv["node"], false)
@@ -1849,9 +1850,6 @@ func _sub_views(q: PackedByteArray) -> void:
 		if not on and sv["node"] != null:
 			_sub_hide(sv["node"], false)
 			sv["node"] = null
-
-
-const SUB_EYE_DROP := 0.06        # the game's viewpoint is 0.38 above the entity, this viewer's eye 0.32 (as the main view)
 
 
 func _live_node(idx: int) -> Node3D:

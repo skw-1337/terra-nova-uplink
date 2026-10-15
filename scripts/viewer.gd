@@ -503,10 +503,14 @@ func _add_vegetation(m: Dictionary) -> int:
 		var mesh: Mesh = null
 		var mat: Material = null
 		var ref: Vector2i = objects.ref_for(key.x, key.y) if objects_ok else Vector2i.ZERO
+		if OS.has_environment("TN_DEBUG"):
+			print("vegetation %s ref %s %s x%d largeur %.3f" % [key, ref, data.type_name(key.x, key.y), groups[key].size(), objects.sprite_width(key.x, key.y)])
 		if TNObjects.is_sprite(ref):
 			var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 			if not sp.is_empty():
-				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y))
+				var low: String = data.type_name(key.x, key.y).to_lower()
+				var rock := low.contains("roch") or low.contains("rock")
+				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * (ROCK_SCALE if rock else 1.0))
 				mat = _sprite_mat(ref, sp)
 		elif TNObjects.is_model(ref):
 			var md: Dictionary = objects.model(ref, pal, pal_key)
@@ -537,6 +541,11 @@ func _add_vegetation(m: Dictionary) -> int:
 		mmi.visible = veg_on
 		world.add_child(mmi)
 	return n
+
+
+# Rocks are drawn twice their radius wide by the game (seen on a ridge: "width = radius" was measured on a tree, and
+# left the rocks half sunk behind the crest)
+const ROCK_SCALE := 2.0
 
 
 # Simple stand-in shapes, standing on their base, when the game data has no sprite / model.
@@ -804,7 +813,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
-			var q := _sprite_quad(sp, objects.sprite_width(cls, sub))
+			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * (ROCK_SCALE if low.contains("roch") or low.contains("rock") else 1.0))
 			mi.mesh = q
 			mi.material_override = _sprite_mat(ref, sp)
 			top = q.size.y

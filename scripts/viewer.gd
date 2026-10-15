@@ -101,6 +101,7 @@ var sky_haze := Color(0.7, 0.76, 0.84)
 # 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
 # off-centre like the game's, whose view centre (the crosshair) is 51 % down its 3D window
 const HUD_PORT := 47823
+const SUN_AZ_OFFSET := 315.0  # see _set_sky
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
 const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
@@ -1167,7 +1168,10 @@ func _set_sky(path: String, light: Vector2) -> void:
 		c.queue_free()
 	var sk: Dictionary = objects.load_sky(path, pal) if objects_ok and path != "" else {}
 	# the map's light direction (azimuth, elevation; game y axis = Godot z)
-	var to_light := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
+	# the game's azimuth 0 is not this viewer's +x: on the running game (MAP23, azimuth 0, height 45) the slopes it
+	# lights brightest face ~315 deg (heading convention), measured on a full turn against the game's terrain
+	var laz: float = light.x + deg_to_rad(SUN_AZ_OFFSET)
+	var to_light := Vector3(cos(light.y) * cos(laz), sin(light.y), cos(light.y) * sin(laz))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
 	if sk.is_empty():
 		var sm := ProceduralSkyMaterial.new()

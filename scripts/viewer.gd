@@ -2080,7 +2080,7 @@ func _live_fx(idx: int, e) -> void:
 			if now - int(anim_seen.get(idx, -100000)) > 400:   # one spot) around it, each its own fireball
 				var rng := RandomNumberGenerator.new()
 				rng.seed = idx * 7919 + now
-				_spawn_anim(pos0 + Vector3(rng.randf_range(-1.5, 1.5), rng.randf_range(0.0, 0.4), rng.randf_range(-1.5, 1.5)), FX_ANIMS[typ])
+				_spawn_anim(pos0 + Vector3(rng.randf_range(-1.2, 1.2), rng.randf_range(0.0, 0.3), rng.randf_range(-1.2, 1.2)), FX_ANIMS[typ])
 			anim_seen[idx] = now
 			return
 		if now - int(anim_seen.get(idx, -100000)) > 400 and not _anim_near(pos0, now):
@@ -2338,7 +2338,9 @@ var puff_seen := {}
 # second), matched on the running game: 23 = a tree blown up (a fireball as big as the tree, turning to brown
 # smoke, ~0.9 s); 20 = the orange-brown billows of a grenade or missile blast (several at one spot, about a walker's
 # body wide), with the grey puff of 6/25.
-const FX_ANIMS := {23: [1193, 0.012, 16.0], 20: [1177, 0.007, 12.0]}
+# 19 = a big red burst (a walker or a vehicle hit hard; ~0.5 unit wide at its height), 10 = the red spray of an impact
+# on a unit (its dots spreading ~0.35 unit), sizes read on the running game.
+const FX_ANIMS := {23: [1193, 0.012, 16.0], 20: [1177, 0.006, 12.0], 19: [1176, 0.003, 14.0], 10: [1168, 0.0017, 14.0]}
 var anims := []                  # [node, start msec, duration]
 var smoke_pending := []          # blasts (6/23) waiting to know whether a suit burst there: [position, msec]
 var anim_seen := {}

@@ -46,9 +46,10 @@ var oldschool_rect: ColorRect      # live mode, "old school": the game's pixels 
 var ir_rect: ColorRect            # live mode: the game's infrared view (its orange ramp), under the HUD
 var ir_on := false
 # The HUD's side views (live mode): the selected squadmate's camera (bottom left, button VUE) and the probe's (right),
-# drawn here by Godot over the game's own small views (panels 1 = squadmate, 3 = probe).
-const SUB_RECTS := {1: true, 3: true}
+# drawn here by Godot over the game's own small views (panels 1 = squadmate, 2 = target camera, 3 = probe).
+const SUB_RECTS := {1: true, 2: true, 3: true}
 const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels
+const PROBE_TILT := 0.3
 const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
@@ -1809,8 +1810,8 @@ func _sub_views(q: PackedByteArray) -> void:
 		add_child(sub_layer)
 	var n := q[4]
 	for j in n:
-		var o := 5 + 33 * j
-		if o + 33 > q.size():
+		var o := 5 + 37 * j
+		if o + 37 > q.size():
 			break
 		var panel := q[o]
 		if not SUB_RECTS.has(panel):
@@ -1842,11 +1843,11 @@ func _sub_views(q: PackedByteArray) -> void:
 		# its frame in the cockpit (sent by the bridge: they move from one suit to another), less the name under the
 		# squadmate's picture and the button bar under the probe's (measured on two cockpits); the probe's compass
 		# labels are let through by the shader
-		var x0 := q.decode_s16(o + 25)
-		var y0 := q.decode_s16(o + 27)
-		var x1 := q.decode_s16(o + 29)
-		var y1 := q.decode_s16(o + 31)
-		var r := Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17) if panel == 1 else Rect2(x0, y0, x1 - x0, y1 - y0 - 16)
+		var x0 := q.decode_s16(o + 29)
+		var y0 := q.decode_s16(o + 31)
+		var x1 := q.decode_s16(o + 33)
+		var y1 := q.decode_s16(o + 35)
+		var r := Rect2(x0, y0, x1 - x0, y1 - y0 - 16) if panel == 3 else Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17)
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
 		tr.size = r.size * k
@@ -1858,7 +1859,11 @@ func _sub_views(q: PackedByteArray) -> void:
 		(tr.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		(tr.material as ShaderMaterial).set_shader_parameter("hud", hud_tex)
 		(tr.material as ShaderMaterial).set_shader_parameter("frame", Vector4(r.position.x, r.position.y, r.size.x, r.size.y))
-		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel == 3 else 0.0)
+		# the game's labels over its small view: the probe's compass (lavender, dark blue outline), the target camera's
+		# name (red)
+		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel == 3 else (18.0 if panel == 2 else 0.0))
+		(tr.material as ShaderMaterial).set_shader_parameter("label_a", 47.0 if panel == 3 else 68.0)
+		(tr.material as ShaderMaterial).set_shader_parameter("label_b", 59.0 if panel == 3 else 68.0)
 		var old := oldschool_rect != null and oldschool_rect.visible    # F12: the side views follow the main view
 		(tr.material as ShaderMaterial).set_shader_parameter("old", old)
 		if old:
@@ -1866,12 +1871,15 @@ func _sub_views(q: PackedByteArray) -> void:
 					(oldschool_rect.material as ShaderMaterial).get_shader_parameter("pal_tex"))
 		var idx := q.decode_s32(o + 1)
 		var cam: Camera3D = sv["cam"]
-		cam.fov = SUB_FOV_PROBE if panel == 3 else SUB_FOV
+		# the panel camera's zoom (the target camera: its distance to the target, 1 to 16), as the main view's
+		var zoom: float = maxf(0.2, q.decode_float(o + 25))
+		cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(SUB_FOV_PROBE if panel == 3 else SUB_FOV) / 2.0) / zoom))
 		var h := q.decode_float(o + 17)
 		cam.position = Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
-		# the probe's view stays level (its pitch in the viewpoint, ~11 deg down, put its horizon well above the game's;
-		# level, the ridge sits within a few pixels)
-		var tilt := 0.0 if panel == 3 else q.decode_float(o + 21)
+		# the probe's pitch in the viewpoint (~11 deg down) is drawn much flatter by the game: a third of it puts the
+		# ridge where the game has it (measured with an undamaged suit: damage scrambles the game's own views); the
+		# squadmate's and the target camera's are drawn as given
+		var tilt := q.decode_float(o + 21) * (PROBE_TILT if panel == 3 else 1.0)
 		cam.rotation = Vector3(tilt, atan2(-cos(h), -sin(h)), 0.0)
 		var node: Node3D = _live_node(idx)
 		if node != sv["node"]:

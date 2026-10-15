@@ -5,11 +5,13 @@ shader_type canvas_item;
 uniform bool ir = false;
 // the game's HUD (palette index in red, as sent by the bridge) and this view's frame in its 320 x 400 screen: where
 // the game draws over its small view this view lets the HUD through: a tooltip (black, index 0, with green letters
-// next to it) and, in the top label_rows rows, the probe's compass labels (indices 47 and 59: lavender letters,
-// dark blue outline)
+// next to it) and, in the top label_rows rows, the game's labels (indices label_a / label_b: the probe's compass,
+// lavender letters with a dark blue outline; the target camera's red name)
 uniform sampler2D hud : filter_nearest;
 uniform vec4 frame = vec4(0.0, 0.0, 320.0, 400.0);
 uniform float label_rows = 0.0;
+uniform float label_a = 47.0;
+uniform float label_b = 59.0;
 // old school (F12): the game's pixel grid of this small view (one cell per pixel of its 320 x 400 screen) and the
 // planet's palette
 uniform bool old = false;
@@ -63,7 +65,7 @@ void fragment() {
 	}
 	if (p.y < frame.y + label_rows) {
 		float k = idx(p);
-		if (k == 47.0 || k == 59.0) {
+		if (k == label_a || k == label_b) {
 			discard;
 		}
 	}

@@ -76,8 +76,11 @@ INFRA = 0x38A3FE if FR else 0x38A34E
 # qui ne tient leur position que le temps de leur dessin (le reste du temps : celle du joueur). Lu en rafale a chaque
 # tour ; son entite (mot a +0x5A : equipier ou sonde ; le joueur = la vue principale) dit laquelle. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
 # (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
-#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap, tangage (f32), cadre x0, y0, x1, y1 (i16)]
+#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 2 cible, 3 sonde), entite (i32), x, y, z, cap, tangage, zoom (f32),
+#   cadre x0, y0, x1, y1 (i16)]
 VUEPT = 0x41EC18 if FR else 0x41EB68
+MODES = 0x38FCC2 if FR else 0x38FC12     # mode des panneaux du cockpit (octet, pas de 32) : 4 VUE, 0x15 camera de cible
+CAMS = 0x3900C0 if FR else 0x390010      # cameras des panneaux (pas de 0xBA) : zoom 16.16 en tete
 REGIONS = 0x389EA8 if FR else 0x389DF8   # table des cadres des panneaux du cockpit en cours (pointeurs ; x0, y0, x1, y1 a +8)
 
 
@@ -695,20 +698,28 @@ while True:
     for _ in range(24):                   # vues annexes : leur point de vue, pris pendant leur dessin
         vp = g.read(VUEPT, 0x68)
         vx, vy, vz = (v / 65536 for v in struct.unpack_from('<3i', vp, 0))
-        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A) : celle du joueur = la vue
-        if vi == pid: continue                # principale (tester la position la confondait avec une vue annexe quand
-                                              # le joueur avancait, Z ; et ecartait une sonde posee a cote de lui)
+        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A)
+        # celle du joueur : la camera de cible du panneau du bas a gauche (mode 0x15 : bouton viseur, une cible
+        # verrouillee ; du joueur vers la cible, zoom = distance bornee a 1-16), sinon rien (tester la position la
+        # confondait avec une vue annexe quand le joueur avancait, Z ; et ecartait une sonde posee a cote de lui)
+        cible = vi == pid
+        if cible and g.read(MODES, 1)[0] != 0x15: continue
+        if cible and abs(vz - (z + d32(OEIL) / 65536 + 0.1875)) > 0.03: continue   # (une autre ecriture du joueur, a son
+                                              # cap et 0,4 au-dessus de lui, se glisse entre : pas la camera de cible)
         if not 0 <= vi < NENT or not tab[0x25 * vi] or tab[0x25 * vi + 1] not in (1, 2, 3): continue
         # le jeu y ecrit lui-meme cap (+0xC) et tangage (+0x16, positif = vers le bas) de la vue (routine 0x275260 de
         # l'exe anglais : cap de l'unite + reglage du panneau + visee), hauteur = z de l'unite + [0x38FB1C] + 0,1875
         cap_v = struct.unpack_from('<H', vp, 0xC)[0] / 65536 * 2 * math.pi
         tang_v = -struct.unpack_from('<h', vp, 0x16)[0] / 65536 * 2 * math.pi
         vz += EYE - (d32(OEIL) / 65536 + 0.1875)  # meme oeil que la vue principale (EYE, ajuste sur le jeu)
-        vues[3 if tab[0x25 * vi + 1] == 3 else 1] = (time.time(), vi, vx, vy, vz, cap_v, tang_v)
+        panneau = 2 if cible else (3 if tab[0x25 * vi + 1] == 3 else 1)
+        zoom = d32(CAMS + (0xBA * 2 if panneau == 3 else 0)) / 65536
+        if not 0.2 < zoom < 20: zoom = 1.0
+        vues[panneau] = (time.time(), vi, vx, vy, vz, cap_v, tang_v, zoom)
     sv = [(k, v) for k, v in vues.items() if time.time() - v[0] < 0.4]
     cd = cadres() if sv else []
     if cd:                                    # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
-        s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi5f4h', k, v[1], *v[2:], *(cd[0] if k == 1 else cd[-1]))
+        s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *(cd[-1] if k == 3 else cd[0]))
                  for k, v in sv), ('127.0.0.1', 47821))
     elif not sv:
         s.sendto(b'SUBV' + bytes([0]), ('127.0.0.1', 47821))

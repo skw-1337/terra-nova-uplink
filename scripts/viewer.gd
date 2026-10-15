@@ -48,6 +48,7 @@ var ir_on := false
 # The HUD's side views (live mode): the selected squadmate's camera (bottom left, button VUE) and the probe's (right),
 # drawn here by Godot over the game's own small views (panels 1 = squadmate, 3 = probe).
 const SUB_RECTS := {1: true, 3: true}
+const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels
 const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
@@ -1839,12 +1840,13 @@ func _sub_views(q: PackedByteArray) -> void:
 			sv = {"vp": vp, "cam": cam, "rect": tr, "seen": 0, "node": null}
 			sub_views[panel] = sv
 		# its frame in the cockpit (sent by the bridge: they move from one suit to another), less the name under the
-		# squadmate's picture and the probe's icons above / buttons below (measured on two cockpits)
+		# squadmate's picture and the button bar under the probe's (measured on two cockpits); the probe's compass
+		# labels are let through by the shader
 		var x0 := q.decode_s16(o + 25)
 		var y0 := q.decode_s16(o + 27)
 		var x1 := q.decode_s16(o + 29)
 		var y1 := q.decode_s16(o + 31)
-		var r := Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17) if panel == 1 else Rect2(x0, y0 + 8, x1 - x0, y1 - y0 - 23)
+		var r := Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17) if panel == 1 else Rect2(x0, y0, x1 - x0, y1 - y0 - 16)
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
 		tr.size = r.size * k
@@ -1856,11 +1858,21 @@ func _sub_views(q: PackedByteArray) -> void:
 		(tr.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		(tr.material as ShaderMaterial).set_shader_parameter("hud", hud_tex)
 		(tr.material as ShaderMaterial).set_shader_parameter("frame", Vector4(r.position.x, r.position.y, r.size.x, r.size.y))
+		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel == 3 else 0.0)
+		var old := oldschool_rect != null and oldschool_rect.visible    # F12: the side views follow the main view
+		(tr.material as ShaderMaterial).set_shader_parameter("old", old)
+		if old:
+			(tr.material as ShaderMaterial).set_shader_parameter("pal_tex",
+					(oldschool_rect.material as ShaderMaterial).get_shader_parameter("pal_tex"))
 		var idx := q.decode_s32(o + 1)
 		var cam: Camera3D = sv["cam"]
+		cam.fov = SUB_FOV_PROBE if panel == 3 else SUB_FOV
 		var h := q.decode_float(o + 17)
 		cam.position = Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
-		cam.rotation = Vector3(q.decode_float(o + 21), atan2(-cos(h), -sin(h)), 0.0)
+		# the probe's view stays level (its pitch in the viewpoint, ~11 deg down, put its horizon well above the game's;
+		# level, the ridge sits within a few pixels)
+		var tilt := 0.0 if panel == 3 else q.decode_float(o + 21)
+		cam.rotation = Vector3(tilt, atan2(-cos(h), -sin(h)), 0.0)
 		var node: Node3D = _live_node(idx)
 		if node != sv["node"]:
 			_sub_hide(sv["node"], false)

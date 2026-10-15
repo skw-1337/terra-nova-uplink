@@ -74,8 +74,7 @@ INFRA = 0x38A3FE if FR else 0x38A34E
 # vues annexes du HUD (camera du soldat selectionne en bas a gauche : bouton VUE ; camera de la sonde a droite) : le
 # jeu les dessine avec le point de vue partage de ses vues secondaires (0x41EB68 dans l'exe anglais, x, y, z 16.16),
 # qui ne tient leur position que le temps de leur dessin (le reste du temps : celle du joueur). Lu en rafale a chaque
-# tour ; une position qui n'est pas celle du joueur est celle d'une vue annexe : son entite (mot a +0x5A : equipier
-# ou sonde) dit laquelle, et donne le cap. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
+# tour ; son entite (mot a +0x5A : equipier ou sonde ; le joueur = la vue principale) dit laquelle. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
 # (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
 #   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap, tangage (f32), cadre x0, y0, x1, y1 (i16)]
 VUEPT = 0x41EC18 if FR else 0x41EB68
@@ -696,8 +695,9 @@ while True:
     for _ in range(24):                   # vues annexes : leur point de vue, pris pendant leur dessin
         vp = g.read(VUEPT, 0x68)
         vx, vy, vz = (v / 65536 for v in struct.unpack_from('<3i', vp, 0))
-        if abs(vx - x) < 0.05 and abs(vy - y) < 0.05: continue
-        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A)
+        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A) : celle du joueur = la vue
+        if vi == pid: continue                # principale (tester la position la confondait avec une vue annexe quand
+                                              # le joueur avancait, Z ; et ecartait une sonde posee a cote de lui)
         if not 0 <= vi < NENT or not tab[0x25 * vi] or tab[0x25 * vi + 1] not in (1, 2, 3): continue
         # le jeu y ecrit lui-meme cap (+0xC) et tangage (+0x16, positif = vers le bas) de la vue (routine 0x275260 de
         # l'exe anglais : cap de l'unite + reglage du panneau + visee), hauteur = z de l'unite + [0x38FB1C] + 0,1875

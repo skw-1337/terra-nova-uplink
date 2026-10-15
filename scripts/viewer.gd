@@ -1783,6 +1783,9 @@ func _live_units(pk: PackedByteArray) -> void:
 			node = live_nodes[idx - live_off]
 		if node != null and node.visible and node.has_meta("soldier"):
 			_pose_soldier(node, joints[idx])
+			if not node.has_meta("corpse"):
+				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits
+				# ~0.06 above the game's, seen up close)
 		elif node != null and node.visible and node.has_meta("mech"):
 			_pose_mech(node, joints[idx])
 			node.position.y = feet[idx]              # on its feet: the walker's entity is 0.23 to 0.39 above them

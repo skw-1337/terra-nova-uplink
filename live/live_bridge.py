@@ -77,8 +77,20 @@ INFRA = 0x38A3FE if FR else 0x38A34E
 # tour ; une position qui n'est pas celle du joueur est celle d'une vue annexe : son entite (mot a +0x5A : equipier
 # ou sonde) dit laquelle, et donne le cap. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
 # (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
-#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap, tangage (f32)]
+#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap, tangage (f32), cadre x0, y0, x1, y1 (i16)]
 VUEPT = 0x41EC18 if FR else 0x41EB68
+REGIONS = 0x389EA8 if FR else 0x389DF8   # table des cadres des panneaux du cockpit en cours (pointeurs ; x0, y0, x1, y1 a +8)
+
+
+def cadres():
+    """cadres des panneaux du bas (y0 > 200) du cockpit en cours, de gauche a droite (ils changent d'une armure a l'autre)"""
+    out = []
+    for k in range(8):
+        p = struct.unpack('<I', g.read(REGIONS + 4 * k, 4))[0]
+        if not 0x380000 <= p < 0x3A0000: continue
+        r = struct.unpack('<4h', g.read(p + 8, 8))
+        if r[1] > 200 and 40 < r[2] - r[0] < 120: out.append(r)
+    return sorted(out)
 OEIL = 0x38FBCC if FR else 0x38FB1C    # hauteur de l'oeil ajoutee par le jeu (16.16)
 vues = {}                                 # panneau -> (temps, entite, x, y, z, cap)
 nuages_t = 0.0
@@ -694,7 +706,12 @@ while True:
         vz += EYE - (d32(OEIL) / 65536 + 0.1875)  # meme oeil que la vue principale (EYE, ajuste sur le jeu)
         vues[3 if tab[0x25 * vi + 1] == 3 else 1] = (time.time(), vi, vx, vy, vz, cap_v, tang_v)
     sv = [(k, v) for k, v in vues.items() if time.time() - v[0] < 0.4]
-    s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi5f', k, v[1], *v[2:]) for k, v in sv), ('127.0.0.1', 47821))
+    cd = cadres() if sv else []
+    if cd:                                    # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
+        s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi5f4h', k, v[1], *v[2:], *(cd[0] if k == 1 else cd[-1]))
+                 for k, v in sv), ('127.0.0.1', 47821))
+    elif not sv:
+        s.sendto(b'SUBV' + bytes([0]), ('127.0.0.1', 47821))
     cam = (x, y, z + EYE, head, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),

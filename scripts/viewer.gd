@@ -46,9 +46,8 @@ var oldschool_rect: ColorRect      # live mode, "old school": the game's pixels 
 var ir_rect: ColorRect            # live mode: the game's infrared view (its orange ramp), under the HUD
 var ir_on := false
 # The HUD's side views (live mode): the selected squadmate's camera (bottom left, button VUE) and the probe's (right),
-# drawn here by Godot over the game's own small views. Panel -> its picture in the game's 320 x 400 screen (the
-# squadmate's name under it left out; the probe's icons above and its button bar below left to the game's HUD).
-const SUB_RECTS := {1: Rect2(17, 277, 82, 87), 3: Rect2(217, 272, 82, 81)}
+# drawn here by Godot over the game's own small views (panels 1 = squadmate, 3 = probe).
+const SUB_RECTS := {1: true, 3: true}
 const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
@@ -1805,8 +1804,8 @@ func _sub_views(q: PackedByteArray) -> void:
 		add_child(sub_layer)
 	var n := q[4]
 	for j in n:
-		var o := 5 + 25 * j
-		if o + 25 > q.size():
+		var o := 5 + 33 * j
+		if o + 33 > q.size():
 			break
 		var panel := q[o]
 		if not SUB_RECTS.has(panel):
@@ -1835,7 +1834,13 @@ func _sub_views(q: PackedByteArray) -> void:
 			sub_layer.add_child(tr)
 			sv = {"vp": vp, "cam": cam, "rect": tr, "seen": 0, "node": null}
 			sub_views[panel] = sv
-		var r: Rect2 = SUB_RECTS[panel]
+		# its frame in the cockpit (sent by the bridge: they move from one suit to another), less the name under the
+		# squadmate's picture and the probe's icons above / buttons below (measured on two cockpits)
+		var x0 := q.decode_s16(o + 25)
+		var y0 := q.decode_s16(o + 27)
+		var x1 := q.decode_s16(o + 29)
+		var y1 := q.decode_s16(o + 31)
+		var r := Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17) if panel == 1 else Rect2(x0, y0 + 8, x1 - x0, y1 - y0 - 23)
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
 		tr.size = r.size * k

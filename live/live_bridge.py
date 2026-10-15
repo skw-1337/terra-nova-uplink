@@ -236,6 +236,14 @@ def send_hud():
         same = np.zeros_like(win, bool)
         same[:, ok] = win[:, ok] == hd[:, idx[ok]]
         if same.mean() < 0.7: return False       # images qui ne correspondent pas : on garde le HUD precedent
+        # une ligne entiere de la 3D qui differe alors que ses voisines correspondent : l'ecran du jeu et l'image HD lus
+        # a un instant d'ecart pour cette ligne (vu au lancement de la sonde, en combat), pas un element du HUD (aucun
+        # ne traverse la fenetre) ; opaque, elle montrait une rangee de gros pixels du jeu en travers de la vue
+        if fh > 6:
+            ligne = same[:, fw // 6:5 * fw // 6].mean(1)
+            seule = np.zeros(fh, bool)
+            seule[2:-2] = (ligne[2:-2] < 0.2) & (ligne[:-4] > 0.8) & (ligne[4:] > 0.8) & (ligne[1:-3] > 0.8) |                           (ligne[2:-2] < 0.2) & (ligne[:-4] > 0.8) & (ligne[4:] > 0.8) & (ligne[3:-1] > 0.8)
+            same[seule] = True
         # un pixel du cadre du cockpit tombe parfois par hasard sur la couleur de la 3D derriere lui : transparent une
         # image, il faisait des trous qui scintillent sur les bords du cadre. Transparent seulement apres 3 images de
         # suite egales a la 3D ; un element du HUD qui apparait (lock, reticule) reste opaque des la premiere.

@@ -1,5 +1,5 @@
 // Water: the planet's sky (the game's cloud texture, as in sky.gdshader) mirrored on small moving ripples, more
-// of it at grazing angles (Fresnel), over a deep blue; unlit like the sky it reflects.
+// of it at grazing angles (Fresnel), over a deep blue, a grey teal far off; unlit like the sky it reflects.
 shader_type spatial;
 render_mode unshaded, cull_disabled, depth_draw_opaque;
 
@@ -8,6 +8,7 @@ uniform bool has_clouds = true;
 uniform vec3 haze : source_color = vec3(0.7, 0.76, 0.84);
 uniform float cloud_scale = 0.22;
 uniform vec3 deep : source_color = vec3(0.08, 0.2, 0.4);
+uniform vec3 far_tint : source_color = vec3(0.29, 0.38, 0.35);
 
 varying vec3 wpos;
 
@@ -32,7 +33,11 @@ void fragment() {
 	}
 	float cosv = clamp(dot(-v, n), 0.0, 1.0);
 	float fres = 0.08 + 0.92 * pow(1.0 - cosv, 4.0);
-	float k = clamp(0.15 + 0.7 * fres, 0.0, 0.8);   // a hint of sky, more at grazing angles
-	ALBEDO = mix(deep, sky, k);
+	float k = clamp(0.15 + 0.3 * fres, 0.0, 0.42);  // a hint of sky, a little more at grazing angles
+	vec3 col = mix(deep, sky, k);
+	// the game reflects the sky only near the eye (~3.5 units): beyond, a flat grey teal (measured on the running game:
+	// ~(75, 100, 94), a sharp change)
+	float far_k = smoothstep(2.5, 4.0, length(wpos - CAMERA_POSITION_WORLD));
+	ALBEDO = mix(col, far_tint, far_k);
 	ALPHA = mix(0.82, 0.96, fres);
 }

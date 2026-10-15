@@ -17,6 +17,7 @@ uniform bool has_clouds = false;
 uniform vec3 haze : source_color = vec3(0.7, 0.76, 0.84);
 uniform float cloud_scale = 0.22;
 uniform float reflect_gain = 1.0;
+const vec3 WATER_FAR = vec3(0.14, 0.25, 0.21);    // the game's far water (before this viewer's light)
 const float GRAIN = 0.55;
 // relief: the hollows of the height map darker, its crests lighter (one texel per grid vertex, 0.5 = unchanged),
 // and the tile's own picture as a bump map (its light parts stand out, lit by the sun)
@@ -114,8 +115,12 @@ void fragment() {
 			sky = mix(haze, texture(clouds, r.xz / max(r.y, 0.05) * cloud_scale).rgb, smoothstep(0.0, 0.28, r.y));
 		}
 		float fres = 0.08 + 0.92 * pow(1.0 - clamp(dot(-v, n), 0.0, 1.0), 4.0);
-		float k = clamp(0.12 + 0.7 * fres, 0.0, 0.75);   // a hint of sky, more at grazing angles
-		ALBEDO *= 1.0 - k;
+		float k = clamp(0.12 + 0.35 * fres, 0.0, 0.45);  // a hint of sky, a little more at grazing angles
+		// the game reflects the sky only near the eye (~3.5 units): beyond, its water is a flat
+		// grey teal (measured on the running game: ~(75, 100, 94) from ~3.5 units on, a sharp change)
+		float far_k = smoothstep(2.5, 4.0, length(wpos - CAMERA_POSITION_WORLD));
+		k *= 1.0 - far_k;
+		ALBEDO = mix(ALBEDO * (1.0 - k), WATER_FAR, far_k);
 		EMISSION = sky * k * reflect_gain;
 	}
 }

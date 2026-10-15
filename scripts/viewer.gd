@@ -440,7 +440,8 @@ func _load(index: int) -> void:
 		pm.size = Vector2(1024, 1024)
 		plane.mesh = pm
 		plane.material_override = mats["water"]
-		plane.position = Vector3(256, wl + 0.12, 256)
+		plane.position = Vector3(256, wl - 0.05, 256)     # under the water tiles: 0.12 above them it rose up the
+		# river banks, wider than the game's river (its tiles, with their own far colour, are the game's water)
 		world.add_child(plane)
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
 	pal_key = m["planet"]
@@ -1188,7 +1189,11 @@ func _set_sky(path: String, light: Vector2) -> void:
 	for sm in ground_mats + [mats["water"]]:
 		_sky_to(sm)
 	var sprites: Array = sk["items"].duplicate()
-	if sk.get("moon") != null:
+	if sk["clouds"] != null:
+		sprites.clear()                                 # under a cloud ceiling the game shows none of them: no sun,
+		# moon or little clouds on a full turn of the running game (they are beyond its opaque ceiling); only the
+		# skies without clouds (space) show them
+	elif sk.get("moon") != null:
 		var moon: Dictionary = sk["moon"].duplicate()
 		moon["az"] = light.x
 		moon["el"] = light.y
@@ -1990,7 +1995,8 @@ func _live_vegetation(game_map: PackedByteArray) -> void:
 # in memory, read by the bridge), and draws burnt debris lying there: the game's burnt picture (RESTNOBJ 1161 frame
 # 9) as a decal on the ground, turned at random. Packet: count, then vertex indices (y * 513 + x, game y = Godot z).
 const SCORCH_REF := Vector2i(1161, 9)
-const SCORCH_WIDTH := 1.3
+const SCORCH_WIDTH := 1.6
+const SCORCH_TINT := Color(0.22, 0.17, 0.14)
 
 
 func _live_scorch(pk: PackedByteArray) -> void:
@@ -2017,6 +2023,8 @@ func _live_scorch(pk: PackedByteArray) -> void:
 		var dc := Decal.new()
 		dc.texture_albedo = sp["texture"]
 		dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH * float(sp["aspect"]))
+		dc.modulate = SCORCH_TINT                     # the game's burnt ground is near black (its sprite's colours
+		# alone left a faint reddish speck where a grenade leaves a black patch ~1.5 units wide)
 		dc.position = Vector3(x, TNData.height_at(m, x, y) + 0.3, y)
 		dc.rotation.y = float((v * 2654435761) % 6283) / 1000.0
 		dc.cull_mask = 1

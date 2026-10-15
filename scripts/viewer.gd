@@ -8,6 +8,7 @@ const GROUND = preload("res://terrain.gdshader")
 const LIMB = preload("res://limb.gdshader")
 const OLDSCHOOL = preload("res://oldschool.gdshader")
 const INFRARED = preload("res://infrared.gdshader")
+const SUBVIEW = preload("res://subview.gdshader")
 const SMOKE = preload("res://smoke.gdshader")
 const PUFF = preload("res://puff.gdshader")
 const ANIM = preload("res://anim.gdshader")
@@ -44,6 +45,15 @@ var ui: CanvasLayer
 var oldschool_rect: ColorRect      # live mode, "old school": the game's pixels and palette over the 3D view (F12)
 var ir_rect: ColorRect            # live mode: the game's infrared view (its orange ramp), under the HUD
 var ir_on := false
+# The HUD's side views (live mode): the selected squadmate's camera (bottom left, button VUE) and the probe's (right),
+# drawn here by Godot over the game's own small views. Panel -> its picture in the game's 320 x 400 screen (the
+# squadmate's name under it left out; the probe's icons above and its button bar below left to the game's HUD).
+const SUB_RECTS := {1: Rect2(17, 277, 82, 87), 3: Rect2(217, 272, 82, 81)}
+const SUB_FOV := 90.0             # horizontal, degrees
+const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
+const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
+var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
+var sub_layer: CanvasLayer
 var oldschool_key := ""
 var panel: PanelContainer
 var list: ItemList
@@ -293,6 +303,7 @@ func _build_scene() -> void:
 	sky_root = Node3D.new()
 	add_child(sky_root)
 	camera = Camera3D.new()
+	camera.cull_mask = 0xFFFFF & ~PLAYER_LAYER       # the player's body: only in the HUD's side views
 	camera.far = 3000.0
 	camera.fov = 70.0
 	add_child(camera)
@@ -1615,6 +1626,9 @@ func _live_update() -> void:
 				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
 			if oldschool_rect != null:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
+		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
+			if OS.has_environment("TN_SUBVIEWS"):            # side views: in progress (the squadmate's camera does not
+				_sub_views(q)                                # face the game's direction yet), off unless asked
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
@@ -1729,7 +1743,7 @@ func _live_units(pk: PackedByteArray) -> void:
 			continue
 		var k: int = idx - live_off
 		var mine: bool = live_off >= 0 and k >= 0 and k < mis.size() and e[0] == mis[k]["cls"] and e[1] == mis[k]["sub"]
-		if idx == player or mine or e[0] > 4:
+		if mine or e[0] > 4:
 			continue                                    # units, vehicles, probes, buildings set up in play (turrets),
 		# and decor: when a tree or bush is hit, the game empties its vegetation cell and makes every plant of the
 		# cell a decor entity, intact (drawn like the plant); a destroyed one leaves the table, its ground burnt
@@ -1744,6 +1758,8 @@ func _live_units(pk: PackedByteArray) -> void:
 		if not live_extra.has(idx) and e[2] != 0:
 			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0)
 			live_extra[idx].set_meta("ct", ct)
+			if idx == player:
+				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
 		if live_extra.has(idx):
 			_live_place(live_extra[idx], e, m)
 	for idx in joints:                                 # soldiers the game draws: its own animation
@@ -1756,6 +1772,102 @@ func _live_units(pk: PackedByteArray) -> void:
 			_pose_mech(node, joints[idx])
 			node.position.y = feet[idx]              # on its feet: the walker's entity is 0.23 to 0.39 above them
 			# as it walks (a suit's: 0.15), so GAME_Z left it floating
+
+
+# The HUD's side views: each one a small viewport sharing the world, its camera where the game puts it (the unit's
+# position, from the shared viewpoint the game draws them with) facing the unit's heading, laid over the game's own
+# small view in the HUD. Hidden when the bridge stops seeing it (button off, probe recalled) or on the game's screens.
+func _sub_views(q: PackedByteArray) -> void:
+	var now := Time.get_ticks_msec()
+	var vs := get_viewport().get_visible_rect().size
+	var k := vs / Vector2(320, 400)
+	if sub_layer == null:
+		sub_layer = CanvasLayer.new()
+		sub_layer.layer = 2                          # over the HUD, under the game's screens
+		add_child(sub_layer)
+	var n := q[4]
+	for j in n:
+		var o := 5 + 21 * j
+		if o + 21 > q.size():
+			break
+		var panel := q[o]
+		if not SUB_RECTS.has(panel):
+			continue
+		var sv: Dictionary = sub_views.get(panel, {})
+		if sv.is_empty():
+			var vp := SubViewport.new()
+			vp.world_3d = get_viewport().world_3d
+			vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+			var cam := Camera3D.new()
+			cam.keep_aspect = Camera3D.KEEP_WIDTH
+			cam.fov = SUB_FOV
+			cam.near = 0.05
+			cam.far = camera.far
+			cam.cull_mask = 0xFFFFF & ~SUB_HIDE_LAYER
+			vp.add_child(cam)
+			add_child(vp)
+			var tr := TextureRect.new()
+			tr.texture = vp.get_texture()
+			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tr.stretch_mode = TextureRect.STRETCH_SCALE
+			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var sm := ShaderMaterial.new()
+			sm.shader = SUBVIEW
+			tr.material = sm
+			sub_layer.add_child(tr)
+			sv = {"vp": vp, "cam": cam, "rect": tr, "seen": 0, "node": null}
+			sub_views[panel] = sv
+		var r: Rect2 = SUB_RECTS[panel]
+		var tr: TextureRect = sv["rect"]
+		tr.position = r.position * k
+		tr.size = r.size * k
+		var px := Vector2i(maxi(16, roundi(tr.size.x)), maxi(16, roundi(tr.size.y)))
+		if (sv["vp"] as SubViewport).size != px:
+			(sv["vp"] as SubViewport).size = px
+		(tr.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
+		var idx := q.decode_s32(o + 1)
+		var cam: Camera3D = sv["cam"]
+		var h := q.decode_float(o + 17)
+		cam.position = Vector3(q.decode_float(o + 5), q.decode_float(o + 13) - SUB_EYE_DROP, q.decode_float(o + 9))
+		cam.rotation = Vector3(0.0, atan2(-cos(h), -sin(h)), 0.0)
+		var node: Node3D = _live_node(idx)
+		if node != sv["node"]:
+			_sub_hide(sv["node"], false)
+			_sub_hide(node, true)
+			sv["node"] = node
+		sv["seen"] = now
+	for panel in sub_views:
+		var sv: Dictionary = sub_views[panel]
+		var on: bool = now - int(sv["seen"]) < 500 and not menu_mode
+		(sv["rect"] as TextureRect).visible = on
+		(sv["vp"] as SubViewport).render_target_update_mode = SubViewport.UPDATE_ALWAYS if on else SubViewport.UPDATE_DISABLED
+		if not on and sv["node"] != null:
+			_sub_hide(sv["node"], false)
+			sv["node"] = null
+
+
+const SUB_EYE_DROP := 0.06        # the game's viewpoint is 0.38 above the entity, this viewer's eye 0.32 (as the main view)
+
+
+func _live_node(idx: int) -> Node3D:
+	if live_extra.has(idx):
+		return live_extra[idx]
+	if live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
+		return live_nodes[idx - live_off]
+	return null
+
+
+func _sub_hide(node: Node3D, hide: bool, layer: int = SUB_HIDE_LAYER) -> void:
+	if node == null or not is_instance_valid(node) or (node.has_meta("player_body") and layer != PLAYER_LAYER):
+		return
+	if layer == PLAYER_LAYER:
+		node.set_meta("player_body", true)
+	var stack: Array = [node]
+	while not stack.is_empty():
+		var nd = stack.pop_back()
+		if nd is VisualInstance3D:
+			(nd as VisualInstance3D).layers = layer if hide else 1
+		stack.append_array(nd.get_children())
 
 
 # A burst suit (6/33): one entity, drawn by the game as a pile of the suit's armour pieces (its limb sprites: torso,

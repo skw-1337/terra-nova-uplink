@@ -68,9 +68,18 @@ brule_prev, brule_t, brule_sent = None, 0.0, 0.0
 # nuages : decalage de la texture du ciel (texels 16.16, u puis v), qui avance avec le vent ; la position du joueur
 # s'y ajoute a l'affichage (plafond a 44 unites au-dessus de l'oeil, 1 texel par unite)
 NUAGES = 0x427E6C if FR else 0x427DBC
-# vue infrarouge du jeu (touche I) : 1 = IR (0x45F588 dans l'exe francais ; anglais suppose a -0xB0 comme le reste
-# de ces donnees, pas verifie)
-INFRA = 0x45F588 if FR else 0x45F4D8
+# vue infrarouge du jeu (touche I) : 1 = IR (0x38A3FE dans l'exe francais, retrouve sur l'image ; anglais suppose a
+# -0xB0 comme la camera principale voisine, pas verifie)
+INFRA = 0x38A3FE if FR else 0x38A34E
+# vues annexes du HUD (camera du soldat selectionne en bas a gauche : bouton VUE ; camera de la sonde a droite) : le
+# jeu les dessine avec le point de vue partage de ses vues secondaires (0x41EB68 dans l'exe anglais, x, y, z 16.16),
+# qui ne tient leur position que le temps de leur dessin (le reste du temps : celle du joueur). Lu en rafale a chaque
+# tour ; une position qui n'est pas celle du joueur est celle d'une vue annexe : son entite (mot a +0x5A : equipier
+# ou sonde) dit laquelle, et donne le cap. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
+# (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
+#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 3 sonde), entite (i32), x, y, z, cap (f32)]
+VUEPT = 0x41EC18 if FR else 0x41EB68
+vues = {}                                 # panneau -> (temps, entite, x, y, z, cap)
 nuages_t = 0.0
 # soldats morts : leur corps eclate en morceaux d'armure (entites 6/33) ; une table par numero de soldat n garde leur
 # position apres la mort (0x38337F + n * 0x14E dans l'exe francais), la fiche soldat leur armure (+0xDE)
@@ -646,7 +655,7 @@ while True:
     joints = []
     for i in range(NENT):
         o = 0x25 * i
-        if i == pid or not tab[o] or tab[o + 1] != 1: continue
+        if not tab[o] or tab[o + 1] != 1: continue      # (le joueur aussi : il se voit dans les vues annexes)
         nf = struct.unpack_from('<H', tab, o + 3)[0]
         if nf > 200: continue
         jr = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
@@ -663,6 +672,18 @@ while True:
         sg = 1 if q[9][2] > q[8][2] else -1
         sol = min(w[2] * sg for w in q[:4])
         joints.append(struct.pack('<if48f', i, sol * sg, *[c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]))
+    for _ in range(24):                   # vues annexes : leur point de vue, pris pendant leur dessin
+        vp = g.read(VUEPT, 0x68)
+        vx, vy, vz = (v / 65536 for v in struct.unpack_from('<3i', vp, 0))
+        if abs(vx - x) < 0.05 and abs(vy - y) < 0.05: continue
+        vi = struct.unpack_from('<H', vp, 0x5A)[0]           # l'entite de la vue (+0x5A), regardant selon son cap
+        if not 0 <= vi < NENT or not tab[0x25 * vi] or tab[0x25 * vi + 1] not in (1, 2, 3): continue
+        cap_v = struct.unpack_from('<H', tab, 0x25 * vi + 0x1B)[0] / 65536 * 2 * math.pi
+        cap_v += math.pi / 2                  # a cap force a 0, la vue du jeu regarde vers 80-90 deg (mesure) ; les autres
+                                              # caps ne collent pas encore (hauteur / position de la camera a revoir)
+        vues[3 if tab[0x25 * vi + 1] == 3 else 1] = (time.time(), vi, vx, vy, vz, cap_v)
+    sv = [(k, v) for k, v in vues.items() if time.time() - v[0] < 0.4]
+    s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi4f', k, v[1], *v[2:]) for k, v in sv), ('127.0.0.1', 47821))
     cam = (x, y, z + EYE, head, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),

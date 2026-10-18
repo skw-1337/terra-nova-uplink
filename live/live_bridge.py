@@ -146,6 +146,7 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 #   'P' + x, y (i16)  -> regard coupe (Y ou Pause dans le visualiseur) : curseur du jeu a cette position de son
 #        ecran 320 x 400 (boutons du HUD, carte, visee libre)
 #   'C' + bouton + appui + x, y -> clic a cette position
+#   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -7187, 6127
 if PLAY:
@@ -197,6 +198,7 @@ def post_key(sc, down):
 
 
 def handle_input():
+    global guest
     look = False
     while True:
         try:
@@ -225,6 +227,10 @@ def handle_input():
             pos = struct.unpack('<hh', pk[3:7])
             if btn == 1: mouse_evt(2 if down else 4, 1 if down else 0, pos)
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0, pos)
+        elif pk == b'HOST' and guest is None:   # the viewer's "Host online" button: its coop_net.gd opens the lobby
+            import coop_guest
+            guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True)
+            print('coop: hosting online', flush=True)
     if look:                                  # le curseur du jeu reste au centre : on vise ou on regarde
         x, y = centre()
         g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')

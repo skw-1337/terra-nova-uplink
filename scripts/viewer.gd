@@ -134,6 +134,9 @@ var play_dx := 0.0
 var play_dy := 0.0
 var play_held := {}
 var play_started := false        # the first click in the window only takes the mouse
+# live mode without coop: "Host online" (top left, while the mouse is free) turns this game into an online coop host,
+# as Coop online - host.bat does: coop_net.gd opens the Steam lobby, the bridge ('HOST') starts its coop module
+var host_btn: Button
 # the game's own screen when it is not in its 3D (menus, death screen, briefing, video, pause): the bridge captures
 # the DOSBox window and sends it (see live_bridge.py menu_loop); shown over everything, the mouse goes to the game
 var menu_mode := false
@@ -265,6 +268,18 @@ func _ready() -> void:
 		play = true
 		play_udp = PacketPeerUDP.new()
 		play_udp.set_dest_address("127.0.0.1", PLAY_PORT)
+		if not ("--coop-host" in args or "--coop-guest" in args or "--coop-hud" in args):
+			var bl := CanvasLayer.new()
+			bl.layer = 21                               # over the game's screens (menus)
+			add_child(bl)
+			host_btn = Button.new()
+			host_btn.text = "Host online"
+			host_btn.tooltip_text = "Online coop: a Steam friend drives a teammate (TN+ Coop build, Steam running)"
+			host_btn.position = Vector2(12, 8)
+			host_btn.focus_mode = Control.FOCUS_NONE        # keys stay the game's
+			host_btn.add_theme_font_size_override("font_size", 16)
+			host_btn.pressed.connect(_host_online)
+			bl.add_child(host_btn)
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8
@@ -1494,6 +1509,13 @@ func _play_send(bytes: PackedByteArray) -> void:
 	play_udp.put_packet(bytes)
 
 
+func _host_online() -> void:
+	host_btn.get_parent().queue_free()
+	host_btn = null
+	_play_send("HOST".to_ascii_buffer())
+	add_child(load("res://scripts/coop_net.gd").new())
+
+
 func _play_key(sc: int, down: bool) -> void:
 	var b := PackedByteArray([0x4B, sc & 0xFF, sc >> 8, 1 if down else 0])
 	_play_send(b)
@@ -1592,6 +1614,8 @@ func _input(event: InputEvent) -> void:
 	# the view, clicks at the view's centre) and cursor (the game's own cursor follows the mouse, clicks where it
 	# is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if host_btn and host_btn.visible and event is InputEventMouse and host_btn.get_global_rect().has_point(event.position):
+		return                                          # the "Host online" button's, not the game's
 	if menu_mode and (event is InputEventMouseButton or event is InputEventMouseMotion):
 		var mp := _menu_game_pos(event.position)          # the game's own screen: its cursor follows the mouse
 		if event is InputEventMouseMotion:
@@ -1669,6 +1693,8 @@ func _live_update() -> void:
 		c.encode_s16(3, play_cursor.y)
 		_play_send(c)
 		play_cursor_sent = play_cursor
+	if host_btn:
+		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 	if hud:
 		_hud_update()
 	_puffs_update()

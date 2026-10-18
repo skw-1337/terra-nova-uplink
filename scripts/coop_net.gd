@@ -13,6 +13,8 @@
 # Both sides must run the same coop files: the lobby carries "coop_version" and the guest says "HELLO" + COOP_VERSION;
 # a guest with another version leaves, the host ignores the input of one that stays (an older guest).
 # GodotSteam (addons/godotsteam) is loaded at run time and reached through Engine.get_singleton("Steam").
+# --fake-steam: scripts/fake_steam.gd instead (one process only: nobody else to meet). live/test_coop_net.gd runs a
+# host and a guest side by side over one fake Steam (fake_steam, role and the ports set before _ready).
 extends CanvasLayer
 
 const COOP_VERSION := "3"           # bump when the host / guest packets change
@@ -32,6 +34,13 @@ const HUD_OUT := 47832               # guest: its coop_hud.gd
 const PAD_DEAD := 0.2
 
 var steam: Object = null
+var fake_steam: Object = null        # set before _ready (tests): this instead of GodotSteam; --fake-steam: a lone one
+var role := ""                       # set before _ready (tests): "host" / "guest"; else from --coop-guest
+var view_in := VIEW_IN               # the ports, which the tests move (host and guest in one process)
+var input_out := INPUT_OUT
+var live_in := LIVE_IN
+var play_in := PLAY_IN
+var hud_out_port := HUD_OUT
 var host_mode := true
 var lobby_id := 0
 var peer := 0                        # the other player's Steam ID
@@ -66,8 +75,8 @@ var bad_col := Color(1.0, 0.35, 0.3)
 
 func _ready() -> void:
 	layer = 10
-	host_mode = not ("--coop-guest" in OS.get_cmdline_user_args())
-	if "--coop-guest" in OS.get_cmdline_user_args():
+	host_mode = role == "host" if role != "" else not ("--coop-guest" in OS.get_cmdline_user_args())
+	if not host_mode:
 		wait_panel = ColorRect.new()
 		wait_panel.color = Color(0.04, 0.06, 0.08)
 		wait_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -97,12 +106,17 @@ func _ready() -> void:
 	label.add_theme_constant_override("outline_size", 4)
 	add_child(label)
 	_show("STEAM...", "", warn_col)
-	if not Engine.has_singleton("Steam"):
-		var r := GDExtensionManager.load_extension("res://addons/godotsteam/godotsteam.gdextension")
-		if r != GDExtensionManager.LOAD_STATUS_OK and r != GDExtensionManager.LOAD_STATUS_ALREADY_LOADED:
-			_show("OFFLINE", "GodotSteam not loaded (%d)" % r, bad_col)
-			return
-	steam = Engine.get_singleton("Steam")
+	if fake_steam == null and "--fake-steam" in OS.get_cmdline_user_args():
+		fake_steam = load("res://scripts/fake_steam.gd").new()
+	if fake_steam:
+		steam = fake_steam
+	else:
+		if not Engine.has_singleton("Steam"):
+			var r := GDExtensionManager.load_extension("res://addons/godotsteam/godotsteam.gdextension")
+			if r != GDExtensionManager.LOAD_STATUS_OK and r != GDExtensionManager.LOAD_STATUS_ALREADY_LOADED:
+				_show("OFFLINE", "GodotSteam not loaded (%d)" % r, bad_col)
+				return
+		steam = Engine.get_singleton("Steam")
 	var init: Dictionary = steam.steamInitEx(APP_ID, false)
 	if int(init.get("status", 1)) != 0:
 		_show("OFFLINE", "Steam: %s" % init.get("verbal", "?"), bad_col)
@@ -114,14 +128,14 @@ func _ready() -> void:
 	steam.connect("join_requested", _on_join_requested)
 	steam.connect("p2p_session_request", _on_p2p_request)
 	if host_mode:
-		udp_in.bind(VIEW_IN, "127.0.0.1")
-		udp_out.set_dest_address("127.0.0.1", INPUT_OUT)
+		udp_in.bind(view_in, "127.0.0.1")
+		udp_out.set_dest_address("127.0.0.1", input_out)
 		_show("ONLINE", "%s - opening a friends-only lobby..." % steam.getPersonaName(), warn_col)
 		steam.createLobby(LOBBY_FRIENDS_ONLY, 2)
 	else:
-		udp_in.bind(PLAY_IN, "127.0.0.1")
-		udp_out.set_dest_address("127.0.0.1", LIVE_IN)
-		hud_out.set_dest_address("127.0.0.1", HUD_OUT)
+		udp_in.bind(play_in, "127.0.0.1")
+		udp_out.set_dest_address("127.0.0.1", live_in)
+		hud_out.set_dest_address("127.0.0.1", hud_out_port)
 		var want := _lobby_arg()
 		if want:
 			_show("ONLINE", "joining the host's lobby...", warn_col)
@@ -148,14 +162,14 @@ func _process(delta: float) -> void:
 	if host_mode:
 		while udp_in.get_available_packet_count() > 0:
 			var pk := udp_in.get_packet()
-			if peer and pk.size() >= 3:
+			if peer_ok and pk.size() >= 3:                 # only to a guest that said HELLO with our version
 				var tag := pk.slice(0, 3).get_string_from_ascii()
 				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)
 				sent += pk.size()
 		mission_t += delta
 		var vp := get_parent()
-		if peer and mission_t > 2.0 and vp and not vp.current.is_empty():
+		if peer_ok and mission_t > 2.0 and vp and not vp.current.is_empty():
 			mission_t = 0.0
 			steam.sendP2PPacket(peer, ("MSN" + str(vp.current["entry"]["file"]).get_file().to_upper()).to_ascii_buffer(), SEND_RELIABLE, CH_VIEW)
 		_read(CH_INPUT)
@@ -191,7 +205,7 @@ func _read(ch: int) -> void:
 	while n > 0:
 		var r: Dictionary = steam.readP2PPacket(n, ch)
 		var data: PackedByteArray = r.get("data", PackedByteArray())
-		var from: int = int(r.get("steam_id_remote", 0))
+		var from: int = int(r.get("remote_steam_id", 0))      # GodotSteam 4: remote_steam_id
 		if from == peer and data.size() > 0:
 			recv += data.size()
 			var tag := data.slice(0, 3).get_string_from_ascii()
@@ -339,7 +353,14 @@ func _in_lobby(id: int) -> bool:
 	return false
 
 
-func _on_lobby_update(_lobby: int, _changed: int, _maker: int, _change: int) -> void:
+func _on_lobby_update(lobby: int, changed: int, _maker: int, change: int) -> void:
+	if not host_mode and peer and lobby == lobby_id and changed == peer and change & 30:   # host left / disconnected
+		steam.leaveLobby(lobby_id)                          # (else Steam makes us the owner of an empty room)
+		peer = 0
+		lobby_id = 0
+		view = preload("res://scripts/coop_view.gd").new()
+		_show("ONLINE", "the host left - waiting for an invite (or Join game from your friends list)", warn_col)
+		return
 	if host_mode:
 		var was := peer
 		peer = 0

@@ -58,6 +58,7 @@ var view: RefCounted = preload("res://scripts/coop_view.gd").new()   # guest: re
 var resync_t := -100.0
 var clock := 0.0
 var mission_t := 0.0
+var msn_want := ""                   # guest: the host's mission last asked of the viewer (loading takes a while)
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
 var bad_col := Color(1.0, 0.35, 0.3)
@@ -158,6 +159,7 @@ func _process(delta: float) -> void:
 			mission_t = 0.0
 			steam.sendP2PPacket(peer, ("MSN" + str(vp.current["entry"]["file"]).get_file().to_upper()).to_ascii_buffer(), SEND_RELIABLE, CH_VIEW)
 		_read(CH_INPUT)
+		_drop(CH_VIEW)                                  # nothing comes this way: never let it pile up
 	else:
 		while udp_in.get_available_packet_count() > 0:
 			var pk := udp_in.get_packet()
@@ -174,6 +176,7 @@ func _process(delta: float) -> void:
 			resync_t = clock
 			steam.sendP2PPacket(peer, "R".to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
 			sent += 1
+		_drop(CH_INPUT)
 	rate_t += delta
 	if rate_t >= 1.0:
 		rate = "%d KB/s out, %d KB/s in" % [sent / 1024, recv / 1024]
@@ -208,7 +211,8 @@ func _read(ch: int) -> void:
 			elif data.size() > 3 and tag == "MSN":
 				var mf := data.slice(3).get_string_from_ascii()
 				var vp := get_parent()
-				if vp and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
+				if vp and mf != msn_want and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
+					msn_want = mf                           # once: not again every 2 s while it loads
 					vp._load_by_label(mf)
 			elif tag == "VKF" or tag == "VDL" or tag == "VDP" or tag == "VDC":
 				var full: PackedByteArray = view.feed(data)
@@ -216,6 +220,21 @@ func _read(ch: int) -> void:
 					udp_out.put_packet(full)                   # the same packet as the local coop's
 					last_view = clock
 		n = steam.getAvailableP2PPacketSize(ch)
+
+
+func _drop(ch: int) -> void:
+	var n: int = steam.getAvailableP2PPacketSize(ch)
+	while n > 0:
+		steam.readP2PPacket(n, ch)
+		n = steam.getAvailableP2PPacketSize(ch)
+
+
+# host: the guest left (or another one came): let go of his keys and fire, their releases will never arrive
+func _release_input() -> void:
+	for sc in [0x11, 0x1F, 0x1E, 0x20]:
+		udp_out.put_packet(PackedByteArray([0x4B, sc, 0, 0]))
+	udp_out.put_packet(PackedByteArray([0x42, 1, 0]))
+	udp_out.put_packet(PackedByteArray([80, 0, 0, 0, 0, 0]))
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -239,6 +258,12 @@ func _on_lobby_created(result: int, id: int) -> void:
 func _on_join_requested(id: int, _friend: int) -> void:
 	if not host_mode:
 		version_msg = ""
+		if lobby_id and lobby_id != id:
+			steam.leaveLobby(lobby_id)
+			if peer:
+				steam.closeP2PSessionWithUser(peer)
+			lobby_id = 0
+			peer = 0
 		_show("ONLINE", "joining the host's lobby...", warn_col)
 		steam.joinLobby(id)
 
@@ -323,8 +348,19 @@ func _on_lobby_update(_lobby: int, _changed: int, _maker: int, _change: int) -> 
 			if m != steam.getSteamID():
 				peer = m
 		if peer != was:
+			if was:
+				steam.closeP2PSessionWithUser(was)
+				_release_input()
 			peer_hello = false
 			peer_ok = false
+	elif lobby_id and peer and not _in_lobby(peer):         # guest: the host left (quit, crash, Steam closed)
+		steam.leaveLobby(lobby_id)
+		steam.closeP2PSessionWithUser(peer)
+		lobby_id = 0
+		peer = 0
+		msn_want = ""
+		_show("ONLINE", "the host left - waiting for an invite", warn_col)
+		return
 	_refresh()
 
 

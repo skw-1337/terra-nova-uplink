@@ -100,11 +100,13 @@ class Guest:
     def pick(self, me, after=0):
         """a living suit of the player's squad: the nearest, or the next one after `after` (F8); TN_GUEST_ID wins"""
         if os.environ.get('TN_GUEST_ID'):
-            return int(os.environ['TN_GUEST_ID'])
+            gid = int(os.environ['TN_GUEST_ID'])
+            return gid if self.alive(gid) else 0
         near = self.suits(me)
         if not self.squad:                                     # mission start: the suits around the player
             self.squad = [i for d, i in near if d < SQUAD_R] or [i for d, i in near[:1]]
-            print('guest: squad', self.squad, flush=True)
+            if self.squad:
+                print('guest: squad', self.squad, flush=True)
         live = [i for i in self.squad if self.alive(i)]
         if not live:
             return 0
@@ -140,6 +142,7 @@ class Guest:
             if self.gid:
                 self.take(0)
             self.squad, self.state = [], OK
+            self.read_input(False)                             # no stale look / F8 at the next mission start
             return
         if self.state == OK and not self.alive(self.gid):
             if self.gid:                                       # his suit is destroyed: a few seconds, then the next one
@@ -148,6 +151,8 @@ class Guest:
                 print('guest: suit destroyed', flush=True)
             else:
                 self.take(self.pick(me))
+                if not self.gid:                               # no teammate yet: the host's view, try again
+                    self.state, self.down_t = SPECTATE, time.time() - 3.0
         if self.state != OK and time.time() - self.down_t > 3.0:
             gid = self.pick(me)
             if gid:
@@ -161,42 +166,14 @@ class Guest:
                 self.take(gid)
         self.next = False
         self.hud()
+        turn = self.read_input(self.state == OK)
         if self.state != OK:                                   # the guest watches through the host's eyes
             ex, ey, ez = (self.i32(M + me * 0x25 + o) / 65536 for o in (0x0F, 0x13, 0x17))
             eh = self.u16(M + me * 0x25 + 0x1B) / 65536 * 2 * math.pi
-            while True:                                        # still read his input (F8 is ignored here)
-                try:
-                    pk, _ = self.rx.recvfrom(64)
-                except (BlockingIOError, OSError):
-                    break
-                self.resync(pk)
             self.send(struct.pack('<6f2i', ex, ey, ez + self.eye, eh, 0.0, self.fov_now(), len(body), me) +
                       b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
             return
         eg = M + self.gid * 0x25
-        turn = 0
-        while True:                                            # the guest window: keys, mouse, buttons
-            try:
-                pk, _ = self.rx.recvfrom(64)
-            except (BlockingIOError, OSError):
-                break
-            self.resync(pk)
-            if pk[:1] == b'K' and len(pk) >= 4:
-                sc, down = struct.unpack('<HB', pk[1:4])
-                if sc == F8 and down:
-                    self.next = True
-                if sc in KEYS:
-                    (self.keys.add if down else self.keys.discard)(sc)
-            elif pk[:1] == b'M' and len(pk) >= 5:
-                dx, dy = (max(-200, min(200, v)) for v in struct.unpack('<hh', pk[1:5]))
-                turn += dx * self.sens_x
-                self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
-            elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
-                self.fire = bool(pk[2])
-            elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
-                lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
-                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (f != 0,)
-                self.rpad_t = time.time()
         k = lambda sc: 1 if sc in self.keys else 0
         fwd, side, fire = k(0x11) - k(0x1F), k(0x20) - k(0x1E), self.fire
         p = None if self.remote else pad()        # online: the guest's own window only
@@ -246,6 +223,37 @@ class Guest:
         if pk[:1] == b'R' and self.enc and time.time() - self.resync_t > 0.5:
             self.resync_t = time.time()
             self.enc.resync()
+
+    def read_input(self, active):
+        """the guest window: keys, mouse, buttons, online gamepad; returns the turn. Key and button releases count
+        even while he has no suit (else a key let go while down stays held on the next teammate); look and F8 do not"""
+        turn = 0
+        for _ in range(512):
+            try:
+                pk, _ = self.rx.recvfrom(64)
+            except BlockingIOError:
+                break
+            except OSError:                                    # a datagram over 64 bytes (WSAEMSGSIZE): dropped
+                continue
+            self.resync(pk)
+            if pk[:1] == b'K' and len(pk) >= 4:
+                sc, down = struct.unpack('<HB', pk[1:4])
+                if sc == F8 and down and active:
+                    self.next = True
+                if sc in KEYS:
+                    (self.keys.add if down else self.keys.discard)(sc)
+            elif pk[:1] == b'M' and len(pk) >= 5:
+                if active:
+                    dx, dy = (max(-200, min(200, v)) for v in struct.unpack('<hh', pk[1:5]))
+                    turn += dx * self.sens_x
+                    self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
+            elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
+                self.fire = bool(pk[2])
+            elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
+                lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
+                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (f != 0,)
+                self.rpad_t = time.time()
+        return turn
 
     def send(self, view):
         if not self.remote:

@@ -205,15 +205,15 @@ class Guest:
             g.write(G_FIRE, b'\x01')
         if self.anim:                                          # the host's suit, never posed by the game (cockpit view)
             now = time.time()
-            top = lambda j: max(struct.unpack_from('<48f', j, 4)[1::3])
+            top = lambda j: max(struct.unpack_from('<48f', j, 8)[1::3])   # record: index, foot height, 48 floats
             hmax = max(map(top, joints)) if joints else 0
-            up = {struct.unpack_from('<i', j)[0]: struct.unpack_from('<48f', j, 4) for j in joints if top(j) > 0.8 * hmax}
+            up = {struct.unpack_from('<i', j)[0]: struct.unpack_from('<48f', j, 8) for j in joints if top(j) > 0.8 * hmax}
             where = lambda i: (self.i32(M + 0x25 * i + 0x0F) / 65536, self.i32(M + 0x25 * i + 0x13) / 65536,
                                self.u16(M + 0x25 * i + 0x1B) / 65536 * 2 * math.pi)
             self.anim.learn(up, where, now)
             pose = self.anim.host(*where(me), now)
             if pose:
-                joints = joints + [struct.pack('<i', me) + pose]
+                joints = joints + [struct.pack('<if', me, min(struct.unpack('<48f', pose)[1::3])) + pose]
         view = (struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
         self.send(view)

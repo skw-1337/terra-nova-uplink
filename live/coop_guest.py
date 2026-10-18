@@ -12,6 +12,10 @@ from coop_name import NameTag
 
 CAVE = 0x46B040
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
+G_JUMP, G_JV = 0x46C004, 0x46C120  # jump mailbox (TN+ Coop 1.2.2-coop2 and later): 1 = jump with speed G_JV (16.16)
+SHIFT = {0x2A, 0x36}              # Shift + a direction key: the game's directional jump
+JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: math.pi / 2, 0x20: -math.pi / 2}   # W S A D: angle from the heading
+HEAT = 0x3C8                      # suit record: the game jumps only while this is under 0x30000
 LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 KEYS = {0x11, 0x1F, 0x1E, 0x20}   # the only keys a guest can hold: W S A D (input from the network is filtered)
@@ -76,6 +80,7 @@ class Guest:
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
+        self.shift, self.jump_t, self.pad_jump = False, 0.0, False
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
@@ -106,6 +111,17 @@ class Guest:
                 x, y = struct.unpack_from('<ii', b, 0x0F)
                 out.append((math.hypot(x - mx, y - my) / 65536, i))
         return sorted(out)
+
+    def jump(self, angle):
+        """the game's jump (120 flat, 80 up) toward the heading + angle; once a second, not while the jets are hot"""
+        if not self.gid or time.time() - self.jump_t < 1.0:
+            return
+        if struct.unpack('<i', self.g.read(self.suit(self.gid) + HEAT, 4))[0] >= 0x30000:
+            return
+        self.jump_t = time.time()
+        h = self.u16(self.master + 0x25 * self.gid + 0x1B) / 65536 * 2 * math.pi + angle
+        self.g.write(G_JV, struct.pack('<3i', int(math.cos(h) * 120 * 65536), int(math.sin(h) * 120 * 65536), 80 * 65536))
+        self.g.write(G_JUMP, b'\x01')
 
     def suit(self, e):
         return PBA + PBA_N * self.u16(self.master + 0x25 * e + 3)
@@ -293,6 +309,10 @@ class Guest:
                     self.next = True
                 if sc in WEAPON_KEYS and down and active and self.gid:
                     self.g.write(self.suit(self.gid) + SEL, bytes([WEAPON_KEYS[sc]]))
+                if sc in SHIFT:
+                    self.shift = bool(down)
+                elif sc in JUMP_DIR and down and active and self.shift:
+                    self.jump(JUMP_DIR[sc])
                 if sc in KEYS:
                     (self.keys.add if down else self.keys.discard)(sc)
             elif pk[:1] == b'M' and len(pk) >= 5:
@@ -314,7 +334,10 @@ class Guest:
                     self.tag.put(self.gid, self.name, self.face)
             elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
-                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (f != 0,)
+                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (bool(f & 1),)
+                if f & 2 and not self.pad_jump and active:      # button A: jump where the left stick points
+                    self.jump(math.atan2(-self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0)
+                self.pad_jump = bool(f & 2)
                 self.rpad_t = time.time()
         return turn
 

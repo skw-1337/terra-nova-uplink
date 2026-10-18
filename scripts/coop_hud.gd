@@ -113,7 +113,7 @@ func _ready() -> void:
 	bottom.add_child(mate_label)
 	hint_label = _label(14, Color(0.8, 0.85, 0.9))
 	hint_label.position = Vector2(16, -30)
-	hint_label.text = "F8: next teammate   1-4: weapon"
+	hint_label.text = "F8: next teammate   1-4: weapon   Shift+move: jump"
 	bottom.add_child(hint_label)
 	# centre: suit destroyed / spectating
 	var centre := Control.new()
@@ -282,7 +282,7 @@ func _draw_panel() -> void:
 	_text(mate_name.to_upper(), 54.0, 275.0, 12.0, Color(1.0, 0.8, 0.2))
 	_text("SQUAD LEADER", 54.0, 289.0, 12.0, Color(0.9, 0.9, 0.95))
 	_text("ARMOUR %d%%" % int(round(f * 100.0)), 31.0, 350.0, 11.0, Color(0.9, 0.9, 0.95))
-	_text("F8 NEXT TEAMMATE", 31.0, 363.0, 9.0, Color(0.6, 0.65, 0.8))
+	_text("SHIFT+MOVE JUMP   F8 NEXT", 31.0, 363.0, 9.0, Color(0.6, 0.65, 0.8))
 	# WEAPON: his selected weapon
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
 	_text(wn.to_upper(), 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)

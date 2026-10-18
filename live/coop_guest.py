@@ -8,6 +8,7 @@
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
 import ctypes, math, os, socket, struct, time
 import coop_view
+from coop_name import NameTag
 
 CAVE = 0x46B040
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
@@ -64,6 +65,7 @@ class Guest:
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
+        self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.anim = None
         try:
             from host_anim import HostAnim
@@ -122,6 +124,9 @@ class Guest:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
             self.amax, self.state = max(1, self.armour(gid)), OK
             print('guest: entity %d' % gid, flush=True)
+            self.tag.put(gid, self.name)
+        else:
+            self.tag.restore()
 
     def hud(self):
         if time.time() - self.hud_t < 0.1:
@@ -249,6 +254,12 @@ class Guest:
                     self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
+            elif pk[:1] == b'N' and len(pk) > 1:                 # his Steam name (host coop_net.gd): on the host's HUD
+                name = pk[1:33].decode('utf-8', 'ignore')
+                if name != self.name:
+                    self.name = name
+                    if self.gid and self.state == OK:
+                        self.tag.put(self.gid, name)
             elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
                 self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (f != 0,)

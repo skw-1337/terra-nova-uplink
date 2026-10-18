@@ -217,6 +217,7 @@ func _read(ch: int) -> void:
 						peer_ok = ok
 						if ok:
 							udp_out.put_packet("R".to_ascii_buffer())   # the bridge: full decor and a keyframe for him
+							udp_out.put_packet(("N" + steam.getFriendPersonaName(peer)).to_utf8_buffer())   # his name on our HUD
 						_refresh()
 				elif peer_ok:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it

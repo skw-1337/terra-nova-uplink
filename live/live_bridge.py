@@ -691,6 +691,7 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
     guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote='--guest-remote' in sys.argv,
                              view_hz=arg('--view-hz', 20.0))   # online: views a second to the guest
 atexit.register(cursor_restore)
+atexit.register(lambda: guest and guest.tag.restore())   # coop: the pilot's own name back in the game
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi
     atexit.register(lambda: viewer.poll() is None and viewer.terminate())
 if PLAY:

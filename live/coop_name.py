@@ -1,7 +1,7 @@
 # Coop: the guest's name on the host's HUD (COMM / STAT panels) in place of his teammate's pilot name (English exe).
 # The game's pilots: 4 records of 0x32 bytes at 0x391e50 (+0 in use, +2 entity, +6 name index); the names are the
 # strings of resource 364 (RESGAME.RES): index k = last name (COMM panel), k + 33 = nickname, k + 65 = full name
-# (STAT). The guest's pilot gets the index of a pilot who is not in the mission, whose strings get the guest's name
+# (STAT), k + 98 = first and last name, k + 165 = last name again, k + 198 = first name (k < 32: Colin has no nickname). The guest's pilot gets the index of a pilot who is not in the mission, whose strings get the guest's name
 # (cut to their length: the strings stay in place). Everything is put back when the guest leaves that suit.
 import struct
 
@@ -11,7 +11,8 @@ PAL = 0x44AE90                                        # the game screen's palett
 
 PILOTS, PILOT_N, PILOT_END = 0x391e50, 0x32, 0x391f18
 FIRST = b'N. ap Io\x00B. ap Io\x00'          # the first strings of resource 364
-NAMES = 33                                   # last names 0..32, nicknames +33, full names +65
+NAMES = 32                                   # pilots with every form of their name
+FORMS = (0, 33, 65, 98, 165, 198)            # last, "nick", full, first last, last, first
 
 
 class NameTag:
@@ -33,7 +34,7 @@ class NameTag:
             base = chunk + i - 0x3a2                         # u16 count, count + 1 offsets, then the strings
             n = struct.unpack('<H', self.g.read(base, 2))[0]
             offs = struct.unpack('<%dI' % (n + 1), self.g.read(base + 2, 4 * (n + 1)))
-            if n > 65 + NAMES and offs[0] == 0x3a2:
+            if n > 198 + NAMES and offs[0] == 0x3a2:
                 self.strings = (base, offs)
                 return self.strings
         return None
@@ -91,15 +92,15 @@ class NameTag:
         if not free:
             return False
         k = max(free, key=size)                              # the longest last name nobody uses here
-        keep = [(base + offs[j], self.g.read(base + offs[j], size(j))) for j in (k, k + 33, k + 65)]
+        keep = [(base + offs[k + f], self.g.read(base + offs[k + f], size(k + f))) for f in FORMS]
         fa = self._faces() if face and len(face) == PW * PH * 3 else None
         if fa:                                               # his avatar in place of that pilot's portrait
             pa = fa + k * P_STEP + P_DATA
             keep.append((pa, self.g.read(pa, PW * PH)))
             self.g.write(pa, self._face(face))
         self.saved = (rec, self.g.read(rec + 6, 1), keep, base)
-        for j, (a, old) in zip((k, k + 33, k + 65), keep):
-            text = (name if j != k + 33 else '"%s"' % name)[:len(old)].encode()
+        for f, (a, old) in zip(FORMS, keep):
+            text = (name if f != 33 else '"%s"' % name)[:len(old)].encode()
             self.g.write(a, text + b'\0' * (len(old) - len(text)))
         self.g.write(rec + 6, bytes([k]))
         return True

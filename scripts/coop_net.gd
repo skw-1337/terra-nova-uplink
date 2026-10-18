@@ -351,8 +351,11 @@ func _on_avatar(id: int, size: int, data: PackedByteArray) -> void:
 	if not host_mode or id != peer or size <= 0 or data.size() != size * size * 4:
 		return
 	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
-	img.resize(27, 27, Image.INTERPOLATE_LANCZOS)
-	img = img.get_region(Rect2i(3, 0, 21, 27))
+	# the game's screen has half-height rows (320 x 400 shown 4:3): a portrait's 21 x 27 pixels show a wide band,
+	# 1.73 wide for 1 high; the avatar's middle band, a little above the centre (faces)
+	var h := int(size / 1.73)
+	img = img.get_region(Rect2i(0, int((size - h) * 0.4), size, h))
+	img.resize(21, 27, Image.INTERPOLATE_LANCZOS)
 	img.convert(Image.FORMAT_RGB8)
 	udp_out.put_packet("A".to_ascii_buffer() + img.get_data())
 

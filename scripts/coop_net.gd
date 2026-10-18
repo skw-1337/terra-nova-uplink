@@ -33,6 +33,12 @@ var sent := 0
 var recv := 0
 var rate_t := 0.0
 var rate := ""
+# guest: waiting screen until the host's view arrives (not connected yet, or the host is in the game's menus)
+var wait_panel: ColorRect
+var wait_title: Label
+var wait_text: Label
+var last_view := -100.0
+var clock := 0.0
 var mission_t := 0.0
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -42,6 +48,29 @@ var bad_col := Color(1.0, 0.35, 0.3)
 func _ready() -> void:
 	layer = 10
 	host_mode = not ("--coop-guest" in OS.get_cmdline_user_args())
+	if "--coop-guest" in OS.get_cmdline_user_args():
+		wait_panel = ColorRect.new()
+		wait_panel.color = Color(0.04, 0.06, 0.08)
+		wait_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+		wait_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(wait_panel)
+		var box := VBoxContainer.new()
+		box.set_anchors_preset(Control.PRESET_CENTER)
+		box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+		box.grow_vertical = Control.GROW_DIRECTION_BOTH
+		box.alignment = BoxContainer.ALIGNMENT_CENTER
+		wait_panel.add_child(box)
+		wait_title = Label.new()
+		wait_title.text = "TERRA NOVA  ·  COOP"
+		wait_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		wait_title.add_theme_font_size_override("font_size", 44)
+		wait_title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.3))
+		box.add_child(wait_title)
+		wait_text = Label.new()
+		wait_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		wait_text.add_theme_font_size_override("font_size", 20)
+		wait_text.add_theme_color_override("font_color", Color(0.8, 0.85, 0.9))
+		box.add_child(wait_text)
 	label = Label.new()
 	label.position = Vector2(12, 8)
 	label.add_theme_font_size_override("font_size", 16)
@@ -90,6 +119,9 @@ func _lobby_arg() -> int:
 
 
 func _process(delta: float) -> void:
+	clock += delta
+	if wait_panel:
+		_waiting()
 	if not steam:
 		return
 	steam.run_callbacks()
@@ -139,6 +171,7 @@ func _read(ch: int) -> void:
 					vp._load_by_label(mf)
 			else:
 				udp_out.put_packet(data.decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE))
+				last_view = clock
 		n = steam.getAvailableP2PPacketSize(ch)
 
 
@@ -211,6 +244,21 @@ func _refresh() -> void:
 			_show("ONLINE · CONNECTABLE", "friends can join from Steam (F9: invite)", ok_col)
 	elif peer:
 		_show("ONLINE · CONNECTED TO HOST", "%s   %s" % [steam.getFriendPersonaName(peer), rate], ok_col)
+
+
+func _waiting() -> void:
+	var live := steam != null and peer != 0 and clock - last_view < 2.0
+	wait_panel.visible = not live
+	if live:
+		return
+	var dots := ".".repeat(1 + int(clock * 2.0) % 3)
+	if steam == null:
+		wait_text.text = "Steam is not available: start Steam, then this window again."
+	elif peer == 0:
+		wait_text.text = "Waiting for an invite%s\nAccept your friend's invite in Steam, or use Join game on your friend in your friends list." % dots
+	else:
+		wait_text.text = "Connected to %s.\nWaiting for the host to start a mission%s\nYou will drive the teammate nearest to the host: W/S/A/D, mouse, left button to fire." % [
+			steam.getFriendPersonaName(peer), dots]
 
 
 func _show(t: String, d: String, c: Color) -> void:

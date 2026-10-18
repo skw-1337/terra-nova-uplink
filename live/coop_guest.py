@@ -6,7 +6,7 @@
 # read: the guest window's coop_net.gd sends its own gamepad as 'P' packets (lx, ly, rx, ry int8 with XInput signs,
 # fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd). Online the
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
-import ctypes, math, os, socket, struct, time, zlib
+import builtins, ctypes, math, os, socket, struct, time, zlib
 import coop_view
 from coop_name import NameTag
 
@@ -39,6 +39,22 @@ CLEAR = [((30, 276, 108, 376), 60, 255),     # COMM panel (the guest's window dr
          ((72, 25, 162, 34), 0x28, 255),     # armour bar (his armour)
          ((162, 22, 262, 36), 0x28, 255),    # the other bar
          ((146, 222, 175, 252), 0, 255)]     # rear view
+
+
+_LOG = None
+
+
+def print(*a, **k):                                   # coop messages: the console and live/logs/coop_host_<date>.log
+    global _LOG
+    builtins.print(*a, **k)
+    try:
+        if _LOG is None:
+            d = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+            os.makedirs(d, exist_ok=True)
+            _LOG = open(os.path.join(d, time.strftime('coop_host_%Y-%m-%d_%H-%M-%S.log')), 'a', encoding='utf-8')
+        _LOG.write(time.strftime('[%H:%M:%S] ') + ' '.join(map(str, a)) + '\n'); _LOG.flush()
+    except OSError:
+        pass
 
 
 class XState(ctypes.Structure):

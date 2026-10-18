@@ -88,11 +88,12 @@ KNOWN LIMITS
 
 SENDING LOGS BACK
 -----------------
-If something goes wrong, send us:
-- Host: a copy of the text in the black console window (or a screenshot of it).
-- Both: the Godot log, in
-    %APPDATA%\\Godot\\app_userdata\\Terra Nova Uplink\\logs\\godot.log
+Each coop session writes a log by itself (connection, version check, ping,
+data rate every 10 s). After a test, send these files:
+- Both: the newest file in
+    %APPDATA%\\Godot\\app_userdata\\Terra Nova Uplink\\coop_logs
   (paste that path in the Windows Explorer address bar).
+- Host: also the newest coop_host_*.log in this folder's live\\logs.
 - A few words on what you did and what happened, and a screenshot if you can.
 """
 

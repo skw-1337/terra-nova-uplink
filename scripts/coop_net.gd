@@ -58,6 +58,12 @@ var sent := 0
 var recv := 0
 var rate_t := 0.0
 var rate := ""
+# ping: the guest sends 'PNG' + its clock (ms, 8 bytes) + its last ping (u16) every 2 s, the host answers 'PNO' + the
+# same clock; both show it. Session log: user://coop_logs/<host|guest>_<date>.log (events, and a status every 10 s)
+var ping_ms := -1
+var ping_t := 0.0
+var log_f: FileAccess
+var status_t := 0.0
 # guest: waiting screen until the host's view arrives (not connected yet, or the host is in the game's menus)
 var wait_panel: ColorRect
 var wait_title: Label
@@ -75,6 +81,7 @@ var bad_col := Color(1.0, 0.35, 0.3)
 
 func _ready() -> void:
 	layer = 10
+	_log_open()
 	host_mode = role == "host" if role != "" else not ("--coop-guest" in OS.get_cmdline_user_args())
 	if not host_mode:
 		wait_panel = ColorRect.new()
@@ -184,6 +191,13 @@ func _process(delta: float) -> void:
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if pk[0] == 77 else SEND_RELIABLE, CH_INPUT)
 				sent += pk.size()
 		if peer:
+			if clock - ping_t > 2.0:
+				ping_t = clock
+				var png := "PNG".to_ascii_buffer()
+				png.resize(13)
+				png.encode_u64(3, Time.get_ticks_msec())
+				png.encode_u16(11, ping_ms if ping_ms >= 0 else 65535)
+				steam.sendP2PPacket(peer, png, SEND_UNRELIABLE_NO_DELAY, CH_INPUT)
 			if clock - hello_t > 2.0:                       # again now and then: the host may have missed it
 				_hello()
 			_pad()
@@ -200,6 +214,13 @@ func _process(delta: float) -> void:
 		recv = 0
 		rate_t = 0.0
 		_refresh()
+	status_t += delta
+	if status_t >= 10.0:
+		status_t = 0.0
+		if peer:
+			_log("status: %s, %s, ping %s, %s" % [steam.getFriendPersonaName(peer), rate,
+				"%d ms" % ping_ms if ping_ms >= 0 else "?",
+				("guest ok" if peer_ok else "guest not ok") if host_mode else ("last view %.1f s ago" % (clock - last_view))])
 
 
 func _read(ch: int) -> void:
@@ -212,9 +233,15 @@ func _read(ch: int) -> void:
 			recv += data.size()
 			var tag := data.slice(0, 3).get_string_from_ascii()
 			if host_mode:
-				if data.size() >= 5 and data.slice(0, 5).get_string_from_ascii() == "HELLO":
+				if tag == "PNG" and data.size() >= 13:
+					ping_ms = data.decode_u16(11) if data.decode_u16(11) < 65535 else -1
+					var pong := "PNO".to_ascii_buffer()
+					pong.append_array(data.slice(3, 11))
+					steam.sendP2PPacket(peer, pong, SEND_UNRELIABLE_NO_DELAY, CH_VIEW)
+				elif data.size() >= 5 and data.slice(0, 5).get_string_from_ascii() == "HELLO":
 					var ok := data.get_string_from_ascii() == "HELLO" + COOP_VERSION
 					if ok != peer_ok or not peer_hello:
+						_log("guest %s said HELLO: %s" % [steam.getFriendPersonaName(peer), "same version" if ok else "ANOTHER VERSION: " + data.get_string_from_ascii()])
 						peer_hello = true
 						peer_ok = ok
 						if ok:
@@ -225,6 +252,8 @@ func _read(ch: int) -> void:
 						_refresh()
 				elif peer_ok:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
+			elif tag == "PNO" and data.size() >= 11:
+				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
 			elif tag == "GHD" or tag == "GCK":                # HUD and cockpit: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
 			elif data.size() > 3 and tag == "MSN":
@@ -236,6 +265,8 @@ func _read(ch: int) -> void:
 			elif tag == "VKF" or tag == "VDL" or tag == "VDP" or tag == "VDC":
 				var full: PackedByteArray = view.feed(data)
 				if full.size() > 0:
+					if clock - last_view > 5.0:
+						_log("views from the host: %s" % ("first" if last_view < 0 else "again after %.1f s" % (clock - last_view)))
 					udp_out.put_packet(full)                   # the same packet as the local coop's
 					last_view = clock
 		n = steam.getAvailableP2PPacketSize(ch)
@@ -425,7 +456,7 @@ func _refresh() -> void:
 		if not lobby_id:
 			return
 		if peer and peer_ok:
-			_show("ONLINE · GUEST CONNECTED", "%s   %s" % [steam.getFriendPersonaName(peer), rate], ok_col)
+			_show("ONLINE · GUEST CONNECTED", "%s   %s%s" % [steam.getFriendPersonaName(peer), rate, _ping_text()], ok_col)
 		elif peer and peer_hello:
 			_show("ONLINE · GUEST HAS ANOTHER VERSION", "%s: both need the same Uplink coop files (yours: %s)" % [
 				steam.getFriendPersonaName(peer), COOP_VERSION], warn_col)
@@ -434,7 +465,8 @@ func _refresh() -> void:
 		else:
 			_show("ONLINE · CONNECTABLE", "friends can join from Steam (F9: invite)", ok_col)
 	elif peer:
-		_show("ONLINE · CONNECTED TO HOST", "%s   %s" % [steam.getFriendPersonaName(peer), rate], ok_col)
+		_show("ONLINE · CONNECTED TO HOST", "%s   %s%s" % [steam.getFriendPersonaName(peer), rate, _ping_text()],
+			ok_col if ping_ms < 150 else warn_col)
 
 
 func _waiting() -> void:
@@ -455,6 +487,29 @@ func _waiting() -> void:
 			steam.getFriendPersonaName(peer), dots]
 
 
+func _ping_text() -> String:
+	return "   ping %d ms" % ping_ms if ping_ms >= 0 else ""
+
+
+func _log_open() -> void:
+	DirAccess.make_dir_recursive_absolute("user://coop_logs")
+	var role := "guest" if "--coop-guest" in OS.get_cmdline_user_args() else "host"
+	var path := "user://coop_logs/%s_%s.log" % [role, Time.get_datetime_string_from_system().replace(":", "-")]
+	log_f = FileAccess.open(path, FileAccess.WRITE)
+	_log("Terra Nova Uplink coop %s, version %s, %s" % [role, COOP_VERSION, OS.get_name()])
+	_log("log file: %s" % ProjectSettings.globalize_path(path))
+
+
+func _log(msg: String) -> void:
+	var line := "[%s] %s" % [Time.get_time_string_from_system(), msg]
+	print("coop: ", line)
+	if log_f:
+		log_f.store_line(line)
+		log_f.flush()
+
+
 func _show(t: String, d: String, c: Color) -> void:
+	if label and not label.text.begins_with("● " + t):
+		_log("%s  %s" % [t, d])
 	label.text = "● " + t + ("\n   " + d if d != "" else "")
 	label.add_theme_color_override("font_color", c)

@@ -16,6 +16,9 @@ G_JUMP, G_JV = 0x46C004, 0x46C120  # jump mailbox (TN+ Coop 1.2.2-coop2 and late
 SHIFT = {0x2A, 0x36}              # Shift + a direction key: the game's directional jump
 JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: math.pi / 2, 0x20: -math.pi / 2}   # W S A D: angle from the heading
 HEAT = 0x3C8                      # suit record: the game jumps only while this is under 0x30000
+# Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
+# of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
+LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 250.0
 LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 KEYS = {0x11, 0x1F, 0x1E, 0x20}   # the only keys a guest can hold: W S A D (input from the network is filtered)
@@ -81,6 +84,7 @@ class Guest:
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
         self.shift, self.jump_t, self.pad_jump = False, 0.0, False
+        self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
@@ -111,6 +115,34 @@ class Guest:
                 x, y = struct.unpack_from('<ii', b, 0x0F)
                 out.append((math.hypot(x - mx, y - my) / 65536, i))
         return sorted(out)
+
+    def target_pos(self, e):
+        """middle of a living unit (classes 1-3), or None"""
+        b = self.g.read(self.master + 0x25 * e, 0x1B)
+        if not b[0] or not 1 <= b[1] <= 3:
+            return None
+        x, y, z = (v / 65536 for v in struct.unpack_from('<3i', b, 0x0F))
+        return (x, y, z + 0.35)
+
+    @staticmethod
+    def off_view(eye, view, t):
+        d = [a - b for a, b in zip(t, eye)]
+        n = math.sqrt(sum(c * c for c in d)) or 1.0
+        return math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(d, view)) / n)))
+
+    def pick_target(self, me, eye, view):
+        best, pick = LOCK_PICK, 0
+        for i in range(1, self.nent):
+            if i in (me, self.gid) or i in self.squad:
+                continue
+            t = self.target_pos(i)
+            if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
+                continue
+            a = self.off_view(eye, view, t)
+            if a < best:
+                best, pick = a, i
+        print('guest: lock', pick or 'nothing', flush=True)
+        return pick
 
     def jump(self, angle):
         """the game's jump (120 flat, 80 up) toward the heading + angle; once a second, not while the jets are hot"""
@@ -172,7 +204,9 @@ class Guest:
             sel = self.g.read(p + SEL, 1)[0] & 3
             wtype = self.g.read(p + SLOTS + SLOT_N * sel, 1)[0]
         head = self.u16(self.master + 0x25 * self.gid + 0x1B) if self.gid else 0
-        pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head)
+        lt = self.target_pos(self.lock) if self.lock else None
+        pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head) + \
+            (struct.pack('<H3f', self.lock, *lt) if lt else b'')
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
@@ -263,10 +297,23 @@ class Guest:
         g.write(G_CTRL, bytes(c))
         gx, gy, gz = (self.i32(eg + o) / 65536 for o in (0x0F, 0x13, 0x17))
         gh = self.u16(eg + 0x1B) / 65536 * 2 * math.pi
-        # aim: 30 units along the guest's view; held = a request every frame (the weapon's reload sets the pace)
-        ca = math.cos(self.pitch) * 30
-        g.write(G_TGT, struct.pack('<3i', int((gx + math.cos(gh) * ca) * 65536), int((gy + math.sin(gh) * ca) * 65536),
-                                   int((gz + self.eye + math.sin(self.pitch) * 30) * 65536)))
+        # aim: 30 units along the guest's view, or his locked target; held = a request every frame (the weapon's
+        # reload sets the pace)
+        eye = (gx, gy, gz + self.eye)
+        view = (math.cos(gh) * math.cos(self.pitch), math.sin(gh) * math.cos(self.pitch), math.sin(self.pitch))
+        if self.lock_req:
+            self.lock_req = False
+            self.lock = 0 if self.lock else self.pick_target(me, eye, view)
+        aim = None
+        if self.lock:
+            t = self.target_pos(self.lock)
+            if t is None:
+                self.lock = 0
+            elif self.off_view(eye, view, t) < LOCK_KEEP:
+                aim = t
+        if aim is None:
+            aim = tuple(e + v * 30 for e, v in zip(eye, view))
+        g.write(G_TGT, struct.pack('<3i', *(int(v * 65536) for v in aim)))
         if fire:
             g.write(G_FIRE, b'\x01')
         if self.anim:                                          # the host's suit, never posed by the game (cockpit view)
@@ -320,6 +367,9 @@ class Guest:
                     dx, dy = (max(-200, min(200, v)) for v in struct.unpack('<hh', pk[1:5]))
                     turn += dx * self.sens_x
                     self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
+            elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 2:
+                if pk[2] and active:
+                    self.lock_req = True
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
             elif pk[:1] == b'N' and len(pk) > 1:                 # his Steam name (host coop_net.gd): on the host's HUD
@@ -338,6 +388,9 @@ class Guest:
                 if f & 2 and not self.pad_jump and active:      # button A: jump where the left stick points
                     self.jump(math.atan2(-self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0)
                 self.pad_jump = bool(f & 2)
+                if f & 4 and not self.pad_lock and active:
+                    self.lock_req = True
+                self.pad_lock = bool(f & 4)
                 self.rpad_t = time.time()
         return turn
 

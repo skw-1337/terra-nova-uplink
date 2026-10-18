@@ -332,6 +332,8 @@ func _pad() -> void:
 	var fire := 1 if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT) > 0.25 else 0
 	if Input.is_joy_button_pressed(0, JOY_BUTTON_A):
 		fire |= 2                                         # bit 1: jump
+	if Input.is_joy_button_pressed(0, JOY_BUTTON_RIGHT_SHOULDER):
+		fire |= 4                                         # bit 2: lock target
 	var used := lx != 0 or ly != 0 or rx != 0 or ry != 0 or fire != 0
 	if not used and not pad_live:                         # idle pad: nothing to send (one last all-zero packet)
 		return

@@ -24,6 +24,8 @@ var entity := 0
 var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
+var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
+var lock_pos := Vector3.ZERO
 
 var root: Control
 var cross: Control
@@ -113,7 +115,7 @@ func _ready() -> void:
 	bottom.add_child(mate_label)
 	hint_label = _label(14, Color(0.8, 0.85, 0.9))
 	hint_label.position = Vector2(16, -30)
-	hint_label.text = "F8: next teammate   1-4: weapon   Shift+move: jump"
+	hint_label.text = "F8: next teammate   1-4: weapon   Shift+move: jump   right button: lock"
 	bottom.add_child(hint_label)
 	# centre: suit destroyed / spectating
 	var centre := Control.new()
@@ -177,13 +179,19 @@ func _process(delta: float) -> void:
 				weapon_slot = pk.decode_u8(10)
 				weapon_type = pk.decode_u8(11)
 				heading = pk.decode_u16(12)
+			lock = 0
+			if pk.size() >= 28:
+				lock = pk.decode_u16(14)
+				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true
 	root.visible = clock - last < TIMEOUT
 	if got and root.visible:
 		_update()
-	if cockpit.visible and root.visible:
-		_map_follow()
+	if root.visible:
+		if cockpit.visible:
+			_map_follow()
+		panel.visible = cockpit.visible or lock != 0
 		panel.queue_redraw()
 
 
@@ -255,6 +263,9 @@ func _text(t: String, x: float, y: float, h: float, col: Color, centre := false)
 func _draw_panel() -> void:
 	if state != 0:
 		return
+	_draw_lock()
+	if not cockpit.visible:
+		return
 	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (x 160)
 	var bearing := fposmod(360.0 - heading / 65536.0 * 360.0, 360.0)
 	var amber := Color(1.0, 0.8, 0.25)
@@ -295,6 +306,21 @@ func _draw_panel() -> void:
 	var u := _g(0, 6).y
 	panel.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -u), c + Vector2(u * 0.6, u * 0.6),
 		c + Vector2(-u * 0.6, u * 0.6)]), Color(1, 1, 1))
+
+
+# the lock: green corners around his target, where his camera sees it
+func _draw_lock() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if lock == 0 or cam == null or cam.is_position_behind(lock_pos):
+		return
+	var c := cam.unproject_position(lock_pos)
+	var r := maxf(10.0, root.size.y * 0.03)
+	var col := Color(0.3, 1.0, 0.35)
+	for sx in [-1, 1]:
+		for sy in [-1, 1]:
+			var k := c + Vector2(sx * r, sy * r)
+			panel.draw_line(k, k - Vector2(sx * r * 0.5, 0), col, 2.0)
+			panel.draw_line(k, k - Vector2(0, sy * r * 0.5), col, 2.0)
 
 
 func _map_follow() -> void:

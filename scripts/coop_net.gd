@@ -127,6 +127,8 @@ func _ready() -> void:
 	steam.connect("lobby_joined", _on_lobby_joined)
 	steam.connect("join_requested", _on_join_requested)
 	steam.connect("p2p_session_request", _on_p2p_request)
+	if steam.has_signal("avatar_loaded"):
+		steam.connect("avatar_loaded", _on_avatar)
 	if host_mode:
 		udp_in.bind(view_in, "127.0.0.1")
 		udp_out.set_dest_address("127.0.0.1", input_out)
@@ -218,6 +220,8 @@ func _read(ch: int) -> void:
 						if ok:
 							udp_out.put_packet("R".to_ascii_buffer())   # the bridge: full decor and a keyframe for him
 							udp_out.put_packet(("N" + steam.getFriendPersonaName(peer)).to_utf8_buffer())   # his name on our HUD
+							if steam.has_method("getPlayerAvatar"):
+								steam.getPlayerAvatar(2, peer)          # and his avatar as the portrait (avatar_loaded)
 						_refresh()
 				elif peer_ok:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
@@ -340,6 +344,17 @@ func _axis(a: JoyAxis, sign_: float) -> int:
 	if absf(v) < PAD_DEAD:
 		return 0
 	return clampi(roundi(signf(v) * (absf(v) - PAD_DEAD) / (1.0 - PAD_DEAD) * 127.0), -127, 127)
+
+
+# host: the guest's Steam avatar, 21 x 27 like the game's portraits (the bridge turns it into the game's colours)
+func _on_avatar(id: int, size: int, data: PackedByteArray) -> void:
+	if not host_mode or id != peer or size <= 0 or data.size() != size * size * 4:
+		return
+	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	img.resize(27, 27, Image.INTERPOLATE_LANCZOS)
+	img = img.get_region(Rect2i(3, 0, 21, 27))
+	img.convert(Image.FORMAT_RGB8)
+	udp_out.put_packet("A".to_ascii_buffer() + img.get_data())
 
 
 func _on_p2p_request(remote: int) -> void:

@@ -66,6 +66,7 @@ class Guest:
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
+        self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
         self.anim = None
         try:
             from host_anim import HostAnim
@@ -124,7 +125,7 @@ class Guest:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
             self.amax, self.state = max(1, self.armour(gid)), OK
             print('guest: entity %d' % gid, flush=True)
-            self.tag.put(gid, self.name)
+            self.tag.put(gid, self.name, self.face)
         else:
             self.tag.restore()
 
@@ -235,10 +236,10 @@ class Guest:
         turn = 0
         for _ in range(512):
             try:
-                pk, _ = self.rx.recvfrom(64)
+                pk, _ = self.rx.recvfrom(2048)
             except BlockingIOError:
                 break
-            except OSError:                                    # a datagram over 64 bytes (WSAEMSGSIZE): dropped
+            except OSError:                                    # a datagram over 2 KB (WSAEMSGSIZE): dropped
                 continue
             self.resync(pk)
             if pk[:1] == b'K' and len(pk) >= 4:
@@ -259,7 +260,11 @@ class Guest:
                 if name != self.name:
                     self.name = name
                     if self.gid and self.state == OK:
-                        self.tag.put(self.gid, name)
+                        self.tag.put(self.gid, name, self.face)
+            elif pk[:1] == b'A' and len(pk) == 1 + 21 * 27 * 3:      # his avatar (host coop_net.gd)
+                self.face = pk[1:]
+                if self.gid and self.state == OK:
+                    self.tag.put(self.gid, self.name, self.face)
             elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
                 self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (f != 0,)

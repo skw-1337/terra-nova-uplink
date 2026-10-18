@@ -1,12 +1,13 @@
 # Coop over Steam (TN+ Coop build, prototype). Steam test App ID 480 ("Spacewar"), friends-only lobby for two, P2P
 # through Steam's relays: no port is opened on either PC.
 #  --coop-host  (the player's window): opens the lobby, shows ONLINE / CONNECTABLE / GUEST CONNECTED (F9 = invite).
-#               The bridge (live_bridge.py --guest-remote) sends the guest's view to 127.0.0.1:47841: it goes to the
-#               guest, zlib-compressed by the bridge; the guest's input comes back and goes to 127.0.0.1:47834 (the
-#               bridge's coop module, which only turns it into move / turn / aim / fire commands).
+#               The bridge (live_bridge.py --guest-remote) sends the guest's view to 127.0.0.1:47841 as coop_view.py
+#               messages: keyframes (VKF) and decor (VDC) go reliable, deltas (VDL, VDP parts) unreliable; the guest's
+#               input comes back and goes to 127.0.0.1:47834 (the bridge's coop module, which only turns it into move /
+#               turn / aim / fire commands). A guest that connects gets an 'R' to the bridge: decor and keyframe now.
 #  --coop-guest (the second player's window, his own copy of the game files): joins the host's lobby (Steam invite,
-#               "Join game" in the friends list, or --connect-lobby ID / +connect_lobby ID), feeds the received view
-#               to its own live port and sends its keys, mouse and buttons (its --play port) to the host, plus its
+#               "Join game" in the friends list, or --connect-lobby ID / +connect_lobby ID), rebuilds the full view
+#               packet (coop_view.gd) for its own live port, asks for the decor again ('R') while it lacks it, and sends its keys, mouse and buttons (its --play port) to the host, plus its
 #               gamepad ('P' packets, ~60 a second: left stick move / strafe, right stick look, right trigger fire).
 #               HUD packets ('GHD') from the host go as they are to 127.0.0.1:47832 (coop_hud.gd). F8: next teammate.
 # Both sides must run the same coop files: the lobby carries "coop_version" and the guest says "HELLO" + COOP_VERSION;
@@ -14,14 +15,15 @@
 # GodotSteam (addons/godotsteam) is loaded at run time and reached through Engine.get_singleton("Steam").
 extends CanvasLayer
 
-const COOP_VERSION := "2"           # bump when the host / guest packets change
+const COOP_VERSION := "3"           # bump when the host / guest packets change
 const APP_ID := 480
 const LOBBY_FRIENDS_ONLY := 1        # ELobbyType
 const RESULT_OK := 1                 # EResult
 const SEND_UNRELIABLE_NO_DELAY := 1
 const SEND_RELIABLE := 2
-const CH_VIEW := 0                   # host -> guest: view (zlib) and mission name
-const CH_INPUT := 1                  # guest -> host: HELLO, input packets (K / M / B) as the viewer sends them, gamepad (P)
+const UNRELIABLE_MAX := 1200         # Steam P2P: the biggest unreliable packet (the bridge cuts deltas to fit)
+const CH_VIEW := 0                   # host -> guest: view (coop_view messages), HUD and mission name
+const CH_INPUT := 1                  # guest -> host: HELLO, input packets (K / M / B) as the viewer sends them, gamepad (P), R
 const VIEW_IN := 47841               # host: the bridge's guest view
 const INPUT_OUT := 47834             # host: to the bridge's coop module
 const LIVE_IN := 47831               # guest: its viewer's live port
@@ -52,6 +54,8 @@ var wait_panel: ColorRect
 var wait_title: Label
 var wait_text: Label
 var last_view := -100.0
+var view: RefCounted = preload("res://scripts/coop_view.gd").new()   # guest: rebuilds the host's view
+var resync_t := -100.0
 var clock := 0.0
 var mission_t := 0.0
 var ok_col := Color(0.35, 1.0, 0.45)
@@ -143,8 +147,10 @@ func _process(delta: float) -> void:
 	if host_mode:
 		while udp_in.get_available_packet_count() > 0:
 			var pk := udp_in.get_packet()
-			if peer:
-				steam.sendP2PPacket(peer, pk, SEND_RELIABLE, CH_VIEW)
+			if peer and pk.size() >= 3:
+				var tag := pk.slice(0, 3).get_string_from_ascii()
+				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
+				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)
 				sent += pk.size()
 		mission_t += delta
 		var vp := get_parent()
@@ -164,6 +170,10 @@ func _process(delta: float) -> void:
 				_hello()
 			_pad()
 		_read(CH_VIEW)
+		if peer and view.waiting_decor() and clock - resync_t > 1.0:   # joined late: the decor again, please
+			resync_t = clock
+			steam.sendP2PPacket(peer, "R".to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
+			sent += 1
 	rate_t += delta
 	if rate_t >= 1.0:
 		rate = "%d KB/s out, %d KB/s in" % [sent / 1024, recv / 1024]
@@ -188,6 +198,8 @@ func _read(ch: int) -> void:
 					if ok != peer_ok or not peer_hello:
 						peer_hello = true
 						peer_ok = ok
+						if ok:
+							udp_out.put_packet("R".to_ascii_buffer())   # the bridge: full decor and a keyframe for him
 						_refresh()
 				elif peer_ok:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
@@ -198,9 +210,11 @@ func _read(ch: int) -> void:
 				var vp := get_parent()
 				if vp and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
 					vp._load_by_label(mf)
-			else:
-				udp_out.put_packet(data.decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE))
-				last_view = clock
+			elif tag == "VKF" or tag == "VDL" or tag == "VDP" or tag == "VDC":
+				var full: PackedByteArray = view.feed(data)
+				if full.size() > 0:
+					udp_out.put_packet(full)                   # the same packet as the local coop's
+					last_view = clock
 		n = steam.getAvailableP2PPacketSize(ch)
 
 
@@ -247,6 +261,7 @@ func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -
 	version_msg = ""
 	lobby_id = id
 	peer = steam.getLobbyOwner(id)
+	view = preload("res://scripts/coop_view.gd").new()     # nothing kept from another host
 	_hello()                                                # opens the P2P session
 	_refresh()
 

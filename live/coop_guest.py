@@ -4,8 +4,10 @@
 # Input: an XInput gamepad (left stick move / strafe, right stick look, right trigger fire) or the guest window
 # itself (W/S/A/D, mouse, left button, F8 = next teammate), on port 47834. Online (--guest-remote) the local pad is not
 # read: the guest window's coop_net.gd sends its own gamepad as 'P' packets (lx, ly, rx, ry int8 with XInput signs,
-# fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd).
-import ctypes, math, os, socket, struct, time, zlib
+# fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd). Online the
+# view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
+import ctypes, math, os, socket, struct, time
+import coop_view
 
 CAVE = 0x46B040
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
@@ -52,8 +54,9 @@ def launch(godot, vpath, mission):
 
 
 class Guest:
-    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False):
-        self.remote, self.sent_t = remote, 0.0
+    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False, view_hz=20.0):
+        self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
+        self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
         self.fov_now, self.s = fov_now, sock
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -163,9 +166,10 @@ class Guest:
             eh = self.u16(M + me * 0x25 + 0x1B) / 65536 * 2 * math.pi
             while True:                                        # still read his input (F8 is ignored here)
                 try:
-                    self.rx.recvfrom(64)
+                    pk, _ = self.rx.recvfrom(64)
                 except (BlockingIOError, OSError):
                     break
+                self.resync(pk)
             self.send(struct.pack('<6f2i', ex, ey, ez + self.eye, eh, 0.0, self.fov_now(), len(body), me) +
                       b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
             return
@@ -176,6 +180,7 @@ class Guest:
                 pk, _ = self.rx.recvfrom(64)
             except (BlockingIOError, OSError):
                 break
+            self.resync(pk)
             if pk[:1] == b'K' and len(pk) >= 4:
                 sc, down = struct.unpack('<HB', pk[1:4])
                 if sc == F8 and down:
@@ -236,9 +241,19 @@ class Guest:
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
         self.send(view)
 
+    def resync(self, pk):
+        # 'R': the guest's decor table is not ours (it joined late), or it just connected (coop_net.gd)
+        if pk[:1] == b'R' and self.enc and time.time() - self.resync_t > 0.5:
+            self.resync_t = time.time()
+            self.enc.resync()
+
     def send(self, view):
         if not self.remote:
             self.s.sendto(view, ('127.0.0.1', LIVE_PORT))
-        elif time.time() - self.sent_t > 1 / 30:           # online: 30 views a second, compressed
-            self.sent_t = time.time()
-            self.s.sendto(zlib.compress(view, 6), ('127.0.0.1', REMOTE_VIEW))
+            return
+        now = time.time()
+        if now - self.sent_t < 1 / self.view_hz:              # online: view_hz views a second (--view-hz)
+            return
+        self.sent_t = max(self.sent_t + 1 / self.view_hz, now - 1 / self.view_hz)   # on the beat, not the bridge's frames
+        for m in self.enc.encode(view, now):
+            self.s.sendto(m, ('127.0.0.1', REMOTE_VIEW))

@@ -45,7 +45,8 @@ if '--launch' in sys.argv:
     print('mission', mission, '-> Uplink', res)
     pos = ['--position', os.environ['TN_POS']] if 'TN_POS' in os.environ else []   # tests : fenetre hors ecran
     taille = ['--', '--live', '--native'] if res == 'native' else ['--resolution', res] + pos + ['--', '--live']   # native : plein ecran
-    viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))
+    viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []) +
+                              (['--coop-host'] if '--guest' in sys.argv else []))
     print('visualiseur pid %d' % viewer.pid, flush=True)
     if '--guest' in sys.argv:                   # coop: the guest's window (same Uplink, other ports, no HUD)
         import coop_guest

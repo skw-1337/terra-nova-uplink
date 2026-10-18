@@ -255,6 +255,8 @@ func _ready() -> void:
 		var lf := args.find("--shot-frame")
 		if lf >= 0 and lf + 1 < args.size():
 			live_shot_frame = int(args[lf + 1])
+	if live and "--coop-host" in args:          # coop over Steam: online indicator, friends-only lobby (coop_net.gd)
+		add_child(load("res://scripts/coop_net.gd").new())
 	if live and "--hud" in args:
 		_hud_setup()
 	if live and "--play" in args:

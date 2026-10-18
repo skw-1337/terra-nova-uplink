@@ -3,11 +3,13 @@
 # guest's commands, aim and fire to the game (data page 0x46C000) and the guest's camera to his window (port 47831).
 # Input: an XInput gamepad (left stick move / strafe, right stick look, right trigger fire) or the guest window
 # itself (W/S/A/D, mouse, left button), on port 47834.
-import ctypes, math, os, socket, struct, time
+import ctypes, math, os, socket, struct, time, zlib
 
 CAVE = 0x46B040
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
 LIVE_PORT, PLAY_PORT = 47831, 47834
+REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
+KEYS = {0x11, 0x1F, 0x1E, 0x20}   # the only keys a guest can hold: W S A D (input from the network is filtered)
 
 
 class XState(ctypes.Structure):
@@ -43,7 +45,8 @@ def launch(godot, vpath, mission):
 
 
 class Guest:
-    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock):
+    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False):
+        self.remote, self.sent_t = remote, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
         self.fov_now, self.s = fov_now, sock
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -103,16 +106,17 @@ class Guest:
                 break
             if pk[:1] == b'K' and len(pk) >= 4:
                 sc, down = struct.unpack('<HB', pk[1:4])
-                (self.keys.add if down else self.keys.discard)(sc)
+                if sc in KEYS:
+                    (self.keys.add if down else self.keys.discard)(sc)
             elif pk[:1] == b'M' and len(pk) >= 5:
-                dx, dy = struct.unpack('<hh', pk[1:5])
+                dx, dy = (max(-200, min(200, v)) for v in struct.unpack('<hh', pk[1:5]))
                 turn += dx * self.sens_x
                 self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
         k = lambda sc: 1 if sc in self.keys else 0
         fwd, side, fire = k(0x11) - k(0x1F), k(0x20) - k(0x1E), self.fire
-        p = pad()
+        p = None if self.remote else pad()        # online: the guest's own window only
         if p:                                                  # gamepad
             fwd = max(-1.0, min(1.0, fwd + axis(p.ly)))
             side = max(-1.0, min(1.0, side + axis(p.lx)))
@@ -143,5 +147,10 @@ class Guest:
             pose = self.anim.host(*where(me), now)
             if pose:
                 joints = joints + [struct.pack('<i', me) + pose]
-        self.s.sendto(struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
-                      b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints), ('127.0.0.1', LIVE_PORT))
+        view = (struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
+                b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
+        if not self.remote:
+            self.s.sendto(view, ('127.0.0.1', LIVE_PORT))
+        elif time.time() - self.sent_t > 1 / 30:           # online: 30 views a second, compressed
+            self.sent_t = time.time()
+            self.s.sendto(zlib.compress(view, 6), ('127.0.0.1', REMOTE_VIEW))

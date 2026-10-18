@@ -99,6 +99,8 @@ var scorch_prev := PackedByteArray()
 var ground_mats := []        # ground materials of the map, for the sky they mirror
 var sky_clouds: Texture2D
 var sky_haze := Color(0.7, 0.76, 0.84)
+var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the horizon)
+var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light direction)
 # --hud: the game's own screen (cockpit, HUD) over the view, its 3D window transparent (port 47823: 'PAL' palette +
 # 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
 # off-centre like the game's, whose view centre (the crosshair) is 51 % down its 3D window
@@ -700,6 +702,8 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	var sm := ShaderMaterial.new()
 	sm.shader = GROUND
 	sm.set_shader_parameter("tiles", pl["textures"])
+	sm.set_shader_parameter("tiles_soft", pl["textures"])
+	sm.set_shader_parameter("tiles_wrap", pl["textures"])
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
@@ -707,11 +711,20 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	# water tiles: the bluish ones of the planet's set (their mean colour)
 	var wt := Image.create(64, 1, false, Image.FORMAT_R8)
 	var tc: PackedColorArray = pl["tile_color"]
+	var wsum := Color(0, 0, 0)
+	var wn := 0
 	for i in mini(64, tc.size()):
 		var c := tc[i]
 		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25:
 			wt.set_pixel(i, 0, Color(1, 0, 0))
+			wsum += c
+			wn += 1
 	sm.set_shader_parameter("water_tiles", ImageTexture.create_from_image(wt))
+	if wn > 0:                                # the game's far water: the mean colour of these tiles, flat
+		var far := Color(wsum.r / wn, wsum.g / wn, wsum.b / wn)
+		sm.set_shader_parameter("water_far", far)
+		mats["water"].set_shader_parameter("far_tint", far)
+		print("far water %d tiles: %s" % [wn, far.to_html(false)])
 	var t0 := Time.get_ticks_msec()
 	sm.set_shader_parameter("relief", ImageTexture.create_from_image(_relief_image(grid["h"], grid["n"], step)))
 	sm.set_shader_parameter("has_relief", true)
@@ -774,6 +787,25 @@ func _sky_to(sm: ShaderMaterial) -> void:
 		sm.set_shader_parameter("clouds", sky_clouds)
 	sm.set_shader_parameter("haze", Vector3(sky_haze.r, sky_haze.g, sky_haze.b))
 	sm.set_shader_parameter("reflect_gain", 0.8)
+	if sky_clouds != null:
+		sm.set_shader_parameter("clouds_soft", sky_clouds)
+	sm.set_shader_parameter("light", Vector3(sky_light.r, sky_light.g, sky_light.b))
+	sm.set_shader_parameter("sun_dir", sun_to)
+	sm.set_shader_parameter("desat", 1.0 / env.adjustment_saturation if live and env.adjustment_enabled else 1.0)
+	sm.set_shader_parameter("modern", _is_modern())
+
+
+# Old school off (F12, and the map viewer): the modern sky and water (sky_common.gdshaderinc); on: the game's.
+func _is_modern() -> bool:
+	return oldschool_rect == null or not oldschool_rect.visible
+
+
+func _apply_look() -> void:
+	var m := _is_modern()
+	if env.sky.sky_material is ShaderMaterial:
+		(env.sky.sky_material as ShaderMaterial).set_shader_parameter("modern", m)
+	for sm in ground_mats + [mats["water"]]:
+		sm.set_shader_parameter("modern", m)
 
 
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
@@ -1163,6 +1195,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _oldschool_toggle() -> void:
 	if oldschool_rect != null and oldschool_key != "":
 		oldschool_rect.visible = not oldschool_rect.visible
+		_apply_look()
 
 
 # The mission's sky (see TNObjects.load_sky): shader sky with the cloud texture and the haze color
@@ -1178,6 +1211,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 	var laz: float = light.x + deg_to_rad(SUN_AZ_OFFSET)
 	var to_light := Vector3(cos(light.y) * cos(laz), sin(light.y), cos(light.y) * sin(laz))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
+	sun_to = to_light
 	if sk.is_empty():
 		var sm := ProceduralSkyMaterial.new()
 		sm.sky_top_color = Color(0.32, 0.5, 0.78)
@@ -1194,6 +1228,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		mat.set_shader_parameter("stars", sk["stars"])
 	if sk["clouds"] != null:
 		mat.set_shader_parameter("clouds", sk["clouds"])
+		mat.set_shader_parameter("clouds_soft", sk["clouds"])
 	var haze: Color = sk["haze"]
 	mat.set_shader_parameter("haze", Vector3(haze.r, haze.g, haze.b))
 	env.sky.sky_material = mat
@@ -1203,10 +1238,12 @@ func _set_sky(path: String, light: Vector2) -> void:
 	if sk.get("light") != null:                         # the clouds lighten towards the horizon
 		var lt: Color = sk["light"]
 		mat.set_shader_parameter("light", Vector3(lt.r, lt.g, lt.b))
+		sky_light = lt
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
 	for sm in ground_mats + [mats["water"]]:
 		_sky_to(sm)
+	_apply_look()
 	var sprites: Array = sk["items"].duplicate()
 	if sk["clouds"] != null:
 		sprites.clear()                                 # under a cloud ceiling the game shows none of them: no sun,
@@ -1635,6 +1672,7 @@ func _live_update() -> void:
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
 		if oldschool_key == "":
 			oldschool_rect.visible = not ("--smooth" in OS.get_cmdline_user_args())
+			_apply_look()
 		oldschool_key = pal_key
 	var pk := PackedByteArray()
 	while udp.get_available_packet_count() > 0:
@@ -1656,6 +1694,8 @@ func _live_update() -> void:
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
 						Vector2(q.decode_float(4), q.decode_float(8)))
+			for sm in ground_mats + [mats["water"]]:          # the water mirrors the same clouds
+				sm.set_shader_parameter("cloud_off", Vector2(q.decode_float(4), q.decode_float(8)))
 		else:
 			pk = q
 	if pk.size() < 24:

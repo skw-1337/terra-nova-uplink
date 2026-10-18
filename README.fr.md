@@ -39,18 +39,22 @@ Petite trouvaille : des têtes de l'île de Pâques sont cachées sur la planèt
 
 ## Mode Live (prototype)
 
+![Uplink en direct sur l'opération Panama](docs/uplink_shore.jpg)
+
 Le jeu tourne toujours dans DOSBox : c'est bien le vrai jeu qui joue. Un petit pont en Python lit son état dans la mémoire de DOSBox environ 120 fois par seconde (caméra, unités, articulations des soldats, tirs, explosions, ciel, écran du cockpit), et Uplink dessine la même scène sur la carte graphique, avec le vrai cockpit du jeu par-dessus. On joue depuis la fenêtre d'Uplink : clavier et souris sont renvoyés au jeu.
 
-![Le jeu dans DOSBox et Uplink, même caméra](docs/live_prototype.png)
+Même instant, même caméra : le jeu dans DOSBox, Uplink avec son filtre old school (`F12`), et le rendu d'Uplink :
 
-Le cockpit, dans le jeu (en haut) et sur la 3D d'Uplink (en bas) :
+![Le jeu, Uplink old school et Uplink](docs/live_compare_shore.jpg)
 
-![Le cockpit, jeu et Uplink](docs/live_hud.png)
+| | |
+|---|---|
+| ![Le lac et les écluses](docs/uplink_lake.jpg) | ![Le lac reflète le ciel](docs/uplink_water.jpg) |
 
 1. Installer [Python 3](https://www.python.org/downloads/) 64 bits, puis lancer `pip install numpy psutil`.
 2. Lancer le jeu avec [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus), Display **HD 848x480** (le mode Live ne gère pas encore le 1280x720).
 3. Double-cliquer sur **`Live (prototype).bat`**. Il trouve la mission en cours et ouvre Uplink dessus. Ça marche aussi depuis les menus.
-4. Cliquer dans la fenêtre pour prendre la souris : la souris regarde, les boutons tirent et verrouillent. `Y` ou `Pause` donne le curseur du jeu (boutons du cockpit, carte) et revient. `F12` active ou coupe le look « old school » (les pixels et la palette du jeu). Toutes les autres touches vont au jeu.
+4. Cliquer dans la fenêtre pour prendre la souris : la souris regarde, les boutons tirent et verrouillent. `Y` ou `Pause` donne le curseur du jeu (boutons du cockpit, carte) et revient. `F12` passe du rendu d'Uplink (sol lisse, eau qui reflète le ciel, nuages plus doux) au look « old school » (les pixels et la palette du jeu), et inversement. Toutes les autres touches vont au jeu.
 
 Fermer Uplink pour arrêter. Les menus, briefings et vidéos s'affichent tels que le jeu les dessine. Pour des cinématiques HD, `tools/upscale_movies.py` agrandit une fois les vidéos du jeu sur ton PC (il faut ffmpeg, Real-ESRGAN et RIFE).
 

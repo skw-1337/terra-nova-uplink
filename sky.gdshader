@@ -7,7 +7,11 @@
 // repeats 4 times around the horizon.
 shader_type sky;
 
+#include "res://sky_common.gdshaderinc"
+
 uniform sampler2D clouds : source_color, filter_nearest_mipmap, repeat_enable;
+uniform sampler2D clouds_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // modern look
+uniform bool modern = false;               // old school off: a smoother, more natural sky (sky_common)
 uniform bool has_clouds = true;
 uniform sampler2D stars : source_color, filter_nearest, repeat_enable;
 uniform bool has_stars = false;
@@ -27,7 +31,10 @@ float hash(vec3 p) {
 void sky() {
 	vec3 d = EYEDIR;
 	vec3 col = has_clouds ? light : haze;
-	if (d.y > 0.0) {
+	if (modern && has_clouds) {
+		col = tn_sky(d, POSITION, clouds_soft, true, light, haze, cloud_px, cloud_par, cloud_off,
+				LIGHT0_ENABLED ? LIGHT0_DIRECTION : vec3(0.0, 1.0, 0.0));
+	} else if (d.y > 0.0) {
 		if (has_clouds) {
 			vec2 t = vec2(d.z, d.x) / max(d.y, 0.004) * cloud_px + vec2(POSITION.z, POSITION.x) * cloud_par + cloud_off;
 			// share of the cloud's own colour, measured on the game's sky: 0.39 at 1.5 deg, 0.70 at 4, 0.85 at 6.5

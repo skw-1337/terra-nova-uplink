@@ -395,7 +395,7 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
         if c != last_c: last_c, last_t = c, now
         # un ecran du jeu : sa 3D arretee, ou sa souris dans un cadre de menu (640 x 480 ; la 3D de TN+ tourne encore
         # au debut de certains ecrans, comme la base : leur image passait alors par le HUD, assombrie)
-        fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (640, 480)
+        fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (0, 0)   # sans --play : la 3D arretee seulement
         menu = now - last_t > 0.5 or fw >= 640
         if mode == 0 and menu: mode = 1
         elif mode == 1 and not menu and now - last_t < 0.1:

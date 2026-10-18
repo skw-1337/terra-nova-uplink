@@ -46,18 +46,22 @@ Fun find: there are Easter Island heads hidden on the red planet in *Operation P
 
 ## Live mode (prototype)
 
+![Uplink, live on Operation Panama](docs/uplink_shore.jpg)
+
 The game keeps running in DOSBox, so it's still the real game you play. A small Python bridge reads its state from DOSBox's memory about 120 times a second (camera, units, soldiers' joints, shots, explosions, sky, cockpit screen), and Uplink draws the same scene on the graphics card, with the game's own cockpit on top. You play from Uplink's window: your keys and mouse go back to the game.
 
-![The game in DOSBox and Uplink, same camera](docs/live_prototype.png)
+Same moment, same camera: the game in DOSBox, Uplink with its old school filter (`F12`), and Uplink's own look:
 
-The cockpit, in the game (top) and over Uplink's 3D (bottom):
+![The game, Uplink old school and Uplink](docs/live_compare_shore.jpg)
 
-![The cockpit, game and Uplink](docs/live_hud.png)
+| | |
+|---|---|
+| ![The lake and the locks](docs/uplink_lake.jpg) | ![The lake mirrors the sky](docs/uplink_water.jpg) |
 
 1. Install 64-bit [Python 3](https://www.python.org/downloads/), then run `pip install numpy psutil`.
 2. Start the game with [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus), Display **HD 848x480** (the live mode doesn't support 1280x720 yet).
 3. Double-click **`Live (prototype).bat`**. It finds the mission in progress and opens Uplink on it. Starting from the menus works too.
-4. Click in the window to take the mouse: the mouse looks around, the buttons fire and lock. `Y` or `Pause` gives you the game's cursor (cockpit buttons, map) and back. `F12` switches the "old school" look (the game's pixels and palette) on or off. Every other key goes to the game.
+4. Click in the window to take the mouse: the mouse looks around, the buttons fire and lock. `Y` or `Pause` gives you the game's cursor (cockpit buttons, map) and back. `F12` switches between Uplink's own look (smooth ground, water that mirrors the sky, softer clouds) and the "old school" one (the game's pixels and palette). Every other key goes to the game.
 
 Close Uplink to stop. Menus, briefings and videos are shown as the game draws them. For HD cutscenes, `tools/upscale_movies.py` upscales the game's videos once on your PC (needs ffmpeg, Real-ESRGAN and RIFE).
 

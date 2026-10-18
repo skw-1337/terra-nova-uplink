@@ -3,8 +3,13 @@
 shader_type spatial;
 render_mode diffuse_burley, specular_disabled;
 
+#include "res://sky_common.gdshaderinc"
+
 // nearest up close: the game's texels, crisp like the original; mipmapped further away: no shimmering
 uniform sampler2DArray tiles : source_color, filter_nearest_mipmap_anisotropic, repeat_disable;
+// modern look (old school off): the same tiles filtered smoothly, the game's big texels no longer blocks up close
+uniform sampler2DArray tiles_soft : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+uniform sampler2DArray tiles_wrap : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // its grain
 uniform sampler2D tilemap : filter_nearest, repeat_disable;
 uniform vec2 origin;          // world XZ of grid vertex (0, 0)
 uniform float step_size;      // world units between grid vertices
@@ -17,7 +22,17 @@ uniform bool has_clouds = false;
 uniform vec3 haze : source_color = vec3(0.7, 0.76, 0.84);
 uniform float cloud_scale = 0.22;
 uniform float reflect_gain = 1.0;
-const vec3 WATER_FAR = vec3(0.14, 0.25, 0.21);    // the game's far water (before this viewer's light)
+// modern look (old school off): the water tiles mirror the whole sky (sky_common), as the water plane does
+uniform bool modern = false;
+uniform sampler2D clouds_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform vec3 light : source_color = vec3(0.91, 0.94, 0.97);
+uniform float cloud_px = 44.0;
+uniform float cloud_par = 1.0;
+uniform vec2 cloud_off = vec2(0.0);
+uniform vec3 sun_dir = vec3(0.0, 0.7, 0.7);
+uniform float desat = 1.0;
+// the game's far water: a flat colour, the mean of the planet's water tiles (blue on Panama, grey teal elsewhere)
+uniform vec3 water_far : source_color = vec3(0.41, 0.54, 0.5);
 const float GRAIN = 0.55;
 // relief: the hollows of the height map darker, its crests lighter (one texel per grid vertex, 0.5 = unchanged),
 // and the tile's own picture as a bump map (its light parts stand out, lit by the sun)
@@ -51,6 +66,9 @@ vec3 ground_at(vec2 q, vec2 dx, vec2 dy, out vec2 uv, out float tile, out vec2 d
 	}
 	du = dx;
 	dv = dy;
+	if (modern) {        // texel centres to the cell's edges: no half-texel strip of the edge texel along each border
+		return textureGrad(tiles_soft, vec3(uv * (63.0 / 64.0) + 0.5 / 64.0, tile), dx, dy).rgb;
+	}
 	return textureGrad(tiles, vec3(uv, tile), dx, dy).rgb;
 }
 
@@ -77,7 +95,8 @@ void fragment() {
 	bool water = texture(water_tiles, vec2((tile + 0.5) / 64.0, 0.5)).r > 0.5;
 	// grain: the same tile 4 times finer modulates the brightness up close (grass blades, dirt streaks); its mips
 	// fade it to nothing further away, so it does not shimmer
-	vec3 fine = textureGrad(tiles, vec3(fract(uv * 4.0), tile), du * 4.0, dv * 4.0).rgb;
+	vec3 fine = modern ? textureGrad(tiles_wrap, vec3(uv * 4.0, tile), du * 4.0, dv * 4.0).rgb   // wrapped: no seams
+			: textureGrad(tiles, vec3(fract(uv * 4.0), tile), du * 4.0, dv * 4.0).rgb;
 	vec3 avg = textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
 	float gain = dot(fine, vec3(0.3, 0.59, 0.11)) / max(dot(avg, vec3(0.3, 0.59, 0.11)), 0.02);
 	col *= mix(1.0, clamp(gain, 0.4, 1.8), GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)));
@@ -87,6 +106,10 @@ void fragment() {
 	ALBEDO = col;
 	ROUGHNESS = 1.0;
 	float bump_k = bump * (1.0 - smoothstep(0.25, 0.5, tpp));
+	if (modern) {        // across a cell border the next tile's texels made a step: a line along every border
+		vec2 fe = fract(g);
+		bump_k *= smoothstep(0.0, 0.06, min(min(fe.x, 1.0 - fe.x), min(fe.y, 1.0 - fe.y)));
+	}
 	if (!water && bump_k > 0.0) {
 		// one texel further along x and along z: the brightness slope tilts the normal (faded by the mips far away)
 		const float TEXEL = 1.0 / 64.0;
@@ -114,13 +137,27 @@ void fragment() {
 		if (has_clouds) {
 			sky = mix(haze, texture(clouds, r.xz / max(r.y, 0.05) * cloud_scale).rgb, smoothstep(0.0, 0.28, r.y));
 		}
+		if (modern) {
+			float dist = length(wpos - CAMERA_POSITION_WORLD);
+			vec2 sm = tn_waves(p, t, dist);
+			vec3 nm = normalize(vec3(-sm.x, 1.0, -sm.y));
+			vec3 rm = reflect(v, nm);
+			rm.y = max(rm.y, 0.07);              // not only the white horizon: the clouds above it
+			vec3 skym = tn_sky(rm, wpos, clouds_soft, has_clouds, light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
+			skym = mix(vec3(dot(skym, vec3(0.299, 0.587, 0.114))), skym, desat);
+			float fm = 0.04 + 0.96 * pow(1.0 - clamp(dot(-v, nm), 0.0, 1.0), 5.0);
+			float km = clamp(0.2 + 0.55 * fm, 0.0, 0.75);
+			ALBEDO = water_far * 0.5 * (1.0 - km);
+			EMISSION = skym * mix(vec3(1.0), water_far * 1.6, 0.35) * km + vec3(1.0, 0.95, 0.85) * pow(max(dot(rm, sun_dir), 0.0), 900.0) * 1.2;
+		} else {
 		float fres = 0.08 + 0.92 * pow(1.0 - clamp(dot(-v, n), 0.0, 1.0), 4.0);
 		float k = clamp(0.12 + 0.35 * fres, 0.0, 0.45);  // a hint of sky, a little more at grazing angles
-		// the game reflects the sky only near the eye (~3.5 units): beyond, its water is a flat
-		// grey teal (measured on the running game: ~(75, 100, 94) from ~3.5 units on, a sharp change)
+		// the game reflects the sky only near the eye (~3.5 units): beyond, its water is a flat colour, the mean of
+		// the planet's water tiles, unlit (Panama: its blue (117, 154, 202) and teal (100, 134, 131) texels)
 		float far_k = smoothstep(2.5, 4.0, length(wpos - CAMERA_POSITION_WORLD));
 		k *= 1.0 - far_k;
-		ALBEDO = mix(ALBEDO * (1.0 - k), WATER_FAR, far_k);
-		EMISSION = sky * k * reflect_gain;
+		ALBEDO = ALBEDO * (1.0 - k) * (1.0 - far_k);
+		EMISSION = sky * k * reflect_gain + water_far * far_k;
+		}
 	}
 }

@@ -1,5 +1,5 @@
 @echo off
-rem Terra Nova Viewer (Godot 4.7): reads the maps straight from your game install.
+rem Terra Nova Uplink, map viewer (Godot 4.7): reads the maps straight from your game install.
 rem Looks for Godot in: the GODOT variable, next to this folder, in the PATH, in C:\Tools\Godot.
 setlocal
 set "HERE=%~dp0"

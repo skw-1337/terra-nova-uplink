@@ -4,4 +4,6 @@ export/
 /*.png
 live/base.txt
 live/__pycache__/
+live/snaps/
+live/shots/
 movies_hd/

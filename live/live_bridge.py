@@ -1,8 +1,8 @@
-# Pont vers Terra Nova Viewer (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
+# Pont vers Terra Nova Uplink (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
 # (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
 # Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
 #   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
-#   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance le visualiseur dessus en mode
+#   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance Uplink dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, time, zlib
 import tnre
@@ -42,7 +42,7 @@ if '--launch' in sys.argv:
     res = sys.argv[sys.argv.index('--res') + 1] if '--res' in sys.argv else '1600x900'
     godot = os.environ.get('GODOT', r'C:\Tools\Godot\Godot_v4.7.2-stable_win64.exe')
     vpath = os.environ.get('TN_VIEWER', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # le depot
-    print('mission', mission, '-> visualiseur', res)
+    print('mission', mission, '-> Uplink', res)
     pos = ['--position', os.environ['TN_POS']] if 'TN_POS' in os.environ else []   # tests : fenetre hors ecran
     taille = ['--', '--live', '--native'] if res == 'native' else ['--resolution', res] + pos + ['--', '--live']   # native : plein ecran
     viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))

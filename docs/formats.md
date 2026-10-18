@@ -1,6 +1,6 @@
 # Technical notes
 
-For modders and the curious: how the viewer reads the game files.
+For modders and the curious: how Terra Nova Uplink reads the game files.
 
 ## Command line options (for screenshots and tests)
 
@@ -16,12 +16,12 @@ For modders and the curious: how the viewer reads the game files.
 
 ## File formats
 
-Everything below was worked out for this viewer from the game files and from the game's own code (`__FF.EXE`). Memory addresses refer to the running game (GOG version, as loaded by DOSBox).
+Everything below was worked out for Uplink from the game files and from the game's own code (`__FF.EXE`). Memory addresses refer to the running game (GOG version, as loaded by DOSBox).
 
 | File / resource | Contents |
 |---|---|
 | LG Res v2 | 128-byte header, directory offset at 0x7C; entries: u16 id, 24-bit size + flags, 24-bit compressed size + type |
-| MAPx.RES 86 | 513 × 513 × 3 bytes: ground type, s16 height (× 0.6875 / 256) |
+| MAPx.RES 86 | 513 × 513 × 3 bytes: ground type, s16 height (÷ 384 in game units) |
 | MAPx.RES 85 | 257 × 257 × 3 bytes, same format, step 4, offset 256 |
 | MAPx.RES 80 | planet file name (`resplntN.res`) |
 | MAPx.RES 82 | light: u16 azimuth, s16 elevation (1/65536 turn) — the engine also draws the sky's moon there; then 2 words not decoded |

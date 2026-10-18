@@ -1,4 +1,4 @@
-# Terra Nova map viewer: terrain, water, mission entities, named script zones, free camera.
+# Terra Nova Uplink: terrain, water, mission entities, named script zones, free camera.
 extends Node3D
 
 const TNData = preload("res://scripts/tn_data.gd")
@@ -74,7 +74,7 @@ var env: Environment
 var sun: DirectionalLight3D
 var sky_root: Node3D
 var mats := {}
-# --live: the camera follows the running game (sent by _MODS/re/live_bridge.py over UDP, port 47821:
+# --live: the camera follows the running game (sent by live/live_bridge.py over UDP, port 47821:
 # x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
 const LIVE_PORT := 47821
 const GAME_Z := 0.12          # the game's heights are this much above the ground (units, shots)
@@ -343,7 +343,7 @@ func _build_ui() -> void:
 	var vb := VBoxContainer.new()
 	panel.add_child(vb)
 	var title := Label.new()
-	title.text = "Terra Nova map viewer"
+	title.text = "Terra Nova Uplink"
 	vb.add_child(title)
 	list = ItemList.new()
 	list.custom_minimum_size = Vector2(360, 520)

@@ -1,0 +1,147 @@
+# Coop (TN+ Coop build only): a second player drives a teammate and sees through his eyes in a second Uplink window.
+# TN+ Coop puts the coop code in the game at the main menu (code 0x46B040); this module picks the teammate, sends the
+# guest's commands, aim and fire to the game (data page 0x46C000) and the guest's camera to his window (port 47831).
+# Input: an XInput gamepad (left stick move / strafe, right stick look, right trigger fire) or the guest window
+# itself (W/S/A/D, mouse, left button), on port 47834.
+import ctypes, math, os, socket, struct, time
+
+CAVE = 0x46B040
+G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
+LIVE_PORT, PLAY_PORT = 47831, 47834
+
+
+class XState(ctypes.Structure):
+    _fields_ = [('packet', ctypes.c_uint), ('buttons', ctypes.c_ushort), ('lt', ctypes.c_ubyte), ('rt', ctypes.c_ubyte),
+                ('lx', ctypes.c_short), ('ly', ctypes.c_short), ('rx', ctypes.c_short), ('ry', ctypes.c_short)]
+
+
+try:
+    _xinput = ctypes.windll.xinput1_4
+except OSError:
+    _xinput = None
+
+
+def pad():
+    if not _xinput:
+        return None
+    s = XState()
+    return s if _xinput.XInputGetState(0, ctypes.byref(s)) == 0 else None
+
+
+def axis(v, dead=7849):
+    if abs(v) < dead:
+        return 0.0
+    return max(-1.0, min(1.0, (v - math.copysign(dead, v)) / (32767 - dead)))
+
+
+def launch(godot, vpath, mission):
+    import subprocess
+    return subprocess.Popen([godot, '--path', vpath, '--resolution', os.environ.get('TN_GUEST_RES', '1280x720')] +
+                            (['--position', os.environ['TN_GUEST_POS']] if 'TN_GUEST_POS' in os.environ else []) +
+                            ['--', '--live', '--live-port', str(LIVE_PORT), '--play', '--play-port', str(PLAY_PORT)] +
+                            (['--mission', mission] if mission else []))
+
+
+class Guest:
+    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock):
+        self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
+        self.fov_now, self.s = fov_now, sock
+        self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
+        self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
+        self.anim = None
+        try:
+            from host_anim import HostAnim
+            self.anim = HostAnim()
+        except Exception:
+            pass
+        self.ready = g.read(CAVE, 4) != bytes(4)
+        print('coop :', 'code in place' if self.ready else 'NOT in place (start the game with TN+ Coop, English game)', flush=True)
+
+    def u16(self, a):
+        return struct.unpack('<H', self.g.read(a, 2))[0]
+
+    def i32(self, a):
+        return struct.unpack('<i', self.g.read(a, 4))[0]
+
+    def pick(self):
+        """the suit nearest to the player (a teammate at mission start), or TN_GUEST_ID"""
+        me = self.u16(self.pid_addr + 2)
+        mx, my = struct.unpack('<ii', self.g.read(self.master + 0x25 * me + 0x0F, 8))
+        best, gid = None, 0
+        for i in range(1, self.nent):
+            b = self.g.read(self.master + 0x25 * i, 0x17)
+            if b[0] and b[1] == 1 and b[2] < 8 and i != me:
+                x, y = struct.unpack_from('<ii', b, 0x0F); d = (x - mx) ** 2 + (y - my) ** 2
+                if best is None or d < best:
+                    best, gid = d, i
+        return int(os.environ['TN_GUEST_ID']) if os.environ.get('TN_GUEST_ID') else gid
+
+    def step(self, body, joints):
+        g, M = self.g, self.master
+        if not self.ready:
+            self.ready = g.read(CAVE, 4) != bytes(4)
+            if not self.ready:
+                return
+        me = self.u16(self.pid_addr + 2)
+        if g.read(M + me * 0x25, 2) != b'\x01\x01':          # not in a mission
+            if self.gid:
+                g.write(G_ON, b'\x00'); self.gid = 0
+            return
+        if not self.gid or not g.read(M + self.gid * 0x25, 1)[0]:
+            self.gid = self.pick()
+            if not self.gid:
+                return
+            g.write(G_TIM, bytes(16)); g.write(G_ID, struct.pack('<H', self.gid)); g.write(G_ON, b'\x01')
+            print('guest: entity %d' % self.gid, flush=True)
+        eg = M + self.gid * 0x25
+        turn = 0
+        while True:                                            # the guest window: keys, mouse, buttons
+            try:
+                pk, _ = self.rx.recvfrom(64)
+            except (BlockingIOError, OSError):
+                break
+            if pk[:1] == b'K' and len(pk) >= 4:
+                sc, down = struct.unpack('<HB', pk[1:4])
+                (self.keys.add if down else self.keys.discard)(sc)
+            elif pk[:1] == b'M' and len(pk) >= 5:
+                dx, dy = struct.unpack('<hh', pk[1:5])
+                turn += dx * self.sens_x
+                self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
+            elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
+                self.fire = bool(pk[2])
+        k = lambda sc: 1 if sc in self.keys else 0
+        fwd, side, fire = k(0x11) - k(0x1F), k(0x20) - k(0x1E), self.fire
+        p = pad()
+        if p:                                                  # gamepad
+            fwd = max(-1.0, min(1.0, fwd + axis(p.ly)))
+            side = max(-1.0, min(1.0, side + axis(p.lx)))
+            turn += axis(p.rx) * 600
+            self.pitch = max(-0.9, min(0.9, self.pitch + axis(p.ry) * 0.03))
+            fire = fire or p.rt > 64
+        if turn:
+            g.write(eg + 0x1B, struct.pack('<H', (self.u16(eg + 0x1B) + int(turn)) & 0xffff))
+        c = bytearray(0x28)
+        struct.pack_into('<ii', c, 0, int(fwd * 0x10000), int(side * 0x10000))
+        g.write(G_CTRL, bytes(c))
+        gx, gy, gz = (self.i32(eg + o) / 65536 for o in (0x0F, 0x13, 0x17))
+        gh = self.u16(eg + 0x1B) / 65536 * 2 * math.pi
+        # aim: 30 units along the guest's view; held = a request every frame (the weapon's reload sets the pace)
+        ca = math.cos(self.pitch) * 30
+        g.write(G_TGT, struct.pack('<3i', int((gx + math.cos(gh) * ca) * 65536), int((gy + math.sin(gh) * ca) * 65536),
+                                   int((gz + self.eye + math.sin(self.pitch) * 30) * 65536)))
+        if fire:
+            g.write(G_FIRE, b'\x01')
+        if self.anim:                                          # the host's suit, never posed by the game (cockpit view)
+            now = time.time()
+            top = lambda j: max(struct.unpack_from('<48f', j, 4)[1::3])
+            hmax = max(map(top, joints)) if joints else 0
+            up = {struct.unpack_from('<i', j)[0]: struct.unpack_from('<48f', j, 4) for j in joints if top(j) > 0.8 * hmax}
+            where = lambda i: (self.i32(M + 0x25 * i + 0x0F) / 65536, self.i32(M + 0x25 * i + 0x13) / 65536,
+                               self.u16(M + 0x25 * i + 0x1B) / 65536 * 2 * math.pi)
+            self.anim.learn(up, where, now)
+            pose = self.anim.host(*where(me), now)
+            if pose:
+                joints = joints + [struct.pack('<i', me) + pose]
+        self.s.sendto(struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
+                      b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints), ('127.0.0.1', LIVE_PORT))

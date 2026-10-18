@@ -76,7 +76,7 @@ var sky_root: Node3D
 var mats := {}
 # --live: the camera follows the running game (sent by live/live_bridge.py over UDP, port 47821:
 # x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
-const LIVE_PORT := 47821
+var LIVE_PORT := 47821                         # --live-port N (coop: the guest's window)
 const GAME_Z := 0.12          # the game's heights are this much above the ground (units, shots)
 var live := false
 var udp: PacketPeerUDP
@@ -127,7 +127,7 @@ var hud_win := Rect2i()           # 3D window in the game's 320 x 400 screen
 # --play: keyboard and mouse go to the game through the bridge (port 47824): keys as PC scancodes of their physical
 # position ('K'), mouse moves ('M', the bridge turns them into the look), left / right buttons ('B'). A click in the
 # window captures the mouse; Pause gives it back (also when the window loses the focus).
-const PLAY_PORT := 47824
+var PLAY_PORT := 47824                         # --play-port N
 var play := false
 var play_udp: PacketPeerUDP
 var play_dx := 0.0
@@ -241,6 +241,12 @@ func _ready() -> void:
 		env.fog_depth_end = LIVE_FOG_END
 		env.fog_density = 1.0
 		env.fog_sky_affect = 0.0
+		var lpi := args.find("--live-port")
+		if lpi >= 0 and lpi + 1 < args.size():
+			LIVE_PORT = int(args[lpi + 1])
+		var ppi := args.find("--play-port")
+		if ppi >= 0 and ppi + 1 < args.size():
+			PLAY_PORT = int(args[ppi + 1])
 		udp = PacketPeerUDP.new()
 		udp.bind(LIVE_PORT, "127.0.0.1")
 		var ls := args.find("--shot")

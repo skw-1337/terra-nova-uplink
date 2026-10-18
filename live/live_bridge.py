@@ -47,6 +47,10 @@ if '--launch' in sys.argv:
     taille = ['--', '--live', '--native'] if res == 'native' else ['--resolution', res] + pos + ['--', '--live']   # native : plein ecran
     viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))
     print('visualiseur pid %d' % viewer.pid, flush=True)
+    if '--guest' in sys.argv:                   # coop: the guest's window (same Uplink, other ports, no HUD)
+        import coop_guest
+        gviewer = coop_guest.launch(godot, vpath, mission)
+        print('guest window pid %d' % gviewer.pid, flush=True)
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -674,6 +678,10 @@ def devant():
 
 
 import atexit
+guest = None
+if '--guest' in sys.argv:                       # coop (TN+ Coop build): a teammate played by a second player
+    import coop_guest
+    guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s)
 atexit.register(cursor_restore)
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi
     atexit.register(lambda: viewer.poll() is None and viewer.terminate())
@@ -779,6 +787,7 @@ while True:
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),
              ('127.0.0.1', 47821))
+    if guest: guest.step(body, joints)
     if '--once' in sys.argv or n % int(HZ * 2) == 0:
         print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
         if '--once' in sys.argv: break

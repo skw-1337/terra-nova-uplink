@@ -6,7 +6,7 @@
 # read: the guest window's coop_net.gd sends its own gamepad as 'P' packets (lx, ly, rx, ry int8 with XInput signs,
 # fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd). Online the
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
-import ctypes, math, os, socket, struct, time
+import ctypes, math, os, socket, struct, time, zlib
 import coop_view
 from coop_name import NameTag
 
@@ -16,10 +16,22 @@ LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 KEYS = {0x11, 0x1F, 0x1E, 0x20}   # the only keys a guest can hold: W S A D (input from the network is filtered)
 F8 = 0x42                     # next teammate
+WEAPON_KEYS = {0x02: 0, 0x03: 1, 0x04: 2, 0x05: 3}   # 1-4: weapon slot (suit record +0xCE, the fire uses it)
+SEL, SLOTS, SLOT_N = 0xCE, 0x45, 0xF                # selected slot, 4 weapon slots (+0 type: weapon names 1-17)
 HUD_PORT = 47832              # the guest window's coop_hud.gd: 'GHD' state, armour, max, entity (online: via 47841)
 PBA, PBA_N, ARMOUR = 0x3A5608, 0x582, 0x88   # English exe: suit records, armour word (our suits 1100, enemies 1000)
 SQUAD_R = 25.0                # suits this close to the player at mission start = his squad (the guest's choices)
 OK, DOWN, SPECTATE = 0, 1, 2
+# The guest's cockpit (coop_hud.gd) is the host's game screen (320 x 400, palette indices + alpha, see live_bridge.py
+# send_hud) with what is the host's own emptied: his panels' contents, compass, bars, rear view, and anything drawn in
+# the 3D window away from its frame (crosshair, target box). 'GCK' + palette + zlib(index, alpha), every 10 s.
+CLEAR = [((30, 276, 108, 376), 60, 255),     # COMM panel (the guest's window draws the host's name and avatar)
+         ((211, 276, 292, 376), 60, 255),    # WEAPON panel (his weapon)
+         ((118, 260, 202, 368), 0, 255),     # map (his own, from above)
+         ((30, 0, 290, 21), 0, 255),         # compass strip (his heading)
+         ((72, 25, 162, 34), 0x28, 255),     # armour bar (his armour)
+         ((162, 22, 262, 36), 0x28, 255),    # the other bar
+         ((146, 222, 175, 252), 0, 255)]     # rear view
 
 
 class XState(ctypes.Structure):
@@ -67,6 +79,7 @@ class Guest:
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
+        self.hud_src, self.tpl_t, self.taken_t = None, 0.0, 0.0   # the bridge's last game screen, for his cockpit
         self.anim = None
         try:
             from host_anim import HostAnim
@@ -93,6 +106,9 @@ class Guest:
                 x, y = struct.unpack_from('<ii', b, 0x0F)
                 out.append((math.hypot(x - mx, y - my) / 65536, i))
         return sorted(out)
+
+    def suit(self, e):
+        return PBA + PBA_N * self.u16(self.master + 0x25 * e + 3)
 
     def armour(self, e):
         return struct.unpack('<h', self.g.read(PBA + PBA_N * self.u16(self.master + 0x25 * e + 3) + ARMOUR, 2))[0]
@@ -123,7 +139,7 @@ class Guest:
         self.gid = gid
         if gid:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
-            self.amax, self.state = max(1, self.armour(gid)), OK
+            self.amax, self.state, self.taken_t = max(1, self.armour(gid)), OK, time.time()
             print('guest: entity %d' % gid, flush=True)
             self.tag.put(gid, self.name, self.face)
         else:
@@ -134,8 +150,36 @@ class Guest:
             return
         self.hud_t = time.time()
         a = self.armour(self.gid) if self.gid else 0
-        pk = b'GHD' + struct.pack('<BhhH', self.state, max(0, a), self.amax, self.gid)
+        sel, wtype = 0, 0
+        if self.gid:
+            p = self.suit(self.gid)
+            sel = self.g.read(p + SEL, 1)[0] & 3
+            wtype = self.g.read(p + SLOTS + SLOT_N * sel, 1)[0]
+        head = self.u16(self.master + 0x25 * self.gid + 0x1B) if self.gid else 0
+        pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
+        # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
+        if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
+            self.cockpit()
+
+    def cockpit(self):
+        src = self.hud_src() if self.hud_src else None
+        if not src:
+            return
+        import numpy as np
+        scr, alpha, (fx0, fy0, fw, fh), pal = src
+        if fw < 100 or fh < 100:                               # the game's map or a menu: not the cockpit
+            return
+        self.tpl_t = time.time()
+        scr, alpha = scr.copy(), alpha.copy()
+        m = 16                                                 # the 3D window: only its frame stays
+        alpha[fy0 + m:fy0 + fh - m, fx0 + m:fx0 + fw - m] = 0
+        for (x0, y0, x1, y1), c, a in CLEAR:
+            scr[y0:y1, x0:x1] = c
+            alpha[y0:y1, x0:x1] = a
+        pk = b'GCK' + pal + zlib.compress(np.dstack([scr, alpha]).tobytes(), 6)
+        if len(pk) < 60000:
+            self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
     def step(self, body, joints):
         g, M = self.g, self.master
@@ -229,6 +273,7 @@ class Guest:
         if pk[:1] == b'R' and self.enc and time.time() - self.resync_t > 0.5:
             self.resync_t = time.time()
             self.enc.resync()
+            self.taken_t = time.time()                     # and his cockpit again
 
     def read_input(self, active):
         """the guest window: keys, mouse, buttons, online gamepad; returns the turn. Key and button releases count
@@ -246,6 +291,8 @@ class Guest:
                 sc, down = struct.unpack('<HB', pk[1:4])
                 if sc == F8 and down and active:
                     self.next = True
+                if sc in WEAPON_KEYS and down and active and self.gid:
+                    self.g.write(self.suit(self.gid) + SEL, bytes([WEAPON_KEYS[sc]]))
                 if sc in KEYS:
                     (self.keys.add if down else self.keys.discard)(sc)
             elif pk[:1] == b'M' and len(pk) >= 5:

@@ -230,6 +230,7 @@ def handle_input():
         elif pk == b'HOST' and guest is None:   # the viewer's "Host online" button: its coop_net.gd opens the lobby
             import coop_guest
             guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True)
+            guest.hud_src = lambda: hud_last
             print('coop: hosting online', flush=True)
     if look:                                  # le curseur du jeu reste au centre : on vise ou on regarde
         x, y = centre()
@@ -237,6 +238,7 @@ def handle_input():
 
 
 hud_rate, hud_rect, hud_fixe = None, None, {}
+hud_last = None
 
 
 def send_hud():
@@ -288,6 +290,8 @@ def send_hud():
         alpha[fy0:fy0 + fh, fx0:fx0 + fw][same & (hud_rate > 0.6) & ~cadre] = 0
     else:
         fx0 = fy0 = fw = fh = 0
+    global hud_last                           # coop: the guest's cockpit is made from ours (coop_guest.py)
+    hud_last = (scr.copy(), alpha.copy(), (fx0, fy0, fw, fh), g.read(PAL, 768))
     if PLAY:
         curseur_hud(scr, alpha)
     hud_n += 1
@@ -690,6 +694,7 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
     import coop_guest                           # (--guest-remote: online, through the host window's Steam link)
     guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote='--guest-remote' in sys.argv,
                              view_hz=arg('--view-hz', 20.0))   # online: views a second to the guest
+    guest.hud_src = lambda: hud_last
 atexit.register(cursor_restore)
 atexit.register(lambda: guest and guest.tag.restore())   # coop: the pilot's own name back in the game
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi

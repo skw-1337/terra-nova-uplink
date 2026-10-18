@@ -225,7 +225,7 @@ func _read(ch: int) -> void:
 						_refresh()
 				elif peer_ok:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
-			elif tag == "GHD":
+			elif tag == "GHD" or tag == "GCK":                # HUD and cockpit: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
 			elif data.size() > 3 and tag == "MSN":
 				var mf := data.slice(3).get_string_from_ascii()
@@ -307,6 +307,11 @@ func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -
 	peer = steam.getLobbyOwner(id)
 	view = preload("res://scripts/coop_view.gd").new()     # nothing kept from another host
 	_hello()                                                # opens the P2P session
+	for n in get_parent().get_children():                   # the host's name now, his avatar when Steam has it
+		if n.has_method("set_mate"):
+			n.set_mate(steam.getFriendPersonaName(peer), null)
+	if steam.has_method("getPlayerAvatar"):
+		steam.getPlayerAvatar(2, peer)
 	_refresh()
 
 
@@ -348,13 +353,18 @@ func _axis(a: JoyAxis, sign_: float) -> int:
 
 # host: the guest's Steam avatar, 21 x 27 like the game's portraits (the bridge turns it into the game's colours)
 func _on_avatar(id: int, size: int, data: PackedByteArray) -> void:
-	if not host_mode or id != peer or size <= 0 or data.size() != size * size * 4:
+	if id != peer or size <= 0 or data.size() != size * size * 4:
 		return
 	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
 	# the game's screen has half-height rows (320 x 400 shown 4:3): a portrait's 21 x 27 pixels show a wide band,
 	# 1.73 wide for 1 high; the avatar's middle band, a little above the centre (faces)
 	var h := int(size / 1.73)
 	img = img.get_region(Rect2i(0, int((size - h) * 0.4), size, h))
+	if not host_mode:                                       # guest: the host's face in our cockpit's COMM panel
+		for n in get_parent().get_children():
+			if n.has_method("set_mate"):
+				n.set_mate(steam.getFriendPersonaName(peer), img)
+		return
 	img.resize(21, 27, Image.INTERPOLATE_LANCZOS)
 	img.convert(Image.FORMAT_RGB8)
 	udp_out.put_packet("A".to_ascii_buffer() + img.get_data())

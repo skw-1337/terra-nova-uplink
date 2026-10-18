@@ -2,7 +2,9 @@
 # TN+ Coop puts the coop code in the game at the main menu (code 0x46B040); this module picks the teammate, sends the
 # guest's commands, aim and fire to the game (data page 0x46C000) and the guest's camera to his window (port 47831).
 # Input: an XInput gamepad (left stick move / strafe, right stick look, right trigger fire) or the guest window
-# itself (W/S/A/D, mouse, left button), on port 47834.
+# itself (W/S/A/D, mouse, left button, F8 = next teammate), on port 47834. Online (--guest-remote) the local pad is not
+# read: the guest window's coop_net.gd sends its own gamepad as 'P' packets (lx, ly, rx, ry int8 with XInput signs,
+# fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd).
 import ctypes, math, os, socket, struct, time, zlib
 
 CAVE = 0x46B040
@@ -57,6 +59,7 @@ class Guest:
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
+        self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.anim = None
         try:
@@ -185,6 +188,10 @@ class Guest:
                 self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
+            elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
+                lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
+                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (f != 0,)
+                self.rpad_t = time.time()
         k = lambda sc: 1 if sc in self.keys else 0
         fwd, side, fire = k(0x11) - k(0x1F), k(0x20) - k(0x1E), self.fire
         p = None if self.remote else pad()        # online: the guest's own window only
@@ -194,6 +201,13 @@ class Guest:
             turn += axis(p.rx) * 600
             self.pitch = max(-0.9, min(0.9, self.pitch + axis(p.ry) * 0.03))
             fire = fire or p.rt > 64
+        if self.remote and self.rpad and time.time() - self.rpad_t < 0.3:   # online gamepad, same as the local one
+            lx, ly, rx, ry, pf = self.rpad
+            fwd = max(-1.0, min(1.0, fwd + ly))
+            side = max(-1.0, min(1.0, side + lx))
+            turn += rx * 600
+            self.pitch = max(-0.9, min(0.9, self.pitch + ry * 0.03))
+            fire = fire or pf
         if turn:
             g.write(eg + 0x1B, struct.pack('<H', (self.u16(eg + 0x1B) + int(turn)) & 0xffff))
         c = bytearray(0x28)

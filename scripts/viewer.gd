@@ -257,6 +257,8 @@ func _ready() -> void:
 			live_shot_frame = int(args[lf + 1])
 	if live and ("--coop-host" in args or "--coop-guest" in args):   # coop over Steam (coop_net.gd)
 		add_child(load("res://scripts/coop_net.gd").new())
+	if live and ("--coop-hud" in args or "--coop-guest" in args):  # the coop guest's HUD (coop_hud.gd)
+		add_child(load("res://scripts/coop_hud.gd").new())
 	if live and "--hud" in args:
 		_hud_setup()
 	if live and "--play" in args:

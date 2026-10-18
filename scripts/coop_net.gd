@@ -6,28 +6,42 @@
 #               bridge's coop module, which only turns it into move / turn / aim / fire commands).
 #  --coop-guest (the second player's window, his own copy of the game files): joins the host's lobby (Steam invite,
 #               "Join game" in the friends list, or --connect-lobby ID / +connect_lobby ID), feeds the received view
-#               to its own live port and sends its keys, mouse and buttons (its --play port) to the host.
+#               to its own live port and sends its keys, mouse and buttons (its --play port) to the host, plus its
+#               gamepad ('P' packets, ~60 a second: left stick move / strafe, right stick look, right trigger fire).
+#               HUD packets ('GHD') from the host go as they are to 127.0.0.1:47832 (coop_hud.gd). F8: next teammate.
+# Both sides must run the same coop files: the lobby carries "coop_version" and the guest says "HELLO" + COOP_VERSION;
+# a guest with another version leaves, the host ignores the input of one that stays (an older guest).
 # GodotSteam (addons/godotsteam) is loaded at run time and reached through Engine.get_singleton("Steam").
 extends CanvasLayer
 
+const COOP_VERSION := "2"           # bump when the host / guest packets change
 const APP_ID := 480
 const LOBBY_FRIENDS_ONLY := 1        # ELobbyType
 const RESULT_OK := 1                 # EResult
 const SEND_UNRELIABLE_NO_DELAY := 1
 const SEND_RELIABLE := 2
 const CH_VIEW := 0                   # host -> guest: view (zlib) and mission name
-const CH_INPUT := 1                  # guest -> host: input packets (K / M / B), as the viewer sends them
+const CH_INPUT := 1                  # guest -> host: HELLO, input packets (K / M / B) as the viewer sends them, gamepad (P)
 const VIEW_IN := 47841               # host: the bridge's guest view
 const INPUT_OUT := 47834             # host: to the bridge's coop module
 const LIVE_IN := 47831               # guest: its viewer's live port
 const PLAY_IN := 47834               # guest: its viewer's play port
+const HUD_OUT := 47832               # guest: its coop_hud.gd
+const PAD_DEAD := 0.2
 
 var steam: Object = null
 var host_mode := true
 var lobby_id := 0
 var peer := 0                        # the other player's Steam ID
+var peer_hello := false              # host: the guest said HELLO...
+var peer_ok := false                 # ... with our coop version (only then its input goes to the bridge)
+var version_msg := ""                # guest: the host runs another coop version
+var hello_t := -100.0
+var pad_t := -100.0
+var pad_live := false                # guest: the last gamepad packet was not all zero
 var udp_in := PacketPeerUDP.new()
 var udp_out := PacketPeerUDP.new()
+var hud_out := PacketPeerUDP.new()
 var label: Label
 var sent := 0
 var recv := 0
@@ -102,6 +116,7 @@ func _ready() -> void:
 	else:
 		udp_in.bind(PLAY_IN, "127.0.0.1")
 		udp_out.set_dest_address("127.0.0.1", LIVE_IN)
+		hud_out.set_dest_address("127.0.0.1", HUD_OUT)
 		var want := _lobby_arg()
 		if want:
 			_show("ONLINE", "joining the host's lobby...", warn_col)
@@ -144,6 +159,10 @@ func _process(delta: float) -> void:
 				# mouse moves may be dropped; keys and buttons must arrive
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if pk[0] == 77 else SEND_RELIABLE, CH_INPUT)
 				sent += pk.size()
+		if peer:
+			if clock - hello_t > 2.0:                       # again now and then: the host may have missed it
+				_hello()
+			_pad()
 		_read(CH_VIEW)
 	rate_t += delta
 	if rate_t >= 1.0:
@@ -162,9 +181,19 @@ func _read(ch: int) -> void:
 		var from: int = int(r.get("steam_id_remote", 0))
 		if from == peer and data.size() > 0:
 			recv += data.size()
+			var tag := data.slice(0, 3).get_string_from_ascii()
 			if host_mode:
-				udp_out.put_packet(data)                   # guest input: the bridge validates and uses it
-			elif data.size() > 3 and data.slice(0, 3).get_string_from_ascii() == "MSN":
+				if data.size() >= 5 and data.slice(0, 5).get_string_from_ascii() == "HELLO":
+					var ok := data.get_string_from_ascii() == "HELLO" + COOP_VERSION
+					if ok != peer_ok or not peer_hello:
+						peer_hello = true
+						peer_ok = ok
+						_refresh()
+				elif peer_ok:
+					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
+			elif tag == "GHD":
+				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
+			elif data.size() > 3 and tag == "MSN":
 				var mf := data.slice(3).get_string_from_ascii()
 				var vp := get_parent()
 				if vp and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
@@ -187,6 +216,7 @@ func _on_lobby_created(result: int, id: int) -> void:
 	lobby_id = id
 	steam.setLobbyJoinable(id, true)
 	steam.setLobbyData(id, "game", "terra-nova-coop")
+	steam.setLobbyData(id, "coop_version", COOP_VERSION)
 	steam.setRichPresence("connect", "+connect_lobby %d" % id)
 	steam.setRichPresence("status", "Terra Nova coop: room for a second player")
 	_refresh()
@@ -194,6 +224,7 @@ func _on_lobby_created(result: int, id: int) -> void:
 
 func _on_join_requested(id: int, _friend: int) -> void:
 	if not host_mode:
+		version_msg = ""
 		_show("ONLINE", "joining the host's lobby...", warn_col)
 		steam.joinLobby(id)
 
@@ -204,10 +235,56 @@ func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -
 	if response != 1:                                       # k_EChatRoomEnterResponseSuccess
 		_show("ONLINE", "could not join the lobby (%d)" % response, bad_col)
 		return
+	var hv := str(steam.getLobbyData(id, "coop_version"))
+	if hv != COOP_VERSION:
+		steam.leaveLobby(id)
+		peer = 0
+		lobby_id = 0
+		var hs := hv if hv != "" else "older"
+		version_msg = "The host has another coop version (host %s, you %s): both need the same Uplink coop files." % [hs, COOP_VERSION]
+		_show("ONLINE · ANOTHER COOP VERSION", "host %s, you %s" % [hs, COOP_VERSION], bad_col)
+		return
+	version_msg = ""
 	lobby_id = id
 	peer = steam.getLobbyOwner(id)
-	steam.sendP2PPacket(peer, "HELLO".to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)   # opens the P2P session
+	_hello()                                                # opens the P2P session
 	_refresh()
+
+
+func _hello() -> void:
+	hello_t = clock
+	steam.sendP2PPacket(peer, ("HELLO" + COOP_VERSION).to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
+
+
+# guest: gamepad 0 through Godot, XInput signs (stick up = positive), at most 60 packets a second while it is used:
+# 'P' + lx, ly, rx, ry (int8, -127..127) + fire (0 / 1); the host's coop_guest.py drops values older than 0.3 s
+func _pad() -> void:
+	if clock - pad_t < 1.0 / 60.0 or not (0 in Input.get_connected_joypads()):
+		return
+	var lx := _axis(JOY_AXIS_LEFT_X, 1.0)
+	var ly := _axis(JOY_AXIS_LEFT_Y, -1.0)                # Godot: up = negative
+	var rx := _axis(JOY_AXIS_RIGHT_X, 1.0)
+	var ry := _axis(JOY_AXIS_RIGHT_Y, -1.0)
+	var fire := 1 if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT) > 0.25 else 0
+	var used := lx != 0 or ly != 0 or rx != 0 or ry != 0 or fire != 0
+	if not used and not pad_live:                         # idle pad: nothing to send (one last all-zero packet)
+		return
+	pad_live = used
+	pad_t = clock
+	var pk := PackedByteArray([80, 0, 0, 0, 0, fire])     # 'P'
+	pk.encode_s8(1, lx)
+	pk.encode_s8(2, ly)
+	pk.encode_s8(3, rx)
+	pk.encode_s8(4, ry)
+	steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY, CH_INPUT)
+	sent += pk.size()
+
+
+func _axis(a: JoyAxis, sign_: float) -> int:
+	var v := Input.get_joy_axis(0, a) * sign_
+	if absf(v) < PAD_DEAD:
+		return 0
+	return clampi(roundi(signf(v) * (absf(v) - PAD_DEAD) / (1.0 - PAD_DEAD) * 127.0), -127, 127)
 
 
 func _on_p2p_request(remote: int) -> void:
@@ -224,11 +301,15 @@ func _in_lobby(id: int) -> bool:
 
 func _on_lobby_update(_lobby: int, _changed: int, _maker: int, _change: int) -> void:
 	if host_mode:
+		var was := peer
 		peer = 0
 		for i in steam.getNumLobbyMembers(lobby_id):
 			var m: int = steam.getLobbyMemberByIndex(lobby_id, i)
 			if m != steam.getSteamID():
 				peer = m
+		if peer != was:
+			peer_hello = false
+			peer_ok = false
 	_refresh()
 
 
@@ -238,8 +319,13 @@ func _refresh() -> void:
 	if host_mode:
 		if not lobby_id:
 			return
-		if peer:
+		if peer and peer_ok:
 			_show("ONLINE · GUEST CONNECTED", "%s   %s" % [steam.getFriendPersonaName(peer), rate], ok_col)
+		elif peer and peer_hello:
+			_show("ONLINE · GUEST HAS ANOTHER VERSION", "%s: both need the same Uplink coop files (yours: %s)" % [
+				steam.getFriendPersonaName(peer), COOP_VERSION], warn_col)
+		elif peer:
+			_show("ONLINE · GUEST JOINING", steam.getFriendPersonaName(peer), warn_col)
 		else:
 			_show("ONLINE · CONNECTABLE", "friends can join from Steam (F9: invite)", ok_col)
 	elif peer:
@@ -252,12 +338,15 @@ func _waiting() -> void:
 	if live:
 		return
 	var dots := ".".repeat(1 + int(clock * 2.0) % 3)
+	wait_text.add_theme_color_override("font_color", bad_col if version_msg != "" and peer == 0 else Color(0.8, 0.85, 0.9))
 	if steam == null:
 		wait_text.text = "Steam is not available: start Steam, then this window again."
+	elif peer == 0 and version_msg != "":
+		wait_text.text = version_msg
 	elif peer == 0:
 		wait_text.text = "Waiting for an invite%s\nAccept your friend's invite in Steam, or use Join game on your friend in your friends list." % dots
 	else:
-		wait_text.text = "Connected to %s.\nWaiting for the host to start a mission%s\nYou will drive the teammate nearest to the host: W/S/A/D, mouse, left button to fire." % [
+		wait_text.text = "Connected to %s.\nWaiting for the host to start a mission%s\nYou will drive the teammate nearest to the host: W/S/A/D, mouse, left button to fire,\nor a gamepad (left stick move, right stick look, right trigger fire). F8: next teammate." % [
 			steam.getFriendPersonaName(peer), dots]
 
 

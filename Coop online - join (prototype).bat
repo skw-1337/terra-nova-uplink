@@ -1,7 +1,9 @@
 @echo off
 rem Terra Nova Uplink, online coop guest (prototype): joins a Steam friend's coop game. Needs your own copy of the game
 rem (Uplink draws the maps from it), Godot 4.7 and Steam running. Accept the host's invite in Steam, or start this file
-rem and use "Join game" on the host in your friends list. W/S/A/D, mouse and left button in this window drive your teammate.
+rem and use "Join game" on the host in your friends list. W/S/A/D, mouse and left button in this window drive your teammate,
+rem or a gamepad (left stick move, right stick look, right trigger fire). F8: next teammate. Host and guest need the
+rem same Uplink coop files (the version is checked when you join).
 setlocal
 set "HERE=%~dp0"
 set "EXE="

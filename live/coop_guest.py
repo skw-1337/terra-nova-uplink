@@ -149,7 +149,9 @@ class Guest:
                     pilot = r[6]
             out.append(struct.pack('<HBB', e, max(0, min(100, self.armour(e) * 100 // full)), pilot))
         out = out[:3]
-        return bytes([len(out)]) + b''.join(out)
+        # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (1 s apart)
+        slots = bytes(self.g.read(self.suit(self.gid) + SLOTS + SLOT_N * k, 1)[0] for k in range(4)) if self.gid else bytes(4)
+        return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if time.time() - self.jump_t >= 1.0 else 0])
 
     def target_pos(self, e):
         """middle of a living unit (classes 1-3), or None"""

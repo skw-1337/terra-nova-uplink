@@ -53,6 +53,12 @@ var panel: Control                   # what is drawn on it, in the game's 320 x 
 var map_view: SubViewport            # the map: the 3D world from above, around the guest
 var map_cam: Camera3D
 var map_rect: TextureRect
+var status_page := false             # Tab (or the STATUS tab with the mouse free): his weapon slots, jump, lock
+var slot_types := PackedByteArray([0, 0, 0, 0])
+var jump_ready := true
+var rear_view: SubViewport            # the dashboard's rear view (the game's small screen under the 3D window)
+var rear_cam: Camera3D
+var rear_rect: TextureRect
 var big_map := false                 # M (or the MAP button with the mouse free): the map over the 3D window, wider
 var mate_name := "Host"
 var mate_face: ImageTexture
@@ -106,6 +112,22 @@ func _ready() -> void:
 	map_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	map_rect.visible = false
 	root.add_child(map_rect)
+	rear_view = SubViewport.new()
+	rear_view.size = Vector2i(120, 100)
+	rear_view.world_3d = get_viewport().world_3d
+	add_child(rear_view)
+	rear_cam = Camera3D.new()
+	rear_cam.fov = 60.0
+	rear_cam.far = 400.0
+	rear_cam.cull_mask = 0xFFFFF & ~(1 << 18)            # not his own body (the viewer's PLAYER_LAYER)
+	rear_view.add_child(rear_cam)
+	rear_rect = TextureRect.new()
+	rear_rect.texture = rear_view.get_texture()
+	rear_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rear_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rear_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rear_rect.visible = false
+	root.add_child(rear_rect)
 	panel = Control.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -210,6 +232,10 @@ func _process(delta: float) -> void:
 				for i in mini(pk.decode_u8(52), 3):
 					if 53 + 4 * i + 4 <= pk.size():
 						squad.append([pk.decode_u16(53 + 4 * i), pk.decode_u8(55 + 4 * i), pk.decode_u8(56 + 4 * i)])
+				var so := 53 + 4 * mini(pk.decode_u8(52), 3)
+				if so + 5 <= pk.size():
+					slot_types = pk.slice(so, so + 4)
+					jump_ready = pk.decode_u8(so + 4) != 0
 			if pk.size() >= 52:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
@@ -223,6 +249,7 @@ func _process(delta: float) -> void:
 	if root.visible:
 		if cockpit.visible:
 			_map_follow()
+		_rear_follow()
 		panel.visible = true
 		panel.queue_redraw()
 
@@ -450,15 +477,18 @@ func _draw_panel() -> void:
 		panel.draw_rect(_grect(54.0, y0 + 17.0, 54.0 + 50.0 * a, y0 + 21.0),
 			Color(0.3, 0.9, 0.3) if a > 0.5 else (Color(1.0, 0.7, 0.2) if a > 0.25 else Color(1.0, 0.25, 0.2)))
 	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 31.0, 366.0, 8.0, Color(0.6, 0.65, 0.8))
+	if status_page:
+		_draw_status()
 	# WEAPON: his selected weapon, its picture under the texts as in the game
-	var wpic := _weapon_pic(weapon_type)
+	var wpic := null if status_page else _weapon_pic(weapon_type)
 	if wpic:
 		panel.draw_texture_rect(wpic, _grect(211.0, 276.0, 211.0 + wpic.get_width(), 276.0 + wpic.get_height()), false)
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
-	_text(wn.to_upper(), 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)
-	_text("%d%%" % int(round(f * 100.0)), 214.0, 338.0, 12.0, Color(0.95, 0.95, 1.0))
-	_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 214.0, 355.0, 12.0,
-		Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
+	if not status_page:
+		_text(wn.to_upper(), 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)
+		_text("%d%%" % int(round(f * 100.0)), 214.0, 338.0, 12.0, Color(0.95, 0.95, 1.0))
+		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 214.0, 355.0, 12.0,
+			Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
 	_draw_map_units()
 	# map: the guest in the middle, pointing up
 	var c := _map_box().get_center()
@@ -504,6 +534,25 @@ func _draw_lock() -> void:
 			panel.draw_line(k, k - Vector2(0, sy * r * 0.5), col, 2.0)
 
 
+func toggle_status() -> void:
+	status_page = not status_page
+
+
+# STATUS page (the WEAPON panel's other tab): his 4 weapon slots, the selected one lit, jump and lock
+func _draw_status() -> void:
+	_text("STATUS", 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)
+	for k in 4:
+		var t: int = slot_types[k]
+		var nm: String = WEAPONS[t] if t < WEAPONS.size() and t > 0 else "-"
+		var sel := k == weapon_slot
+		_text("%d %s" % [k + 1, nm.to_upper()], 215.0, 296.0 + 13.0 * k, 10.0,
+			Color(0.4, 1.0, 0.45) if sel else Color(0.75, 0.78, 0.9))
+	_text("JUMP %s" % ("READY" if jump_ready else "..."), 215.0, 350.0, 10.0,
+		Color(0.4, 1.0, 0.45) if jump_ready else Color(1.0, 0.7, 0.25))
+	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 215.0, 363.0, 10.0,
+		Color(0.4, 1.0, 0.45) if lock else Color(0.75, 0.78, 0.9))
+
+
 func toggle_map() -> void:
 	big_map = not big_map
 
@@ -512,6 +561,18 @@ func _map_box() -> Rect2:
 	if big_map and win.size.y > 0:
 		return _grect(win.position.x + 12.0, win.position.y + 8.0, win.end.x - 12.0, win.end.y - 8.0)
 	return _grect(118.0, 260.0, 202.0, 368.0)
+
+
+func _rear_follow() -> void:
+	var cam := get_viewport().get_camera_3d()
+	rear_rect.visible = cockpit.visible and state == 0 and cam != null
+	if not rear_rect.visible:
+		return
+	rear_rect.position = _g(147.0, 223.0)
+	rear_rect.size = _g(175.0, 252.0) - _g(147.0, 223.0)
+	var back := cam.global_transform
+	back.basis = back.basis.rotated(Vector3.UP, PI)
+	rear_cam.global_transform = back
 
 
 func _map_follow() -> void:

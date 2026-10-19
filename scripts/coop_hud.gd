@@ -33,6 +33,10 @@ var heading := 0
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
 var host_pos := Vector3.ZERO           # the host's suit (Godot units): his name above it
+var guest_xy := Vector2.ZERO           # his own suit (game x, y): the map's centre
+var squad := []                        # COMM panel: [entity, armour %, pilot] (the host first)
+var game_res = null                    # RESGAME.RES (pilot names, resource 364)
+var faces := {}                        # pilot -> portrait texture (RESHLMHI.RES 538)
 
 var root: Control
 var cross: Control
@@ -198,6 +202,13 @@ func _process(delta: float) -> void:
 				weapon_type = pk.decode_u8(11)
 				heading = pk.decode_u16(12)
 			lock = 0
+			if pk.size() >= 40:
+				guest_xy = Vector2(pk.decode_float(28), pk.decode_float(32))
+			squad = []
+			if pk.size() >= 53:
+				for i in mini(pk.decode_u8(52), 3):
+					if 53 + 4 * i + 4 <= pk.size():
+						squad.append([pk.decode_u16(53 + 4 * i), pk.decode_u8(55 + 4 * i), pk.decode_u8(56 + 4 * i)])
 			if pk.size() >= 52:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
@@ -285,6 +296,64 @@ func _preview_avatar(_id: int, size: int, data: PackedByteArray) -> void:
 	set_mate(name, img)
 
 
+# the map's units: teammates green, the host blue, others red; north-up like the 3D (his heading up)
+func _draw_map_units() -> void:
+	var vp := get_parent()
+	if vp == null or not ("live_ents" in vp) or guest_xy == Vector2.ZERO:
+		return
+	var h := heading / 65536.0 * TAU
+	var fwd := Vector2(cos(h), sin(h))
+	var right := Vector2(-fwd.y, fwd.x)
+	var box := _grect(119.0, 261.0, 201.0, 367.0)
+	var c := _g(160.0, 314.0)
+	var k := _g(0, 1.8).y                                   # screen pixels per game unit (the map camera's 60 units)
+	var host_e: int = squad[0][0] if not squad.is_empty() else -1
+	var mates := {}
+	for w in squad:
+		mates[w[0]] = true
+	for idx in vp.live_ents:
+		var e: Array = vp.live_ents[idx]
+		if e[0] < 1 or e[0] > 3 or e[2] == 0 or idx == entity:
+			continue
+		var rel := Vector2(e[3], e[4]) - guest_xy
+		var p := c + Vector2(rel.dot(right), -rel.dot(fwd)) * k
+		if not box.has_point(p):
+			continue
+		var col := Color(0.4, 0.8, 1.0) if idx == host_e else (Color(0.3, 1.0, 0.35) if mates.has(idx) else Color(1.0, 0.3, 0.25))
+		panel.draw_rect(Rect2(p - Vector2(2.5, 2.5), Vector2(5, 5)), Color.BLACK)
+		panel.draw_rect(Rect2(p - Vector2(1.5, 1.5), Vector2(3, 3)), col)
+
+
+func _face(pilot: int) -> Texture2D:
+	if pilot >= 33 or hud_pal.is_empty():
+		return null
+	if faces.has(pilot):
+		return faces[pilot]
+	var tex: Texture2D = null
+	var vp := get_parent()
+	if hl_res == null and vp and "data" in vp:
+		hl_res = LGRes.open(vp.data.data_dir().path_join("RESHLMHI.RES"))
+	if hl_res and hl_res.has(538):
+		var fr: Array = LGRes.frames(hl_res.data(538))
+		if pilot < fr.size():
+			var img: Image = TNObjects._bitmap(fr[pilot], hud_pal)
+			if img:
+				tex = ImageTexture.create_from_image(img)
+	faces[pilot] = tex
+	return tex
+
+
+func _pilot_name(pilot: int, e: int) -> String:
+	var vp := get_parent()
+	if game_res == null and vp and "data" in vp:
+		game_res = LGRes.open(vp.data.data_dir().path_join("RESGAME.RES"))
+	if pilot < 33 and game_res and game_res.has(364):
+		var names: PackedStringArray = game_res.strings(364)
+		if pilot < names.size():
+			return names[pilot]
+	return "#%d" % e
+
+
 func _weapon_pic(t: int) -> Texture2D:
 	if weapon_pics.has(t):
 		return weapon_pics[t]
@@ -361,15 +430,24 @@ func _draw_panel() -> void:
 	for i in int(round(f * 22.0)):
 		var x1 := 161.0 - i * 4.0
 		panel.draw_rect(_grect(x1 - 3.0, 26.0, x1, 33.0), Color(0.9, 0.2, 0.15) if f > 0.25 else Color(1.0, 0.5, 0.1))
-	# COMM: the host's avatar and name
-	if mate_face:
-		panel.draw_texture_rect(mate_face, _grect(29.0, 273.0, 50.0, 300.0), false)
-	else:
-		panel.draw_rect(_grect(29.0, 273.0, 50.0, 300.0), Color(0.05, 0.05, 0.1))
-	_text(mate_name.to_upper(), 54.0, 275.0, 12.0, Color(1.0, 0.8, 0.2))
-	_text("SQUAD LEADER", 54.0, 289.0, 12.0, Color(0.9, 0.9, 0.95))
-	_text("ARMOUR %d%%" % int(round(f * 100.0)), 31.0, 350.0, 11.0, Color(0.9, 0.9, 0.95))
-	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 31.0, 363.0, 9.0, Color(0.6, 0.65, 0.8))
+	# COMM: his squad as the game lists it: the host (Steam avatar and name), then his other teammates (their
+	# portraits and names from his game files), each with an armour bar
+	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
+	for i in rows.size():
+		var y0 := 273.0 + 30.0 * i
+		var who: Array = rows[i]
+		var pic: Texture2D = mate_face if i == 0 else _face(who[2])
+		if pic:
+			panel.draw_texture_rect(pic, _grect(29.0, y0, 50.0, y0 + 27.0), false)
+		else:
+			panel.draw_rect(_grect(29.0, y0, 50.0, y0 + 27.0), Color(0.05, 0.05, 0.1))
+		var nm: String = mate_name if i == 0 else _pilot_name(who[2], who[0])
+		_text(nm.to_upper(), 54.0, y0 + 1.0, 11.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
+		var a: float = who[1] / 100.0
+		panel.draw_rect(_grect(54.0, y0 + 17.0, 104.0, y0 + 21.0), Color(0.1, 0.1, 0.15))
+		panel.draw_rect(_grect(54.0, y0 + 17.0, 54.0 + 50.0 * a, y0 + 21.0),
+			Color(0.3, 0.9, 0.3) if a > 0.5 else (Color(1.0, 0.7, 0.2) if a > 0.25 else Color(1.0, 0.25, 0.2)))
+	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 31.0, 366.0, 8.0, Color(0.6, 0.65, 0.8))
 	# WEAPON: his selected weapon, its picture under the texts as in the game
 	var wpic := _weapon_pic(weapon_type)
 	if wpic:
@@ -379,6 +457,7 @@ func _draw_panel() -> void:
 	_text("%d%%" % int(round(f * 100.0)), 214.0, 338.0, 12.0, Color(0.95, 0.95, 1.0))
 	_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 214.0, 355.0, 12.0,
 		Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
+	_draw_map_units()
 	# map: the guest in the middle, pointing up
 	var c := _g(160.0, 314.0)
 	var u := _g(0, 6).y

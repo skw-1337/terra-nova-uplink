@@ -53,6 +53,7 @@ const PROBE_TILT := 0.3
 const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
+var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
 var sub_layer: CanvasLayer
@@ -1785,6 +1786,7 @@ func _live_units(pk: PackedByteArray) -> void:
 		_sub_hide(live_extra.get(player), true, PLAYER_LAYER)
 		live_player = player
 	var ents := {}
+	live_ents = ents
 	for k in n:
 		var o := 32 + 32 * k
 		if o + 32 > pk.size():

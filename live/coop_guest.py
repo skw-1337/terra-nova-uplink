@@ -102,6 +102,7 @@ class Guest:
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
         self.shift, self.jump_t, self.pad_jump = False, 0.0, False
         self.lock, self.lock_req, self.pad_lock = 0, False, False
+        self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
@@ -132,6 +133,23 @@ class Guest:
                 x, y = struct.unpack_from('<ii', b, 0x0F)
                 out.append((math.hypot(x - mx, y - my) / 65536, i))
         return sorted(out)
+
+    def squad_info(self, me):
+        """the guest's COMM panel: the host first, then his other living teammates: entity, armour %, pilot (name and
+        portrait index in the game's tables, 255 = none)"""
+        out = []
+        for e in [me] + [i for i in self.squad if i != self.gid]:
+            if not self.alive(e):
+                continue
+            full = self.amax0.setdefault(e, max(1, self.armour(e)))
+            pilot = 255
+            for a in range(0x391e50, 0x391f18, 0x32):
+                r = self.g.read(a, 8)
+                if r[0] | r[1] and struct.unpack_from('<H', r, 2)[0] == e:
+                    pilot = r[6]
+            out.append(struct.pack('<HBB', e, max(0, min(100, self.armour(e) * 100 // full)), pilot))
+        out = out[:3]
+        return bytes([len(out)]) + b''.join(out)
 
     def target_pos(self, e):
         """middle of a living unit (classes 1-3), or None"""
@@ -228,7 +246,7 @@ class Guest:
         host = tuple(self.i32(self.master + 0x25 * me + o) / 65536 for o in (0x0F, 0x13, 0x17))
         pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head) + \
             struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
-            struct.pack('<3f', *host)
+            struct.pack('<3f', *host) + self.squad_info(me)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
@@ -263,7 +281,7 @@ class Guest:
         if g.read(M + me * 0x25, 2) != b'\x01\x01':          # not in a mission
             if self.gid:
                 self.take(0)
-            self.squad, self.state = [], OK
+            self.squad, self.state, self.amax0 = [], OK, {}
             self.read_input(False)                             # no stale look / F8 at the next mission start
             return
         if self.state == OK and not self.alive(self.gid):

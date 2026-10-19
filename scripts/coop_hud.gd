@@ -53,6 +53,7 @@ var panel: Control                   # what is drawn on it, in the game's 320 x 
 var map_view: SubViewport            # the map: the 3D world from above, around the guest
 var map_cam: Camera3D
 var map_rect: TextureRect
+var big_map := false                 # M (or the MAP button with the mouse free): the map over the 3D window, wider
 var mate_name := "Host"
 var mate_face: ImageTexture
 var font: Font
@@ -304,9 +305,9 @@ func _draw_map_units() -> void:
 	var h := heading / 65536.0 * TAU
 	var fwd := Vector2(cos(h), sin(h))
 	var right := Vector2(-fwd.y, fwd.x)
-	var box := _grect(119.0, 261.0, 201.0, 367.0)
-	var c := _g(160.0, 314.0)
-	var k := _g(0, 1.8).y                                   # screen pixels per game unit (the map camera's 60 units)
+	var box := _map_box().grow(-1.0)
+	var c := box.get_center()
+	var k := box.size.y / map_cam.size                      # screen pixels per game unit (the map camera's height)
 	var host_e: int = squad[0][0] if not squad.is_empty() else -1
 	var mates := {}
 	for w in squad:
@@ -401,12 +402,13 @@ func _text(t: String, x: float, y: float, h: float, col: Color, centre := false)
 func _draw_panel() -> void:
 	if state != 0:
 		return
-	_draw_lock()
-	_draw_mate()
+	if not big_map:                                  # the big map covers the 3D view: no marks on it
+		_draw_lock()
+		_draw_mate()
 	if not cockpit.visible:
 		return
 	var vp := get_parent()
-	var looking: bool = vp != null and "look_off" in vp and vp.look_off.length() > 0.03
+	var looking: bool = big_map or (vp != null and "look_off" in vp and vp.look_off.length() > 0.03)
 	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + 0.51 * win.size.y)
 	for r in ([] if looking else [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]):   # free look: no crosshair (his aim stays ahead)
 		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
@@ -459,8 +461,10 @@ func _draw_panel() -> void:
 		Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
 	_draw_map_units()
 	# map: the guest in the middle, pointing up
-	var c := _g(160.0, 314.0)
+	var c := _map_box().get_center()
 	var u := _g(0, 6).y
+	if big_map:
+		_text("MAP  (M: back)", win.position.x + 16.0, win.position.y + 10.0, 10.0, Color(0.9, 0.9, 1.0))
 	panel.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -u), c + Vector2(u * 0.6, u * 0.6),
 		c + Vector2(-u * 0.6, u * 0.6)]), Color(1, 1, 1))
 
@@ -500,9 +504,22 @@ func _draw_lock() -> void:
 			panel.draw_line(k, k - Vector2(0, sy * r * 0.5), col, 2.0)
 
 
+func toggle_map() -> void:
+	big_map = not big_map
+
+
+func _map_box() -> Rect2:
+	if big_map and win.size.y > 0:
+		return _grect(win.position.x + 12.0, win.position.y + 8.0, win.end.x - 12.0, win.end.y - 8.0)
+	return _grect(118.0, 260.0, 202.0, 368.0)
+
+
 func _map_follow() -> void:
-	map_rect.position = _g(118.0, 260.0)
-	map_rect.size = _g(202.0, 368.0) - _g(118.0, 260.0)
+	var box := _map_box()
+	map_rect.position = box.position
+	map_rect.size = box.size
+	map_cam.size = 220.0 if big_map else 60.0
+	map_view.size = Vector2i(maxi(16, int(box.size.x)), maxi(16, int(box.size.y)))
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
 		return

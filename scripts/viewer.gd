@@ -1645,6 +1645,11 @@ func _input(event: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click only takes the mouse
 		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
 			free_look = event.pressed
+		elif guest_win and not captured and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and \
+				Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position))):
+			for n in get_children():                     # coop guest: the cockpit's MAP button, mouse free (Y)
+				if n.has_method("toggle_map"):
+					n.toggle_map()
 		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
 			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
 			if captured:
@@ -1667,6 +1672,12 @@ func _input(event: InputEvent) -> void:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey:
+		if guest_win and event.physical_keycode == KEY_M and event.pressed and not event.echo:
+			for n in get_children():                 # coop guest: his map, big or small (coop_hud.gd)
+				if n.has_method("toggle_map"):
+					n.toggle_map()
+			get_viewport().set_input_as_handled()
+			return
 		if event.physical_keycode == KEY_F12:           # the viewer's own: old school mode on / off
 			if event.pressed and not event.echo:
 				_oldschool_toggle()

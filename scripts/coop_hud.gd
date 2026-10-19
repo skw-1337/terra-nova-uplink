@@ -8,6 +8,12 @@
 # coop_net.gd forwards them here. Nothing is drawn when no packet came for 2 s.
 extends CanvasLayer
 
+const LGRes = preload("res://scripts/lgres.gd")
+const TNObjects = preload("res://scripts/tn_objects.gd")
+# the WEAPON panel's picture for each weapon type: the game's table at 0x35B27A (RESHLMHI.RES, 82 x 104-106, RLE),
+# drawn from the guest's own game files in the game's palette (the cockpit packet's)
+const WEAPON_PIC := [515, 516, 518, 507, 513, 508, 509, 511, 514, 510, 512, 519, 515, 517, 517, 520, 521, 522]
+
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
 const WEAPONS := ["", "Flare Launcher", "Smoke Grenade", "Grenade Launcher", "Laser", "Multipulsar", "Particle Beam",
@@ -46,6 +52,9 @@ var map_rect: TextureRect
 var mate_name := "Host"
 var mate_face: ImageTexture
 var font: Font
+var hud_pal := PackedColorArray()     # the game's palette (cockpit packet)
+var weapon_pics := {}                 # type -> texture
+var hl_res = null                     # RESHLMHI.RES
 # --coop-preview (local coop, TN_COOP_PREVIEW=1): this PC's Steam account is the host, as online: its name and avatar
 # in this (the guest's) cockpit. The host's HUD keeps "Player 2": a local guest has no Steam account of his own.
 var preview_steam: Object
@@ -235,6 +244,9 @@ func _cockpit(pk: PackedByteArray) -> void:
 	if vp and "hud_win" in vp:
 		vp.hud_win = Rect2i(win)
 	var pal := pk.slice(11, 11 + 768)
+	if hud_pal.is_empty():
+		for i in 256:
+			hud_pal.append(Color8(pal[3 * i], pal[3 * i + 1], pal[3 * i + 2]))
 	var raw := pk.slice(11 + 768).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
 	if raw.size() != 320 * 400 * 2:
 		return
@@ -271,6 +283,23 @@ func _preview_avatar(_id: int, size: int, data: PackedByteArray) -> void:
 	img = img.get_region(Rect2i(0, int((size - h) * 0.4), size, h))
 	var name: String = preview_steam.getPersonaName()
 	set_mate(name, img)
+
+
+func _weapon_pic(t: int) -> Texture2D:
+	if weapon_pics.has(t):
+		return weapon_pics[t]
+	var tex: Texture2D = null
+	var vp := get_parent()
+	if t < WEAPON_PIC.size() and not hud_pal.is_empty() and vp and "data" in vp:
+		if hl_res == null:
+			hl_res = LGRes.open(vp.data.data_dir().path_join("RESHLMHI.RES"))
+		if hl_res and hl_res.has(WEAPON_PIC[t]):
+			var fr: Array = LGRes.frames(hl_res.data(WEAPON_PIC[t]))
+			var img: Image = TNObjects._bitmap(fr[0], hud_pal) if fr.size() > 0 else null
+			if img:
+				tex = ImageTexture.create_from_image(img)
+	weapon_pics[t] = tex
+	return tex
 
 
 # the host: his Steam name and avatar in the COMM panel (coop_net.gd; "Host" and no picture in local coop)
@@ -341,10 +370,12 @@ func _draw_panel() -> void:
 	_text("SQUAD LEADER", 54.0, 289.0, 12.0, Color(0.9, 0.9, 0.95))
 	_text("ARMOUR %d%%" % int(round(f * 100.0)), 31.0, 350.0, 11.0, Color(0.9, 0.9, 0.95))
 	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 31.0, 363.0, 9.0, Color(0.6, 0.65, 0.8))
-	# WEAPON: his selected weapon
+	# WEAPON: his selected weapon, its picture under the texts as in the game
+	var wpic := _weapon_pic(weapon_type)
+	if wpic:
+		panel.draw_texture_rect(wpic, _grect(211.0, 276.0, 211.0 + wpic.get_width(), 276.0 + wpic.get_height()), false)
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
 	_text(wn.to_upper(), 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)
-	_text("SLOT %d   KEYS 1-4" % (weapon_slot + 1), 251.0, 298.0, 10.0, Color(0.7, 0.75, 0.9), true)
 	_text("%d%%" % int(round(f * 100.0)), 214.0, 338.0, 12.0, Color(0.95, 0.95, 1.0))
 	_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 214.0, 355.0, 12.0,
 		Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))

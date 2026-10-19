@@ -350,7 +350,8 @@ class Guest:
             self.anim.learn(up, where, now)
             pose = self.anim.host(*where(me), now)
             if pose:
-                joints = joints + [struct.pack('<if', me, min(struct.unpack('<48f', pose)[1::3])) + pose]
+                # after the index: the height of the feet in the world (the game's entity height minus its 0.12)
+                joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
         view = (struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
         self.send(view)

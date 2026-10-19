@@ -63,6 +63,10 @@ var rate := ""
 var ping_ms := -1
 var ping_t := 0.0
 var log_f: FileAccess
+# host: the guest's name over his suit, from the HUD packets the bridge sends him through us (online only)
+var marker: Control
+var guest_pos := Vector3.ZERO
+var guest_seen := -100.0
 var status_t := 0.0
 # guest: waiting screen until the host's view arrives (not connected yet, or the host is in the game's menus)
 var wait_panel: ColorRect
@@ -106,6 +110,11 @@ func _ready() -> void:
 		wait_text.add_theme_font_size_override("font_size", 20)
 		wait_text.add_theme_color_override("font_color", Color(0.8, 0.85, 0.9))
 		box.add_child(wait_text)
+	marker = Control.new()
+	marker.set_anchors_preset(Control.PRESET_FULL_RECT)
+	marker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	marker.draw.connect(_draw_marker)
+	add_child(marker)
 	label = Label.new()
 	label.position = Vector2(12, 8)
 	label.add_theme_font_size_override("font_size", 16)
@@ -174,6 +183,9 @@ func _process(delta: float) -> void:
 			if peer_ok and pk.size() >= 3:                 # only to a guest that said HELLO with our version
 				var tag := pk.slice(0, 3).get_string_from_ascii()
 				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
+				if tag == "GHD" and pk.size() >= 40:
+					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
+					guest_seen = clock
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)
 				sent += pk.size()
 		mission_t += delta
@@ -214,6 +226,8 @@ func _process(delta: float) -> void:
 		recv = 0
 		rate_t = 0.0
 		_refresh()
+	if host_mode:
+		marker.queue_redraw()
 	status_t += delta
 	if status_t >= 10.0:
 		status_t = 0.0
@@ -485,6 +499,25 @@ func _waiting() -> void:
 	else:
 		wait_text.text = "Connected to %s.\nWaiting for the host to start a mission%s\nYou will drive the teammate nearest to the host: W/S/A/D, mouse, left button to fire,\nor a gamepad (left stick move, right stick look, right trigger fire). F8: next teammate." % [
 			steam.getFriendPersonaName(peer), dots]
+
+
+func _draw_marker() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if not (host_mode and peer_ok) or clock - guest_seen > 1.0 or guest_pos == Vector3.ZERO or cam == null:
+		return
+	var top := guest_pos + Vector3(0, 1.0, 0)
+	if cam.is_position_behind(top):
+		return
+	var font := ThemeDB.fallback_font
+	var c := cam.unproject_position(top)
+	var fs := int(clampf(marker.size.y * 0.028, 12.0, 26.0))
+	var t := "%s  %dm" % [steam.getFriendPersonaName(peer), int(round(cam.global_position.distance_to(guest_pos) * 10.0))]
+	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var p := c - Vector2(w / 2.0, 6.0)
+	marker.draw_string_outline(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 4, Color.BLACK)
+	marker.draw_string(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.45, 0.85, 1.0))
+	marker.draw_colored_polygon(PackedVector2Array([c + Vector2(-5, -2), c + Vector2(5, -2), c + Vector2(0, 5)]),
+		Color(0.45, 0.85, 1.0))
 
 
 func _ping_text() -> String:

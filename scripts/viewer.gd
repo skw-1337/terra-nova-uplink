@@ -53,6 +53,7 @@ const PROBE_TILT := 0.3
 const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
+var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
 var sub_layer: CanvasLayer
 var oldschool_key := ""
@@ -1743,7 +1744,7 @@ func _live_update() -> void:
 	yaw = atan2(-cos(h), -sin(h))                   # game heading 0 = +x, then towards +y (Godot +z)
 	pitch = pk.decode_float(16)
 	camera.rotation = Vector3(pitch, yaw, 0)
-	if hud:
+	if hud or hud_win.size.y > 0:                     # coop guest: its cockpit's window (coop_hud.gd)
 		_hud_camera(camera.fov)
 	live_seen += 1
 	if play and OS.has_environment("TN_PLAYTEST") and (live_seen == 100 or live_seen == 220):
@@ -1764,6 +1765,14 @@ func _live_update() -> void:
 func _live_units(pk: PackedByteArray) -> void:
 	var n := pk.decode_s32(24)
 	var player := pk.decode_s32(28)
+	if player != live_player:                          # coop: the guest's window changes suit (or watched the host's
+		var was: Node3D = live_extra.get(live_player)  # until it had one): the old body shows again, the new one hides
+		if was != null and is_instance_valid(was):
+			was.remove_meta("player_body")
+			_sub_hide(was, false, PLAYER_LAYER)
+			was.remove_meta("player_body")
+		_sub_hide(live_extra.get(player), true, PLAYER_LAYER)
+		live_player = player
 	var ents := {}
 	for k in n:
 		var o := 32 + 32 * k

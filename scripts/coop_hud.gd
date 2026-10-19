@@ -26,6 +26,7 @@ var weapon_type := 0
 var heading := 0
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
+var host_pos := Vector3.ZERO           # the host's suit (Godot units): his name above it
 
 var root: Control
 var cross: Control
@@ -45,6 +46,7 @@ var map_rect: TextureRect
 var mate_name := "Host"
 var mate_face: ImageTexture
 var font: Font
+var win := Rect2()                   # the game's 3D window (320 x 400 units), from the cockpit packet
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -168,7 +170,7 @@ func _process(delta: float) -> void:
 	while udp.get_available_packet_count() > 0:
 		var pk := udp.get_packet()
 		var tag := pk.slice(0, 3).get_string_from_ascii() if pk.size() >= 3 else ""
-		if tag == "GCK" and pk.size() > 3 + 768:
+		if tag == "GCK" and pk.size() > 11 + 768:
 			_cockpit(pk)
 		elif tag == "GHD" and pk.size() >= 10:
 			state = pk.decode_u8(3)
@@ -180,6 +182,8 @@ func _process(delta: float) -> void:
 				weapon_type = pk.decode_u8(11)
 				heading = pk.decode_u16(12)
 			lock = 0
+			if pk.size() >= 52:
+				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
 				lock = pk.decode_u16(14)
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
@@ -191,13 +195,13 @@ func _process(delta: float) -> void:
 	if root.visible:
 		if cockpit.visible:
 			_map_follow()
-		panel.visible = cockpit.visible or lock != 0
+		panel.visible = true
 		panel.queue_redraw()
 
 
 func _update() -> void:
 	var ck := cockpit.texture != null
-	cross.visible = state == 0
+	cross.visible = state == 0 and not ck
 	bottom.visible = state == 0 and not ck
 	cockpit.visible = ck
 	panel.visible = ck
@@ -217,8 +221,14 @@ func _update() -> void:
 
 
 func _cockpit(pk: PackedByteArray) -> void:
-	var pal := pk.slice(3, 3 + 768)
-	var raw := pk.slice(3 + 768).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
+	# the game's 3D window: the viewer frames its view on it like the host's (off-centre frustum), the crosshair
+	# at the game's view centre, 51 % down the window
+	win = Rect2(pk.decode_s16(3), pk.decode_s16(5), pk.decode_s16(7), pk.decode_s16(9))
+	var vp := get_parent()
+	if vp and "hud_win" in vp:
+		vp.hud_win = Rect2i(win)
+	var pal := pk.slice(11, 11 + 768)
+	var raw := pk.slice(11 + 768).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
 	if raw.size() != 320 * 400 * 2:
 		return
 	var rgba := PackedByteArray()
@@ -264,8 +274,13 @@ func _draw_panel() -> void:
 	if state != 0:
 		return
 	_draw_lock()
+	_draw_mate()
 	if not cockpit.visible:
 		return
+	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + 0.51 * win.size.y)
+	for r in [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]:
+		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
+		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))
 	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (x 160)
 	var bearing := fposmod(360.0 - heading / 65536.0 * 360.0, 360.0)
 	var amber := Color(1.0, 0.8, 0.25)
@@ -309,6 +324,26 @@ func _draw_panel() -> void:
 
 
 # the lock: green corners around his target, where his camera sees it
+# the host's name over his suit (and how far he is)
+func _draw_mate() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if host_pos == Vector3.ZERO or cam == null:
+		return
+	var top := host_pos + Vector3(0, 1.0, 0)
+	if cam.is_position_behind(top):
+		return
+	var c := cam.unproject_position(top)
+	var d := cam.global_position.distance_to(host_pos)
+	var fs := int(clampf(root.size.y * 0.028, 12.0, 26.0))
+	var t := "%s  %dm" % [mate_name, int(round(d * 10.0))]
+	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var p := c - Vector2(w / 2.0, 6.0)
+	panel.draw_string_outline(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 4, Color.BLACK)
+	panel.draw_string(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.45, 0.85, 1.0))
+	panel.draw_colored_polygon(PackedVector2Array([c + Vector2(-5, -2), c + Vector2(5, -2), c + Vector2(0, 5)]),
+		Color(0.45, 0.85, 1.0))
+
+
 func _draw_lock() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if lock == 0 or cam == null or cam.is_position_behind(lock_pos):

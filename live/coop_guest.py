@@ -220,9 +220,14 @@ class Guest:
             sel = self.g.read(p + SEL, 1)[0] & 3
             wtype = self.g.read(p + SLOTS + SLOT_N * sel, 1)[0]
         head = self.u16(self.master + 0x25 * self.gid + 0x1B) if self.gid else 0
+        # then: his lock (entity, middle; 0 = none), his suit's and the host's positions (the name markers)
         lt = self.target_pos(self.lock) if self.lock else None
+        mine = self.target_pos(self.gid) if self.gid else None
+        me = self.u16(self.pid_addr + 2)
+        host = tuple(self.i32(self.master + 0x25 * me + o) / 65536 for o in (0x0F, 0x13, 0x17))
         pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head) + \
-            (struct.pack('<H3f', self.lock, *lt) if lt else b'')
+            struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
+            struct.pack('<3f', *host)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
@@ -243,7 +248,7 @@ class Guest:
         for (x0, y0, x1, y1), c, a in CLEAR:
             scr[y0:y1, x0:x1] = c
             alpha[y0:y1, x0:x1] = a
-        pk = b'GCK' + pal + zlib.compress(np.dstack([scr, alpha]).tobytes(), 6)
+        pk = b'GCK' + struct.pack('<4h', fx0, fy0, fw, fh) + pal + zlib.compress(np.dstack([scr, alpha]).tobytes(), 6)
         if len(pk) < 60000:
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
@@ -332,7 +337,10 @@ class Guest:
         g.write(G_TGT, struct.pack('<3i', *(int(v * 65536) for v in aim)))
         if fire:
             g.write(G_FIRE, b'\x01')
-        if self.anim:                                          # the host's suit, never posed by the game (cockpit view)
+        # the host's suit: the game never poses it in the cockpit view, its joints there are stale (they folded it
+        # out of sight): left out; the learnt walk / rest pose instead, else the viewer's default pose
+        joints = [j for j in joints if struct.unpack_from('<i', j)[0] != me]
+        if self.anim:
             now = time.time()
             top = lambda j: max(struct.unpack_from('<48f', j, 8)[1::3])   # record: index, foot height, 48 floats
             hmax = max(map(top, joints)) if joints else 0

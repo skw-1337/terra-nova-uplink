@@ -91,7 +91,10 @@ def launch(godot, vpath, mission):
 
 
 class Guest:
-    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False, view_hz=20.0):
+    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False, view_hz=20.0, versus=False):
+        # versus (1v1, experimental): the guest drives a suit of the other side instead of a teammate, its AI off, and
+        # fights the host (his shots come from the enemy side, so they hurt); his "squad" is the enemy suits
+        self.versus = versus or bool(os.environ.get('TN_COOP_VERSUS'))
         self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
@@ -122,14 +125,23 @@ class Guest:
     def i32(self, a):
         return struct.unpack('<i', self.g.read(a, 4))[0]
 
-    def suits(self, me):
+    def pilots(self):
+        """entities with a pilot record (0x391e50, 4 x 0x32: the player and his squad): the player's side"""
+        out = set()
+        for a in range(0x391e50, 0x391f18, 0x32):
+            r = self.g.read(a, 4)
+            if r[0] | r[1]:
+                out.add(struct.unpack_from('<H', r, 2)[0])
+        return out
+
+    def suits(self, me, enemy=False):
         """living suits but the player's, nearest first: [(distance, entity)]"""
         mx, my = struct.unpack('<ii', self.g.read(self.master + 0x25 * me + 0x0F, 8))
         tab = self.g.read(self.master, 0x25 * self.nent)
         out = []
         for i in range(1, self.nent):
             b = tab[0x25 * i:0x25 * i + 0x17]
-            if b[0] and b[1] == 1 and b[2] < 8 and i != me:
+            if b[0] and b[1] == 1 and (enemy or b[2] < 8) and i != me:
                 x, y = struct.unpack_from('<ii', b, 0x0F)
                 out.append((math.hypot(x - mx, y - my) / 65536, i))
         return sorted(out)
@@ -170,7 +182,7 @@ class Guest:
     def pick_target(self, me, eye, view):
         best, pick = LOCK_PICK, 0
         for i in range(1, self.nent):
-            if i in (me, self.gid) or i in self.squad:
+            if i == self.gid or (i == me and not self.versus) or i in self.squad:
                 continue
             t = self.target_pos(i)
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
@@ -206,9 +218,13 @@ class Guest:
         if os.environ.get('TN_GUEST_ID'):
             gid = int(os.environ['TN_GUEST_ID'])
             return gid if self.alive(gid) else 0
-        near = self.suits(me)
+        near = self.suits(me, enemy=self.versus)
         if not self.squad:                                     # mission start: the suits around the player
-            self.squad = [i for d, i in near if d < SQUAD_R] or [i for d, i in near[:1]]
+            if self.versus:                                    # versus: every suit of the other side (no pilot record)
+                side = self.pilots()
+                self.squad = [i for d, i in near if i not in side]
+            else:
+                self.squad = [i for d, i in near if d < SQUAD_R] or [i for d, i in near[:1]]
             if self.squad:
                 print('guest: squad', self.squad, flush=True)
         live = [i for i in self.squad if self.alive(i)]

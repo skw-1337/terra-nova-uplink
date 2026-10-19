@@ -3,7 +3,11 @@
 # strings of resource 364 (RESGAME.RES): index k = last name (COMM panel), k + 33 = nickname, k + 65 = full name
 # (STAT), k + 98 = first and last name, k + 165 = last name again, k + 198 = first name (k < 32: Colin has no nickname). The guest's pilot gets the index of a pilot who is not in the mission, whose strings get the guest's name
 # (cut to their length: the strings stay in place). Everything is put back when the guest leaves that suit.
-import struct
+import json, os, struct
+
+# what put() changed, kept on disk until restore(): a bridge closed hard (console closed, killed) leaves the game with
+# the guest's name and face; the next bridge puts the originals back (only where memory still holds what we wrote)
+UNDO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'coop_names_undo.json')
 
 PORTRAIT = bytes.fromhex('02000000' '15001b00' '1500')   # 33 pilot portraits, 21 x 27, one after the other
 PW, PH, P_STEP, P_DATA = 21, 27, 0x253, 0x18         # record step; pixels from the header's type word
@@ -18,6 +22,7 @@ FORMS = (0, 33, 65, 98, 165, 198)            # last, "nick", full, first last, l
 class NameTag:
     def __init__(self, g):
         self.g, self.strings, self.saved, self.faces = g, None, None, None
+        self._undo_old_run()
 
     def _table(self):
         """(base, offsets) of resource 364 in memory, found again when it moved (a new mission loads it again)"""
@@ -38,6 +43,30 @@ class NameTag:
                 self.strings = (base, offs)
                 return self.strings
         return None
+
+    def _undo_old_run(self):
+        try:
+            u = json.load(open(UNDO))
+        except (OSError, ValueError):
+            return
+        for a, old, new in u.get('bytes', []):
+            if self.g.read(a, len(new) // 2) == bytes.fromhex(new):
+                self.g.write(a, bytes.fromhex(old))
+        rec, idx, now = u.get('pilot', (0, 0, 0))
+        if rec and self.g.read(rec + 6, 1)[0] == now:
+            self.g.write(rec + 6, bytes([idx]))
+        self._undo_save(None)
+        print('coop: names and faces from a closed session put back', flush=True)
+
+    def _undo_save(self, u):
+        try:
+            if u is None:
+                os.remove(UNDO)
+            else:
+                os.makedirs(os.path.dirname(UNDO), exist_ok=True)
+                json.dump(u, open(UNDO, 'w'))
+        except OSError:
+            pass
 
     def _faces(self):
         """address of portrait 0 (the type word of its header), found again when it moved"""
@@ -103,6 +132,8 @@ class NameTag:
             text = (name if f != 33 else '"%s"' % name)[:len(old)].encode()
             self.g.write(a, text + b'\0' * (len(old) - len(text)))
         self.g.write(rec + 6, bytes([k]))
+        self._undo_save({'bytes': [(a, old.hex(), self.g.read(a, len(old)).hex()) for a, old in keep],
+                         'pilot': (rec, self.saved[1][0], k)})
         return True
 
     def restore(self):
@@ -110,6 +141,7 @@ class NameTag:
             return
         rec, idx, keep, base = self.saved
         self.saved = None
+        self._undo_save(None)
         t = self._table()
         if t and t[0] == base:                               # same resource still loaded: put the strings back
             for a, old in keep:

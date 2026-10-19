@@ -46,6 +46,11 @@ var map_rect: TextureRect
 var mate_name := "Host"
 var mate_face: ImageTexture
 var font: Font
+# --coop-preview (local coop, TN_COOP_PREVIEW=1): the Steam account of this PC plays both: its name and avatar in
+# this cockpit and, sent to the bridge like coop_net.gd does, on the host's HUD. To check how it looks with one PC.
+var preview_steam: Object
+var preview_pk: Array = []              # name and avatar packets, sent again every 5 s (the bridge may start later)
+var preview_t := 0.0
 var win := Rect2()                   # the game's 3D window (320 x 400 units), from the cockpit packet
 
 var ok_col := Color(0.35, 1.0, 0.45)
@@ -57,6 +62,8 @@ func _ready() -> void:
 	layer = 9
 	udp.bind(HUD_PORT, "127.0.0.1", 1 << 20)
 	font = ThemeDB.fallback_font
+	if "--coop-preview" in OS.get_cmdline_user_args():
+		_preview()
 	root = Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -166,6 +173,15 @@ func _rect(r: Rect2, col: Color) -> ColorRect:
 
 func _process(delta: float) -> void:
 	clock += delta
+	if preview_steam:
+		preview_steam.run_callbacks()
+		preview_t += delta
+		if preview_t > 5.0 and not preview_pk.is_empty():
+			preview_t = 0.0
+			var o := PacketPeerUDP.new()
+			o.set_dest_address("127.0.0.1", 47834)
+			for b in preview_pk:
+				o.put_packet(b)
 	var got := false
 	while udp.get_available_packet_count() > 0:
 		var pk := udp.get_packet()
@@ -241,6 +257,37 @@ func _cockpit(pk: PackedByteArray) -> void:
 		rgba[4 * i + 3] = raw[2 * i + 1]
 	cockpit.texture = ImageTexture.create_from_image(Image.create_from_data(320, 400, false, Image.FORMAT_RGBA8, rgba))
 	_update()
+
+
+func _preview() -> void:
+	if not Engine.has_singleton("Steam"):
+		GDExtensionManager.load_extension("res://addons/godotsteam/godotsteam.gdextension")
+	if not Engine.has_singleton("Steam"):
+		return
+	preview_steam = Engine.get_singleton("Steam")
+	if int(preview_steam.steamInitEx(480, false).get("status", 1)) != 0:
+		preview_steam = null
+		return
+	preview_steam.connect("avatar_loaded", _preview_avatar)
+	preview_steam.getPlayerAvatar(2, preview_steam.getSteamID())
+
+
+func _preview_avatar(_id: int, size: int, data: PackedByteArray) -> void:
+	if size <= 0 or data.size() != size * size * 4:
+		return
+	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	var h := int(size / 1.73)
+	img = img.get_region(Rect2i(0, int((size - h) * 0.4), size, h))
+	var name: String = preview_steam.getPersonaName()
+	set_mate(name, img)
+	var small := img.duplicate()
+	small.resize(21, 27, Image.INTERPOLATE_LANCZOS)
+	small.convert(Image.FORMAT_RGB8)
+	var out := PacketPeerUDP.new()
+	out.set_dest_address("127.0.0.1", 47834)          # the bridge's coop module (as coop_net.gd sends them online)
+	preview_pk = [("N" + name).to_utf8_buffer(), "A".to_ascii_buffer() + small.get_data()]
+	for b in preview_pk:
+		out.put_packet(b)
 
 
 # the host: his Steam name and avatar in the COMM panel (coop_net.gd; "Host" and no picture in local coop)

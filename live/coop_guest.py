@@ -86,6 +86,7 @@ def launch(godot, vpath, mission):
     return subprocess.Popen([godot, '--path', vpath, '--resolution', os.environ.get('TN_GUEST_RES', '1280x720')] +
                             (['--position', os.environ['TN_GUEST_POS']] if 'TN_GUEST_POS' in os.environ else []) +
                             ['--', '--live', '--live-port', str(LIVE_PORT), '--play', '--play-port', str(PLAY_PORT), '--coop-hud'] +
+                            (['--coop-preview'] if os.environ.get('TN_COOP_PREVIEW') else []) +   # Steam name / avatar
                             (['--mission', mission] if mission else []))
 
 
@@ -403,7 +404,7 @@ class Guest:
                     self.name = name
                     if self.gid and self.state == OK:
                         self.tag.put(self.gid, name, self.face)
-            elif pk[:1] == b'A' and len(pk) == 1 + 21 * 27 * 3:      # his avatar (host coop_net.gd)
+            elif pk[:1] == b'A' and len(pk) == 1 + 21 * 27 * 3 and pk[1:] != self.face:   # his avatar (coop_net.gd)
                 self.face = pk[1:]
                 if self.gid and self.state == OK:
                     self.tag.put(self.gid, self.name, self.face)

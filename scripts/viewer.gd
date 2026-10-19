@@ -132,6 +132,11 @@ var PLAY_PORT := 47824                         # --play-port N
 var play := false
 var play_udp: PacketPeerUDP
 var play_dx := 0.0
+# coop guest's window (--coop-hud / --coop-guest): free look, the middle button or Alt held: the mouse turns only
+# his camera (up to 120 degrees aside, 60 up / down), his suit and aim stay; let go: the view comes back
+var guest_win := false
+var free_look := false
+var look_off := Vector2.ZERO
 var play_dy := 0.0
 var play_held := {}
 var play_started := false        # the first click in the window only takes the mouse
@@ -263,6 +268,7 @@ func _ready() -> void:
 		add_child(load("res://scripts/coop_net.gd").new())
 	if live and ("--coop-hud" in args or "--coop-guest" in args):  # the coop guest's HUD (coop_hud.gd)
 		add_child(load("res://scripts/coop_hud.gd").new())
+		guest_win = true
 	if live and "--hud" in args:
 		_hud_setup()
 	if live and "--play" in args:
@@ -1636,6 +1642,8 @@ func _input(event: InputEvent) -> void:
 			if event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 				play_started = true
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click only takes the mouse
+		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
+			free_look = event.pressed
 		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
 			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
 			if captured:
@@ -1648,7 +1656,10 @@ func _input(event: InputEvent) -> void:
 				_play_send(b)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
-		if captured:
+		if captured and guest_win and (free_look or Input.is_physical_key_pressed(KEY_ALT)):
+			look_off.x = clampf(look_off.x - event.relative.x * 0.004, -2.1, 2.1)
+			look_off.y = clampf(look_off.y - event.relative.y * 0.004, -1.05, 1.05)
+		elif captured:
 			play_dx += event.relative.x
 			play_dy += event.relative.y
 		elif play_started:
@@ -1743,7 +1754,7 @@ func _live_update() -> void:
 	camera.fov = pk.decode_float(20)
 	yaw = atan2(-cos(h), -sin(h))                   # game heading 0 = +x, then towards +y (Godot +z)
 	pitch = pk.decode_float(16)
-	camera.rotation = Vector3(pitch, yaw, 0)
+	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
 	if hud or hud_win.size.y > 0:                     # coop guest: its cockpit's window (coop_hud.gd)
 		_hud_camera(camera.fov)
 	live_seen += 1
@@ -2650,6 +2661,10 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	if guest_win and look_off != Vector2.ZERO:
+		if not (free_look or Input.is_physical_key_pressed(KEY_ALT)):
+			look_off = look_off.move_toward(Vector2.ZERO, delta * 6.0)   # back to the suit's view in ~0.3 s
+		camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
 	if hd_movie_box != null and hd_movie_box.visible and hd_movie.get_video_texture() != null:
 		var vsz := hd_movie.get_video_texture().get_size()
 		if vsz.y > 0:

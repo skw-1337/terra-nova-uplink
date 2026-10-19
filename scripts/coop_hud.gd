@@ -277,8 +277,10 @@ func _draw_panel() -> void:
 	_draw_mate()
 	if not cockpit.visible:
 		return
+	var vp := get_parent()
+	var looking: bool = vp != null and "look_off" in vp and vp.look_off.length() > 0.03
 	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + 0.51 * win.size.y)
-	for r in [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]:
+	for r in ([] if looking else [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]):   # free look: no crosshair (his aim stays ahead)
 		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
 		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))
 	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (x 160)
@@ -308,7 +310,7 @@ func _draw_panel() -> void:
 	_text(mate_name.to_upper(), 54.0, 275.0, 12.0, Color(1.0, 0.8, 0.2))
 	_text("SQUAD LEADER", 54.0, 289.0, 12.0, Color(0.9, 0.9, 0.95))
 	_text("ARMOUR %d%%" % int(round(f * 100.0)), 31.0, 350.0, 11.0, Color(0.9, 0.9, 0.95))
-	_text("SHIFT+MOVE JUMP   F8 NEXT", 31.0, 363.0, 9.0, Color(0.6, 0.65, 0.8))
+	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 31.0, 363.0, 9.0, Color(0.6, 0.65, 0.8))
 	# WEAPON: his selected weapon
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
 	_text(wn.to_upper(), 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)

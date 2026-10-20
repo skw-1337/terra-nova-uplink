@@ -4,6 +4,8 @@ Two players, one mission, over Steam. The host plays the real game. The guest dr
 
 It's a prototype: expect bugs. Windows only, two players, English game only for now.
 
+Help, bug reports, or looking for someone to play with: [Discord](https://discord.gg/AHpqNeT7s).
+
 ## The easy way: Terra Nova Coop
 
 **`Terra Nova Coop.exe`** does everything for both players. Put it in an empty folder and start it:

@@ -28,6 +28,7 @@ static class Coop
     static readonly string[][] WHEELS = {           // pinned: the bridge's only two packages, as wheels for Python 3.12 x64
         new[] { "numpy", "2.5.4", "-cp312-cp312-win_amd64.whl" },
         new[] { "psutil", "7.2.2", "-cp37-abi3-win_amd64.whl" } };
+    const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GOG_ID = "1434984562";
     const string GAME_SUB = "Terra Nova Strike Force Centauri";
 
@@ -138,8 +139,13 @@ static class Coop
         stopBtn.Click += delegate { StopAll(); };
         form.Controls.Add(stopBtn);
         Label help = new Label { Text = "Both players: Steam running, each other in your friends list, your own copy of the game (English).",
-            ForeColor = CDim, AutoSize = true, Location = new Point(22, 524), Font = new Font("Segoe UI", 8.5f) };
+            ForeColor = CDim, AutoSize = true, Location = new Point(22, 516), Font = new Font("Segoe UI", 8.5f) };
         form.Controls.Add(help);
+        LinkLabel dc = new LinkLabel { Text = "Help, bugs, finding a partner: Discord", AutoSize = true, Location = new Point(22, 535),
+            Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
+        dc.LinkArea = new LinkArea(dc.Text.IndexOf("Discord"), 7);
+        dc.LinkClicked += delegate { try { Process.Start(DISCORD); } catch { } };
+        form.Controls.Add(dc);
     }
 
     static Button Flat(string text, Color back)

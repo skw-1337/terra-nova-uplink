@@ -457,6 +457,7 @@ class Guest:
                 self.take(gid)
         self.next = False
         self.hud()
+        self.tag.retry()
         self.lobby_step(True)
         if self.versus and self.state == OK:
             self.versus_hits(me)

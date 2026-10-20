@@ -3,7 +3,7 @@
 # strings of resource 364 (RESGAME.RES): index k = last name (COMM panel), k + 33 = nickname, k + 65 = full name
 # (STAT), k + 98 = first and last name, k + 165 = last name again, k + 198 = first name (k < 32: Colin has no nickname). The guest's pilot gets the index of a pilot who is not in the mission, whose strings get the guest's name
 # (cut to their length: the strings stay in place). Everything is put back when the guest leaves that suit.
-import json, os, struct
+import json, os, struct, time
 
 # what put() changed, kept on disk until restore(): a bridge closed hard (console closed, killed) leaves the game with
 # the guest's name and face; the next bridge puts the originals back (only where memory still holds what we wrote)
@@ -22,6 +22,7 @@ FORMS = (0, 33, 65, 98, 165, 198)            # last, "nick", full, first last, l
 class NameTag:
     def __init__(self, g):
         self.g, self.strings, self.saved, self.faces = g, None, None, None
+        self.want, self.want_t = None, 0.0     # a face not placed yet (the portraits load after the suit is taken)
         self._undo_old_run()
 
     def _table(self):
@@ -123,6 +124,7 @@ class NameTag:
         k = max(free, key=size)                              # the longest last name nobody uses here
         keep = [(base + offs[k + f], self.g.read(base + offs[k + f], size(k + f))) for f in FORMS]
         fa = self._faces() if face and len(face) == PW * PH * 3 else None
+        self.want = (gid, name, face) if face and not fa else None
         if fa:                                               # his avatar in place of that pilot's portrait
             pa = fa + k * P_STEP + P_DATA
             keep.append((pa, self.g.read(pa, PW * PH)))
@@ -136,7 +138,14 @@ class NameTag:
                          'pilot': (rec, self.saved[1][0], k)})
         return True
 
+    def retry(self):
+        """the face again every 2 s until the game's portraits are there (at a mission's start they come later)"""
+        if self.want and time.time() - self.want_t > 2.0:
+            self.want_t = time.time()
+            self.put(*self.want)
+
     def restore(self):
+        self.want = None
         if not self.saved:
             return
         rec, idx, keep, base = self.saved

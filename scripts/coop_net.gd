@@ -94,9 +94,9 @@ var bad_col := Color(1.0, 0.35, 0.3)
 
 
 func _ready() -> void:
-	layer = 10
 	_log_open()
 	host_mode = role == "host" if role != "" else not ("--coop-guest" in OS.get_cmdline_user_args())
+	layer = 21 if host_mode else 10       # host: over the game's screens (menus, quarters: layer 10); guest: under his lobby
 	if not host_mode:
 		wait_panel = ColorRect.new()
 		wait_panel.color = Color(0.04, 0.06, 0.08)

@@ -14,6 +14,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Management;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -23,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.5";
+    const string VERSION = "0.6";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -44,6 +45,8 @@ static class Coop
     static readonly Color CBack = Color.FromArgb(9, 17, 16), CPanel = Color.FromArgb(22, 41, 38), CField = Color.FromArgb(12, 26, 24);
     static readonly Color CText = Color.FromArgb(214, 226, 220), CDim = Color.FromArgb(122, 150, 142), CAmber = Color.FromArgb(240, 178, 48);
     static readonly Color CGreen = Color.FromArgb(56, 214, 92), CRed = Color.FromArgb(236, 72, 60), CBlue = Color.FromArgb(38, 76, 178);
+
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
 
     static string Root, Comp, Ini, LogPath;
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
@@ -467,6 +470,9 @@ static class Coop
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
         }
         if (stopping || bridge == null) return;
+        // the game keeps running minimized (the bridge reads it, Uplink draws it): drawn twice it slows Uplink down
+        foreach (Process d in Process.GetProcessesByName("dosbox-staging"))
+            try { if (d.MainWindowHandle != IntPtr.Zero) { ShowWindow(d.MainWindowHandle, 6); Log("game window minimized"); } } catch { }
         Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\". Invite your friend from Uplink's list (top right)." :
             "Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.", CGreen);
         while (!stopping && !bridge.HasExited) Thread.Sleep(500);
@@ -787,8 +793,12 @@ static class Coop
     static void WriteTnpIni(string game)
     {
         string ini = Path.Combine(TnpDir, "TNPlus.ini");
+        // HD 848x480 stays (the bridge reads the cockpit from it); the rest at its lightest: Uplink draws the world,
+        // the game's own picture is only there to keep it running (minimized)
         Dictionary<string, string> want = new Dictionary<string, string> {
-            { "display", "HD" }, { "widescreen", "2" }, { "update_check", "0" }, { "game_dir", game } };
+            { "display", "HD" }, { "widescreen", "2" }, { "update_check", "0" }, { "game_dir", game },
+            { "terrain_detail", "GAME" }, { "object_distance", "GAME" }, { "view_distance", "NORMAL" },
+            { "small_views", "0" }, { "edge_objects", "0" }, { "field_of_view", "GAME" } };
         List<string> lines = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)) : new List<string> { "; Terra Nova Plus settings (written by Terra Nova Coop)" };
         foreach (KeyValuePair<string, string> kv in want)
         {

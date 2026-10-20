@@ -26,6 +26,7 @@ var last := -100.0
 var state := 0
 var armour := 0
 var armour_max := 1
+var host_ent := 0                    # the host's entity: his name over the suit the viewer draws
 var energy := 100                     # his energy, % of what he had at pickup (shots draw from it)
 var entity := 0
 var weapon_slot := 0
@@ -252,6 +253,8 @@ func _process(delta: float) -> void:
 					jump_ready = pk.decode_u8(so + 4) != 0
 				if so + 6 <= pk.size():
 					energy = pk.decode_u8(so + 5)
+				if so + 8 <= pk.size():
+					host_ent = pk.decode_u16(so + 6)
 			if pk.size() >= 52:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
@@ -531,7 +534,8 @@ func _draw_mate() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if host_pos == Vector3.ZERO or cam == null:
 		return
-	var top := host_pos + Vector3(0, 1.0, 0)
+	var n := _drawn(host_ent)                  # the suit as drawn (20 views a second); these packets come ~twice a second
+	var top := (n.global_position if n else host_pos) + Vector3(0, 0.72, 0)   # just over his head (a suit stands ~0.6)
 	if cam.is_position_behind(top):
 		return
 	var c := cam.unproject_position(top)
@@ -546,11 +550,24 @@ func _draw_mate() -> void:
 		Color(0.45, 0.85, 1.0))
 
 
+func _drawn(idx: int) -> Node3D:
+	# the viewer's node for an entity, where it is drawn now (null: none, or not shown)
+	var vp := get_parent()
+	if idx <= 0 or vp == null or not vp.has_method("_live_node"):
+		return null
+	var n: Node3D = vp._live_node(idx)
+	return n if n != null and is_instance_valid(n) and n.visible else null
+
+
 func _draw_lock() -> void:
 	var cam := get_viewport().get_camera_3d()
-	if lock == 0 or cam == null or cam.is_position_behind(lock_pos):
+	if lock == 0 or cam == null:
 		return
-	var c := cam.unproject_position(lock_pos)
+	var n := _drawn(lock)
+	var at := n.global_position + Vector3(0, 0.35, 0) if n else lock_pos   # its middle, as the bridge's lock_pos
+	if cam.is_position_behind(at):
+		return
+	var c := cam.unproject_position(at)
 	var r := maxf(10.0, root.size.y * 0.03)
 	var col := Color(0.3, 1.0, 0.35)
 	for sx in [-1, 1]:

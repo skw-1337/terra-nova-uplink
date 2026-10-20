@@ -67,6 +67,7 @@ var log_f: FileAccess
 var marker: Control
 var guest_pos := Vector3.ZERO
 var guest_seen := -100.0
+var guest_ent := 0                    # host: the guest's suit (his name follows it as the viewer draws it)
 var status_t := 0.0
 # guest: waiting screen until the host's view arrives (not connected yet, or the host is in the game's menus)
 var wait_panel: ColorRect
@@ -230,6 +231,7 @@ func _process(delta: float) -> void:
 				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
+					guest_ent = pk.decode_u16(8)
 					guest_seen = clock
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)
 				sent += pk.size()
@@ -809,7 +811,9 @@ func _draw_marker() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if not (host_mode and peer_ok) or clock - guest_seen > 1.0 or guest_pos == Vector3.ZERO or cam == null:
 		return
-	var top := guest_pos + Vector3(0, 1.0, 0)
+	var vp := get_parent()
+	var n: Node3D = vp._live_node(guest_ent) if guest_ent > 0 and vp != null and vp.has_method("_live_node") else null
+	var top := (n.global_position if n != null and is_instance_valid(n) and n.visible else guest_pos) + Vector3(0, 0.72, 0)   # just over his head
 	if cam.is_position_behind(top):
 		return
 	var font := ThemeDB.fallback_font

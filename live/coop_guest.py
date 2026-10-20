@@ -263,7 +263,7 @@ class Guest:
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
-            score = side + up * 0.25                          # the nearest to the crosshair sideways first
+            score = side + up * 0.25 + math.dist(t[:2], eye[:2]) * 0.0005   # nearest the crosshair; near ones first (100 u = 3 deg)
             if side < LOCK_PICK and up < LOCK_PICK_V and (best is None or score < best):
                 best, pick = score, i
         print('guest: lock', pick or 'nothing', flush=True)
@@ -396,7 +396,7 @@ class Guest:
         host = tuple(self.i32(self.master + 0x25 * me + o) / 65536 for o in (0x0F, 0x13, 0x17))
         pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head) + \
             struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
-            struct.pack('<3f', *host) + self.squad_info(me)
+            struct.pack('<3f', *host) + self.squad_info(me) + struct.pack('<H', me)   # the host's entity: his name follows his drawn suit
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):

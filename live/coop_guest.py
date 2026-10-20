@@ -12,6 +12,13 @@ from coop_name import NameTag
 
 CAVE = 0x46B040
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
+G_HIT = 0x46C200                  # 1v1 hit mailbox (TN+ Coop coop3): 1, +2 entity hit, +6 the guest's projectile that hit it
+# versus: the guest's shots never collide with the host, so the bridge watches them (projectile entities: class 5, record
+# 0x39BDF0 + n*0x1E, +6 the shooter, +0x16 range left) and sends the game a hit for one that crosses the host's body; the
+# game then does the rest (damage by weapon, side hit, shield, armour, death). Spent ones (range 0) are retired (range -1)
+# or they pile up and the guest cannot fire any more
+PROJ, PROJ_N = 0x39BDF0, 0x1E
+HIT_R, HIT_Z = 0.9, (-0.2, 2.6)    # the host's body: radius, height from his feet
 G_JUMP, G_JV = 0x46C004, 0x46C120  # jump mailbox (TN+ Coop 1.2.2-coop2 and later): 1 = jump with speed G_JV (16.16)
 SHIFT = {0x2A, 0x36}              # Shift + a direction key: the game's directional jump
 JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: math.pi / 2, 0x20: -math.pi / 2}   # W S A D: angle from the heading
@@ -105,6 +112,7 @@ class Guest:
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
         self.shift, self.jump_t, self.pad_jump = False, 0.0, False
         self.lock, self.lock_req, self.pad_lock = 0, False, False
+        self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
@@ -164,6 +172,55 @@ class Guest:
         # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (1 s apart)
         slots = bytes(self.g.read(self.suit(self.gid) + SLOTS + SLOT_N * k, 1)[0] for k in range(4)) if self.gid else bytes(4)
         return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if time.time() - self.jump_t >= 1.0 else 0])
+
+    def versus_hits(self, me):
+        g, M = self.g, self.master
+        if g.read(G_HIT, 1)[0] == 0:                         # the cave took the last hit: retire, send the next
+            for i in self.retire:
+                if g.read(M + 0x25 * i, 2) != b'':      # gone already
+                    continue
+                rec = struct.unpack('<h', g.read(M + 0x25 * i + 3, 2))[0]
+                g.write(PROJ + PROJ_N * rec + 0x16, struct.pack('<i', -1))
+            self.retire = []
+            if self.hits:
+                i = self.hits.pop(0)
+                g.write(G_HIT + 2, struct.pack('<HHH', me, 0, i))
+                g.write(G_HIT, b'')
+                self.retire.append(i)
+                print('versus: hit on the host', flush=True)
+        hx, hy, hz = (self.i32(M + me * 0x25 + o) / 65536 for o in (0x0F, 0x13, 0x17))
+        tab = g.read(M, 0x25 * self.nent)
+        seen = {}
+        for i in range(1, self.nent):
+            b = tab[0x25 * i:0x25 * i + 0x1B]
+            if not (b[0] and b[1] == 5):
+                continue
+            rec = g.read(PROJ + PROJ_N * struct.unpack_from('<h', b, 3)[0], PROJ_N)
+            if struct.unpack_from('<h', rec, 6)[0] != self.gid:
+                continue
+            p = tuple(v / 65536 for v in struct.unpack_from('<3i', b, 0x0F))
+            last = self.shots.get(i)
+            if last == 'done' or i in self.hits or i in self.retire:
+                seen[i] = 'done'
+                continue
+            seen[i] = p
+            if self.crosses(last or p, p, (hx, hy, hz)):
+                self.hits.append(i)
+                seen[i] = 'done'
+            elif struct.unpack_from('<i', rec, 0x16)[0] == 0 and i not in self.retire:
+                self.retire.append(i)                         # spent (hit the ground): free its slot
+                seen[i] = 'done'
+        self.shots = seen
+
+    @staticmethod
+    def crosses(a, b, host):
+        """the shot's last step a -> b passes through the host's body (an upright cylinder)"""
+        hx, hy, hz = host
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        n = dx * dx + dy * dy
+        t = 0.0 if n < 1e-9 else max(0.0, min(1.0, ((hx - a[0]) * dx + (hy - a[1]) * dy) / n))
+        x, y, z = (u + (v - u) * t for u, v in zip(a, b))
+        return math.hypot(x - hx, y - hy) < HIT_R and hz + HIT_Z[0] < z < hz + HIT_Z[1]
 
     def target_pos(self, e):
         """middle of a living unit (classes 1-3), or None"""
@@ -324,6 +381,8 @@ class Guest:
                 self.take(gid)
         self.next = False
         self.hud()
+        if self.versus and self.state == OK:
+            self.versus_hits(me)
         turn = self.read_input(self.state == OK)
         if self.state != OK:                                   # the guest watches through the host's eyes
             ex, ey, ez = (self.i32(M + me * 0x25 + o) / 65536 for o in (0x0F, 0x13, 0x17))

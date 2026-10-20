@@ -176,14 +176,24 @@ func _run() -> void:
 	# --- the friends lists that replace Steam's overlay: the host's Invite buttons, the guest's JOIN on the host
 	var row_btn := func(cn, who: String) -> Button:
 		for h in cn.friends_box.get_children():
-			if h is HBoxContainer and h.get_child(0).text == who:
-				return h.get_child(1)
+			if h is HBoxContainer and h.get_child(1).text == who:   # status dot, name, button
+				return h.get_child(2)
 		return null
 	await until(func(): return row_btn.call(host, "Guest player") != null and row_btn.call(guest, "Host player") != null, 5.0)
 	var inv: Button = row_btn.call(host, "Guest player")
 	var join: Button = row_btn.call(guest, "Host player")
 	check(host.friends_panel.visible and inv != null and inv.text == "Invite", "host: the guest in INVITE A FRIEND")
 	check(guest.friends_panel.visible and join != null and join.text == "JOIN", "guest: the host in FRIENDS HOSTING A GAME")
+	host.friends_search.text = "zzz"
+	host.friends_search.text_changed.emit("zzz")
+	await wait(0.2)
+	var none_left: bool = row_btn.call(host, "Guest player") == null
+	host.friends_search.text = "gues"
+	host.friends_search.text_changed.emit("gues")
+	await wait(0.2)
+	check(none_left and row_btn.call(host, "Guest player") != null, "host: the search filters the friends list")
+	host.friends_search.text = ""
+	host.friends_search.text_changed.emit("")
 
 	# --- a host with another coop version: the guest leaves its lobby
 	var old_host := FakeSteam.new(net, "Old host")

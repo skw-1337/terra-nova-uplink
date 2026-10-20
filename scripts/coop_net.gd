@@ -88,6 +88,13 @@ var friends_title: Label
 var friends_t := -100.0
 var friends_sig := ""
 var invited := {}                     # host: friend id -> clock of the invite
+var friends_search: LineEdit          # host: filters the list by name
+var friends_scroll: ScrollContainer
+var friends_fold: Button
+var friends_folded := false
+var recent := {}                      # friend id -> unix time: invited or played with (user://coop_recent.json)
+const RECENT_FILE := "user://coop_recent.json"
+const STATE_NAMES := ["offline", "online", "busy", "away", "snooze", "online", "online"]
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
 var bad_col := Color(1.0, 0.35, 0.3)
@@ -297,6 +304,8 @@ func _read(ch: int) -> void:
 						peer_hello = true
 						peer_ok = ok
 						if ok:
+							_remember(peer)               # first in the friends list next time
+						if ok:
 							udp_out.put_packet("R".to_ascii_buffer())   # the bridge: full decor and a keyframe for him
 							udp_out.put_packet(("N" + steam.getFriendPersonaName(peer)).to_utf8_buffer())   # his name on our HUD
 							if steam.has_method("getPlayerAvatar"):
@@ -342,9 +351,15 @@ func _release_input() -> void:
 # Steam's overlay (F9's invite dialog) doesn't open in Uplink: the host invites from a list of his online friends,
 # the guest joins from a list of the friends who host one (their rich presence game is our lobby).
 func _build_friends() -> void:
+	var f := FileAccess.open(RECENT_FILE, FileAccess.READ)
+	if f:
+		var j = JSON.parse_string(f.get_as_text())
+		if j is Dictionary:
+			for k in j:
+				recent[int(k)] = int(j[k])
 	friends_panel = PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.05, 0.08, 0.07, 0.88)
+	sb.bg_color = Color(0.05, 0.08, 0.07, 0.9)
 	sb.border_color = Color(0.3, 0.55, 0.38)
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(6)
@@ -353,23 +368,58 @@ func _build_friends() -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 6)
 	friends_panel.add_child(v)
+	var head := HBoxContainer.new()
+	v.add_child(head)
 	friends_title = Label.new()
 	friends_title.add_theme_font_size_override("font_size", 16)
 	friends_title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.3))
-	v.add_child(friends_title)
+	friends_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(friends_title)
+	friends_fold = Button.new()
+	friends_fold.text = "–"
+	friends_fold.focus_mode = Control.FOCUS_NONE
+	friends_fold.tooltip_text = "Fold / unfold the list"
+	friends_fold.pressed.connect(func():
+		friends_folded = not friends_folded
+		friends_fold.text = "+" if friends_folded else "–"
+		friends_sig = ""
+		_fill_friends())
+	head.add_child(friends_fold)
+	if host_mode:
+		friends_search = LineEdit.new()
+		friends_search.placeholder_text = "Search a friend..."
+		friends_search.clear_button_enabled = true
+		friends_search.text_changed.connect(func(_t): friends_sig = ""; _fill_friends())
+		v.add_child(friends_search)
+	friends_scroll = ScrollContainer.new()
+	friends_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(friends_scroll)
 	friends_box = VBoxContainer.new()
-	friends_box.add_theme_constant_override("separation", 4)
-	v.add_child(friends_box)
+	friends_box.add_theme_constant_override("separation", 2)
+	friends_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	friends_scroll.add_child(friends_box)
 	friends_panel.visible = false
 	if host_mode:
 		friends_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 		friends_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 		friends_panel.position = Vector2(-12, 44)
-		friends_panel.custom_minimum_size = Vector2(300, 0)
+		friends_panel.custom_minimum_size = Vector2(320, 0)
 		add_child(friends_panel)
 	else:
-		friends_panel.custom_minimum_size = Vector2(420, 0)
+		friends_panel.custom_minimum_size = Vector2(440, 0)
 		wait_title.get_parent().add_child(friends_panel)
+
+
+func _remember(id: int) -> void:
+	# a friend invited or played with: first in the list next time (and Steam's "recently played with")
+	if id == 0:
+		return
+	recent[id] = int(Time.get_unix_time_from_system())
+	var f := FileAccess.open(RECENT_FILE, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(recent))
+	if steam and steam.has_method("setPlayedWith"):
+		steam.setPlayedWith(id)
 
 
 func _fill_friends() -> void:
@@ -379,41 +429,78 @@ func _fill_friends() -> void:
 	friends_panel.visible = want
 	if not want:
 		return
-	var rows := []                                       # [id, name, lobby]
+	# [id, name, state, lobby, recent time]: friends hosting a game first, then recent ones, online, away
+	var rows := []
+	var online := 0
 	if steam.has_method("getFriendCount"):
 		for i in steam.getFriendCount(4):                 # k_EFriendFlagImmediate: the friends list
 			var id: int = steam.getFriendByIndex(i, 4)
-			if steam.getFriendPersonaState(id) == 0:      # offline
+			var st: int = steam.getFriendPersonaState(id)
+			if st == 0:                                   # offline
 				continue
+			online += 1
 			var lobby := 0
 			var g: Dictionary = steam.getFriendGamePlayed(id)
 			if int(g.get("id", 0)) == APP_ID:
 				lobby = int(g.get("lobby", 0))
 			if host_mode or lobby != 0:
-				rows.append([id, steam.getFriendPersonaName(id), lobby])
-	rows.sort_custom(func(a, b): return (a[2] != 0 and b[2] == 0) or ((a[2] != 0) == (b[2] != 0) and a[1].nocasecmp_to(b[1]) < 0))
+				rows.append([id, steam.getFriendPersonaName(id), st, lobby, int(recent.get(id, 0))])
+	var q := friends_search.text.strip_edges().to_lower() if friends_search else ""
+	if q != "":
+		rows = rows.filter(func(r): return r[1].to_lower().contains(q))
+	var rank := func(r) -> int:
+		if r[3] != 0: return 0                            # hosting / in a coop lobby
+		if r[4] != 0: return 1                            # recent
+		return 2 if r[2] in [1, 5, 6] else 3 if r[2] == 2 else 4
+	rows.sort_custom(func(a, b):
+		var ra: int = rank.call(a)
+		var rb: int = rank.call(b)
+		if ra != rb: return ra < rb
+		if ra == 1 and a[4] != b[4]: return a[4] > b[4]
+		return a[1].nocasecmp_to(b[1]) < 0)
 	var free := Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
-	var sig := str(rows) + str(invited.keys()) + str(free)
+	var sig := str(rows) + str(invited.keys()) + str(free) + str(friends_folded) + q
 	if sig == friends_sig:
 		return
 	friends_sig = sig
-	for c in friends_box.get_children():
-		c.queue_free()
 	if host_mode:
-		friends_title.text = "INVITE A FRIEND" + ("" if free else "   (Y: free the mouse)")
+		friends_title.text = "INVITE A FRIEND  (%d online)" % online + ("" if free else "   Y: free the mouse")
 	else:
 		friends_title.text = "FRIENDS HOSTING A GAME"
+	if friends_search:
+		friends_search.visible = not friends_folded
+	friends_scroll.visible = not friends_folded
+	if friends_folded:
+		return
+	var keep := friends_scroll.scroll_vertical
+	for c in friends_box.get_children():
+		c.queue_free()
 	if rows.is_empty():
 		var l := Label.new()
-		l.text = "No friend online in Steam." if host_mode else \
+		l.text = ("No friend online matches \"%s\"." % q if q != "" else "No friend online in Steam.") if host_mode else \
 			"Nobody yet. Your friend clicks HOST in Terra Nova Coop,\nthen his name shows up here."
 		l.add_theme_color_override("font_color", Color(0.75, 0.8, 0.85))
 		friends_box.add_child(l)
-		return
-	for r in rows.slice(0, 12):
+	var section := -1
+	var heads := ["HOSTING A COOP GAME", "RECENT", "ONLINE", "BUSY", "AWAY"]
+	for r in rows:
+		var rk: int = rank.call(r)
+		if host_mode and rk != section:
+			section = rk
+			var hl := Label.new()
+			hl.text = heads[rk]
+			hl.add_theme_font_size_override("font_size", 11)
+			hl.add_theme_color_override("font_color", Color(0.5, 0.65, 0.58))
+			friends_box.add_child(hl)
 		var h := HBoxContainer.new()
+		var dot := Label.new()
+		dot.text = "●"
+		dot.add_theme_color_override("font_color", Color(0.35, 1.0, 0.45) if r[2] in [1, 5, 6] else Color(0.95, 0.75, 0.3) if r[2] == 2 else Color(0.5, 0.6, 0.65))
+		h.add_child(dot)
 		var n := Label.new()
 		n.text = r[1]
+		n.tooltip_text = "%s (%s)" % [r[1], STATE_NAMES[clampi(r[2], 0, 6)]]
+		n.mouse_filter = Control.MOUSE_FILTER_PASS
 		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		n.clip_text = true
 		h.add_child(n)
@@ -427,18 +514,32 @@ func _fill_friends() -> void:
 			b.pressed.connect(func():
 				steam.inviteUserToLobby(lobby_id, id)
 				invited[id] = clock
+				_remember(id)
 				_log("invited %s" % steam.getFriendPersonaName(id))
 				friends_sig = ""
 				_fill_friends())
 		else:
-			var lobby: int = r[2]
+			var lobby: int = r[3]
 			b.text = "JOIN"
 			b.custom_minimum_size = Vector2(90, 0)
 			b.pressed.connect(func():
+				_remember(id)
 				_show("ONLINE", "joining %s..." % steam.getFriendPersonaName(id), warn_col)
 				steam.joinLobby(lobby))
 		h.add_child(b)
 		friends_box.add_child(h)
+	# as many rows as fit: the list scrolls past half the window's height
+	var lines := friends_box.get_child_count()
+	friends_scroll.custom_minimum_size = Vector2(0, minf(lines * 28.0 + 4.0, get_viewport().get_visible_rect().size.y * 0.55))
+	friends_scroll.set_deferred("scroll_vertical", keep)
+
+
+func wants_keys() -> bool:
+	# typing in the search or the chat: the keys are for it, not the game (viewer.gd asks)
+	for c in [friends_search, chat_edit]:
+		if c and c.is_visible_in_tree() and c.has_focus():
+			return true
+	return false
 
 
 func owns_point(p: Vector2) -> bool:

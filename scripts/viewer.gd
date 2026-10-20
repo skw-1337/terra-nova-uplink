@@ -1663,6 +1663,10 @@ func _input(event: InputEvent) -> void:
 	if host_btn and host_btn.visible and event is InputEventMouse and (host_btn.get_global_rect().has_point(event.position) or
 			(versus_btn and versus_btn.get_global_rect().has_point(event.position))):
 		return                                          # the "Host online" button's, not the game's
+	if event is InputEventKey:
+		for n in get_children():                         # typing in coop_net.gd's search or chat
+			if n.has_method("wants_keys") and n.wants_keys():
+				return
 	if event is InputEventMouse:
 		for n in get_children():                         # coop_net.gd's own buttons (invite a friend, lock, chat)
 			if n.has_method("owns_point") and n.owns_point(event.position):

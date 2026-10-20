@@ -78,6 +78,8 @@ var resync_t := -100.0
 var clock := 0.0
 var mission_t := 0.0
 var msn_want := ""                   # guest: the host's mission last asked of the viewer (loading takes a while)
+var lock_btn: Button                 # host: locks the guest's column on the Mission Outfitting screen (coop_lobby.py)
+var guest_locked := false
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
 var bad_col := Color(1.0, 0.35, 0.3)
@@ -121,6 +123,14 @@ func _ready() -> void:
 	label.add_theme_color_override("font_outline_color", Color.BLACK)
 	label.add_theme_constant_override("outline_size", 4)
 	add_child(label)
+	if host_mode:
+		lock_btn = Button.new()
+		lock_btn.position = Vector2(12, 64)
+		lock_btn.focus_mode = Control.FOCUS_NONE           # keys stay the game's
+		lock_btn.tooltip_text = "Mission Outfitting: the guest's column (pilot and loadout) can't be changed by him"
+		lock_btn.pressed.connect(_toggle_lock)
+		add_child(lock_btn)
+		_paint_lock()
 	_show("STEAM...", "", warn_col)
 	if fake_steam == null and "--fake-steam" in OS.get_cmdline_user_args():
 		fake_steam = load("res://scripts/fake_steam.gd").new()
@@ -461,6 +471,19 @@ func _on_lobby_update(lobby: int, changed: int, _maker: int, change: int) -> voi
 		_show("ONLINE", "the host left - waiting for an invite", warn_col)
 		return
 	_refresh()
+
+
+func _toggle_lock() -> void:
+	guest_locked = not guest_locked
+	var vp := get_parent()
+	if vp and vp.has_method("_play_send"):
+		vp._play_send(("LOCK1" if guest_locked else "LOCK0").to_ascii_buffer())   # to the bridge (live_bridge.py)
+	_paint_lock()
+
+
+func _paint_lock() -> void:
+	lock_btn.text = "Guest column: " + ("locked" if guest_locked else "unlocked")
+	lock_btn.modulate = warn_col if guest_locked else Color.WHITE
 
 
 func _refresh() -> void:

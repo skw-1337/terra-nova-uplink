@@ -11,6 +11,7 @@ const TIMEOUT := 3.0
 const SLOT_NAMES := ["Left arm 1", "Left arm 2", "Right arm 1", "Right arm 2"]
 
 var out := PacketPeerUDP.new()
+var play_port := PLAY_PORT          # tests: another port
 var st := {}
 var last := -100.0
 var clock := 0.0
@@ -32,7 +33,7 @@ var busy := false                      # filling the controls: their signals are
 
 func _ready() -> void:
 	layer = 20
-	out.set_dest_address("127.0.0.1", PLAY_PORT)
+	out.set_dest_address("127.0.0.1", play_port)
 	root = PanelContainer.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	var sb := StyleBoxFlat.new()
@@ -143,7 +144,7 @@ func _refresh() -> void:
 		c.queue_free()
 	var cols: Array = st.get("cols", [])
 	for i in cols.size():
-		cols_box.add_child(_column_card(i, cols[i], col, locked))
+		cols_box.add_child(_column_card(i, cols[i], col if col > 0 else -1, locked))   # -1: none taken yet
 	picker.visible = col > 0
 	if col > 0 and col < cols.size():
 		_fill_picker(cols[col], locked)

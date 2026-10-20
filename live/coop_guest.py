@@ -25,7 +25,7 @@ JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: math.pi / 2, 0x20: -math.pi / 2}   #
 HEAT = 0x3C8                      # suit record: the game jumps only while this is under 0x30000
 # Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
 # of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
-LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 250.0
+LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 120.0   # range: 1.2 km (2.5 km picked targets out of sight)
 # side angle as above; up / down much wider: the guest rarely aims his pitch at a unit on another level (the arena's
 # terraces put the host 30 degrees below him at 8 units)
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)

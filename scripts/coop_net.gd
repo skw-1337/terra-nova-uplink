@@ -367,6 +367,7 @@ func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -
 			n.set_mate(steam.getFriendPersonaName(peer), null)
 	if steam.has_method("getPlayerAvatar"):
 		steam.getPlayerAvatar(2, peer)
+		steam.getPlayerAvatar(2, steam.getSteamID())          # ours too: the lobby shows both players
 	_refresh()
 
 
@@ -412,7 +413,15 @@ func _axis(a: JoyAxis, sign_: float) -> int:
 
 # host: the guest's Steam avatar, 21 x 27 like the game's portraits (the bridge turns it into the game's colours)
 func _on_avatar(id: int, size: int, data: PackedByteArray) -> void:
-	if id != peer or size <= 0 or data.size() != size * size * 4:
+	if size <= 0 or data.size() != size * size * 4:
+		return
+	if not host_mode and id == steam.getSteamID():          # guest: ours, for the lobby (coop_lobby.gd)
+		var me := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+		for n in get_parent().get_children():
+			if n.has_method("set_self"):
+				n.set_self(steam.getPersonaName(), me)
+		return
+	if id != peer:
 		return
 	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
 	# the game's screen has half-height rows (320 x 400 shown 4:3): a portrait's 21 x 27 pixels show a wide band,

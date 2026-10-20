@@ -73,7 +73,7 @@ func _run() -> void:
 	_feed(_with({"col": 0}))
 	await _wait()
 	var b := _buttons(lobby.cols_box, [])
-	_check(b.size() == 3 and b.all(func(x): return x.text == "Take this column"), "3 columns to take, none for the host")
+	_check(b.size() == 3 and b.all(func(x): return x.text == "TAKE THIS COLUMN"), "3 columns to take, none for the host")
 	_check(not lobby.picker.visible, "no picker before a column is his")
 	_check(lobby.root.visible, "lobby shown on the outfitting screen")
 	b[1].pressed.emit()                              # column 3
@@ -87,7 +87,7 @@ func _run() -> void:
 	await _wait()
 	_check(lobby.picker.visible, "picker shown once the column is his")
 	b = _buttons(lobby.cols_box, [])
-	_check(b.size() == 3 and b.any(func(x): return x.text == "Leave"), "a Leave button on his column")
+	_check(b.size() == 3 and b.any(func(x): return x.text == "LEAVE"), "a Leave button on his column")
 	_check(_sent().is_empty(), "showing the state sends nothing")
 	_feed(_with({"col": 1, "cols": cols}))
 	await _wait()

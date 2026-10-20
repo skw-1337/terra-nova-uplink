@@ -409,6 +409,12 @@ func set_mate(mate: String, face: Image) -> void:
 	mate_name = mate
 	if face:
 		mate_face = ImageTexture.create_from_image(face)
+	lobby.set_mate(mate, face)
+
+
+# the guest: his own Steam name and avatar, for the lobby
+func set_self(me: String, face: Image) -> void:
+	lobby.set_self(me, face)
 
 
 # the game's screen units (320 x 400) to the window

@@ -11,7 +11,7 @@
 #   suit rules      RESMISS 0x6B4 (weapons) / 0x6B5 (ASF): high byte of word [id] = the suits allowed (bit = suit)
 #   redraw          the screen's task [0x36F4B4] waits for event 0x101: posting 0x0B there (as 0x2E809C does)
 #                   redraws every column, no click
-import json, os, struct
+import base64, json, os, struct
 
 SQUAD, SQUAD_N = 0x391E50, 0x32
 ROWS, ROW_N, ID2ROW = 0x390348, 494, 0x391F4D
@@ -22,6 +22,7 @@ TWO_SLOT, ASF_DEFAULT, ASF_OVERRIDE = 0x395111, 0x390328, 0x43D2F8
 TASK, WAKE, REDRAW = 0x36F4B4, 0x101, 0x0B
 OUTFIT_SIG = bytes.fromhex('9b1a14')   # the task's script position (+0x10) while the outfitting screen waits
 LASER = 4
+PALETTE = 0x44AE90                 # the game's 256 colours (8 bits each): the portraits' on the outfitting screen
 SPECS = {1: 'Recon', 2: 'Weapons', 3: 'Demolitions', 4: 'Electronics', 5: 'Repair'}
 STATUS_NAMES = ['Available', 'Injured', 'Away on Mission', 'Ready']
 
@@ -32,6 +33,7 @@ class Lobby:
         self.col = 0                     # the guest's column (1-3), 0 none
         self.locked = False              # the host locked it: the guest can't change it any more
         self.dirty = False               # a redraw to post as soon as the screen waits for it
+        self.pal, self.pal_t = b'', 0.0   # the palette last sent (again every 5 s, his window may have restarted)
         self.names, self.wnames, self.snames, self.anames = {}, {}, {}, {}
         self.wmask, self.amask = {}, {}
         self._load(data_dir)
@@ -101,7 +103,15 @@ class Lobby:
             spec = self.u8(ROWS + ROW_N * self.u8(ID2ROW + pid) + 5)
             cols.append(dict(col, name=self.names.get(pid, '#%d' % pid), spec=SPECS.get(spec, ''),
                              who='host' if c == 0 else 'guest' if c == self.col else 'ai'))
-        return {'outfit': self.on_screen() and not in_mission, 'mission': in_mission, 'col': self.col,
+        outfit = self.on_screen() and not in_mission
+        extra = {}
+        if outfit:                                     # the portraits' colours, when they changed or every 5 s
+            import time
+            pal = self.g.read(PALETTE, 768)
+            if pal != self.pal or time.time() - self.pal_t > 5.0:
+                self.pal, self.pal_t = pal, time.time()
+                extra['pal'] = base64.b64encode(pal).decode('ascii')
+        return {**extra, 'outfit': outfit, 'mission': in_mission, 'col': self.col,
                 'locked': self.locked, 'cols': cols, 'pilots': self.pilots(),
                 'suits': [[s, self.snames.get(s, 'Suit %d' % s)] for s in suits],
                 'weapons': [[w, self.wnames.get(w, '#%d' % w), self.wmask.get(w, 0xFF), 1 if self.two_slot(w) else 0]

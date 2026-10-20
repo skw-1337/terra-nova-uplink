@@ -1549,6 +1549,8 @@ func _play_key(sc: int, down: bool) -> void:
 func _play_release_all() -> void:
 	for sc in play_held.keys():
 		_play_key(sc, false)
+	for bt in [1, 2]:                                    # a button let go elsewhere (alt-tab) would fire forever
+		_play_send(PackedByteArray([0x42, bt, 0]))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	play_started = false
 
@@ -1640,6 +1642,9 @@ func _input(event: InputEvent) -> void:
 		return
 	if guest_win and _lobby_open():                       # its buttons, lists and chat get the mouse and keys
 		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		if not lobby_was_open:
+			_play_release_all()                              # nothing held from the mission into the lobby
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		lobby_was_open = true
 		return

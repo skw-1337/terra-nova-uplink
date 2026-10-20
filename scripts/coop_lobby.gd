@@ -485,6 +485,8 @@ func _refresh() -> void:
 	var cols: Array = st.get("cols", [])
 	var host_col: int = int(st.get("host_col", -1)) if st.get("outfit", false) else -1
 	for i in cols.size():
+		if not int(cols[i].get("on", 1)):                # a slot this mission doesn't have (3-man squads)
+			continue
 		cols_box.add_child(_column_card(i, cols[i], col if col > 0 else -1, locked, i == host_col))   # -1: none taken
 	picker.visible = true
 	_fill_picker(cols[col] if col > 0 and col < cols.size() else {}, locked, col > 0)

@@ -137,6 +137,7 @@ var play_dx := 0.0
 # coop guest's window (--coop-hud / --coop-guest): free look, the middle button or Alt held: the mouse turns only
 # his camera (up to 120 degrees aside, 60 up / down), his suit and aim stay; let go: the view comes back
 var guest_win := false
+var lobby_was_open := false
 var free_look := false
 var look_off := Vector2.ZERO
 var play_dy := 0.0
@@ -1627,9 +1628,24 @@ func _play_game_pos(p: Vector2) -> Vector2i:
 	return Vector2i(clampi(int(p.x / vs.x * 320.0), 0, 319), clampi(int(p.y / vs.y * 400.0), 0, 399))
 
 
+func _lobby_open() -> bool:
+	for n in get_children():                              # coop guest: the outfitting lobby (coop_lobby.gd) is on screen
+		if n.get("lobby") and n.lobby.root and n.lobby.root.visible:
+			return true
+	return false
+
+
 func _input(event: InputEvent) -> void:
 	if not play:
 		return
+	if guest_win and _lobby_open():                       # its buttons, lists and chat get the mouse and keys
+		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		lobby_was_open = true
+		return
+	if lobby_was_open:                                     # the mission starts: the next click takes the mouse again
+		lobby_was_open = false
+		play_started = false
 	# Two modes, swapped by Y (the freelook key) or Pause, which stay in the viewer: look (mouse captured, it turns
 	# the view, clicks at the view's centre) and cursor (the game's own cursor follows the mouse, clicks where it
 	# is: the HUD's buttons, the map, free aiming).

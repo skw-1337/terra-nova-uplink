@@ -98,7 +98,7 @@ class Lobby:
     # ---- reading
     def column(self, c):
         r = self.g.read(SQUAD + SQUAD_N * c, SQUAD_N)
-        return {'pilot': r[6], 'suit': r[8], 'w': list(r[9:13]), 'asf': r[13]}
+        return {'on': r[0], 'pilot': r[6], 'suit': r[8], 'w': list(r[9:13]), 'asf': r[13]}   # on 0: no such slot here
 
     def pilots(self):
         rows = self.g.read(LIST, 16)
@@ -360,7 +360,7 @@ class Lobby:
             return 'ready' if self.ready else 'not ready'
         if act == 'join':
             c = int(msg.get('col', 0))
-            if c not in (1, 2, 3):
+            if c not in (1, 2, 3) or not self.column(c)['on']:
                 return None
             if self.locked and self.col:
                 return 'join refused: locked'

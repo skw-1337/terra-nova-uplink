@@ -23,7 +23,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.4";
+    const string VERSION = "0.5";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -835,6 +835,7 @@ static class Coop
                 InstallPython();
             }
         }
+        if (host) PythonPaths();               // installs made before 0.5 lacked the live folder
         Ui(RefreshUi);
         Progress(0);
     }
@@ -961,8 +962,7 @@ static class Coop
         File.Delete(z);
         string site = Path.Combine(dir, "Lib", "site-packages");
         Directory.CreateDirectory(site);
-        foreach (string pth in Directory.GetFiles(dir, "python*._pth"))   // the embedded Python: add site-packages
-            File.WriteAllText(pth, File.ReadAllText(pth).Replace("#import site", "import site") + "\r\nLib\\site-packages\r\n");
+        PythonPaths();
         foreach (string[] w in WHEELS)
         {
             string j = Text("https://pypi.org/pypi/" + w[0] + "/" + w[1] + "/json");
@@ -975,6 +975,21 @@ static class Coop
         Process t = Run(PythonExe, "-c \"import numpy, psutil; print('python ok', numpy.__version__, psutil.__version__)\"", dir, null, true);
         t.WaitForExit();
         if (t.ExitCode != 0) throw new Exception("the embedded Python doesn't import numpy / psutil");
+    }
+
+    // the embedded Python only searches what its ._pth file lists (not even the script's folder): site-packages for
+    // numpy / psutil, and Uplink's live folder for the bridge's own modules (tnre, coop_guest...)
+    static void PythonPaths()
+    {
+        string dir = Path.Combine(Comp, "python");
+        if (!Directory.Exists(dir)) return;
+        foreach (string pth in Directory.GetFiles(dir, "python*._pth"))
+        {
+            string t = File.ReadAllText(pth).Replace("#import site", "import site");
+            foreach (string need in new[] { @"Lib\site-packages", @"..\uplink\live" })
+                if (!Regex.IsMatch(t, "(?m)^" + Regex.Escape(need) + @"\s*$")) t = t.TrimEnd() + "\r\n" + need + "\r\n";
+            File.WriteAllText(pth, t);
+        }
     }
 
     static string Text(string url)

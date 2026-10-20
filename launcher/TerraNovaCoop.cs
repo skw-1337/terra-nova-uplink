@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.7";
+    const string VERSION = "0.8";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -49,6 +49,9 @@ static class Coop
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WRect r);
+    [StructLayout(LayoutKind.Sequential)] struct WRect { public int Left, Top, Right, Bottom; }
 
     static string Root, Comp, Ini, LogPath;
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
@@ -493,16 +496,29 @@ static class Coop
         }
     }
 
-    // the game keeps running minimized (the bridge reads it, Uplink draws it): drawn twice it slows Uplink down.
-    // Minimized again when it comes back by itself, left alone while it is in front (the host brought it up)
+    // the game's window tucked right behind Uplink's: out of sight, but not minimized (on the menus the bridge
+    // photographs it, PrintWindow, which a minimized window can't give). Left alone while it is in front (the host
+    // brought it up); put back behind when it comes up by itself
     static void KeepGameMinimized()
     {
+        IntPtr up = IntPtr.Zero;
+        foreach (Process g in Process.GetProcesses())
+            try { if (g.ProcessName.StartsWith("Godot") && g.MainWindowHandle != IntPtr.Zero) { up = g.MainWindowHandle; break; } } catch { }
+        if (up == IntPtr.Zero) return;
+        WRect ur;
+        if (!GetWindowRect(up, out ur)) return;
         foreach (Process d in Process.GetProcessesByName("dosbox-staging"))
             try
             {
                 d.Refresh();
                 IntPtr h = d.MainWindowHandle;
-                if (h != IntPtr.Zero && !IsIconic(h) && GetForegroundWindow() != h) { ShowWindow(h, 7); Log("game window minimized"); }
+                if (h == IntPtr.Zero || GetForegroundWindow() == h) continue;
+                if (IsIconic(h)) ShowWindow(h, 4);                 // restored without taking the focus
+                WRect r;
+                GetWindowRect(h, out r);
+                int x = ur.Left + 40, y = ur.Top + 40;
+                if (r.Left != x || r.Top != y) Log("game window behind Uplink");
+                SetWindowPos(h, up, x, y, 0, 0, 0x0001 | 0x0010);    // under Uplink's window, no size change, no activation
             }
             catch { }
     }

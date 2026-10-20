@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.6";
+    const string VERSION = "0.7";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -47,6 +47,8 @@ static class Coop
     static readonly Color CGreen = Color.FromArgb(56, 214, 92), CRed = Color.FromArgb(236, 72, 60), CBlue = Color.FromArgb(38, 76, 178);
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
 
     static string Root, Comp, Ini, LogPath;
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
@@ -451,7 +453,16 @@ static class Coop
         }
         Status("Starting the game (TN+ Coop)...", CAmber);
         Session("Starting the game...", CAmber);
-        Process tnp = Run(TnpExe, "--launch", TnpDir, null, false);
+        // the game windowed (the editions start DOSBox fullscreen, and a fullscreen DOSBox comes back over Uplink at
+        // each video mode change): one more DOSBox config, after the edition's and TN+'s
+        string conf = Path.Combine(TnpDir, "coop_host.conf");
+        File.WriteAllText(conf, "# Terra Nova Coop: the host's game in a small window, kept minimized (Uplink draws it)
+" +
+            "[sdl]
+fullscreen = false
+windowresolution = 640x400
+");
+        Process tnp = Run(TnpExe, "--launch --conf \"" + conf + "\"", TnpDir, null, false);
         // the bridge needs the game's code loaded: tried every few seconds until it stays up
         Status("Waiting for the game to load...", CAmber);
         Process bridge = null;
@@ -470,18 +481,34 @@ static class Coop
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
         }
         if (stopping || bridge == null) return;
-        // the game keeps running minimized (the bridge reads it, Uplink draws it): drawn twice it slows Uplink down
-        foreach (Process d in Process.GetProcessesByName("dosbox-staging"))
-            try { if (d.MainWindowHandle != IntPtr.Zero) { ShowWindow(d.MainWindowHandle, 6); Log("game window minimized"); } } catch { }
         Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\". Invite your friend from Uplink's list (top right)." :
             "Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.", CGreen);
-        while (!stopping && !bridge.HasExited) Thread.Sleep(500);
+        int n = 0;
+        while (!stopping && !bridge.HasExited)
+        {
+            Thread.Sleep(500);
+            if (++n % 4 == 0) KeepGameMinimized();
+        }
         if (!stopping)
         {
             Status(tnp.HasExited ? "The game was closed. Session over." :
                 "Uplink was closed. Click HOST A GAME to open it again.", CText);
             Session("No session.", CDim);
         }
+    }
+
+    // the game keeps running minimized (the bridge reads it, Uplink draws it): drawn twice it slows Uplink down.
+    // Minimized again when it comes back by itself, left alone while it is in front (the host brought it up)
+    static void KeepGameMinimized()
+    {
+        foreach (Process d in Process.GetProcessesByName("dosbox-staging"))
+            try
+            {
+                d.Refresh();
+                IntPtr h = d.MainWindowHandle;
+                if (h != IntPtr.Zero && !IsIconic(h) && GetForegroundWindow() != h) { ShowWindow(h, 7); Log("game window minimized"); }
+            }
+            catch { }
     }
 
     static Process Bridge()

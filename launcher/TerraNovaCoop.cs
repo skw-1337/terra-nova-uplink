@@ -456,12 +456,8 @@ static class Coop
         // the game windowed (the editions start DOSBox fullscreen, and a fullscreen DOSBox comes back over Uplink at
         // each video mode change): one more DOSBox config, after the edition's and TN+'s
         string conf = Path.Combine(TnpDir, "coop_host.conf");
-        File.WriteAllText(conf, "# Terra Nova Coop: the host's game in a small window, kept minimized (Uplink draws it)
-" +
-            "[sdl]
-fullscreen = false
-windowresolution = 640x400
-");
+        File.WriteAllLines(conf, new[] { "# Terra Nova Coop: the host's game in a small window, kept minimized (Uplink draws it)",
+            "[sdl]", "fullscreen = false", "windowresolution = 640x400" });
         Process tnp = Run(TnpExe, "--launch --conf \"" + conf + "\"", TnpDir, null, false);
         // the bridge needs the game's code loaded: tried every few seconds until it stays up
         Status("Waiting for the game to load...", CAmber);

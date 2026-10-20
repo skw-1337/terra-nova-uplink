@@ -56,6 +56,12 @@ static class Coop
         LogPath = Path.Combine(Comp, "logs", "launcher.log");
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2 (GitHub, python.org, PyPI)
         LoadCfg();
+        string[] args = Environment.GetCommandLineArgs();
+        if (args.Length > 2 && args[1] == "--install")    // checks: install / update only, no window (exit code 0 = ok)
+        {
+            try { Install(args[2] == "host"); Console.WriteLine("installed"); Environment.Exit(0); }
+            catch (Exception e) { Log(e.ToString()); Environment.Exit(1); }
+        }
         Application.EnableVisualStyles();
         Build();
         form.Shown += delegate { Refresh(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
@@ -166,8 +172,10 @@ static class Coop
     static void Refresh()
     {
         string g = Game();
-        gameLabel.Text = g != null ? "Game: " + g : "Game: not found - click Change... and pick the folder that contains TNOVA";
-        gameLabel.ForeColor = g != null ? CText : CRed;
+        bool en = g != null && IsEnglish(g);
+        gameLabel.Text = g == null ? "Game: not found - click Change... and pick the folder that contains TNOVA" :
+            (en ? "Game: " : "Not the English game (co-op needs it): ") + g;
+        gameLabel.ForeColor = en ? CText : CRed;
         bool[] have = { File.Exists(Path.Combine(UplinkDir, "project.godot")), File.Exists(GodotExe), File.Exists(TnpExe), File.Exists(PythonExe) };
         for (int i = 0; i < checks.Length; i++)
         {
@@ -211,13 +219,29 @@ static class Coop
     // ------------------------------------------------------------------ the game folder (GOG, Steam, or picked)
     static bool IsGame(string d) { return d != "" && File.Exists(Path.Combine(d, "TNOVA", "DATA", "RESMISS.RES")); }
 
+    const long EN_EXE = 1856641;      // __FF.EXE v1.09 English (Steam, GOG); the French one is 1856813
+    static bool IsEnglish(string d)
+    {   // the co-op code only knows the English exe; TN+ keeps the original next to its patched copy
+        foreach (string f in new[] { "__FF.EXE.tnplus-original", "__FF.EXE" })
+        {
+            string p = Path.Combine(d, "TNOVA", f);
+            if (File.Exists(p)) return new FileInfo(p).Length == EN_EXE;
+        }
+        return false;
+    }
+
     static string Game()
     {
         string g = Cfg("game_dir");
         if (IsGame(g)) return g;
+        string any = null;
         foreach (string c in Candidates())
-            if (IsGame(c)) { cfg["game_dir"] = c; SaveCfg(); return c; }
-        return null;
+            if (IsGame(c))
+            {
+                if (IsEnglish(c)) { cfg["game_dir"] = c; SaveCfg(); return c; }
+                if (any == null) any = c;
+            }
+        return any;                      // not English: shown in red, the user can pick another one
     }
 
     static IEnumerable<string> Candidates()
@@ -498,7 +522,7 @@ static class Coop
         Repo(TNPLUS_REPO, src);
         string bat = Path.Combine(src, "src", "build.bat");
         string cmd = File.ReadAllText(bat);
-        Match m = Regex.Match(cmd, "\"%CSC%\"([^\\r\\n]+)");   // build.bat's compiler line, without its pause
+        Match m = Regex.Match(cmd, "(?m)^\"%CSC%\"([^\\r\\n]+)");   // build.bat's compiler line, without its pause
         if (!m.Success) throw new Exception("TN+ build.bat not understood");
         string csc = Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework64\v4.0.30319\csc.exe");
         if (!File.Exists(csc)) csc = Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework\v4.0.30319\csc.exe");

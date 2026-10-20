@@ -4,6 +4,17 @@ Two players, one mission, over Steam. The host plays the real game. The guest dr
 
 It's a prototype: expect bugs. Windows only, two players, English game only for now.
 
+## The easy way: Terra Nova Coop
+
+**`Terra Nova Coop.exe`** does everything for both players. Put it in an empty folder and start it:
+
+- **HOST A GAME**: downloads what's missing (Uplink, Godot, Python for the bridge, and builds TN+ Coop), starts the game without TN+'s menu, waits for it to load, then opens Uplink with the Steam lobby. Invite your friend from the list at the top right of Uplink's window.
+- **JOIN A FRIEND**: downloads Uplink and Godot, then opens the guest window. Your friend's name shows up there once he hosts: click **JOIN**.
+
+Everything goes in that folder (about 250 MB once installed). Before each game it checks GitHub and updates, so both PCs stay on the same version. It finds the game on its own (GOG or Steam, the English one first); **Change...** picks another folder. To build it yourself: `launcher\build.bat` (C# compiler that comes with Windows).
+
+The rest of this page is the manual way, and what the launcher does for you.
+
 ## What each player needs
 
 | | Host | Guest |
@@ -67,7 +78,7 @@ A gamepad works too: left stick move, right stick look, right trigger fire, left
 | Problem | Fix |
 |---|---|
 | "Godot 4.7 not found" | The Godot exe isn't next to the `.bat` files (or in a `Godot...` folder there). Move it. |
-| F9 does nothing | Normal, Steam's overlay doesn't open in Uplink. The guest uses **Join game** in his friends list. |
+| F9 does nothing | Normal, Steam's overlay doesn't open in Uplink. Use the **Invite** list in Uplink (host), or **JOIN** in the guest window. |
 | No **Join game** on the host | The guest's Uplink must be open first, and you must be Steam friends. |
 | "ANOTHER COOP VERSION" | You don't have the same Uplink files. Both download the zip again. |
 | The guest's suit keeps firing | Unplug a gamepad whose trigger doesn't go back to zero. |

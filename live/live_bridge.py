@@ -232,6 +232,10 @@ def handle_input():
             guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV')
             guest.hud_src = lambda: hud_last
             print('coop: hosting online', flush=True)
+        elif pk in (b'LOCK1', b'LOCK0') and guest is not None:   # the host window's lock of the guest's column
+            guest.lobby.locked = pk == b'LOCK1'
+            guest.lobby_t = 0.0
+            print('lobby: column', 'locked' if guest.lobby.locked else 'unlocked', flush=True)
     if look:                                  # le curseur du jeu reste au centre : on vise ou on regarde
         x, y = centre()
         g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')

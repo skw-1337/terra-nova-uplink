@@ -268,7 +268,7 @@ func _read(ch: int) -> void:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
 			elif tag == "PNO" and data.size() >= 11:
 				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
-			elif tag == "GHD" or tag == "GCK":                # HUD and cockpit: to coop_hud.gd
+			elif tag == "GHD" or tag == "GCK" or tag == "GLB":   # HUD, cockpit and lobby: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
 			elif data.size() > 3 and tag == "MSN":
 				var mf := data.slice(3).get_string_from_ascii()

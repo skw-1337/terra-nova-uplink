@@ -70,6 +70,7 @@ var hl_res = null                     # RESHLMHI.RES
 # in this (the guest's) cockpit. The host's HUD keeps "Player 2": a local guest has no Steam account of his own.
 var preview_steam: Object
 var win := Rect2()                   # the game's 3D window (320 x 400 units), from the cockpit packet
+var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -78,6 +79,8 @@ var bad_col := Color(1.0, 0.35, 0.3)
 
 func _ready() -> void:
 	layer = 9
+	lobby = preload("res://scripts/coop_lobby.gd").new()
+	add_child(lobby)
 	udp.bind(HUD_PORT, "127.0.0.1", 1 << 20)
 	font = ThemeDB.fallback_font
 	if "--coop-preview" in OS.get_cmdline_user_args():
@@ -215,6 +218,8 @@ func _process(delta: float) -> void:
 		var tag := pk.slice(0, 3).get_string_from_ascii() if pk.size() >= 3 else ""
 		if tag == "GCK" and pk.size() > 11 + 768:
 			_cockpit(pk)
+		elif tag == "GLB":
+			lobby.feed(pk)
 		elif tag == "GHD" and pk.size() >= 10:
 			state = pk.decode_u8(3)
 			armour = pk.decode_s16(4)

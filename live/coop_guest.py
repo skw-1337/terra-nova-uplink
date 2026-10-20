@@ -6,8 +6,8 @@
 # read: the guest window's coop_net.gd sends its own gamepad as 'P' packets (lx, ly, rx, ry int8 with XInput signs,
 # fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd). Online the
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
-import builtins, ctypes, math, os, socket, struct, time, zlib
-import coop_view
+import builtins, ctypes, json, math, os, socket, struct, time, zlib
+import coop_lobby, coop_view
 from coop_name import NameTag
 
 CAVE = 0x46B040
@@ -121,6 +121,8 @@ class Guest:
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
         self.hud_src, self.tpl_t, self.taken_t = None, 0.0, 0.0   # the bridge's last game screen, for his cockpit
+        # the Mission Outfitting lobby (his column, pilot, loadout)
+        self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, coop_lobby.find_data(g)), 0.0, []
         self.anim = None
         try:
             from host_anim import HostAnim
@@ -281,6 +283,10 @@ class Guest:
         if os.environ.get('TN_GUEST_ID'):
             gid = int(os.environ['TN_GUEST_ID'])
             return gid if self.alive(gid) else 0
+        if self.lobby.col and not after:                       # the column he took on the outfitting screen
+            gid = struct.unpack('<H', self.g.read(coop_lobby.SQUAD + coop_lobby.SQUAD_N * self.lobby.col + 2, 2))[0]
+            if gid and self.alive(gid):
+                return gid
         near = self.suits(me, enemy=self.versus)
         if not self.squad:                                     # mission start: the suits around the player
             if self.versus:                                    # versus: every suit of the other side (no pilot record)
@@ -308,6 +314,20 @@ class Guest:
             self.tag.put(gid, self.name, self.face)
         else:
             self.tag.restore()
+
+    def lobby_step(self, in_mission):
+        """his requests, the redraw the outfitting screen waits for, and the lobby state for his window (twice a
+        second in the menus, every 3 s in a mission: there it only tells his window to hide the lobby)"""
+        for m in self.lobby_msgs:
+            r = self.lobby.request(m, in_mission)
+            if r:
+                print('lobby:', r, flush=True)
+                self.lobby_t = 0.0
+        self.lobby_msgs = []
+        self.lobby.tick()
+        if time.time() - self.lobby_t >= (3.0 if in_mission else 0.5):
+            self.lobby_t = time.time()
+            self.s.sendto(self.lobby.packet(in_mission), ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
     def hud(self):
         if time.time() - self.hud_t < 0.1:
@@ -364,6 +384,7 @@ class Guest:
                 self.take(0)
             self.squad, self.state, self.amax0 = [], OK, {}
             self.read_input(False)                             # no stale look / F8 at the next mission start
+            self.lobby_step(False)
             return
         if self.state == OK and not self.alive(self.gid):
             if self.gid:                                       # his suit is destroyed: a few seconds, then the next one
@@ -387,6 +408,7 @@ class Guest:
                 self.take(gid)
         self.next = False
         self.hud()
+        self.lobby_step(True)
         if self.versus and self.state == OK:
             self.versus_hits(me)
         turn = self.read_input(self.state == OK)
@@ -511,6 +533,11 @@ class Guest:
                 self.face = pk[1:]
                 if self.gid and self.state == OK:
                     self.tag.put(self.gid, self.name, self.face)
+            elif pk[:1] == b'L' and len(pk) > 1:                 # lobby request (his window's coop_hud.gd): JSON
+                try:
+                    self.lobby_msgs.append(json.loads(pk[1:].decode('utf-8')))
+                except ValueError:
+                    pass
             elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
                 self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (bool(f & 1),)

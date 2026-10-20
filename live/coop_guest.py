@@ -31,12 +31,18 @@ LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 250.0
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
-KEYS = {0x11, 0x1F, 0x1E, 0x20}   # the only keys a guest can hold: W S A D (input from the network is filtered)
+KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A D, Space (network input is filtered)
+JET_ACC, JET_DRAIN = float(os.environ.get('TN_JET_ACC', '1600')), 1000   # Space held: the jets' push (speed units/s
+                                  # per s) and their energy cost per s, the host's (his 1250 last 1.25 s)
+JUMP_ACC = [float(v) for v in os.environ.get('TN_JUMP_ACC', '2000,4500').split(',')]   # a jump's push: flat, up
+JUMP_T, JUMP_COST = 0.3, 150      # for 0.3 s, and its energy
 F8 = 0x42                     # next teammate
+DROPSHIP = 0x1C               # Enter: the game's "Call dropship" key, posted to the host's game (the mission's end)
 WEAPON_KEYS = {0x02: 0, 0x03: 1, 0x04: 2, 0x05: 3}   # 1-4: weapon slot (suit record +0xCE, the fire uses it)
 SEL, SLOTS, SLOT_N = 0xCE, 0x45, 0xF                # selected slot, 4 weapon slots (+0 type: weapon names 1-17)
 HUD_PORT = 47832              # the guest window's coop_hud.gd: 'GHD' state, armour, max, entity (online: via 47841)
-PBA, PBA_N, ARMOUR = 0x3A5608, 0x582, 0x88   # English exe: suit records, armour word (our suits 1100, enemies 1000)
+PBA, PBA_N, ENERGY = 0x3A5608, 0x582, 0x88   # English exe: suit records, the energy word (shots draw from it)
+PARTS = [(0x15 + 7 * k, 0x17 + 7 * k) for k in range(4)]   # the armour: 4 parts (+0x14 + 7k: flag, current, max, current)
 SQUAD_R = 25.0                # suits this close to the player at mission start = his squad (the guest's choices)
 OK, DOWN, SPECTATE = 0, 1, 2
 # The guest's cockpit (coop_hud.gd) is the host's game screen (320 x 400, palette indices + alpha, see live_bridge.py
@@ -113,13 +119,15 @@ class Guest:
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
-        self.shift, self.jump_t, self.pad_jump = False, 0.0, False
+        self.shift, self.jump_t, self.pad_jump, self.jet_t, self.burst = False, 0.0, False, 0.0, None
         self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
+        self.emax = 1
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
+        self.post_key, self.drop_t = None, 0.0                   # the bridge's key poster (DOSBox window)
         self.hud_src, self.tpl_t, self.taken_t = None, 0.0, 0.0   # the bridge's last game screen, for his cockpit
         # the Mission Outfitting lobby (his column, pilot, loadout)
         self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, coop_lobby.find_data(g)), 0.0, []
@@ -166,7 +174,7 @@ class Guest:
         for e in [me] + [i for i in self.squad if i != self.gid]:
             if not self.alive(e):
                 continue
-            full = self.amax0.setdefault(e, max(1, self.armour(e)))
+            full = self.amax0.setdefault(e, self.armour_max(e))
             pilot = 255
             for a in range(0x391e50, 0x391f18, 0x32):
                 r = self.g.read(a, 8)
@@ -176,7 +184,10 @@ class Guest:
         out = out[:3]
         # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (1 s apart)
         slots = bytes(self.g.read(self.suit(self.gid) + SLOTS + SLOT_N * k, 1)[0] for k in range(4)) if self.gid else bytes(4)
-        return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if time.time() - self.jump_t >= 1.0 else 0])
+        en = 0
+        if self.gid:                                           # then his energy, % of what he had at pickup
+            en = max(0, min(100, self.energy(self.gid) * 100 // max(1, self.emax)))
+        return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if time.time() - self.jump_t >= 1.0 else 0, en])
 
     def versus_hits(self, me):
         g, M = self.g, self.master
@@ -190,7 +201,7 @@ class Guest:
             if self.hits:
                 i = self.hits.pop(0)
                 g.write(G_HIT + 2, struct.pack('<HHH', me, 0, i))
-                g.write(G_HIT, b'')
+                g.write(G_HIT, b'\x01')
                 self.retire.append(i)
                 print('versus: hit on the host', flush=True)
         hx, hy, hz = (self.i32(M + me * 0x25 + o) / 65536 for o in (0x0F, 0x13, 0x17))
@@ -259,21 +270,57 @@ class Guest:
         return pick
 
     def jump(self, angle):
-        """the game's jump (120 flat, 80 up) toward the heading + angle; once a second, not while the jets are hot"""
-        if not self.gid or time.time() - self.jump_t < 1.0:
+        """a jump toward the heading + angle: a short push (one impulse is lost on the ground), once a second, paid in
+        energy, not while the jets are hot"""
+        if not self.gid or time.time() - self.jump_t < 1.0 or self.energy(self.gid) < JUMP_COST:
             return
         if struct.unpack('<i', self.g.read(self.suit(self.gid) + HEAT, 4))[0] >= 0x30000:
             return
         self.jump_t = time.time()
+        self.g.write(self.suit(self.gid) + ENERGY, struct.pack('<h', self.energy(self.gid) - JUMP_COST))
         h = self.u16(self.master + 0x25 * self.gid + 0x1B) / 65536 * 2 * math.pi + angle
-        self.g.write(G_JV, struct.pack('<3i', int(math.cos(h) * 120 * 65536), int(math.sin(h) * 120 * 65536), 80 * 65536))
-        self.g.write(G_JUMP, b'\x01')
+        self.burst = (math.cos(h) * JUMP_ACC[0], math.sin(h) * JUMP_ACC[0], JUMP_ACC[1], self.jump_t + JUMP_T)
+
+    def push(self, dt, jets):
+        """this tick's push through the jump mailbox (it adds to the body's speed): a jump's burst, and the jets while
+        Space is held, paid in energy (too little left: nothing until it comes back, the host's jets sputter the same)"""
+        vx = vy = vz = 0.0
+        if self.burst and time.time() < self.burst[3]:
+            vx, vy, vz = (v * dt for v in self.burst[:3])
+        if jets:
+            cost = int(JET_DRAIN * dt)
+            en = self.energy(self.gid)
+            if en >= max(1, cost):
+                self.g.write(self.suit(self.gid) + ENERGY, struct.pack('<h', en - cost))
+                vz += JET_ACC * dt
+        if vx or vy or vz:
+            self.g.write(G_JV, struct.pack('<3i', int(vx * 65536), int(vy * 65536), int(vz * 65536)))
+            self.g.write(G_JUMP, b'\x01')
+
+    def call_dropship(self):
+        """the guest's "Call dropship": Enter in the host's game, as if the host pressed it; once in 5 s, said in the chat"""
+        if not self.post_key or time.time() - self.drop_t < 5.0:
+            return
+        self.drop_t = time.time()
+        self.post_key(DROPSHIP, True)
+        self.post_key(DROPSHIP, False)
+        self.lobby.say('guest', '* called the dropship *')
+        print('guest: dropship called', flush=True)
 
     def suit(self, e):
         return PBA + PBA_N * self.u16(self.master + 0x25 * e + 3)
 
     def armour(self, e):
-        return struct.unpack('<h', self.g.read(PBA + PBA_N * self.u16(self.master + 0x25 * e + 3) + ARMOUR, 2))[0]
+        """the suit's armour: its 4 parts' current values (hits take them down; a shot takes the energy, not this)"""
+        r = self.g.read(self.suit(e), 0x30)
+        return sum(max(0, struct.unpack_from('<h', r, c)[0]) for c, _ in PARTS)
+
+    def armour_max(self, e):
+        r = self.g.read(self.suit(e), 0x30)
+        return max(1, sum(max(0, struct.unpack_from('<h', r, m)[0]) for _, m in PARTS))
+
+    def energy(self, e):
+        return struct.unpack('<h', self.g.read(self.suit(e) + ENERGY, 2))[0]
 
     def alive(self, e):
         return e and self.g.read(self.master + 0x25 * e, 2) == b'\x01\x01' and self.armour(e) > 0
@@ -309,7 +356,8 @@ class Guest:
         self.gid = gid
         if gid:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
-            self.amax, self.state, self.taken_t = max(1, self.armour(gid)), OK, time.time()
+            self.amax, self.state, self.taken_t = self.armour_max(gid), OK, time.time()
+            self.emax = max(1, self.energy(gid))
             print('guest: entity %d' % gid, flush=True)
             self.tag.put(gid, self.name, self.face)
         else:
@@ -441,6 +489,9 @@ class Guest:
         c = bytearray(0x28)
         struct.pack_into('<ii', c, 0, int(fwd * 0x10000), int(side * 0x10000))
         g.write(G_CTRL, bytes(c))
+        now = time.time()
+        self.push(min(0.1, now - self.jet_t), 0x39 in self.keys or bool(p and p.lt > 64))   # Space / left trigger: jets
+        self.jet_t = now
         gx, gy, gz = (self.i32(eg + o) / 65536 for o in (0x0F, 0x13, 0x17))
         gh = self.u16(eg + 0x1B) / 65536 * 2 * math.pi
         # aim: 30 units along the guest's view, or his locked target; held = a request every frame (the weapon's
@@ -508,6 +559,8 @@ class Guest:
                     self.next = True
                 if sc in WEAPON_KEYS and down and active and self.gid:
                     self.g.write(self.suit(self.gid) + SEL, bytes([WEAPON_KEYS[sc]]))
+                if sc == DROPSHIP and down and active:
+                    self.call_dropship()
                 if sc in SHIFT:
                     self.shift = bool(down)
                 elif sc in JUMP_DIR and down and active and self.shift:

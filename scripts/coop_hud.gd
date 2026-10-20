@@ -26,6 +26,7 @@ var last := -100.0
 var state := 0
 var armour := 0
 var armour_max := 1
+var energy := 100                     # his energy, % of what he had at pickup (shots draw from it)
 var entity := 0
 var weapon_slot := 0
 var weapon_type := 0
@@ -161,8 +162,16 @@ func _ready() -> void:
 	bottom.add_child(mate_label)
 	hint_label = _label(14, Color(0.8, 0.85, 0.9))
 	hint_label.position = Vector2(16, -30)
-	hint_label.text = "F8: next teammate   1-4: weapon   Shift+move: jump   right button: lock"
+	hint_label.text = "F8: next teammate   1-4: weapon   Space: jets   Shift+move: jump   right button: lock   Enter: dropship"
 	bottom.add_child(hint_label)
+	var drop := Button.new()                 # the game's "Call dropship" (Enter), posted to the host's game
+	drop.text = "CALL DROPSHIP"
+	drop.focus_mode = Control.FOCUS_NONE
+	drop.position = Vector2(232, -72)
+	drop.pressed.connect(func():
+		for d in [1, 0]:
+			lobby.out.put_packet(PackedByteArray([0x4B, 0x1C, 0, d])))
+	bottom.add_child(drop)
 	# centre: suit destroyed / spectating
 	var centre := Control.new()
 	centre.set_anchors_preset(Control.PRESET_CENTER)
@@ -241,6 +250,8 @@ func _process(delta: float) -> void:
 				if so + 5 <= pk.size():
 					slot_types = pk.slice(so, so + 4)
 					jump_ready = pk.decode_u8(so + 4) != 0
+				if so + 6 <= pk.size():
+					energy = pk.decode_u8(so + 5)
 			if pk.size() >= 52:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
@@ -273,7 +284,7 @@ func _update() -> void:
 		return
 	var f := clampf(float(armour) / float(armour_max), 0.0, 1.0)
 	var col: Color = ok_col if f > 0.5 else (warn_col if f > 0.25 else bad_col)
-	armour_label.text = "ARMOUR %d%%" % int(round(f * 100.0))
+	armour_label.text = "ARMOUR %d%%     ENERGY %d%%" % [int(round(f * 100.0)), energy]
 	armour_label.add_theme_color_override("font_color", col)
 	bar_fill.size.x = 200.0 * f
 	bar_fill.color = col
@@ -470,6 +481,10 @@ func _draw_panel() -> void:
 	for i in int(round(f * 22.0)):
 		var x1 := 161.0 - i * 4.0
 		panel.draw_rect(_grect(x1 - 3.0, 26.0, x1, 33.0), Color(0.9, 0.2, 0.15) if f > 0.25 else Color(1.0, 0.5, 0.1))
+	# energy: the right bar, green leds from its inner end (the game's "E")
+	for i in int(round(energy / 100.0 * 22.0)):
+		var x0 := 163.0 + i * 4.0
+		panel.draw_rect(_grect(x0, 26.0, x0 + 3.0, 33.0), Color(0.25, 0.9, 0.3) if energy > 25 else Color(1.0, 0.75, 0.2))
 	# COMM: his squad as the game lists it: the host (Steam avatar and name), then his other teammates (their
 	# portraits and names from his game files), each with an armour bar
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]

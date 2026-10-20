@@ -55,6 +55,7 @@ const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidd
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
 var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
+var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
 var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
 var sub_layer: CanvasLayer
 var oldschool_key := ""
@@ -1812,14 +1813,20 @@ func _live_update() -> void:
 func _live_units(pk: PackedByteArray) -> void:
 	var n := pk.decode_s32(24)
 	var player := pk.decode_s32(28)
-	if player != live_player:                          # coop: the guest's window changes suit (or watched the host's
-		var was: Node3D = live_extra.get(live_player)  # until it had one): the old body shows again, the new one hides
-		if was != null and is_instance_valid(was):
+	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
+	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
+	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
+	var pn: Node3D = _live_node(player) if player >= 0 else null
+	if player != live_player or pn != live_player_node:
+		var was: Node3D = live_player_node
+		if was != null and is_instance_valid(was) and was != pn:
 			was.remove_meta("player_body")
 			_sub_hide(was, false, PLAYER_LAYER)
 			was.remove_meta("player_body")
-		_sub_hide(live_extra.get(player), true, PLAYER_LAYER)
+		if pn != null:
+			_sub_hide(pn, true, PLAYER_LAYER)
 		live_player = player
+		live_player_node = pn
 	var ents := {}
 	live_ents = ents
 	for k in n:

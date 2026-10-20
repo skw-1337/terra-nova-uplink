@@ -233,7 +233,7 @@ def handle_input():
         elif pk in (b'HOST', b'HOSTV') and guest is None:   # the viewer's "Host online" button: its coop_net.gd opens the lobby
             import coop_guest
             guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV')
-            guest.hud_src = lambda: hud_last
+            guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
             print('coop: hosting online', flush=True)
         elif pk in (b'LOCK1', b'LOCK0') and guest is not None:   # the host window's lock of the guest's column
             guest.lobby.locked = pk == b'LOCK1'
@@ -701,7 +701,7 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
     import coop_guest                           # (--guest-remote: online, through the host window's Steam link)
     guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote='--guest-remote' in sys.argv,
                              view_hz=arg('--view-hz', 20.0))   # online: views a second to the guest
-    guest.hud_src = lambda: hud_last
+    guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
 atexit.register(cursor_restore)
 atexit.register(lambda: guest and guest.tag.restore())   # coop: the pilot's own name back in the game
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi

@@ -324,7 +324,8 @@ class Guest:
                 print('lobby:', r, flush=True)
                 self.lobby_t = 0.0
         self.lobby_msgs = []
-        self.lobby.tick()
+        self.lobby.guest_name = self.name
+        self.lobby.tick(in_mission)
         if time.time() - self.lobby_t >= (3.0 if in_mission else 0.5):
             self.lobby_t = time.time()
             self.s.sendto(self.lobby.packet(in_mission), ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
@@ -495,10 +496,10 @@ class Guest:
         turn = 0
         for _ in range(512):
             try:
-                pk, _ = self.rx.recvfrom(2048)
+                pk, _ = self.rx.recvfrom(16384)
             except BlockingIOError:
                 break
-            except OSError:                                    # a datagram over 2 KB (WSAEMSGSIZE): dropped
+            except OSError:                                    # a datagram over 16 KB (WSAEMSGSIZE): dropped
                 continue
             self.resync(pk)
             if pk[:1] == b'K' and len(pk) >= 4:
@@ -533,6 +534,8 @@ class Guest:
                 self.face = pk[1:]
                 if self.gid and self.state == OK:
                     self.tag.put(self.gid, self.name, self.face)
+            elif pk[:1] == b'Q' and len(pk) == 1 + 64 * 64 * 3:     # his avatar, 64 x 64 (host coop_net.gd): the lobby
+                self.lobby.guest_face = pk[1:]
             elif pk[:1] == b'L' and len(pk) > 1:                 # lobby request (his window's coop_hud.gd): JSON
                 try:
                     self.lobby_msgs.append(json.loads(pk[1:].decode('utf-8')))

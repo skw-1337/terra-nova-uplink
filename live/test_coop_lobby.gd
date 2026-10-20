@@ -74,7 +74,12 @@ func _run() -> void:
 	await _wait()
 	var b := _buttons(lobby.cols_box, [])
 	_check(b.size() == 3 and b.all(func(x): return x.text == "TAKE THIS COLUMN"), "3 columns to take, none for the host")
-	_check(not lobby.picker.visible, "no picker before a column is his")
+	var none_free := true
+	for i in lobby.pilots_list.item_count:
+		none_free = none_free and lobby.pilots_list.is_item_disabled(i)
+	_check(none_free and lobby.suit_opt.disabled and lobby.ready_btn.disabled, "no pilot / loadout / ready before a column is his")
+	_check(lobby.title.text.contains("OPERATION AEGIS"), "the operation in the title")
+	_check(lobby.note_label.text.begins_with("Nik, we can't"), "the screen's note in the briefing")
 	_check(lobby.root.visible, "lobby shown on the outfitting screen")
 	b[1].pressed.emit()                              # column 3
 	await _wait()
@@ -85,7 +90,13 @@ func _run() -> void:
 	var cols: Array = base["cols"].duplicate(true)
 	_feed(_with({"col": 1, "cols": cols}))
 	await _wait()
-	_check(lobby.picker.visible, "picker shown once the column is his")
+	_check(not lobby.suit_opt.disabled and not lobby.ready_btn.disabled, "loadout and ready once the column is his")
+	_check(lobby.spec_label.text.contains("Sensors") and lobby.slot_opts[0].tooltip_text.contains("Range"), "spec lines: his suit, his weapons on their drop-downs")
+	var editing := false
+	for c in lobby.cols_box.get_children():
+		for l in c.find_children("*", "Label", true, false):
+			editing = editing or l.text == "HOST EDITING"
+	_check(editing, "the column the host is on is marked")
 	b = _buttons(lobby.cols_box, [])
 	_check(b.size() == 3 and b.any(func(x): return x.text == "LEAVE"), "a Leave button on his column")
 	_check(_sent().is_empty(), "showing the state sends nothing")
@@ -181,6 +192,32 @@ func _run() -> void:
 	for i in lobby.pilots_list.item_count:
 		all_off = all_off and lobby.pilots_list.is_item_disabled(i)
 	_check(all_off, "locked: no pilot can be picked")
+
+	# ready, chat, saved loadouts
+	_feed(_with({"col": 1, "cols": cols2}))
+	await _wait()
+	_sent()
+	lobby.ready_btn.toggled.emit(true)
+	await _wait()
+	s = _sent()
+	_check(s.size() == 1 and s[0]["act"] == "ready" and s[0]["on"] == true, "READY -> ready on (%s)" % [s])
+	lobby.chat_edit.text_submitted.emit("on y va ?")
+	await _wait()
+	s = _sent()
+	_check(s.size() == 1 and s[0]["act"] == "chat" and s[0]["text"] == "on y va ?", "chat line sent (%s)" % [s])
+	_feed(_with({"col": 1, "cols": cols2, "chat": [[1, "host", "ok go"], [2, "guest", "on y va ?"]]}))
+	await _wait()
+	_check(lobby.chat_log.text.contains("ok go") and lobby.chat_log.text.contains("on y va ?"), "chat shown")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://coop_loadouts.json"))
+	lobby.save_btns[1].pressed.emit()
+	await _wait()
+	_check(_sent().is_empty() and FileAccess.file_exists("user://coop_loadouts.json"), "SAVE 2 writes the file, sends nothing")
+	lobby.load_btns[1].pressed.emit()
+	await _wait()
+	s = _sent()
+	var acts := s.map(func(x): return x["act"])
+	_check(acts.size() >= 3 and acts[0] == "suit" and acts.has("weapon") and acts[-1] == "asf", "LOAD 2 -> suit, weapons, ASF (%s)" % [acts])
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://coop_loadouts.json"))
 
 	# in a mission: hidden
 	_feed(_with({"col": 1, "mission": true, "outfit": false}))

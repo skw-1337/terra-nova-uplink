@@ -222,6 +222,9 @@ def handle_input():
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0)
         elif pk[:1] == b'P' and len(pk) >= 5:
             g.write(m_cur, pk[1:5]); g.write(m_warp, b'\x01')
+        elif pk[:4] == b'CHAT' and guest is not None:          # the host window's lobby chat
+            guest.lobby.say('host', pk[4:].decode('utf-8', 'ignore'))
+            guest.lobby_t = 0.0
         elif pk[:1] == b'C' and len(pk) >= 7:
             btn, down = pk[1], pk[2]
             pos = struct.unpack('<hh', pk[3:7])

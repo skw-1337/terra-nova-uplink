@@ -79,6 +79,8 @@ var clock := 0.0
 var mission_t := 0.0
 var msn_want := ""                   # guest: the host's mission last asked of the viewer (loading takes a while)
 var lock_btn: Button                 # host: locks the guest's column on the Mission Outfitting screen (coop_lobby.py)
+var lobby_label: Label               # host: the guest's column / ready, and the lobby chat ('GLB' packets going by)
+var chat_edit: LineEdit
 var guest_locked := false
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -131,6 +133,20 @@ func _ready() -> void:
 		lock_btn.pressed.connect(_toggle_lock)
 		add_child(lock_btn)
 		_paint_lock()
+		lobby_label = Label.new()
+		lobby_label.position = Vector2(12, 100)
+		lobby_label.add_theme_font_size_override("font_size", 14)
+		lobby_label.add_theme_color_override("font_outline_color", Color.BLACK)
+		lobby_label.add_theme_constant_override("outline_size", 4)
+		add_child(lobby_label)
+		chat_edit = LineEdit.new()
+		chat_edit.placeholder_text = "Lobby chat (Enter)"
+		chat_edit.custom_minimum_size = Vector2(320, 0)
+		chat_edit.position = Vector2(12, 300)
+		chat_edit.max_length = 120
+		chat_edit.text_submitted.connect(_on_chat)
+		chat_edit.visible = false
+		add_child(chat_edit)
 	_show("STEAM...", "", warn_col)
 	if fake_steam == null and "--fake-steam" in OS.get_cmdline_user_args():
 		fake_steam = load("res://scripts/fake_steam.gd").new()
@@ -192,6 +208,8 @@ func _process(delta: float) -> void:
 			var pk := udp_in.get_packet()
 			if peer_ok and pk.size() >= 3:                 # only to a guest that said HELLO with our version
 				var tag := pk.slice(0, 3).get_string_from_ascii()
+				if tag == "GLB" and lobby_label:
+					_lobby_seen(pk)
 				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
@@ -424,6 +442,11 @@ func _on_avatar(id: int, size: int, data: PackedByteArray) -> void:
 	if id != peer:
 		return
 	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	if host_mode:                                           # the menus have square pixels: 64 x 64 for the lobby's
+		var sq := img.duplicate()                           # portrait on our outfitting screen (coop_lobby.py)
+		sq.resize(64, 64, Image.INTERPOLATE_LANCZOS)
+		sq.convert(Image.FORMAT_RGB8)
+		udp_out.put_packet("Q".to_ascii_buffer() + sq.get_data())
 	# the game's screen has half-height rows (320 x 400 shown 4:3): a portrait's 21 x 27 pixels show a wide band,
 	# 1.73 wide for 1 high; the avatar's middle band, a little above the centre (faces)
 	var h := int(size / 1.73)
@@ -480,6 +503,32 @@ func _on_lobby_update(lobby: int, changed: int, _maker: int, change: int) -> voi
 		_show("ONLINE", "the host left - waiting for an invite", warn_col)
 		return
 	_refresh()
+
+
+func _on_chat(t: String) -> void:
+	chat_edit.clear()
+	chat_edit.release_focus()
+	var vp := get_parent()
+	if t.strip_edges() != "" and vp and vp.has_method("_play_send"):
+		vp._play_send(("CHAT" + t.strip_edges()).to_utf8_buffer())
+
+
+# host: the lobby state going to the guest (the bridge's 'GLB'): his column, ready, the chat, under the lock button
+func _lobby_seen(pk: PackedByteArray) -> void:
+	var j = JSON.parse_string(pk.slice(3).get_string_from_utf8())
+	if typeof(j) != TYPE_DICTIONARY:
+		return
+	var show: bool = not bool(j.get("mission", false))
+	chat_edit.visible = show
+	if not show:
+		lobby_label.text = ""
+		return
+	var col := int(j.get("col", 0))
+	var t := "Player 2: " + ("column %d%s" % [col + 1, "  ·  READY" if j.get("ready", false) else "  ·  choosing"] if col else "no column yet")
+	for c in j.get("chat", []).slice(-8):
+		t += "
+%s: %s" % ["You" if c[1] == "host" else steam.getFriendPersonaName(peer) if steam and peer else "Player 2", c[2]]
+	lobby_label.text = t
 
 
 func _toggle_lock() -> void:

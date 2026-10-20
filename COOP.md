@@ -11,6 +11,7 @@ Help, bug reports, or looking for someone to play with: [Discord](https://discor
 **`Terra Nova Coop.exe`** does everything for both players. Put it in an empty folder and start it:
 
 - **HOST A GAME**: downloads what's missing (Uplink, Godot, Python for the bridge, and builds TN+ Coop), starts the game without TN+'s menu, waits for it to load, then opens Uplink with the Steam lobby. Invite your friend from the list at the top right of Uplink's window.
+- **Mission (host)**: pick a campaign mission instead of going through the game's menus. The launcher writes a save named `COOP Mission NN` in a free slot (never over one of yours), made from your most advanced save (your squad and equipment) and set on that mission. In the game: Load Game, then that save.
 - **JOIN A FRIEND**: downloads Uplink and Godot, then opens the guest window. Your friend's name shows up there once he hosts: click **JOIN**.
 
 Everything goes in that folder (about 250 MB once installed). Before each game it checks GitHub and updates, so both PCs stay on the same version. It finds the game on its own (GOG or Steam, the English one first); **Change...** picks another folder. To build it yourself: `launcher\build.bat` (C# compiler that comes with Windows).

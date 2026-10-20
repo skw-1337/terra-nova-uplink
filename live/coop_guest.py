@@ -26,6 +26,9 @@ HEAT = 0x3C8                      # suit record: the game jumps only while this 
 # Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
 # of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 250.0
+# side angle as above; up / down much wider: the guest rarely aims his pitch at a unit on another level (the arena's
+# terraces put the host 30 degrees below him at 8 units)
+LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 KEYS = {0x11, 0x1F, 0x1E, 0x20}   # the only keys a guest can hold: W S A D (input from the network is filtered)
@@ -231,22 +234,25 @@ class Guest:
         return (x, y, z + 0.35)
 
     @staticmethod
-    def off_view(eye, view, t):
+    def off_aim(eye, view, t):
+        """(side, up / down) angles between the view and the direction to t"""
         d = [a - b for a, b in zip(t, eye)]
-        n = math.sqrt(sum(c * c for c in d)) or 1.0
-        return math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(d, view)) / n)))
+        side = abs((math.atan2(d[1], d[0]) - math.atan2(view[1], view[0]) + math.pi) % (2 * math.pi) - math.pi)
+        up = abs(math.atan2(d[2], math.hypot(d[0], d[1])) - math.asin(max(-1.0, min(1.0, view[2]))))
+        return side, up
 
     def pick_target(self, me, eye, view):
-        best, pick = LOCK_PICK, 0
+        best, pick = None, 0
         for i in range(1, self.nent):
             if i == self.gid or (i == me and not self.versus) or i in self.squad:
                 continue
             t = self.target_pos(i)
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
-            a = self.off_view(eye, view, t)
-            if a < best:
-                best, pick = a, i
+            side, up = self.off_aim(eye, view, t)
+            score = side + up * 0.25                          # the nearest to the crosshair sideways first
+            if side < LOCK_PICK and up < LOCK_PICK_V and (best is None or score < best):
+                best, pick = score, i
         print('guest: lock', pick or 'nothing', flush=True)
         return pick
 
@@ -426,8 +432,10 @@ class Guest:
             t = self.target_pos(self.lock)
             if t is None:
                 self.lock = 0
-            elif self.off_view(eye, view, t) < LOCK_KEEP:
-                aim = t
+            else:
+                side, up = self.off_aim(eye, view, t)
+                if side < LOCK_KEEP and up < LOCK_KEEP_V:
+                    aim = t
         if aim is None:
             aim = tuple(e + v * 30 for e, v in zip(eye, view))
         g.write(G_TGT, struct.pack('<3i', *(int(v * 65536) for v in aim)))

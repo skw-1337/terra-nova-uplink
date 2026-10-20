@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.8";
+    const string VERSION = "0.9";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -457,10 +457,11 @@ static class Coop
         Status("Starting the game (TN+ Coop)...", CAmber);
         Session("Starting the game...", CAmber);
         // the game windowed (the editions start DOSBox fullscreen, and a fullscreen DOSBox comes back over Uplink at
-        // each video mode change): one more DOSBox config, after the edition's and TN+'s
+        // each video mode change), Uplink's size: on the menus the bridge reads the game's screen (640 x 480) from
+        // this window, a smaller one squashed it (the cursor came out black). One more config, after the edition's
         string conf = Path.Combine(TnpDir, "coop_host.conf");
         File.WriteAllLines(conf, new[] { "# Terra Nova Coop: the host's game in a small window, kept minimized (Uplink draws it)",
-            "[sdl]", "fullscreen = false", "windowresolution = 640x400" });
+            "[sdl]", "fullscreen = false", "windowresolution = " + (Cfg("window") == "native" || Cfg("window") == "" ? "1696x960" : Cfg("window")) });
         Process tnp = Run(TnpExe, "--launch --conf \"" + conf + "\"", TnpDir, null, false);
         // the bridge needs the game's code loaded: tried every few seconds until it stays up
         Status("Waiting for the game to load...", CAmber);

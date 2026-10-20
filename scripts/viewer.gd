@@ -321,6 +321,8 @@ func _ready() -> void:
 	var i := args.find("--mission")
 	if i >= 0 and i + 1 < args.size():
 		_load_by_label(args[i + 1])
+	elif live:                                # the game in its menus: the small flat map until a mission starts
+		_load_by_label("MISSFLAT.RES")          # ('MIS' then loads the real one; a whole map here was a slow start)
 	else:
 		list.select(4)
 		_load(4)

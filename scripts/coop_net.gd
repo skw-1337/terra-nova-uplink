@@ -517,7 +517,7 @@ func _hello() -> void:
 # guest: gamepad 0 through Godot, XInput signs (stick up = positive), at most 60 packets a second while it is used:
 # 'P' + lx, ly, rx, ry (int8, -127..127) + fire (0 / 1); the host's coop_guest.py drops values older than 0.3 s
 func _pad() -> void:
-	if clock - pad_t < 1.0 / 60.0 or not (0 in Input.get_connected_joypads()):
+	if clock - pad_t < 1.0 / 60.0 or not (0 in Input.get_connected_joypads()) or OS.get_environment("TN_NO_PAD") == "1":
 		return
 	var lx := _axis(JOY_AXIS_LEFT_X, 1.0)
 	var ly := _axis(JOY_AXIS_LEFT_Y, -1.0)                # Godot: up = negative

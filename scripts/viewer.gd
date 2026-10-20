@@ -141,6 +141,8 @@ var lobby_was_open := false
 var free_look := false
 var look_off := Vector2.ZERO
 var play_dy := 0.0
+var mouse_sens := maxf(0.1, OS.get_environment("TN_MOUSE_SENS").to_float()) if OS.get_environment("TN_MOUSE_SENS") != "" else 1.0
+var invert_y := OS.get_environment("TN_INVERT_Y") == "1"    # Terra Nova Coop's settings (the launcher's environment)
 var play_held := {}
 var play_started := false        # the first click in the window only takes the mouse
 # live mode without coop: "Host online" (top left, while the mouse is free) turns this game into an online coop host,
@@ -1709,8 +1711,8 @@ func _input(event: InputEvent) -> void:
 			look_off.x = clampf(look_off.x - event.relative.x * 0.004, -2.1, 2.1)
 			look_off.y = clampf(look_off.y - event.relative.y * 0.004, -1.05, 1.05)
 		elif captured:
-			play_dx += event.relative.x
-			play_dy += event.relative.y
+			play_dx += event.relative.x * mouse_sens
+			play_dy += event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
 		elif play_started:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()

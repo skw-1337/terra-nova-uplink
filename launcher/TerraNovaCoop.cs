@@ -1,15 +1,18 @@
 // Terra Nova Coop: one window, two buttons. It installs what each player needs in its own folder (Uplink's coop
 // branch, Godot, the TN+ coop build, an embedded Python for the host's bridge), keeps both PCs on the same version
-// and starts everything in the right order:
+// (itself included: a newer launcher in Uplink's files is built and swapped in) and starts everything in order:
 //   HOST: the game through TN+ Coop (no menu), then the bridge, which opens Uplink with the Steam lobby.
 //   JOIN: Uplink's guest window, where the friends hosting a game show up with a JOIN button.
+// What Uplink prints (its coop lines come through the bridge on the host) is turned into the session line.
 // Built with the C# compiler that comes with Windows (.NET Framework 4.5+): build.bat.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Management;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -20,17 +23,19 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.1";
+    const string VERSION = "0.2";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
+    const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
     const string GODOT_URL = "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip";
     const string PY_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip";
     static readonly string[][] WHEELS = {           // pinned: the bridge's only two packages, as wheels for Python 3.12 x64
         new[] { "numpy", "2.5.4", "-cp312-cp312-win_amd64.whl" },
         new[] { "psutil", "7.2.2", "-cp37-abi3-win_amd64.whl" } };
-    const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GOG_ID = "1434984562";
     const string GAME_SUB = "Terra Nova Strike Force Centauri";
+    const long EN_EXE = 1856641;      // __FF.EXE v1.09 English (Steam, GOG); the French one is 1856813
+    static readonly string[] SIZES = { "1280x720", "1696x960", "1920x1080", "native" };
 
     static readonly Color CBack = Color.FromArgb(9, 17, 16), CPanel = Color.FromArgb(22, 41, 38), CField = Color.FromArgb(12, 26, 24);
     static readonly Color CText = Color.FromArgb(214, 226, 220), CDim = Color.FromArgb(122, 150, 142), CAmber = Color.FromArgb(240, 178, 48);
@@ -38,14 +43,22 @@ static class Coop
 
     static string Root, Comp, Ini, LogPath;
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
+    static bool fr;
     static Form form;
-    static Label gameLabel, statusLabel, verLabel;
+    static Label gameLabel, statusLabel, verLabel, sessionLabel, sessionLed, sensLabel;
     static Label[] checks;
-    static Button hostBtn, joinBtn, stopBtn, gameBtn;
+    static Button hostBtn, joinBtn, stopBtn, gameBtn, toolsBtn, reportBtn;
+    static RadioButton modeCoop, modeVs;
+    static ComboBox sizeBox;
+    static TrackBar sensBar;
+    static CheckBox invertBox, padBox;
     static ProgressBar bar;
     static TextBox logBox;
     static volatile bool busy, stopping;
     static readonly List<Process> mine = new List<Process>();
+    static string sessionName = "", sessionPing = "";
+
+    static string L(string en, string f) { return fr ? f : en; }
 
     [STAThread]
     static void Main()
@@ -57,16 +70,19 @@ static class Coop
         LogPath = Path.Combine(Comp, "logs", "launcher.log");
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2 (GitHub, python.org, PyPI)
         LoadCfg();
+        fr = Cfg("language") != "" ? Cfg("language") == "fr" : CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "fr";
         string[] args = Environment.GetCommandLineArgs();
         if (args.Length > 2 && args[1] == "--install")    // checks: install / update only, no window (exit code 0 = ok)
         {
             try { Install(args[2] == "host"); Console.WriteLine("installed"); Environment.Exit(0); }
             catch (Exception e) { Log(e.ToString()); Environment.Exit(1); }
         }
+        if (args.Length > 1 && args[1] == "--report") { Report(); Environment.Exit(0); }   // the report, without the window
+        try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
         Application.EnableVisualStyles();
         Build();
-        form.Shown += delegate { Refresh(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
-        form.FormClosing += delegate { stopping = true; };
+        form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
+        form.FormClosing += delegate { SaveOptions(); stopping = true; };
         Application.Run(form);
     }
 
@@ -74,8 +90,8 @@ static class Coop
     static void Build()
     {
         form = new Form();
-        form.Text = TITLE;
-        form.ClientSize = new Size(640, 560);
+        form.Text = TITLE + " " + VERSION;
+        form.ClientSize = new Size(660, 720);
         form.FormBorderStyle = FormBorderStyle.FixedSingle;
         form.MaximizeBox = false;
         form.StartPosition = FormStartPosition.CenterScreen;
@@ -83,69 +99,128 @@ static class Coop
         form.ForeColor = CText;
         form.Font = new Font("Segoe UI", 10f);
         try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        int W = 616, X = 22;
 
-        Label t = new Label { Text = "TERRA NOVA  ·  COOP", Font = new Font("Segoe UI", 22f, FontStyle.Bold), ForeColor = CAmber,
-            AutoSize = true, Location = new Point(22, 16) };
-        form.Controls.Add(t);
-        Label sub = new Label { Text = "Two players, one mission, over Steam. The host plays the game, the guest drives a squadmate.",
-            ForeColor = CDim, AutoSize = true, Location = new Point(25, 60) };
-        form.Controls.Add(sub);
+        form.Controls.Add(new Label { Text = "TERRA NOVA  ·  COOP", Font = new Font("Segoe UI", 22f, FontStyle.Bold), ForeColor = CAmber,
+            AutoSize = true, Location = new Point(X, 14) });
+        form.Controls.Add(new Label { Text = L("Two players, one mission, over Steam. The host plays the game, the guest drives a squadmate.",
+            "Deux joueurs, une mission, via Steam. L'hôte joue au jeu, l'invité pilote un équipier."),
+            ForeColor = CDim, AutoSize = true, Location = new Point(X + 3, 58) });
+        LinkLabel lang = new LinkLabel { Text = fr ? "English" : "Français", AutoSize = true, Location = new Point(X + W - 170, 26),
+            LinkColor = CDim, ActiveLinkColor = Color.White, VisitedLinkColor = CDim };
+        lang.LinkClicked += delegate {
+            Set("language", fr ? "en" : "fr"); SaveOptions();
+            if (busy) { MessageBox.Show(form, L("The language changes after this session.", "La langue changera après cette session."), TITLE); return; }
+            Application.Restart(); };
+        form.Controls.Add(lang);
+        toolsBtn = Flat(L("Tools ▾", "Outils ▾"), CPanel);
+        toolsBtn.Location = new Point(X + W - 96, 20); toolsBtn.Size = new Size(96, 30);
+        toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height)); };
+        form.Controls.Add(toolsBtn);
 
-        Panel gp = new Panel { Location = new Point(22, 92), Size = new Size(596, 34), BackColor = CField };
+        Panel gp = new Panel { Location = new Point(X, 88), Size = new Size(W, 34), BackColor = CField };
         form.Controls.Add(gp);
-        gameLabel = new Label { Location = new Point(8, 7), Size = new Size(480, 22), ForeColor = CText };
+        gameLabel = new Label { Location = new Point(8, 7), Size = new Size(W - 116, 22), ForeColor = CText };
         gp.Controls.Add(gameLabel);
-        gameBtn = Flat("Change...", CPanel);
-        gameBtn.Location = new Point(494, 3); gameBtn.Size = new Size(98, 28);
+        gameBtn = Flat(L("Change...", "Changer..."), CPanel);
+        gameBtn.Location = new Point(W - 102, 3); gameBtn.Size = new Size(98, 28);
         gameBtn.Click += delegate { PickGame(); };
         gp.Controls.Add(gameBtn);
 
-        hostBtn = Flat("HOST A GAME", Color.FromArgb(20, 80, 74));
+        hostBtn = Flat(L("HOST A GAME", "HÉBERGER"), Color.FromArgb(20, 80, 74));
         hostBtn.Font = new Font("Segoe UI", 15f, FontStyle.Bold);
-        hostBtn.Location = new Point(22, 140); hostBtn.Size = new Size(290, 86);
+        hostBtn.Location = new Point(X, 134); hostBtn.Size = new Size(300, 80);
         hostBtn.Click += delegate { Start(true); };
         form.Controls.Add(hostBtn);
-        joinBtn = Flat("JOIN A FRIEND", CBlue);
+        joinBtn = Flat(L("JOIN A FRIEND", "REJOINDRE UN AMI"), CBlue);
         joinBtn.Font = new Font("Segoe UI", 15f, FontStyle.Bold);
-        joinBtn.Location = new Point(328, 140); joinBtn.Size = new Size(290, 86);
+        joinBtn.Location = new Point(X + W - 300, 134); joinBtn.Size = new Size(300, 80);
         joinBtn.Click += delegate { Start(false); };
         form.Controls.Add(joinBtn);
-        Label hh = new Label { Text = "You play the game. Your friend joins you.", ForeColor = CDim, AutoSize = true, Location = new Point(24, 230) };
-        Label jh = new Label { Text = "You drive one of your friend's squadmates.", ForeColor = CDim, AutoSize = true, Location = new Point(330, 230) };
-        form.Controls.Add(hh); form.Controls.Add(jh);
+        form.Controls.Add(new Label { Text = L("You play the game. Your friend joins you.", "Tu joues au jeu, ton ami te rejoint."),
+            ForeColor = CDim, AutoSize = true, Location = new Point(X + 2, 218) });
+        form.Controls.Add(new Label { Text = L("You drive one of your friend's squadmates.", "Tu pilotes un équipier de ton ami."),
+            ForeColor = CDim, AutoSize = true, Location = new Point(X + W - 298, 218) });
 
-        string[] names = { "Uplink (coop)", "Godot " + GODOT_VER, "TN+ Coop (host)", "Python (host)" };
+        // options
+        Panel op = new Panel { Location = new Point(X, 246), Size = new Size(W, 108), BackColor = CField };
+        form.Controls.Add(op);
+        op.Controls.Add(new Label { Text = L("Mode (host)", "Mode (hôte)"), ForeColor = CDim, AutoSize = true, Location = new Point(10, 10) });
+        modeCoop = new RadioButton { Text = L("Co-op", "Coop"), AutoSize = true, Location = new Point(124, 8), ForeColor = CText };
+        modeVs = new RadioButton { Text = L("1v1 (versus)", "1v1 (duel)"), AutoSize = true, Location = new Point(200, 8), ForeColor = CText };
+        op.Controls.Add(modeCoop); op.Controls.Add(modeVs);
+        op.Controls.Add(new Label { Text = L("Uplink window", "Fenêtre Uplink"), ForeColor = CDim, AutoSize = true, Location = new Point(330, 10) });
+        sizeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(460, 6), Size = new Size(146, 24),
+            BackColor = CPanel, ForeColor = CText, FlatStyle = FlatStyle.Flat };
+        sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", L("Fullscreen", "Plein écran") });
+        op.Controls.Add(sizeBox);
+        op.Controls.Add(new Label { Text = L("Mouse", "Souris"), ForeColor = CDim, AutoSize = true, Location = new Point(10, 44) });
+        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickFrequency = 2, Location = new Point(118, 38), Size = new Size(200, 30),
+            BackColor = CField, AutoSize = false };
+        sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
+        op.Controls.Add(sensBar);
+        sensLabel = new Label { ForeColor = CText, AutoSize = true, Location = new Point(322, 44) };
+        op.Controls.Add(sensLabel);
+        invertBox = new CheckBox { Text = L("Invert vertical", "Inverser vertical"), AutoSize = true, Location = new Point(400, 42), ForeColor = CText };
+        op.Controls.Add(invertBox);
+        padBox = new CheckBox { Text = L("Use a gamepad (guest)", "Utiliser une manette (invité)"), AutoSize = true, Location = new Point(10, 76), ForeColor = CText };
+        op.Controls.Add(padBox);
+        LoadOptions();
+
+        string[] names = { "Uplink (coop)", "Godot " + GODOT_VER, L("TN+ Coop (host)", "TN+ Coop (hôte)"), L("Python (host)", "Python (hôte)") };
         checks = new Label[names.Length];
         for (int i = 0; i < names.Length; i++)
         {
-            checks[i] = new Label { AutoSize = true, Location = new Point(24 + (i % 2) * 306, 262 + (i / 2) * 22), ForeColor = CDim };
-            checks[i].Tag = names[i];
+            checks[i] = new Label { AutoSize = true, Location = new Point(X + 2 + (i % 2) * 310, 364 + (i / 2) * 21), ForeColor = CDim, Tag = names[i] };
             form.Controls.Add(checks[i]);
         }
-        verLabel = new Label { AutoSize = true, Location = new Point(24, 308), ForeColor = CDim };
+        verLabel = new Label { AutoSize = true, Location = new Point(X + 2, 408), ForeColor = CDim };
         form.Controls.Add(verLabel);
 
-        statusLabel = new Label { Location = new Point(22, 334), Size = new Size(596, 44), ForeColor = CAmber,
-            Font = new Font("Segoe UI", 11f, FontStyle.Bold) };
+        // the session: what Uplink says (lobby open, friend connected, ping...)
+        Panel sp = new Panel { Location = new Point(X, 432), Size = new Size(W, 34), BackColor = CPanel };
+        form.Controls.Add(sp);
+        sessionLed = new Label { Text = "●", ForeColor = CDim, AutoSize = true, Location = new Point(8, 5), Font = new Font("Segoe UI", 12f) };
+        sp.Controls.Add(sessionLed);
+        sessionLabel = new Label { Location = new Point(32, 8), Size = new Size(W - 40, 22), ForeColor = CText, Text = L("No session.", "Pas de session.") };
+        sp.Controls.Add(sessionLabel);
+
+        statusLabel = new Label { Location = new Point(X, 474), Size = new Size(W, 42), ForeColor = CAmber, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
         form.Controls.Add(statusLabel);
-        bar = new ProgressBar { Location = new Point(22, 380), Size = new Size(596, 10), Style = ProgressBarStyle.Continuous };
+        bar = new ProgressBar { Location = new Point(X, 518), Size = new Size(W, 8), Style = ProgressBarStyle.Continuous };
         form.Controls.Add(bar);
-        logBox = new TextBox { Location = new Point(22, 398), Size = new Size(596, 112), Multiline = true, ReadOnly = true,
-            ScrollBars = ScrollBars.Vertical, BackColor = CField, ForeColor = CDim, BorderStyle = BorderStyle.None,
-            Font = new Font("Consolas", 8.5f) };
+        logBox = new TextBox { Location = new Point(X, 532), Size = new Size(W, 120), Multiline = true, ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical, BackColor = CField, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
         form.Controls.Add(logBox);
-        stopBtn = Flat("Stop", CPanel);
-        stopBtn.Location = new Point(518, 518); stopBtn.Size = new Size(100, 30);
-        stopBtn.Click += delegate { StopAll(); };
+
+        reportBtn = Flat(L("Report a bug", "Signaler un bug"), CPanel);
+        reportBtn.Location = new Point(X + W - 270, 664); reportBtn.Size = new Size(160, 32);
+        reportBtn.Click += delegate { Report(); };
+        form.Controls.Add(reportBtn);
+        stopBtn = Flat(L("Stop", "Arrêter"), CPanel);
+        stopBtn.Location = new Point(X + W - 100, 664); stopBtn.Size = new Size(100, 32);
+        stopBtn.Click += delegate { new Thread(StopAll) { IsBackground = true }.Start(); };
         form.Controls.Add(stopBtn);
-        Label help = new Label { Text = "Both players: Steam running, each other in your friends list, your own copy of the game (English).",
-            ForeColor = CDim, AutoSize = true, Location = new Point(22, 516), Font = new Font("Segoe UI", 8.5f) };
-        form.Controls.Add(help);
-        LinkLabel dc = new LinkLabel { Text = "Help, bugs, finding a partner: Discord", AutoSize = true, Location = new Point(22, 535),
-            Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
+        form.Controls.Add(new Label { Text = L("Both: Steam running, friends on Steam, your own game (English).",
+            "Les deux : Steam lancé, amis sur Steam, votre propre jeu (anglais)."),
+            ForeColor = CDim, AutoSize = true, Location = new Point(X, 662), Font = new Font("Segoe UI", 8.5f) });
+        LinkLabel dc = new LinkLabel { Text = L("Help, bugs, finding a partner: Discord", "Aide, bugs, trouver un partenaire : Discord"),
+            AutoSize = true, Location = new Point(X, 681), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
         dc.LinkArea = new LinkArea(dc.Text.IndexOf("Discord"), 7);
         dc.LinkClicked += delegate { try { Process.Start(DISCORD); } catch { } };
         form.Controls.Add(dc);
+    }
+
+    static ContextMenuStrip ToolsMenu()
+    {
+        ContextMenuStrip m = new ContextMenuStrip();
+        m.Items.Add(L("Open the folder", "Ouvrir le dossier"), null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
+        m.Items.Add(L("Check for updates now", "Chercher les mises à jour"), null, delegate {
+            Background(delegate { Install(true); Status(L("Up to date.", "À jour."), CGreen); CheckUpdates(); }); });
+        m.Items.Add(L("Repair (download everything again)", "Réparer (tout retélécharger)"), null, delegate { Repair(); });
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(L("Uninstall...", "Désinstaller..."), null, delegate { Uninstall(); });
+        return m;
     }
 
     static Button Flat(string text, Color back)
@@ -165,33 +240,40 @@ static class Coop
     static void Status(string s, Color c) { Ui(delegate { statusLabel.Text = s; statusLabel.ForeColor = c; }); Log("== " + s); }
     static void Progress(int pct) { Ui(delegate { bar.Value = Math.Max(0, Math.Min(100, pct)); }); }
 
-    static void Log(string s)
+    static void Session(string s, Color c)
     {
-        string line = DateTime.Now.ToString("HH:mm:ss") + "  " + s;
-        try { File.AppendAllText(LogPath, line + "\r\n"); } catch { }
         Ui(delegate {
-            logBox.AppendText(line + "\r\n");
-            if (logBox.Lines.Length > 400) logBox.Lines = logBox.Lines;   // the box keeps scrolling to the end
+            sessionLabel.Text = s + (sessionPing != "" && c == CGreen ? "   ·   " + sessionPing : "");
+            sessionLed.ForeColor = c;
         });
     }
 
-    static void Refresh()
+    static void Log(string s)
+    {
+        string line = DateTime.Now.ToString("HH:mm:ss") + "  " + s;
+        try { lock (mine) File.AppendAllText(LogPath, line + "\r\n"); } catch { }
+        Ui(delegate { if (logBox != null) logBox.AppendText(line + "\r\n"); });
+    }
+
+    static void RefreshUi()
     {
         string g = Game();
         bool en = g != null && IsEnglish(g);
-        gameLabel.Text = g == null ? "Game: not found - click Change... and pick the folder that contains TNOVA" :
-            (en ? "Game: " : "Not the English game (co-op needs it): ") + g;
+        gameLabel.Text = g == null ? L("Game: not found - click Change... and pick the folder that contains TNOVA",
+                                       "Jeu introuvable : clique sur Changer... et choisis le dossier qui contient TNOVA") :
+            (en ? L("Game: ", "Jeu : ") : L("Not the English game (the host needs it): ", "Pas le jeu anglais (l'hôte en a besoin) : ")) + g;
         gameLabel.ForeColor = en ? CText : CRed;
         bool[] have = { File.Exists(Path.Combine(UplinkDir, "project.godot")), File.Exists(GodotExe), File.Exists(TnpExe), File.Exists(PythonExe) };
         for (int i = 0; i < checks.Length; i++)
         {
-            checks[i].Text = (have[i] ? "●  " : "○  ") + checks[i].Tag + (have[i] ? "" : "  (installed when needed)");
+            checks[i].Text = (have[i] ? "●  " : "○  ") + checks[i].Tag + (have[i] ? "" : L("  (installed when needed)", "  (installé au besoin)"));
             checks[i].ForeColor = have[i] ? CGreen : CDim;
         }
-        hostBtn.Enabled = joinBtn.Enabled = gameBtn.Enabled = !busy;
+        hostBtn.Enabled = joinBtn.Enabled = gameBtn.Enabled = toolsBtn.Enabled = !busy;
         if (statusLabel.Text == "")
         {
-            statusLabel.Text = "Ready. One of you clicks HOST A GAME, the other JOIN A FRIEND.";
+            statusLabel.Text = L("Ready. One of you clicks HOST A GAME, the other JOIN A FRIEND.",
+                                 "Prêt. L'un clique sur HÉBERGER, l'autre sur REJOINDRE UN AMI.");
             statusLabel.ForeColor = CText;
         }
     }
@@ -210,22 +292,47 @@ static class Coop
     static void SaveCfg()
     {
         StringBuilder sb = new StringBuilder("; Terra Nova Coop\r\n");
-        foreach (KeyValuePair<string, string> kv in cfg) sb.Append(kv.Key + " = " + kv.Value + "\r\n");
+        lock (cfg) foreach (KeyValuePair<string, string> kv in cfg) sb.Append(kv.Key + " = " + kv.Value + "\r\n");
         try { File.WriteAllText(Ini, sb.ToString()); } catch { }
     }
 
-    static string Cfg(string k) { string v; return cfg.TryGetValue(k, out v) ? v : ""; }
+    static string Cfg(string k) { string v; lock (cfg) return cfg.TryGetValue(k, out v) ? v : ""; }
+    static void Set(string k, string v) { lock (cfg) cfg[k] = v; }
+
+    static void LoadOptions()
+    {
+        (Cfg("mode") == "versus" ? modeVs : modeCoop).Checked = true;
+        int s = Array.IndexOf(SIZES, Cfg("window"));
+        sizeBox.SelectedIndex = s >= 0 ? s : 1;
+        double sens;
+        sensBar.Value = double.TryParse(Cfg("mouse"), NumberStyles.Float, CultureInfo.InvariantCulture, out sens) ?
+            Math.Max(2, Math.Min(30, (int)Math.Round(sens * 10))) : 10;
+        sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture);
+        invertBox.Checked = Cfg("invert_y") == "1";
+        padBox.Checked = Cfg("gamepad") != "0";
+    }
+
+    static void SaveOptions()
+    {
+        if (modeVs == null) return;
+        Set("mode", modeVs.Checked ? "versus" : "coop");
+        Set("window", SIZES[Math.Max(0, sizeBox.SelectedIndex)]);
+        Set("mouse", (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture));
+        Set("invert_y", invertBox.Checked ? "1" : "0");
+        Set("gamepad", padBox.Checked ? "1" : "0");
+        SaveCfg();
+    }
 
     static string UplinkDir { get { return Path.Combine(Comp, "uplink"); } }
     static string GodotExe { get { return Path.Combine(Comp, "godot", "Godot_v" + GODOT_VER + "-stable_win64.exe"); } }
     static string TnpDir { get { return Path.Combine(Comp, "tnplus"); } }
     static string TnpExe { get { return Path.Combine(TnpDir, "TNPlus.exe"); } }
     static string PythonExe { get { return Path.Combine(Comp, "python", "python.exe"); } }
+    static string GodotData { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Godot", "app_userdata", "Terra Nova Uplink"); } }
 
     // ------------------------------------------------------------------ the game folder (GOG, Steam, or picked)
-    static bool IsGame(string d) { return d != "" && File.Exists(Path.Combine(d, "TNOVA", "DATA", "RESMISS.RES")); }
+    static bool IsGame(string d) { return !string.IsNullOrEmpty(d) && File.Exists(Path.Combine(d, "TNOVA", "DATA", "RESMISS.RES")); }
 
-    const long EN_EXE = 1856641;      // __FF.EXE v1.09 English (Steam, GOG); the French one is 1856813
     static bool IsEnglish(string d)
     {   // the co-op code only knows the English exe; TN+ keeps the original next to its patched copy
         foreach (string f in new[] { "__FF.EXE.tnplus-original", "__FF.EXE" })
@@ -244,7 +351,7 @@ static class Coop
         foreach (string c in Candidates())
             if (IsGame(c))
             {
-                if (IsEnglish(c)) { cfg["game_dir"] = c; SaveCfg(); return c; }
+                if (IsEnglish(c)) { Set("game_dir", c); SaveCfg(); return c; }
                 if (any == null) any = c;
             }
         return any;                      // not English: shown in red, the user can pick another one
@@ -279,51 +386,72 @@ static class Coop
     {
         using (FolderBrowserDialog d = new FolderBrowserDialog())
         {
-            d.Description = "Pick the Terra Nova folder (the one that contains TNOVA)";
+            d.Description = L("Pick the Terra Nova folder (the one that contains TNOVA)", "Choisis le dossier de Terra Nova (celui qui contient TNOVA)");
             if (d.ShowDialog(form) != DialogResult.OK) return;
             string p = d.SelectedPath;
             if (!IsGame(p) && IsGame(Path.GetDirectoryName(p) ?? "")) p = Path.GetDirectoryName(p);
-            if (!IsGame(p)) { MessageBox.Show(form, "No TNOVA\\DATA\\RESMISS.RES in that folder.", TITLE); return; }
-            cfg["game_dir"] = p; SaveCfg(); Refresh();
+            if (!IsGame(p)) { MessageBox.Show(form, L("No TNOVA\\DATA\\RESMISS.RES in that folder.", "Pas de TNOVA\\DATA\\RESMISS.RES dans ce dossier."), TITLE); return; }
+            Set("game_dir", p); SaveCfg(); RefreshUi();
         }
+    }
+
+    static bool Ask(string q)
+    {
+        bool yes = false;
+        Action a = delegate { yes = MessageBox.Show(form, q, TITLE, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes; };
+        if (form.InvokeRequired) form.Invoke(a); else a();
+        return yes;
+    }
+
+    static void Background(Action a)
+    {
+        if (busy) return;
+        busy = true; stopping = false;
+        RefreshUi();
+        new Thread(delegate () {
+            try { a(); }
+            catch (Exception e) { Status(L("Stopped: ", "Arrêté : ") + e.Message, CRed); Log(e.ToString()); }
+            busy = false;
+            Progress(0);
+            Ui(RefreshUi);
+        }) { IsBackground = true }.Start();
     }
 
     // ------------------------------------------------------------------ host / join
     static void Start(bool host)
     {
         if (busy) return;
+        SaveOptions();
         if (Game() == null) { PickGame(); if (Game() == null) return; }
-        busy = true; stopping = false;
-        Refresh();
-        new Thread(delegate () {
-            try { if (host) Host(); else Join(); }
-            catch (Exception e) { Status("Stopped: " + e.Message, CRed); Log(e.ToString()); }
-            busy = false;
-            Ui(Refresh);
-        }) { IsBackground = true }.Start();
+        if (host && !IsEnglish(Game()))
+        {
+            MessageBox.Show(form, L("The host needs the English game (the co-op code only knows its exe). Pick an English install with Change...",
+                "L'hôte a besoin du jeu anglais (le code coop ne connaît que son exe). Choisis une installation anglaise avec Changer..."), TITLE);
+            return;
+        }
+        sessionName = sessionPing = "";
+        Background(delegate { if (host) Host(); else Join(); });
     }
 
     static void Host()
     {
-        Status("Getting things ready...", CAmber);
+        Status(L("Getting things ready...", "Préparation..."), CAmber);
         Install(true);
-        if (!SteamUp()) return;
-        string game = Game();
-        WriteTnpIni(game);
-        Process tnp = null;
-        if (Process.GetProcessesByName("dosbox-staging").Length > 0)
-            Log("DOSBox is already running: TN+ Coop attaches to it");
-        Status("Starting the game (TN+ Coop)...", CAmber);
-        tnp = Run(TnpExe, "--launch", TnpDir, null, false);
+        if (!Preflight(true) || !SteamUp()) return;
+        WriteTnpIni(Game());
+        Status(L("Starting the game (TN+ Coop)...", "Lancement du jeu (TN+ Coop)..."), CAmber);
+        Session(L("Starting the game...", "Lancement du jeu..."), CAmber);
+        Process tnp = Run(TnpExe, "--launch", TnpDir, null, false);
         // the bridge needs the game's code loaded: tried every few seconds until it stays up
-        Status("Waiting for the game to load...", CAmber);
+        Status(L("Waiting for the game to load...", "Attente du chargement du jeu..."), CAmber);
         Process bridge = null;
         DateTime t0 = DateTime.Now;
         while (!stopping)
         {
             if (tnp.HasExited && Process.GetProcessesByName("dosbox-staging").Length == 0)
-            { Status("The game was closed.", CText); return; }
-            if ((DateTime.Now - t0).TotalMinutes > 5) { Status("The game didn't load in 5 minutes: see the log below.", CRed); return; }
+            { Status(L("The game was closed.", "Le jeu a été fermé."), CText); Session(L("No session.", "Pas de session."), CDim); return; }
+            if ((DateTime.Now - t0).TotalMinutes > 5)
+            { Status(L("The game didn't load in 5 minutes: see the log below.", "Le jeu ne s'est pas chargé en 5 minutes : voir le journal."), CRed); return; }
             Thread.Sleep(3000);
             bridge = Bridge();
             DateTime b0 = DateTime.Now;
@@ -332,10 +460,15 @@ static class Coop
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
         }
         if (stopping || bridge == null) return;
-        Status("Uplink is open. Invite your friend from the list at the top right of its window, " +
-               "then go to Mission Outfitting and wait for him to press READY.", CGreen);
+        Status(L("Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.",
+                 "Uplink est ouvert : invite ton ami depuis sa liste (en haut à droite), va à l'écran d'équipement, attends READY."), CGreen);
         while (!stopping && !bridge.HasExited) Thread.Sleep(500);
-        if (!stopping) Status(tnp.HasExited ? "The game was closed. Session over." : "Uplink was closed. Click HOST A GAME to open it again.", CText);
+        if (!stopping)
+        {
+            Status(tnp.HasExited ? L("The game was closed. Session over.", "Le jeu a été fermé. Session terminée.") :
+                L("Uplink was closed. Click HOST A GAME to open it again.", "Uplink a été fermé. Clique sur HÉBERGER pour le rouvrir."), CText);
+            Session(L("No session.", "Pas de session."), CDim);
+        }
     }
 
     static Process Bridge()
@@ -343,21 +476,24 @@ static class Coop
         Dictionary<string, string> env = Env();
         env["PYTHONIOENCODING"] = "utf-8";
         env["PYTHONUNBUFFERED"] = "1";
-        return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") +
-            "\" --launch --hud --play --guest-remote --fov 91.5 --res 1696x960", UplinkDir, env, true);
+        return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") + "\" --launch --hud --play --guest-remote --fov 91.5 --res " +
+            Cfg("window") + (Cfg("mode") == "versus" ? " --versus" : ""), UplinkDir, env, true);
     }
 
     static void Join()
     {
-        Status("Getting things ready...", CAmber);
+        Status(L("Getting things ready...", "Préparation..."), CAmber);
         Install(false);
-        if (!SteamUp()) return;
-        Status("Opening Uplink...", CAmber);
-        Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" --resolution 1280x720 -- --live --coop-guest --live-port 47831 --play --play-port 47834",
-            UplinkDir, Env(), true);
-        Status("Uplink is open. Click JOIN next to your friend's name in its window (he must have clicked HOST A GAME).", CGreen);
+        if (!Preflight(false) || !SteamUp()) return;
+        Status(L("Opening Uplink...", "Ouverture d'Uplink..."), CAmber);
+        string size = Cfg("window");
+        string win = size == "native" ? "" : "--resolution " + size + " ";
+        Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + "-- --live --coop-guest --live-port 47831 --play --play-port 47834" +
+            (size == "native" ? " --native" : ""), UplinkDir, Env(), true);
+        Status(L("Uplink is open: click JOIN next to your friend (he must have clicked HOST A GAME).",
+                 "Uplink est ouvert : clique sur JOIN à côté de ton ami (il doit avoir cliqué sur HÉBERGER)."), CGreen);
         while (!stopping && !g.HasExited) Thread.Sleep(500);
-        if (!stopping) Status("Uplink was closed.", CText);
+        if (!stopping) { Status(L("Uplink was closed.", "Uplink a été fermé."), CText); Session(L("No session.", "Pas de session."), CDim); }
     }
 
     static Dictionary<string, string> Env()
@@ -365,20 +501,76 @@ static class Coop
         Dictionary<string, string> env = new Dictionary<string, string>();
         env["GODOT"] = GodotExe;
         env["TN_GAME_DIR"] = Game();
+        env["TN_MOUSE_SENS"] = Cfg("mouse");
+        env["TN_INVERT_Y"] = Cfg("invert_y");
+        env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         return env;
+    }
+
+    // ------------------------------------------------------------------ checks before starting
+    class Proc { public int Id; public string Name, Cmd; }
+
+    static List<Proc> Procs()
+    {
+        List<Proc> l = new List<Proc>();
+        try
+        {
+            using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT ProcessId, Name, CommandLine FROM Win32_Process " +
+                "WHERE Name = 'python.exe' OR Name LIKE 'Godot%' OR Name = 'dosbox-staging.exe' OR Name = 'TNPlus.exe'"))
+                foreach (ManagementObject o in s.Get())
+                    l.Add(new Proc { Id = Convert.ToInt32(o["ProcessId"]), Name = (string)o["Name"], Cmd = (string)o["CommandLine"] ?? "" });
+        }
+        catch (Exception e) { Log("process list: " + e.Message); }
+        return l;
+    }
+
+    static bool Preflight(bool host)
+    {
+        List<Proc> ps = Procs();
+        // an Uplink or bridge already open (another launch, a .bat): same ports, the new one would not get its packets
+        List<Proc> old = ps.FindAll(p => (p.Name.StartsWith("Godot") && p.Cmd.Contains("--live")) ||
+                                         (p.Name == "python.exe" && p.Cmd.Contains("live_bridge.py")));
+        if (old.Count > 0)
+        {
+            if (!Ask(L("An Uplink session is already open (" + old.Count + " program(s)). Close it and start a new one?",
+                       "Une session Uplink est déjà ouverte (" + old.Count + " programme(s)). La fermer et en démarrer une nouvelle ?")))
+            { Status(L("Close the other Uplink first.", "Ferme d'abord l'autre Uplink."), CRed); return false; }
+            foreach (Proc p in old) Kill(p.Id);
+            Thread.Sleep(1000);
+        }
+        if (host)
+        {   // a game started without the co-op build has no co-op code: it must be started again from here
+            List<Proc> games = ps.FindAll(p => p.Name == "dosbox-staging.exe");
+            bool ours = games.Exists(p => p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0);
+            if (games.Count > 0 && !ours)
+            {
+                if (!Ask(L("Terra Nova is already running, started without the co-op build. Close it so Terra Nova Coop can start it again? (save your game first)",
+                           "Terra Nova tourne déjà, lancé sans la version coop. Le fermer pour que Terra Nova Coop le relance ? (sauvegarde d'abord ta partie)")))
+                { Status(L("Close the game first.", "Ferme d'abord le jeu."), CRed); return false; }
+                foreach (Proc p in games) Kill(p.Id);
+                foreach (Proc p in ps.FindAll(q => q.Name == "TNPlus.exe")) Kill(p.Id);
+                Thread.Sleep(1500);
+            }
+        }
+        return true;
+    }
+
+    static void Kill(int id)
+    {
+        try { Process p = Process.GetProcessById(id); Log("closing " + p.ProcessName + " " + id); p.Kill(); p.WaitForExit(3000); } catch { }
     }
 
     static bool SteamUp()
     {
         if (Process.GetProcessesByName("steam").Length > 0) return true;
-        Status("Starting Steam...", CAmber);
+        Status(L("Starting Steam...", "Lancement de Steam..."), CAmber);
         try { Process.Start("steam://open/main"); } catch { }
         for (int i = 0; i < 60 && !stopping; i++)
         {
             Thread.Sleep(1000);
             if (Process.GetProcessesByName("steam").Length > 0) { Thread.Sleep(8000); return true; }
         }
-        Status("Steam isn't running: start it, log in, then click again.", CRed);
+        Status(L("Steam isn't running: start it, log in, then click again.", "Steam n'est pas lancé : lance-le, connecte-toi, puis reclique."), CRed);
         return false;
     }
 
@@ -387,7 +579,7 @@ static class Coop
         ProcessStartInfo psi = new ProcessStartInfo(exe, args);
         psi.WorkingDirectory = dir;
         psi.UseShellExecute = false;
-        if (env != null) foreach (KeyValuePair<string, string> kv in env) psi.EnvironmentVariables[kv.Key] = kv.Value;
+        if (env != null) foreach (KeyValuePair<string, string> kv in env) psi.EnvironmentVariables[kv.Key] = kv.Value ?? "";
         if (capture)
         {
             psi.CreateNoWindow = true;
@@ -399,7 +591,7 @@ static class Coop
         if (capture)
         {
             string tag = Path.GetFileNameWithoutExtension(exe).Split('_')[0];
-            p.OutputDataReceived += (s, e) => { if (e.Data != null && Useful(e.Data)) Log(tag + ": " + e.Data); };
+            p.OutputDataReceived += (s, e) => { if (e.Data != null) Line(tag, e.Data); };
             p.ErrorDataReceived += (s, e) => { if (e.Data != null && e.Data.Trim() != "") Log(tag + "! " + e.Data); };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
@@ -408,9 +600,45 @@ static class Coop
         return p;
     }
 
-    static bool Useful(string l)
-    {   // the bridge prints its camera every frame: only the coop and start-up lines
-        return !(l.StartsWith("x ") || l.Trim() == "" || l.StartsWith("Godot Engine") || l.StartsWith("Vulkan"));
+    // Uplink's coop lines (coop_net.gd; on the host they come through the bridge, which started Uplink): the session line
+    static readonly Regex COOP = new Regex(@"coop: \[[0-9:]+\] (.*)$");
+    static readonly Regex PING = new Regex(@"ping (\d+) ms");
+
+    static void Line(string tag, string l)
+    {
+        if (l.StartsWith("x ") || l.Trim() == "" || l.StartsWith("Godot Engine") || l.StartsWith("Vulkan")) return;
+        Log(tag + ": " + l);
+        Match m = COOP.Match(l);
+        string t = m.Success ? m.Groups[1].Value : l;
+        Match pm = PING.Match(t);
+        if (pm.Success) sessionPing = pm.Groups[1].Value + " ms";
+        if (t.Contains("OFFLINE"))
+            Session(L("Steam not available: ", "Steam indisponible : ") + t.Substring(t.IndexOf("OFFLINE") + 7).Trim(), CRed);
+        else if (t.Contains("ANOTHER COOP VERSION") || t.Contains("ANOTHER VERSION") || t.Contains("another coop version"))
+            Session(L("Different versions: both of you click HOST / JOIN again (it updates).",
+                      "Versions différentes : cliquez tous les deux à nouveau sur HÉBERGER / REJOINDRE (ça met à jour)."), CRed);
+        else if (t.Contains("GUEST CONNECTED") || t.Contains("CONNECTED TO HOST"))
+        {
+            string rest = t.Substring(t.IndexOf("CONNECTED") + 9).Replace("TO HOST", "").Trim();
+            int cut = rest.IndexOf("  ");
+            sessionName = cut > 0 ? rest.Substring(0, cut) : rest;
+            Session((t.Contains("GUEST") ? L("Connected: ", "Connecté : ") : L("Connected to ", "Connecté à ")) + sessionName, CGreen);
+        }
+        else if (t.StartsWith("status:") && sessionName != "")
+            Session(L("Connected: ", "Connecté : ") + sessionName, CGreen);
+        else if (t.Contains("GUEST JOINING"))
+            Session(L("Your friend is joining...", "Ton ami se connecte..."), CAmber);
+        else if (t.Contains("CONNECTABLE"))
+            Session(L("Lobby open: invite your friend from the list in Uplink (top right).",
+                      "Salon ouvert : invite ton ami depuis la liste dans Uplink (en haut à droite)."), CAmber);
+        else if (t.Contains("the host left"))
+            Session(L("The host left.", "L'hôte est parti."), CAmber);
+        else if (t.Contains("waiting for an invite") || t.Contains("waiting for a game"))
+            Session(L("Waiting: click JOIN next to your friend in Uplink.", "En attente : clique sur JOIN à côté de ton ami dans Uplink."), CAmber);
+        else if (t.StartsWith("invited "))
+            Session(L("Invite sent to ", "Invitation envoyée à ") + t.Substring(8) + ".", CAmber);
+        else if (t.StartsWith("guest: entity"))
+            Session(L("Your friend is in the mission", "Ton ami est dans la mission") + (sessionName != "" ? " (" + sessionName + ")" : "") + ".", CGreen);
     }
 
     static void StopAll()
@@ -422,7 +650,59 @@ static class Coop
                 try { if (!p.HasExited) { p.CloseMainWindow(); if (!p.WaitForExit(1500)) p.Kill(); } } catch { }
             mine.Clear();
         }
-        Status("Stopped.", CText);
+        Status(L("Stopped.", "Arrêté."), CText);
+        Session(L("No session.", "Pas de session."), CDim);
+    }
+
+    // ------------------------------------------------------------------ bug report: one zip on the desktop
+    static void Report()
+    {
+        string zip = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            "TerraNovaCoop_report_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm") + ".zip");
+        try
+        {
+            using (ZipArchive a = ZipFile.Open(zip, ZipArchiveMode.Create))
+            {
+                StringBuilder info = new StringBuilder();
+                string g = Game();
+                info.AppendLine(TITLE + " " + VERSION + ", " + Environment.OSVersion + (Environment.Is64BitOperatingSystem ? ", 64-bit" : ""));
+                info.AppendLine("game: " + g + (g != null && IsEnglish(g) ? " (English)" : " (not English)"));
+                info.AppendLine("uplink " + Cfg("uplink_sha") + ", tnplus " + Cfg("tnplus_sha"));
+                info.AppendLine("options: mode " + Cfg("mode") + ", window " + Cfg("window") + ", mouse " + Cfg("mouse") +
+                                ", invert " + Cfg("invert_y") + ", gamepad " + Cfg("gamepad"));
+                info.AppendLine("session: " + (sessionLabel != null ? sessionLabel.Text : "-"));
+                foreach (Proc p in Procs()) info.AppendLine("running: " + p.Name + " " + p.Id);
+                using (StreamWriter w = new StreamWriter(a.CreateEntry("info.txt").Open())) w.Write(info.ToString());
+                Add(a, LogPath, "launcher.log");
+                Add(a, Path.Combine(TnpDir, "TNPlus.ini"), "TNPlus.ini");
+                Newest(a, Path.Combine(UplinkDir, "live", "logs"), "coop_host_*.log", 3, "bridge/");
+                Newest(a, Path.Combine(GodotData, "coop_logs"), "*.log", 4, "uplink_coop/");
+                Newest(a, Path.Combine(GodotData, "logs"), "*.log", 2, "uplink_godot/");
+            }
+            Status(L("Report saved on your desktop: send it on Discord with a few words on what happened.",
+                     "Rapport enregistré sur ton bureau : envoie-le sur Discord avec quelques mots sur ce qui s'est passé."), CGreen);
+            if (form != null) Process.Start("explorer.exe", "/select,\"" + zip + "\"");
+            else Console.WriteLine(zip);
+        }
+        catch (Exception e) { Status(L("Report failed: ", "Rapport impossible : ") + e.Message, CRed); }
+    }
+
+    static void Add(ZipArchive a, string file, string name)
+    {
+        try
+        {   // the logs are still open in the programs writing them: read them shared
+            using (FileStream f = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (Stream o = a.CreateEntry(name).Open()) f.CopyTo(o);
+        }
+        catch { }
+    }
+
+    static void Newest(ZipArchive a, string dir, string pattern, int n, string into)
+    {
+        if (!Directory.Exists(dir)) return;
+        List<FileInfo> fs = new List<FileInfo>(new DirectoryInfo(dir).GetFiles(pattern));
+        fs.Sort((x, y) => y.LastWriteTime.CompareTo(x.LastWriteTime));
+        for (int i = 0; i < Math.Min(n, fs.Count); i++) Add(a, fs[i].FullName, into + fs[i].Name);
     }
 
     // ------------------------------------------------------------------ TN+ Coop settings: HD 848x480 (the live mode's)
@@ -441,21 +721,22 @@ static class Coop
         File.WriteAllLines(ini, lines);
     }
 
-    // ------------------------------------------------------------------ install and update
+    // ------------------------------------------------------------------ install, update, repair
     static void Install(bool host)
     {
         Dictionary<string, string> heads = Heads();
         string up = Get(heads, UPLINK_REPO);
         if (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha")))
         {
-            Status("Downloading Uplink (coop)...", CAmber);
+            Status(L("Downloading Uplink (coop)...", "Téléchargement d'Uplink (coop)..."), CAmber);
             Repo(UPLINK_REPO, UplinkDir);
-            if (up != null) cfg["uplink_sha"] = up;
+            if (up != null) Set("uplink_sha", up);
             SaveCfg();
+            SelfUpdate();
         }
         if (!File.Exists(GodotExe))
         {
-            Status("Downloading Godot " + GODOT_VER + " (about 90 MB, once)...", CAmber);
+            Status(L("Downloading Godot " + GODOT_VER + " (about 90 MB, once)...", "Téléchargement de Godot " + GODOT_VER + " (environ 90 Mo, une fois)..."), CAmber);
             string z = Download(GODOT_URL, "godot.zip");
             Unzip(z, Path.GetDirectoryName(GodotExe));
             File.Delete(z);
@@ -465,18 +746,18 @@ static class Coop
             string tp = Get(heads, TNPLUS_REPO);
             if (!File.Exists(TnpExe) || (tp != null && tp != Cfg("tnplus_sha")))
             {
-                Status("Downloading and building TN+ Coop...", CAmber);
+                Status(L("Downloading and building TN+ Coop...", "Téléchargement et compilation de TN+ Coop..."), CAmber);
                 BuildTnp();
-                if (tp != null) cfg["tnplus_sha"] = tp;
+                if (tp != null) Set("tnplus_sha", tp);
                 SaveCfg();
             }
             if (!File.Exists(PythonExe) || !File.Exists(Path.Combine(Comp, "python", "Lib", "site-packages", "psutil", "__init__.py")))
             {
-                Status("Downloading Python for the bridge (about 30 MB, once)...", CAmber);
+                Status(L("Downloading Python for the bridge (about 30 MB, once)...", "Téléchargement de Python pour le pont (environ 30 Mo, une fois)..."), CAmber);
                 InstallPython();
             }
         }
-        Ui(Refresh);
+        Ui(RefreshUi);
         Progress(0);
     }
 
@@ -501,12 +782,70 @@ static class Coop
         Dictionary<string, string> h = Heads();
         string up = Get(h, UPLINK_REPO);
         Ui(delegate {
-            if (up == null) verLabel.Text = "Couldn't check for updates (offline?).";
-            else if (Cfg("uplink_sha") == "") verLabel.Text = "Uplink coop " + up.Substring(0, 7) + " will be installed.";
-            else if (up == Cfg("uplink_sha")) verLabel.Text = "Up to date (Uplink coop " + up.Substring(0, 7) + ").";
-            else verLabel.Text = "Update available: it's installed when you click HOST or JOIN (both PCs need the same).";
+            if (up == null) verLabel.Text = L("Couldn't check for updates (offline?).", "Impossible de chercher les mises à jour (hors ligne ?).");
+            else if (Cfg("uplink_sha") == "") verLabel.Text = L("Uplink coop " + up.Substring(0, 7) + " will be installed.", "Uplink coop " + up.Substring(0, 7) + " sera installé.");
+            else if (up == Cfg("uplink_sha")) verLabel.Text = L("Up to date (Uplink coop " + up.Substring(0, 7) + ").", "À jour (Uplink coop " + up.Substring(0, 7) + ").");
+            else verLabel.Text = L("Update available: installed when you click HOST or JOIN (both PCs need the same).",
+                                   "Mise à jour disponible : installée quand tu cliques sur HÉBERGER ou REJOINDRE (les deux PC doivent l'avoir).");
             verLabel.ForeColor = up != null && up != Cfg("uplink_sha") && Cfg("uplink_sha") != "" ? CAmber : CDim;
         });
+    }
+
+    // a newer launcher in Uplink's files (launcher\TerraNovaCoop.cs, its VERSION): built next to this one, swapped in
+    // by a small batch file once this one has closed, then started again
+    static void SelfUpdate()
+    {
+        string src = Path.Combine(UplinkDir, "launcher", "TerraNovaCoop.cs");
+        if (!File.Exists(src) || form == null) return;
+        Match m = Regex.Match(File.ReadAllText(src), "const string VERSION = \"([0-9.]+)\"");
+        Version now, theirs;
+        if (!m.Success || !Version.TryParse(VERSION, out now) || !Version.TryParse(m.Groups[1].Value, out theirs) || theirs <= now) return;
+        Status(L("Building the new launcher " + theirs + "...", "Compilation du nouveau launcher " + theirs + "..."), CAmber);
+        string dir = Path.GetDirectoryName(src), outExe = Path.Combine(Root, "Terra Nova Coop.new.exe");
+        Process p = Run(Csc(), "/nologo /optimize /target:winexe /win32manifest:app.manifest /win32icon:icon.ico /r:System.Windows.Forms.dll " +
+            "/r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll " +
+            "/out:\"" + outExe + "\" TerraNovaCoop.cs", dir, null, true);
+        p.WaitForExit();
+        if (p.ExitCode != 0 || !File.Exists(outExe)) { Log("new launcher didn't build"); return; }
+        if (!Ask(L("A new Terra Nova Coop (" + theirs + ") is ready. Restart now?", "Un nouveau Terra Nova Coop (" + theirs + ") est prêt. Redémarrer maintenant ?"))) return;
+        string me = Application.ExecutablePath, bat = Path.Combine(Root, "update.bat");
+        File.WriteAllText(bat, "@echo off\r\nping -n 3 127.0.0.1 >nul\r\nmove /y \"" + outExe + "\" \"" + me + "\" >nul\r\nstart \"\" \"" + me + "\"\r\n");
+        Process.Start(new ProcessStartInfo("cmd.exe", "/c \"" + bat + "\"") { CreateNoWindow = true, UseShellExecute = false });
+        Environment.Exit(0);
+    }
+
+    static void Repair()
+    {
+        if (busy) return;
+        if (!Ask(L("Download and install everything again? (your settings are kept)", "Tout retélécharger et réinstaller ? (tes réglages sont gardés)"))) return;
+        Background(delegate {
+            StopAll();
+            stopping = false;
+            foreach (string d in new[] { "uplink", "godot", "python", "tnplus_src", "tmp" })
+                try { if (Directory.Exists(Path.Combine(Comp, d))) Directory.Delete(Path.Combine(Comp, d), true); } catch (Exception e) { Log(e.Message); }
+            try { File.Delete(TnpExe); } catch { }
+            Set("uplink_sha", ""); Set("tnplus_sha", ""); SaveCfg();
+            Install(true);
+            Status(L("Repaired: everything is installed again.", "Réparé : tout est réinstallé."), CGreen);
+        });
+    }
+
+    static void Uninstall()
+    {
+        if (busy) return;
+        if (!Ask(L("Remove everything Terra Nova Coop installed in this folder (about 250 MB)? Your game is not touched.",
+                   "Supprimer tout ce que Terra Nova Coop a installé dans ce dossier (environ 250 Mo) ? Ton jeu n'est pas touché."))) return;
+        StopAll();
+        try { Directory.Delete(Comp, true); } catch (Exception e) { Log(e.Message); }
+        try { File.Delete(Ini); } catch { }
+        MessageBox.Show(form, L("Done. You can now delete Terra Nova Coop.exe.", "C'est fait. Tu peux maintenant supprimer Terra Nova Coop.exe."), TITLE);
+        Environment.Exit(0);
+    }
+
+    static string Csc()
+    {
+        string c = Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework64\v4.0.30319\csc.exe");
+        return File.Exists(c) ? c : Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework\v4.0.30319\csc.exe");
     }
 
     static void Repo(string repo, string dest)
@@ -526,20 +865,15 @@ static class Coop
     {
         string src = Path.Combine(Comp, "tnplus_src");
         Repo(TNPLUS_REPO, src);
-        string bat = Path.Combine(src, "src", "build.bat");
-        string cmd = File.ReadAllText(bat);
+        string cmd = File.ReadAllText(Path.Combine(src, "src", "build.bat"));
         Match m = Regex.Match(cmd, "(?m)^\"%CSC%\"([^\\r\\n]+)");   // build.bat's compiler line, without its pause
         if (!m.Success) throw new Exception("TN+ build.bat not understood");
-        string csc = Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework64\v4.0.30319\csc.exe");
-        if (!File.Exists(csc)) csc = Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework\v4.0.30319\csc.exe");
-        Process p = Run(csc, m.Groups[1].Value.Trim(), Path.Combine(src, "src"), null, true);
+        Process p = Run(Csc(), m.Groups[1].Value.Trim(), Path.Combine(src, "src"), null, true);
         p.WaitForExit();
         string built = Path.Combine(src, "src", "TNPlus.exe");
         if (p.ExitCode != 0 || !File.Exists(built)) throw new Exception("TN+ Coop didn't build (see the log)");
         Directory.CreateDirectory(TnpDir);
         File.Copy(built, TnpExe, true);       // TNPlus.ini and its coop copy of the game's exe stay in tnplus\
-        foreach (string f in new[] { "awe32.raw" })
-            if (File.Exists(Path.Combine(src, f))) File.Copy(Path.Combine(src, f), Path.Combine(TnpDir, f), true);
     }
 
     static void InstallPython()

@@ -26,6 +26,7 @@ var root := ""               # game folder (contains TNOVA)
 var type_names := {}         # class -> PackedStringArray
 var mission_names := PackedStringArray()
 var planet_cache := {}
+var iso_tried := false
 
 
 static func find_root(extra: String) -> String:
@@ -55,6 +56,75 @@ func data_dir() -> String:
 
 func maps_dir() -> String:
 	return root.path_join("TNOVA/MAPS")
+
+
+# The Steam edition installs no maps: TNOVA/MAPS is empty and the game reads them from its CD image (_ISO/*.ISO;
+# GOG keeps one in CD/). Missing maps are copied out of that ISO 9660 image once, into Uplink's own cache.
+func iso_maps_dir() -> String:
+	return ProjectSettings.globalize_path("user://iso_maps")
+
+
+func _iso_path() -> String:
+	for sub in ["_ISO", "CD"]:
+		var d := DirAccess.open(root.path_join(sub))
+		if d:
+			for f in d.get_files():
+				if f.to_upper().ends_with(".ISO"):
+					return root.path_join(sub).path_join(f)
+	return ""
+
+
+static func _iso_dir(f: FileAccess, ext: int, size: int) -> Dictionary:
+	# a directory's records: NAME -> [first sector, size, is_dir]
+	var out := {}
+	f.seek(ext * 2048)
+	var d := f.get_buffer(size)
+	var i := 0
+	while i < d.size():
+		var n := d[i]
+		if n == 0:                                          # records never cross a sector: on to the next one
+			i = (i / 2048 + 1) * 2048
+			continue
+		var nl := d[i + 32]
+		var name := d.slice(i + 33, i + 33 + nl).get_string_from_ascii().get_slice(";", 0).to_upper()
+		if nl > 1 or (d[i + 33] > 1):
+			out[name] = [d.decode_u32(i + 2), d.decode_u32(i + 10), (d[i + 25] & 2) != 0]
+		i += n
+	return out
+
+
+func extract_iso_maps() -> int:
+	var src := _iso_path()
+	if src == "":
+		return 0
+	var f := FileAccess.open(src, FileAccess.READ)
+	if f == null:
+		return 0
+	f.seek(16 * 2048)
+	var pvd := f.get_buffer(2048)
+	if pvd.slice(1, 6).get_string_from_ascii() != "CD001":
+		return 0
+	var top := _iso_dir(f, pvd.decode_u32(156 + 2), pvd.decode_u32(156 + 10))
+	var maps: Array = top.get("MAPS", [])
+	if maps.is_empty() and top.has("TNOVA"):
+		var t: Array = top["TNOVA"]
+		maps = _iso_dir(f, t[0], t[1]).get("MAPS", [])
+	if maps.is_empty():
+		return 0
+	DirAccess.make_dir_recursive_absolute(iso_maps_dir())
+	var n := 0
+	var files := _iso_dir(f, maps[0], maps[1])
+	for name in files:
+		var e: Array = files[name]
+		var dst := iso_maps_dir().path_join(name)
+		if e[2] or not name.ends_with(".RES") or (FileAccess.file_exists(dst) and FileAccess.open(dst, FileAccess.READ).get_length() == e[1]):
+			continue
+		f.seek(int(e[0]) * 2048)
+		var w := FileAccess.open(dst, FileAccess.WRITE)
+		if w:
+			w.store_buffer(f.get_buffer(e[1]))
+			n += 1
+	return n
 
 
 func type_name(cls: int, sub: int) -> String:
@@ -110,10 +180,14 @@ func _mname(n: int) -> String:
 func resolve(mission_file: String, name: String) -> String:
 	var here := mission_file.get_base_dir()
 	for dir in [here, here.get_base_dir().path_join("DATA"), here.get_base_dir().path_join("MAPS"),
-			maps_dir(), data_dir()]:
+			maps_dir(), data_dir(), iso_maps_dir()]:
 		var p: String = dir.path_join(name.to_upper())
 		if FileAccess.file_exists(p):
 			return p
+	if not iso_tried:                                       # once per run: the maps from the game's CD image
+		iso_tried = true
+		if extract_iso_maps() > 0:
+			return resolve(mission_file, name)
 	return ""
 
 

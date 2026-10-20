@@ -118,7 +118,7 @@ class Guest:
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
-        self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire)
+        self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.jump_t, self.pad_jump, self.jet_t, self.burst = False, 0.0, False, 0.0, None
         self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
@@ -477,20 +477,22 @@ class Guest:
             turn += axis(p.rx) * 600
             self.pitch = max(-0.9, min(0.9, self.pitch + axis(p.ry) * 0.03))
             fire = fire or p.rt > 64
+        pad_jets = False
         if self.remote and self.rpad and time.time() - self.rpad_t < 0.3:   # online gamepad, same as the local one
-            lx, ly, rx, ry, pf = self.rpad
+            lx, ly, rx, ry, pf, pj = self.rpad
             fwd = max(-1.0, min(1.0, fwd + ly))
             side = max(-1.0, min(1.0, side + lx))
             turn += rx * 600
             self.pitch = max(-0.9, min(0.9, self.pitch + ry * 0.03))
             fire = fire or pf
+            pad_jets = pj
         if turn:
             g.write(eg + 0x1B, struct.pack('<H', (self.u16(eg + 0x1B) + int(turn)) & 0xffff))
         c = bytearray(0x28)
         struct.pack_into('<ii', c, 0, int(fwd * 0x10000), int(side * 0x10000))
         g.write(G_CTRL, bytes(c))
         now = time.time()
-        self.push(min(0.1, now - self.jet_t), 0x39 in self.keys or bool(p and p.lt > 64))   # Space / left trigger: jets
+        self.push(min(0.1, now - self.jet_t), 0x39 in self.keys or bool(p and p.lt > 64) or pad_jets)   # Space / left trigger
         self.jet_t = now
         gx, gy, gz = (self.i32(eg + o) / 65536 for o in (0x0F, 0x13, 0x17))
         gh = self.u16(eg + 0x1B) / 65536 * 2 * math.pi
@@ -596,7 +598,7 @@ class Guest:
                     pass
             elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
-                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (bool(f & 1),)
+                self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (bool(f & 1), bool(f & 8))
                 if f & 2 and not self.pad_jump and active:      # button A: jump where the left stick points
                     self.jump(math.atan2(-self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0)
                 self.pad_jump = bool(f & 2)

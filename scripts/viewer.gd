@@ -187,7 +187,8 @@ func _ready() -> void:
 	_build_ui()
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
-	var root := TNData.find_root(cfg.get_value("game", "root", ""))
+	var given := OS.get_environment("TN_GAME_DIR").replace("\\", "/")   # Terra Nova Coop (the launcher): its game
+	var root := TNData.find_root(given if given != "" else cfg.get_value("game", "root", ""))
 	if root == "" or not data.setup(root):
 		_ask_path("Terra Nova folder not found. Paste the game folder (the one containing TNOVA):")
 		return
@@ -1658,6 +1659,10 @@ func _input(event: InputEvent) -> void:
 	if host_btn and host_btn.visible and event is InputEventMouse and (host_btn.get_global_rect().has_point(event.position) or
 			(versus_btn and versus_btn.get_global_rect().has_point(event.position))):
 		return                                          # the "Host online" button's, not the game's
+	if event is InputEventMouse:
+		for n in get_children():                         # coop_net.gd's own buttons (invite a friend, lock, chat)
+			if n.has_method("owns_point") and n.owns_point(event.position):
+				return
 	if menu_mode and (event is InputEventMouseButton or event is InputEventMouseMotion):
 		var mp := _menu_game_pos(event.position)          # the game's own screen: its cursor follows the mouse
 		if event is InputEventMouseMotion:

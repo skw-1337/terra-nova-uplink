@@ -82,6 +82,12 @@ var lock_btn: Button                 # host: locks the guest's column on the Mis
 var lobby_label: Label               # host: the guest's column / ready, and the lobby chat ('GLB' packets going by)
 var chat_edit: LineEdit
 var guest_locked := false
+var friends_panel: PanelContainer      # host: online friends with an Invite button / guest: friends hosting, Join
+var friends_box: VBoxContainer
+var friends_title: Label
+var friends_t := -100.0
+var friends_sig := ""
+var invited := {}                     # host: friend id -> clock of the invite
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
 var bad_col := Color(1.0, 0.35, 0.3)
@@ -147,6 +153,7 @@ func _ready() -> void:
 		chat_edit.text_submitted.connect(_on_chat)
 		chat_edit.visible = false
 		add_child(chat_edit)
+	_build_friends()
 	_show("STEAM...", "", warn_col)
 	if fake_steam == null and "--fake-steam" in OS.get_cmdline_user_args():
 		fake_steam = load("res://scripts/fake_steam.gd").new()
@@ -203,6 +210,9 @@ func _process(delta: float) -> void:
 	if not steam:
 		return
 	steam.run_callbacks()
+	if clock - friends_t > 3.0:
+		friends_t = clock
+		_fill_friends()
 	if host_mode:
 		while udp_in.get_available_packet_count() > 0:
 			var pk := udp_in.get_packet()
@@ -327,6 +337,116 @@ func _release_input() -> void:
 		udp_out.put_packet(PackedByteArray([0x4B, sc, 0, 0]))
 	udp_out.put_packet(PackedByteArray([0x42, 1, 0]))
 	udp_out.put_packet(PackedByteArray([80, 0, 0, 0, 0, 0]))
+
+
+# Steam's overlay (F9's invite dialog) doesn't open in Uplink: the host invites from a list of his online friends,
+# the guest joins from a list of the friends who host one (their rich presence game is our lobby).
+func _build_friends() -> void:
+	friends_panel = PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.08, 0.07, 0.88)
+	sb.border_color = Color(0.3, 0.55, 0.38)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(10)
+	friends_panel.add_theme_stylebox_override("panel", sb)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	friends_panel.add_child(v)
+	friends_title = Label.new()
+	friends_title.add_theme_font_size_override("font_size", 16)
+	friends_title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.3))
+	v.add_child(friends_title)
+	friends_box = VBoxContainer.new()
+	friends_box.add_theme_constant_override("separation", 4)
+	v.add_child(friends_box)
+	friends_panel.visible = false
+	if host_mode:
+		friends_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		friends_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		friends_panel.position = Vector2(-12, 44)
+		friends_panel.custom_minimum_size = Vector2(300, 0)
+		add_child(friends_panel)
+	else:
+		friends_panel.custom_minimum_size = Vector2(420, 0)
+		wait_title.get_parent().add_child(friends_panel)
+
+
+func _fill_friends() -> void:
+	if not friends_panel:
+		return
+	var want := steam != null and (lobby_id != 0 and not peer if host_mode else peer == 0 and version_msg == "")
+	friends_panel.visible = want
+	if not want:
+		return
+	var rows := []                                       # [id, name, lobby]
+	if steam.has_method("getFriendCount"):
+		for i in steam.getFriendCount(4):                 # k_EFriendFlagImmediate: the friends list
+			var id: int = steam.getFriendByIndex(i, 4)
+			if steam.getFriendPersonaState(id) == 0:      # offline
+				continue
+			var lobby := 0
+			var g: Dictionary = steam.getFriendGamePlayed(id)
+			if int(g.get("id", 0)) == APP_ID:
+				lobby = int(g.get("lobby", 0))
+			if host_mode or lobby != 0:
+				rows.append([id, steam.getFriendPersonaName(id), lobby])
+	rows.sort_custom(func(a, b): return (a[2] != 0 and b[2] == 0) or ((a[2] != 0) == (b[2] != 0) and a[1].nocasecmp_to(b[1]) < 0))
+	var free := Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+	var sig := str(rows) + str(invited.keys()) + str(free)
+	if sig == friends_sig:
+		return
+	friends_sig = sig
+	for c in friends_box.get_children():
+		c.queue_free()
+	if host_mode:
+		friends_title.text = "INVITE A FRIEND" + ("" if free else "   (Y: free the mouse)")
+	else:
+		friends_title.text = "FRIENDS HOSTING A GAME"
+	if rows.is_empty():
+		var l := Label.new()
+		l.text = "No friend online in Steam." if host_mode else \
+			"Nobody yet. Your friend clicks HOST in Terra Nova Coop,\nthen his name shows up here."
+		l.add_theme_color_override("font_color", Color(0.75, 0.8, 0.85))
+		friends_box.add_child(l)
+		return
+	for r in rows.slice(0, 12):
+		var h := HBoxContainer.new()
+		var n := Label.new()
+		n.text = r[1]
+		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		n.clip_text = true
+		h.add_child(n)
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_NONE
+		var id: int = r[0]
+		if host_mode:
+			var done: bool = invited.has(id) and clock - invited[id] < 60.0
+			b.text = "Invited" if done else "Invite"
+			b.disabled = done
+			b.pressed.connect(func():
+				steam.inviteUserToLobby(lobby_id, id)
+				invited[id] = clock
+				_log("invited %s" % steam.getFriendPersonaName(id))
+				friends_sig = ""
+				_fill_friends())
+		else:
+			var lobby: int = r[2]
+			b.text = "JOIN"
+			b.custom_minimum_size = Vector2(90, 0)
+			b.pressed.connect(func():
+				_show("ONLINE", "joining %s..." % steam.getFriendPersonaName(id), warn_col)
+				steam.joinLobby(lobby))
+		h.add_child(b)
+		friends_box.add_child(h)
+
+
+func owns_point(p: Vector2) -> bool:
+	# a click here is for these buttons, not the game (viewer.gd asks before sending the mouse to the game)
+	for c in [friends_panel, lock_btn, chat_edit]:
+		if c and c.is_visible_in_tree() and c.get_global_rect().has_point(p):
+			return true
+	return false
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -560,7 +680,7 @@ func _refresh() -> void:
 		elif peer:
 			_show("ONLINE · GUEST JOINING", steam.getFriendPersonaName(peer), warn_col)
 		else:
-			_show("ONLINE · CONNECTABLE", "friends can join from Steam (F9: invite)", ok_col)
+			_show("ONLINE · CONNECTABLE", "invite a friend from the list on the right", ok_col)
 	elif peer:
 		_show("ONLINE · CONNECTED TO HOST", "%s   %s%s" % [steam.getFriendPersonaName(peer), rate, _ping_text()],
 			ok_col if ping_ms < 150 else warn_col)
@@ -578,7 +698,7 @@ func _waiting() -> void:
 	elif peer == 0 and version_msg != "":
 		wait_text.text = version_msg
 	elif peer == 0:
-		wait_text.text = "Waiting for an invite%s\nAccept your friend's invite in Steam, or use Join game on your friend in your friends list." % dots
+		wait_text.text = "Waiting for a game%s\nClick JOIN next to your friend below, or accept his Steam invite." % dots
 	else:
 		wait_text.text = "Connected to %s.\nWaiting for the host to start a mission%s\nYou will drive the teammate nearest to the host: W/S/A/D, mouse, left button to fire,\nor a gamepad (left stick move, right stick look, right trigger fire). F8: next teammate." % [
 			steam.getFriendPersonaName(peer), dots]

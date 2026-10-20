@@ -173,6 +173,18 @@ func _run() -> void:
 	check(hs.rich.get("connect", "") == "+connect_lobby %d" % host.lobby_id, "host's rich presence: +connect_lobby")
 	check(guest.peer == 0 and guest.wait_panel.visible, "guest waits for an invite")
 
+	# --- the friends lists that replace Steam's overlay: the host's Invite buttons, the guest's JOIN on the host
+	var row_btn := func(cn, who: String) -> Button:
+		for h in cn.friends_box.get_children():
+			if h is HBoxContainer and h.get_child(0).text == who:
+				return h.get_child(1)
+		return null
+	await until(func(): return row_btn.call(host, "Guest player") != null and row_btn.call(guest, "Host player") != null, 5.0)
+	var inv: Button = row_btn.call(host, "Guest player")
+	var join: Button = row_btn.call(guest, "Host player")
+	check(host.friends_panel.visible and inv != null and inv.text == "Invite", "host: the guest in INVITE A FRIEND")
+	check(guest.friends_panel.visible and join != null and join.text == "JOIN", "guest: the host in FRIENDS HOSTING A GAME")
+
 	# --- a host with another coop version: the guest leaves its lobby
 	var old_host := FakeSteam.new(net, "Old host")
 	old_host.steamInitEx()

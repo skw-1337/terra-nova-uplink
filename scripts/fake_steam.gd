@@ -118,6 +118,42 @@ func activateGameOverlayInviteDialog(lobby: int) -> void:
 	invites.append(lobby)
 
 
+# friends: every other user on the net is an online friend; one in a lobby plays app 480 with that lobby
+func _friends() -> Array:
+	var out := []
+	for id in net.users:
+		if id != steam_id and net.user(id):
+			out.append(id)
+	out.sort()
+	return out
+
+
+func getFriendCount(_flags := 4) -> int:
+	return _friends().size()
+
+
+func getFriendByIndex(i: int, _flags := 4) -> int:
+	var f := _friends()
+	return f[i] if i >= 0 and i < f.size() else 0
+
+
+func getFriendPersonaState(id: int) -> int:
+	return 1 if net.user(id) else 0
+
+
+func getFriendGamePlayed(id: int) -> Dictionary:
+	for l in net.lobbies:
+		if id in net.lobbies[l]["members"]:
+			return {"id": 480, "ip": "0.0.0.0", "game_port": 0, "query_port": 0, "lobby": l}
+	return {"id": 480, "ip": "0.0.0.0", "game_port": 0, "query_port": 0, "lobby": 0} if net.user(id) else {}
+
+
+# the host's Invite button: Steam shows the invite, the friend accepts it (join_requested on him)
+func inviteUserToLobby(lobby: int, to: int) -> bool:
+	invite(to, lobby)
+	return true
+
+
 # the test's side of "Join game" / an accepted invite: join_requested on `to`
 func invite(to: int, lobby: int) -> void:
 	var u: Object = net.user(to)

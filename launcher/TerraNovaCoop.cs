@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.9";
+    const string VERSION = "0.10";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -500,6 +500,8 @@ static class Coop
     // the game's window tucked right behind Uplink's: out of sight, but not minimized (on the menus the bridge
     // photographs it, PrintWindow, which a minimized window can't give). Left alone while it is in front (the host
     // brought it up); put back behind when it comes up by itself
+    static WRect lastUp;
+
     static void KeepGameMinimized()
     {
         IntPtr up = IntPtr.Zero;
@@ -508,18 +510,23 @@ static class Coop
         if (up == IntPtr.Zero) return;
         WRect ur;
         if (!GetWindowRect(up, out ur)) return;
+        bool still = ur.Left == lastUp.Left && ur.Top == lastUp.Top;   // not while Uplink is being dragged
+        lastUp = ur;
         foreach (Process d in Process.GetProcessesByName("dosbox-staging"))
             try
             {
                 d.Refresh();
                 IntPtr h = d.MainWindowHandle;
                 if (h == IntPtr.Zero || GetForegroundWindow() == h) continue;
-                if (IsIconic(h)) ShowWindow(h, 4);                 // restored without taking the focus
                 WRect r;
                 GetWindowRect(h, out r);
-                int x = ur.Left + 40, y = ur.Top + 40;
-                if (r.Left != x || r.Top != y) Log("game window behind Uplink");
-                SetWindowPos(h, up, x, y, 0, 0, 0x0001 | 0x0010);    // under Uplink's window, no size change, no activation
+                bool iconic = IsIconic(h);
+                if (iconic) ShowWindow(h, 4);                      // restored without taking the focus
+                if (iconic || (still && (r.Left != ur.Left || r.Top != ur.Top)))
+                {   // under Uplink's window, at its place: moved only once Uplink has stopped moving
+                    SetWindowPos(h, up, ur.Left, ur.Top, 0, 0, 0x0001 | 0x0010);
+                    Log("game window behind Uplink");
+                }
             }
             catch { }
     }

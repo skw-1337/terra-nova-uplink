@@ -519,13 +519,17 @@ func _read_planet(path: String) -> Dictionary:
 	var rgb_tiles := []
 	var tile_spread := PackedFloat32Array()     # color spread of each tile (low = plain texture)
 	var fp := full_palette(pal)                 # tiles also use colors 1-16 (planet 3: a lot)
+	var base_n := 0
 	for t in count:
 		var rgb := PackedByteArray()
 		rgb.resize(64 * 64 * 3)
 		var acc := Vector3.ZERO
 		var acc2 := Vector3.ZERO
 		for p in 4096:
-			var fc: Color = fp[raw[t * 4096 + p]]
+			var ci := raw[t * 4096 + p]
+			if ci >= 1 and ci <= 16:
+				base_n += 1
+			var fc: Color = fp[ci]
 			var c := Vector3(fc.r8, fc.g8, fc.b8)
 			rgb[3 * p] = int(c.x)
 			rgb[3 * p + 1] = int(c.y)
@@ -586,6 +590,9 @@ func _read_planet(path: String) -> Dictionary:
 			own[t] = m
 	out["ok"] = true
 	out["palette"] = full_palette(pal)
+	# share of the tiles' pixels in colours 1-16: planet 3's ground is drawn with them (a pale teal to dark green
+	# ramp, its shading), so its 3D view uses them too (old school: their palette from 1, not 17)
+	out["base_share"] = float(base_n) / maxf(1.0, count * 4096.0)
 	out["count"] = count
 	out["tile_color"] = tile_color
 	out["textures"] = arr

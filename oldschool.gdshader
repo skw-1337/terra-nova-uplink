@@ -1,6 +1,7 @@
 // Old school mode (live mode, F12): the game's look over the 3D view. Its pixel grid (848 x 400 over the window,
 // the game's HD screen), each pixel the mean of what it covers, and its palette (the planet's colours 17-255, those
-// its 3D view is drawn with). Drawn under the game's HUD, which already has both.
+// its 3D view is drawn with; from 1 on planet 3, whose ground is drawn with 1-16). Drawn under the game's HUD, which
+// already has both.
 shader_type canvas_item;
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear;

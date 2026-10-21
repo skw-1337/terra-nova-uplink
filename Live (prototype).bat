@@ -7,6 +7,7 @@ set "HERE=%~dp0"
 set "EXE="
 if defined GODOT if exist "%GODOT%" set "EXE=%GODOT%"
 if not defined EXE for %%f in ("%HERE%Godot_v4*_win64.exe" "%HERE%..\Godot_v4*_win64.exe" "C:\Tools\Godot\Godot_v4*_win64.exe") do if not defined EXE if exist "%%~f" set "EXE=%%~f"
+if not defined EXE for /d %%d in ("%HERE%Godot*" "%HERE%..\Godot*") do for %%f in ("%%~d\Godot_v4*_win64.exe") do if not defined EXE if exist "%%~f" set "EXE=%%~f"
 if not defined EXE for %%g in (godot.exe godot4.exe) do if not defined EXE for %%p in (%%g) do if not "%%~$PATH:p"=="" set "EXE=%%~$PATH:p"
 if not defined EXE (
     echo Godot 4.7 not found.

@@ -273,6 +273,8 @@ func _ready() -> void:
 	var i := args.find("--mission")
 	if i >= 0 and i + 1 < args.size():
 		_load_by_label(args[i + 1])
+	elif live:                                # the game in its menus: the small flat map until a mission starts
+		_load_by_label("MISSFLAT.RES")          # ('MIS' then loads the real one; a whole map here was a slow start)
 	else:
 		list.select(4)
 		_load(4)
@@ -1498,6 +1500,8 @@ func _play_key(sc: int, down: bool) -> void:
 func _play_release_all() -> void:
 	for sc in play_held.keys():
 		_play_key(sc, false)
+	for bt in [1, 2]:                                    # a button let go elsewhere (alt-tab) would fire forever
+		_play_send(PackedByteArray([0x42, bt, 0]))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	play_started = false
 

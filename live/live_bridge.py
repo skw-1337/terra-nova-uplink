@@ -813,6 +813,8 @@ while True:
             larg = max(math.hypot(v[0] - used[0][0], v[1] - used[0][1]) for v in used)   # de large pour 0,5 de haut ;
             if larg > 1.4 * hz + 0.15 * 65536:        # posee : 0,1 a 0,5 de large, ~0,43 de haut)
                 continue
+            if hz > (0.95 if tab[o + 2] in LOURDES else 0.6) * 65536:   # ou etire en hauteur (immobile apres un dezoom :
+                continue                              # 0,73 de haut pour 0,10 de large ; posee : 0,38 a 0,48)
         if prev is None:
             if any(math.hypot(v[0] - x0, v[1] - y0) > (0.9 if mech or tab[o + 2] in LOURDES else 0.45) * 65536 for v in used):
                 continue

@@ -128,6 +128,51 @@ vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, out float wl) {
 	return mix(mix(a, b, fw.x), mix(c, d, fw.x), fw.y);
 }
 
+// the ground more credible without tessellation: wide patches lighter / darker, warmer / cooler (the tiles' pattern
+// no longer repeats), a fine detail chosen by the ground's colour (near the eye only), rock on the steep slopes
+uniform float macro_amount = 0.16;
+uniform float fine_amount = 0.24;
+uniform float slope_rock = 0.35;
+uniform float sparkle = 0.0;           // snow: crystals catching the light up close (the ice planet)
+
+// fine details, around 0 (-0.5 .. 0.5): grass (tufts, blades each tuft its own way), sand (wind ripples), rock
+// (grain, dark veins), snow (soft drifts)
+float grass_fine(vec2 p) {
+	float clump = detail_noised(p * 2.3).x;
+	float a = clump * 6.2832;
+	vec2 q = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a))) * p;
+	return (clump - 0.5) * 0.6 + (detail_noised(q * vec2(28.0, 5.0)).x - 0.5) * 0.7;
+}
+
+float sand_fine(vec2 p) {
+	float w = detail_noised(p * 0.35).x * 6.0;
+	return sin(dot(p, vec2(0.8, 0.6)) * 9.0 + w) * 0.35 + (detail_noised(p * 14.0).x - 0.5) * 0.4;
+}
+
+float rock_fine(vec2 p) {
+	float cr = abs(detail_noised(p * 3.0).x - 0.5) * 2.0;
+	return (detail_noised(p * 6.0).x - 0.5) * 0.5 + (detail_noised(p * 22.0).x - 0.5) * 0.35 - (1.0 - smoothstep(0.0, 0.12, cr)) * 0.4;
+}
+
+float snow_fine(vec2 p) {
+	return (detail_noised(p * 1.2).x - 0.5) * 0.5 + (detail_noised(p * 9.0).x - 0.5) * 0.2;
+}
+
+// by the colour there: green = grass, yellow / orange = sand, white = snow, the rest (grey) = rock
+float ground_fine(vec2 p, vec3 c) {
+	float l = dot(c, vec3(0.3, 0.59, 0.11));
+	float green = clamp((c.g - max(c.r, c.b)) * 6.0, 0.0, 1.0);
+	float warm = clamp((c.r - c.b) * 3.0 - green, 0.0, 1.0);
+	float white = smoothstep(0.62, 0.8, l) * (1.0 - warm);
+	float grey = clamp(1.0 - green - warm - white, 0.0, 1.0);
+	float f = 0.0;
+	if (green > 0.0) f += grass_fine(p) * green;
+	if (warm > 0.0) f += sand_fine(p) * warm;
+	if (white > 0.0) f += snow_fine(p) * white;
+	if (grey > 0.0) f += rock_fine(p) * grey;
+	return f;
+}
+
 varying vec2 g;
 varying vec3 wpos;
 
@@ -193,6 +238,24 @@ void fragment() {
 	col *= mix(1.0, clamp(gain, 0.4, 1.8), GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)));
 	if (has_relief) {
 		col *= texture(relief, (g + 0.5) / grid_n).r + 0.5;
+	}
+	{                                    // wide patches, the fine detail up close, rock on the slopes
+		float mac = detail_noised(wpos.xz * 0.018 + 3.1).x * 0.65 + detail_noised(wpos.xz * 0.006 + 7.7).x * 0.35;
+		float mv = clamp((mac - 0.5) * 2.0, -1.0, 1.0);
+		col *= 1.0 + mv * macro_amount;
+		col *= mix(vec3(1.0), vec3(1.05, 1.0, 0.93), clamp(mv, 0.0, 1.0) * macro_amount * 2.0);
+		float near = 1.0 - smoothstep(4.0, 40.0, length(CAMERA_POSITION_WORLD - wpos));
+		if (near > 0.0) {
+			col *= 1.0 + ground_fine(wpos.xz, col) * fine_amount * 2.0 * near * (1.0 - wl);
+		}
+		vec3 nwg = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+		float steep = 1.0 - smoothstep(0.55, 0.85, nwg.y);
+		float lc = dot(col, vec3(0.3, 0.59, 0.11));
+		col = mix(col, vec3(lc) * vec3(0.95, 0.93, 0.9) * 0.78, steep * slope_rock * (1.0 - wl));
+		if (sparkle > 0.0 && near > 0.0) {
+			float h = detail_hash(floor(wpos.xz * 40.0) + 0.37);
+			EMISSION += vec3(1.0, 0.98, 0.95) * step(0.996, h) * sparkle * near * near;
+		}
 	}
 	ALBEDO = col;
 	ROUGHNESS = 1.0;

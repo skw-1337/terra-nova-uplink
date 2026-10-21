@@ -120,6 +120,23 @@ const LIVE_FOG_MAX := 0.65      # (never a wall: 65 % at the most)
 const LIVE_SHADOW := 70.0       # live mode: the objects' shadows up to there (the ground casts none)
 const LIVE_SATURATION := 1.4    # the 3D's colours (the sky and the water take it back: their "desat")
 const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
+# live mode: each planet's ambiance over that look (its RESPLNTn file; a storm sky, SKY0S, changes its planet's):
+# depth fog (begin, end, its most), its colour (the sky's haze mixed with a tint), the sun's colour and light, the
+# sky's share of the ambient light, saturation, contrast, brightness; sparkle: snow crystals catching the light
+const PLANET_LOOK := {
+	"RESPLNT0.RES": {"fog": [35.0, 320.0, 0.6], "tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
+		"sun": Color(1.0, 0.94, 0.82), "light": 0.82, "ambient": 0.3, "sat": 1.45, "contrast": 1.03},
+	"RESPLNT1.RES": {"fog": [15.0, 180.0, 0.8], "tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.5,        # ice
+		"sun": Color(0.86, 0.93, 1.0), "light": 0.8, "ambient": 0.4, "sat": 1.2, "contrast": 1.08, "sparkle": 1.2},
+	"RESPLNT2.RES": {"fog": [20.0, 260.0, 0.75], "tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
+		"sun": Color(1.0, 0.87, 0.68), "light": 0.95, "ambient": 0.24, "sat": 1.3, "contrast": 1.1},
+	"RESPLNT3.RES": {"fog": [25.0, 240.0, 0.7], "tint": Color(0.42, 0.32, 0.45), "tint_mix": 0.55,       # dusk
+		"sun": Color(1.0, 0.72, 0.62), "light": 0.62, "ambient": 0.22, "sat": 1.25, "contrast": 1.1},
+	"RESPLNT4.RES": {"fog": [25.0, 250.0, 0.7], "tint": Color(0.18, 0.24, 0.36), "tint_mix": 0.6,        # night
+		"sun": Color(0.62, 0.74, 1.0), "light": 0.42, "ambient": 0.1, "sat": 1.0, "contrast": 1.12, "bright": 0.72},
+	"SKY0S.RES": {"fog": [20.0, 220.0, 0.78], "tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
+		"sun": Color(0.82, 0.86, 0.92), "light": 0.5, "ambient": 0.36, "sat": 1.15, "contrast": 0.98},
+}
 const VIEW_CENTRE := 0.51        # the view's centre (the crosshair, screen row 144) in the 3D window, measured on lock boxes
 var hud := false
 var hud_udp: PacketPeerUDP
@@ -521,6 +538,8 @@ func _load(index: int) -> void:
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
 	pal_key = m["planet"]
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
+	if live:
+		planet_look(m["planet"], mis.get("sky", ""))
 	var nveg := _add_vegetation(m)
 	var counts := {}
 	live_nodes.clear()
@@ -868,6 +887,28 @@ func _sky_to(sm: ShaderMaterial) -> void:
 # Old school off (F12, and the map viewer): the modern sky and water (sky_common.gdshaderinc); on: the game's.
 func _is_modern() -> bool:
 	return oldschool_rect == null or not oldschool_rect.visible
+
+
+# The planet's ambiance (PLANET_LOOK) over the live look, once per map, after its sky (whose haze the fog starts from).
+# Also called by the lab, for the map viewer.
+func planet_look(planet: String, sky_file: String) -> void:
+	var a: Dictionary = PLANET_LOOK.get(sky_file.get_file().to_upper(), PLANET_LOOK.get(planet.to_upper(), {}))
+	var fog: Array = a.get("fog", [LIVE_FOG_BEGIN, LIVE_FOG_END, LIVE_FOG_MAX])
+	env.fog_depth_begin = fog[0]
+	env.fog_depth_end = fog[1]
+	env.fog_density = fog[2]
+	env.fog_light_color = env.fog_light_color.lerp(a.get("tint", Color.WHITE), a.get("tint_mix", 0.0))
+	sun.light_color = a.get("sun", Color.WHITE)
+	sun.light_energy = a.get("light", LIVE_LIGHT)
+	env.ambient_light_sky_contribution = a.get("ambient", LIVE_AMBIENT)
+	env.adjustment_saturation = a.get("sat", LIVE_SATURATION)
+	env.adjustment_contrast = a.get("contrast", 1.0)
+	env.adjustment_brightness = a.get("bright", 1.0)
+	for sm in ground_mats:
+		sm.set_shader_parameter("sparkle", a.get("sparkle", 0.0))
+	if env_nofog_cache != null:                   # the coop's maps: the same colours
+		for p in ["ambient_light_sky_contribution", "adjustment_saturation", "adjustment_contrast", "adjustment_brightness"]:
+			env_nofog_cache.set(p, env.get(p))
 
 
 func _apply_look() -> void:

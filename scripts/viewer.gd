@@ -898,6 +898,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
 			top = md["height"]
+			if md["params"] > 0:
+				mi.set_meta("art_ref", ref)              # articulated parts: posed by the live game (_live_arts)
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
@@ -1884,6 +1886,8 @@ func _live_units(pk: PackedByteArray) -> void:
 			joints[pk.decode_s32(jo)] = jp
 			feet[pk.decode_s32(jo)] = pk.decode_float(jo + 4)
 			jo += 200
+		if pk.size() >= jo + 4:
+			_live_arts(pk, jo)
 	var mis: Array = current["mission"]["entities"]
 	if live_off < 0:
 		var best_n := 0
@@ -2072,6 +2076,30 @@ func _sub_views(q: PackedByteArray) -> void:
 		if not on and sv["node"] != null:
 			_sub_hide(sv["node"], false)
 			sv["node"] = null
+
+
+# The objects' articulated parts (the dropship's door, turrets): after the joints, a count then for each object its
+# game index and the two angle words the game draws it with (65536 = a full turn). Its mesh is rebuilt when they
+# change, to 1/256 of a turn (the models are cached by pose).
+func _live_arts(pk: PackedByteArray, at: int) -> void:
+	var na := pk.decode_s32(at)
+	for k in na:
+		var o := at + 4 + 8 * k
+		if o + 8 > pk.size():
+			break
+		var mi := _live_node(pk.decode_s32(o)) as MeshInstance3D
+		if mi == null or not mi.has_meta("art_ref"):
+			continue
+		var pr := PackedByteArray()
+		pr.resize(8)
+		pr.encode_u16(0, pk.decode_u16(o + 4) & 0xFF00)
+		pr.encode_u16(4, pk.decode_u16(o + 6) & 0xFF00)
+		if mi.get_meta("art_pose", PackedByteArray()) == pr:
+			continue
+		mi.set_meta("art_pose", pr)
+		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr)
+		if not md.is_empty():
+			mi.mesh = md["mesh"]
 
 
 func _live_node(idx: int) -> Node3D:

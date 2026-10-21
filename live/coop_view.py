@@ -12,6 +12,8 @@
 #       with a part lost is skipped.
 #   VDC decor (reliable): u32 seq, u8 reset (1 = clear the table first), u16 n, entity records, u16 n, indices gone.
 #       Decor = class 0 / 4 entities unchanged for STILL s: sent once, then only when they change.
+# VKF and VDL end with the articulated parts' angles (the dropship's door): u16 n, then u16 index, u16 angle, u16 angle
+# (all of them each time: a handful of objects). Older guests stop reading before them.
 # Entity record: u16 index, u8 flags, then (RAW) the view's 28 bytes, or u8 class, u8 type, position (int16 x, y, z
 # in POS_STEP around POS_ORIGIN, or POS_F32: 3 float32), heading (u16 = the game's own angle word, or HEAD_F32:
 # float32: dust and armour debris carry a number there). Joint record: u16 index, u8 flags, float32 feet height,
@@ -32,7 +34,8 @@ MAX_PACKET = 1200                  # Steam P2P: the biggest unreliable packet
 
 
 def parse(view):
-    """The view packet -> (camera 32 bytes, {index: 28 bytes}, {index: 196 bytes}), in the packet's order."""
+    """The view packet -> (camera 32 bytes, {index: 28 bytes}, {index: 196 bytes}, articulated parts as in VKF), in
+    the packet's order."""
     n = struct.unpack_from('<i', view, 24)[0]
     ents = {}
     for k in range(n):
@@ -43,14 +46,24 @@ def parse(view):
     for k in range(struct.unpack_from('<i', view, jo)[0] if len(view) >= jo + 4 else 0):
         o = jo + 4 + 200 * k
         joints[struct.unpack_from('<i', view, o)[0]] = view[o + 4:o + 200]
-    return view[:32], ents, joints
+    ao = jo + 4 + 200 * len(joints)
+    arts = []
+    if len(view) >= ao + 4:
+        for k in range(struct.unpack_from('<i', view, ao)[0]):
+            i, a0, a1 = struct.unpack_from('<iHH', view, ao + 4 + 8 * k)
+            if 0 <= i < 65536:
+                arts.append(struct.pack('<3H', i, a0, a1))
+    return view[:32], ents, joints, struct.pack('<H', len(arts)) + b''.join(arts)
 
 
-def build(cam, ents, joints):
+def build(cam, ents, joints, arts=b''):
     """parse() backwards, indices in order (the host sends them in table order)."""
+    n = struct.unpack_from('<H', arts)[0] if len(arts) >= 2 else 0
     return (cam[:24] + struct.pack('<i', len(ents)) + cam[28:32] +
             b''.join(struct.pack('<i', i) + ents[i] for i in sorted(ents)) +
-            struct.pack('<i', len(joints)) + b''.join(struct.pack('<i', i) + joints[i] for i in sorted(joints)))
+            struct.pack('<i', len(joints)) + b''.join(struct.pack('<i', i) + joints[i] for i in sorted(joints)) +
+            (struct.pack('<i', n) + b''.join(struct.pack('<iHH', *struct.unpack_from('<3H', arts, 2 + 6 * k))
+                                             for k in range(n)) if n else b''))
 
 
 def f32(v):
@@ -142,7 +155,7 @@ class Encoder:
         self.reset = True
 
     def encode(self, view, t):
-        cam, ents, joints = parse(view)
+        cam, ents, joints, arts = parse(view)
         recs = {i: q_ent(i, r) for i, r in ents.items() if 0 <= i < 65536}
         jrecs = {i: q_joint(i, r) for i, r in joints.items() if 0 <= i < 65536}
         decor = {}
@@ -174,14 +187,14 @@ class Encoder:
             self.kf = (self.kf_seq, t, dyn, jrecs)
             out.append(b'VKF' + zlib.compress(struct.pack('<HI', self.kf_seq, self.decor_seq) + cam +
                                               _list([dyn[i] for i in sorted(dyn)]) +
-                                              _list([jrecs[i] for i in sorted(jrecs)]), LEVEL))
+                                              _list([jrecs[i] for i in sorted(jrecs)]) + arts, LEVEL))
         else:
             seq, _, kd, kj = self.kf
             z = zlib.compress(
                 struct.pack('<H', seq) + cam +
                 _list([r for i, r in sorted(dyn.items()) if kd.get(i) != r]) + _gone([i for i in kd if i not in dyn]) +
-                _list([r for i, r in sorted(jrecs.items()) if kj.get(i) != r]) + _gone([i for i in kj if i not in jrecs]),
-                LEVEL)
+                _list([r for i, r in sorted(jrecs.items()) if kj.get(i) != r]) + _gone([i for i in kj if i not in jrecs]) +
+                arts, LEVEL)
             if 3 + len(z) <= MAX_PACKET:
                 out.append(b'VDL' + z)
             else:
@@ -236,9 +249,9 @@ class Decoder:
                 self.decor_ok = False
             cam, ents, joints = b[6:38], {}, {}
             o = self._records(b, 38, ents, d_ent)
-            self._records(b, o, joints, d_joint)
+            o = self._records(b, o, joints, d_joint)
             self.kf = (seq, ents, joints)
-            return build(cam, {**self.decor, **ents}, joints) if self.decor_ok else None
+            return build(cam, {**self.decor, **ents}, joints, b[o:]) if self.decor_ok else None
         if tag == b'VDL':
             seq = struct.unpack_from('<H', b)[0]
             if self.kf is None or self.kf[0] != seq or not self.decor_ok:
@@ -249,9 +262,10 @@ class Decoder:
             for i in gone:
                 ents.pop(i, None)
             o = self._records(b, o, joints, d_joint)
-            for i in self._gone(b, o)[0]:
+            gone, o = self._gone(b, o)
+            for i in gone:
                 joints.pop(i, None)
-            return build(cam, {**self.decor, **ents}, joints)
+            return build(cam, {**self.decor, **ents}, joints, b[o:])
         return None
 
     @staticmethod

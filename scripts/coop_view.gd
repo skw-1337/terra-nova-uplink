@@ -77,10 +77,10 @@ func feed(msg: PackedByteArray) -> PackedByteArray:
 		kf_ents = {}
 		kf_joints = {}
 		var o := _records(b, 38, kf_ents, false)
-		_records(b, o, kf_joints, true)
+		o = _records(b, o, kf_joints, true)
 		if not decor_ok:
 			return none
-		return _build(b.slice(6, 38), kf_ents, kf_joints)
+		return _build(b.slice(6, 38), kf_ents, kf_joints, b.slice(o))
 	if tag == "VDL":
 		if b.decode_u16(0) != kf_seq or not decor_ok:
 			return none
@@ -92,9 +92,10 @@ func feed(msg: PackedByteArray) -> PackedByteArray:
 			ents.erase(i)
 		o += 2 + 2 * gone.size()
 		o = _records(b, o, joints, true)
-		for i in _gone(b, o):
+		var jgone := _gone(b, o)
+		for i in jgone:
 			joints.erase(i)
-		return _build(b.slice(2, 34), ents, joints)
+		return _build(b.slice(2, 34), ents, joints, b.slice(o + 2 + 2 * jgone.size()))
 	return none
 
 
@@ -154,8 +155,9 @@ func _gone(b: PackedByteArray, o: int) -> Array[int]:
 	return out
 
 
-# camera, then the decor and the keyframe / delta entities (these win) and the joints, indices in order
-func _build(cam: PackedByteArray, ents: Dictionary, joints: Dictionary) -> PackedByteArray:
+# camera, then the decor and the keyframe / delta entities (these win), the joints, indices in order, and the
+# articulated parts' angles (arts: u16 n, then u16 index, u16, u16; empty from an older host)
+func _build(cam: PackedByteArray, ents: Dictionary, joints: Dictionary, arts := PackedByteArray()) -> PackedByteArray:
 	var all := decor.duplicate()
 	all.merge(ents, true)
 	var keys := all.keys()
@@ -172,4 +174,14 @@ func _build(cam: PackedByteArray, ents: Dictionary, joints: Dictionary) -> Packe
 	pk.append_array(n)
 	for i in jk:
 		pk.append_array(joints[i])
+	var na := arts.decode_u16(0) if arts.size() >= 2 else 0
+	if na > 0 and arts.size() >= 2 + 6 * na:
+		var a := PackedByteArray()
+		a.resize(4 + 8 * na)
+		a.encode_s32(0, na)
+		for k in na:
+			a.encode_s32(4 + 8 * k, arts.decode_u16(2 + 6 * k))
+			a.encode_u16(8 + 8 * k, arts.decode_u16(4 + 6 * k))
+			a.encode_u16(10 + 8 * k, arts.decode_u16(6 + 6 * k))
+		pk.append_array(a)
 	return pk

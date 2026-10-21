@@ -31,7 +31,12 @@ print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage ca
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
-LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
+LOURDES = {2, 5, 20, 23}
+# pieces articulees (porte du vaisseau, tourelles) : le jeu passe a son interpreteur de modeles deux mots de la fiche de
+# l'objet (routine 0x293AA0 de l'exe anglais), fiche n = mot a +3 de l'entree : (debut, pas, decalage des deux mots)
+FICHES_ART = {c: (b + (0xB0 if FR else 0), p, d) for c, (b, p, d) in
+              {2: (0x3A19E8, 0x128, 0x124), 3: (0x39E590, 0x14F, 0x14B), 4: (0x39C750, 0x79, 0x70)}.items()}
+arts_vus = set()                              # objets deja envoyes avec un angle (envoyes ensuite meme revenus a 0)                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
 joints_prev = {}                          # entite -> (articulations brutes, x, y) du tour precedent
 print('exe %s' % ('francais' if FR else 'anglais'))
 
@@ -782,6 +787,23 @@ while True:
         sg = 1 if q[9][2] > q[8][2] else -1
         sol = min(w[2] * sg for w in q[:4])
         joints.append(struct.pack('<if48f', i, sol * sg, *[c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]))
+    arts = []
+    fiches = {c: [] for c in FICHES_ART}
+    for i in range(NENT):
+        o = 0x25 * i
+        if tab[o] and tab[o + 1] in FICHES_ART:
+            nf = struct.unpack_from('<H', tab, o + 3)[0]
+            if nf < 256: fiches[tab[o + 1]].append((i, nf))
+    for c, lst in fiches.items():
+        if not lst: continue
+        b, p, d = FICHES_ART[c]
+        top = max(nf for _, nf in lst)
+        raw = g.read(b, p * top + d + 4)               # toutes les fiches de la classe d'un coup
+        for i, nf in lst:
+            a0, a1 = struct.unpack_from('<HH', raw, p * nf + d)
+            if a0 or a1 or i in arts_vus:
+                arts_vus.add(i)
+                arts.append(struct.pack('<iHH', i, a0, a1))
     for _ in range(24):                   # vues annexes : leur point de vue, pris pendant leur dessin
         vp = g.read(VUEPT, 0x68)
         vx, vy, vz = (v / 65536 for v in struct.unpack_from('<3i', vp, 0))
@@ -822,9 +844,9 @@ while True:
         s.sendto(b'SUBV' + bytes([0]), ('127.0.0.1', 47821))
     cam = (x, y, z + EYE, head, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
-    s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints),
-             ('127.0.0.1', 47821))
-    if guest: guest.step(body, joints)
+    s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
+             struct.pack('<i', len(arts)) + b''.join(arts), ('127.0.0.1', 47821))
+    if guest: guest.step(body, joints, arts)
     if '--once' in sys.argv or n % int(HZ * 2) == 0:
         print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
         if '--once' in sys.argv: break

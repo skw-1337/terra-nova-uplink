@@ -116,15 +116,20 @@ class Mission:
                     sw = math.sin(ph + j * 0.7) * 0.18 if e[7]['walk'] else 0.0
                     pts += [((j % 4) - 1.5) * 0.08, 0.1 * j + 0.02 * math.cos(ph * 2) * e[7]['walk'], sw]
                 joints.append(struct.pack('<if48f', i, e[5], *pts))
-        return cam[:24] + struct.pack('<i', len(body)) + cam[28:] + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints)
+        door = int(self.t * 9000) & 0xffff                     # an articulated part turning (the dropship's door)
+        arts = struct.pack('<iiHH', 1, 5, door, 0)
+        return (cam[:24] + struct.pack('<i', len(body)) + cam[28:] + b''.join(body) + struct.pack('<i', len(joints)) +
+                b''.join(joints) + arts)
 
 
 def same(a, b):
     """The rebuilt view b is the host's view a, to the quantization: '' if so, else what differs."""
-    ca, ea, ja = cv.parse(a)
-    cb, eb, jb = cv.parse(b)
+    ca, ea, ja, aa = cv.parse(a)
+    cb, eb, jb, ab = cv.parse(b)
     if ca[:24] != cb[:24] or ca[28:] != cb[28:]:
         return 'camera'
+    if aa != ab:
+        return 'articulated parts'
     if list(ea) != list(eb) or list(ja) != list(jb):
         return 'indices %s / %s, joints %s / %s' % (sorted(set(ea) ^ set(eb))[:8], len(eb), sorted(set(ja) ^ set(jb))[:8], len(jb))
     pt = cv.POS_STEP / 2 + 1e-4

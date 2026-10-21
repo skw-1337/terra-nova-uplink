@@ -421,7 +421,7 @@ class Guest:
         if len(pk) < 60000:
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
-    def step(self, body, joints):
+    def step(self, body, joints, arts=()):
         g, M = self.g, self.master
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
@@ -466,7 +466,8 @@ class Guest:
             ex, ey, ez = (self.i32(M + me * 0x25 + o) / 65536 for o in (0x0F, 0x13, 0x17))
             eh = self.u16(M + me * 0x25 + 0x1B) / 65536 * 2 * math.pi
             self.send(struct.pack('<6f2i', ex, ey, ez + self.eye, eh, 0.0, self.fov_now(), len(body), me) +
-                      b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
+                      b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
+                      struct.pack('<i', len(arts)) + b''.join(arts))
             return
         eg = M + self.gid * 0x25
         k = lambda sc: 1 if sc in self.keys else 0
@@ -534,7 +535,8 @@ class Guest:
                 # after the index: the height of the feet in the world (the game's entity height minus its 0.12)
                 joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
         view = (struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
-                b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints))
+                b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
+                struct.pack('<i', len(arts)) + b''.join(arts))
         self.send(view)
 
     def resync(self, pk):

@@ -991,6 +991,7 @@ while True:
         if nuages or fumee_prev:
             s.sendto(b'SMKC' + bytes([len(nuages)]) + b''.join(nuages), ('127.0.0.1', 47821))
         fumee_prev = bool(nuages)
+        if guest: guest.smoke(nuages)          # (the coop guest's window too)
     if '--once' in sys.argv or n % int(HZ * 2) == 0:
         print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
         if '--once' in sys.argv: break

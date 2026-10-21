@@ -325,6 +325,12 @@ func _read(ch: int) -> void:
 				if vp and mf != msn_want and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
 					msn_want = mf                           # once: not again every 2 s while it loads
 					vp._load_by_label(mf)
+			elif tag == "SMK" and data.size() > 3:           # smoke grenades' clouds (coop_guest.py smoke)
+				var sb := data.slice(3).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
+				if sb.size() > 0:
+					var full := "SMKC".to_ascii_buffer()
+					full.append_array(sb)
+					udp_out.put_packet(full)               # to the viewer, as the bridge sends it
 			elif tag == "VKF" or tag == "VDL" or tag == "VDP" or tag == "VDC":
 				var full: PackedByteArray = view.feed(data)
 				if full.size() > 0:

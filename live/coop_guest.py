@@ -112,6 +112,7 @@ class Guest:
         # fights the host (his shots come from the enemy side, so they hurt); his "squad" is the enemy suits
         self.versus = versus or bool(os.environ.get('TN_COOP_VERSUS'))
         self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
+        self.smoke_t, self.smoke_on = 0.0, False
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
         self.fov_now, self.s = fov_now, sock
@@ -610,6 +611,27 @@ class Guest:
                 self.pad_lock = bool(f & 4)
                 self.rpad_t = time.time()
         return turn
+
+    def smoke(self, clouds):
+        """Smoke grenades' clouds (live_bridge.py fumees) for the guest's window: at most 40 particles a cloud. Local:
+        'SMKC' as the bridge sends it, 20 a second. Online: 'SMK' + zlib, 5 a second (his viewer keeps the screen
+        thick by itself between them); one empty message when they are over."""
+        if not clouds and not self.smoke_on:
+            return
+        now = time.time()
+        if self.remote and clouds and now - self.smoke_t < 0.2:
+            return
+        self.smoke_t, self.smoke_on = now, bool(clouds)
+        out = []
+        for c in clouds:
+            n = struct.unpack_from('<H', c, 16)[0]
+            keep = range(0, n, max(1, -(-n // 40)))
+            out.append(c[:16] + struct.pack('<H', len(keep)) + b''.join(c[18 + 14 * k:32 + 14 * k] for k in keep))
+        body = bytes([len(out)]) + b''.join(out)
+        if self.remote:
+            self.s.sendto(b'SMK' + zlib.compress(body, 6), ('127.0.0.1', REMOTE_VIEW))
+        else:
+            self.s.sendto(b'SMKC' + body, ('127.0.0.1', LIVE_PORT))
 
     def send(self, view):
         if not self.remote:

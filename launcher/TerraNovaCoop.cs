@@ -188,7 +188,7 @@ static class Coop
         op.Controls.Add(savesBtn);
         LoadOptions();
 
-        string[] names = { "Uplink (coop)", "Godot " + GODOT_VER, "TN+ Coop (host)", "Python (host)" };
+        string[] names = { "Uplink", "Godot " + GODOT_VER, "TN+ Coop (host)", "Python (host)" };
         checks = new Label[names.Length];
         for (int i = 0; i < names.Length; i++)
         {
@@ -1006,7 +1006,7 @@ static class Coop
         string up = Get(heads, UPLINK_REPO);
         if (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha")))
         {
-            Status("Downloading Uplink (coop)...", CAmber);
+            Status("Downloading Uplink...", CAmber);
             Repo(UPLINK_REPO, UplinkDir);
             if (up != null) Set("uplink_sha", up);
             SaveCfg();

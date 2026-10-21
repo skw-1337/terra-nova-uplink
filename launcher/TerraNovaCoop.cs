@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.14";
+    const string VERSION = "0.15";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -514,7 +514,7 @@ static class Coop
     {
         IntPtr up = IntPtr.Zero;
         foreach (Process g in Process.GetProcesses())
-            try { if (g.ProcessName.StartsWith("Godot") && g.MainWindowHandle != IntPtr.Zero) { up = g.MainWindowHandle; break; } } catch { }
+            try { if (g.ProcessName.StartsWith("Godot") && g.MainWindowHandle != IntPtr.Zero && Ours(g, UplinkDir)) { up = g.MainWindowHandle; break; } } catch { }
         if (up == IntPtr.Zero) return;
         WRect ur;
         if (!GetWindowRect(up, out ur)) return;
@@ -525,7 +525,7 @@ static class Coop
             {
                 d.Refresh();
                 IntPtr h = d.MainWindowHandle;
-                if (h == IntPtr.Zero || GetForegroundWindow() == h) continue;
+                if (h == IntPtr.Zero || GetForegroundWindow() == h || !Ours(d, TnpDir)) continue;
                 WRect r;
                 GetWindowRect(h, out r);
                 bool iconic = IsIconic(h);
@@ -539,11 +539,33 @@ static class Coop
             catch { }
     }
 
+    // only what this launcher started: its DOSBox (our conf, in tnplus\) and its Uplink (in uplink\). Another DOSBox
+    // game or another Uplink open on the PC is left where it is. Looked up once per process
+    static Dictionary<string, bool> ours = new Dictionary<string, bool>();
+
+    static bool Ours(Process p, string dir)
+    {
+        bool b;
+        string key = p.Id + "|" + dir;
+        if (ours.TryGetValue(key, out b)) return b;
+        try
+        {
+            using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + p.Id))
+                foreach (ManagementObject o in s.Get())
+                    b = ((string)o["CommandLine"] ?? "").IndexOf(dir, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch { return false; }
+        return ours[key] = b;
+    }
+
     static Process Bridge()
     {
         Dictionary<string, string> env = Env();
         env["PYTHONIOENCODING"] = "utf-8";
         env["PYTHONUNBUFFERED"] = "1";
+        // the game this launcher started: with another DOSBox open too, the bridge would not know which one to read
+        Proc game = Procs().Find(p => p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0);
+        if (game != null) env["TNRE_PID"] = game.Id.ToString();
         return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") + "\" --launch --hud --play --guest-remote --fov 91.5 --res " +
             Cfg("window") + (Cfg("mode") == "versus" ? " --versus" : ""), UplinkDir, env, true);
     }

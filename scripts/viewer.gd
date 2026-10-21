@@ -40,6 +40,7 @@ var objects = TNObjects.new()
 var objects_ok := false
 var pal := PackedColorArray()   # 256-color palette of the current planet
 var pal_key := ""
+var pal_first := 17           # the old school's first palette colour (1 on a planet whose ground uses colours 1-16)
 var world: Node3D
 var camera: Camera3D
 var ui: CanvasLayer
@@ -127,8 +128,9 @@ const PLANET_LOOK := {
 		"sun": Color(0.86, 0.93, 1.0), "light": 0.8, "ambient": 0.4, "sat": 1.2, "contrast": 1.08, "sparkle": 1.2},
 	"RESPLNT2.RES": {"fog": [20.0, 260.0, 0.75], "tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
 		"sun": Color(1.0, 0.87, 0.68), "light": 0.95, "ambient": 0.24, "sat": 1.3, "contrast": 1.1},
-	"RESPLNT3.RES": {"fog": [25.0, 240.0, 0.7], "tint": Color(0.42, 0.32, 0.45), "tint_mix": 0.55,       # dusk
-		"sun": Color(1.0, 0.72, 0.62), "light": 0.62, "ambient": 0.22, "sat": 1.25, "contrast": 1.1},
+	"RESPLNT3.RES": {"fog": [25.0, 240.0, 0.7], "tint": Color(0.1, 0.12, 0.1), "tint_mix": 0.6,          # meteor:
+		"sun": Color(0.82, 1.0, 0.84), "light": 0.62, "ambient": 0.2, "sat": 1.3, "contrast": 1.08},       # dark teal
+
 	"RESPLNT4.RES": {"fog": [25.0, 250.0, 0.7], "tint": Color(0.18, 0.24, 0.36), "tint_mix": 0.6,        # night
 		"sun": Color(0.62, 0.74, 1.0), "light": 0.42, "ambient": 0.1, "sat": 1.0, "contrast": 1.12, "bright": 0.72},
 	"SKY0S.RES": {"fog": [20.0, 220.0, 0.78], "tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
@@ -469,9 +471,10 @@ func _load(index: int) -> void:
 	var det_mat: Material = mats["terrain"]
 	var out_mat: Material = mats["terrain"]
 	if pl["ok"]:                          # real ground textures (else: average colors)
-		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0)
+		var flat := _flat_tiles([m["detail"], m["outer"]])
+		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0, flat)
 		if not m["outer"].is_empty():
-			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0)
+			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0, flat)
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
@@ -491,6 +494,7 @@ func _load(index: int) -> void:
 		# river banks, wider than the game's river (its tiles, with their own far colour, are the game's water)
 		world.add_child(plane)
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
+	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	if live:
@@ -740,7 +744,35 @@ func _load_gallery() -> void:
 		_screenshot(args[sh + 1])
 
 
-func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float) -> ShaderMaterial:
+# Share of each tile's cells lying flat on a map (corners within 0.1 unit; the detail and the outer grid, a sea can be
+# only in the outer one): water lies flat (95-100 %), a bluish ground covering the hills does not (planet 3's teal:
+# 5-11 %, taken for water it was a white mirror). -1: too few cells to tell (a water tile on 21 shore cells, 14 %).
+func _flat_tiles(grids: Array) -> PackedFloat32Array:
+	var all := PackedInt32Array()
+	all.resize(256)
+	var flat := PackedInt32Array()
+	flat.resize(256)
+	for grid in grids:
+		if grid.is_empty():
+			continue
+		var tiles: PackedByteArray = grid["tile"]
+		var h: PackedFloat32Array = grid["h"]
+		var n: int = grid["n"]
+		for y in n - 1:
+			for x in n - 1:
+				var i := y * n + x
+				var t := tiles[i]
+				all[t] += 1
+				if maxf(maxf(absf(h[i + 1] - h[i]), absf(h[i + n] - h[i])), absf(h[i + n + 1] - h[i])) <= 0.1:
+					flat[t] += 1
+	var out := PackedFloat32Array()
+	out.resize(64)
+	for t in 64:
+		out[t] = float(flat[t]) / all[t] if all[t] >= 100 else -1.0
+	return out
+
+
+func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float, flat: PackedFloat32Array) -> ShaderMaterial:
 	var sm := ShaderMaterial.new()
 	sm.shader = GROUND
 	sm.set_shader_parameter("tiles", pl["textures"])
@@ -759,7 +791,8 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	for i in mini(64, tc.size()):
 		var c := tc[i]
 		var lum := c.r * 0.3 + c.g * 0.59 + c.b * 0.11
-		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25 and (lum < 0.65 or c.b - maxf(c.r, c.g) > 0.15):
+		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25 and (lum < 0.65 or c.b - maxf(c.r, c.g) > 0.15) and \
+				(flat[i] < 0.0 or flat[i] >= 0.5):
 			wt.set_pixel(i, 0, Color(1, 0, 0))
 			wsum += c
 			wn += 1
@@ -1285,6 +1318,7 @@ func _oldschool_palette() -> void:
 		for i in 256:
 			pimg.set_pixel(i, 0, pal[i])
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
+		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 		if oldschool_key == "":
 			oldschool_rect.visible = live and not ("--smooth" in OS.get_cmdline_user_args())
 			_apply_look()

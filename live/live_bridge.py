@@ -767,8 +767,8 @@ while True:
         x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
         mech = tab[o + 2] == 9                     # le mech (type 9, squelette 886) : 10 articulations, grande foulee
         used = j[:10] if mech else j
-        if not mech and i != pid:
-            figees.append(i)                          # retiree plus bas si le jeu l'anime
+        if not mech:                              # (le joueur aussi : le jeu n'anime pas sa propre armure, vue de
+            figees.append(i)                          # l'interieur ; son ombre et les vues annexes) retiree plus bas si le jeu l'anime
         if any(v == (0, 0, 0) for v in used):
             continue
         # pas affiche par le jeu : articulations pas a jour (Godot etirerait le maillage en gros bloc noir). Avant :
@@ -810,7 +810,8 @@ while True:
         joints.append(struct.pack('<if48f', i, sol * sg, *pose))
         if i in figees:
             figees.remove(i)
-            animees[i] = (tab[o + 2], pose)
+            if i != pid:                              # (la pose figee du joueur n'apprend rien)
+                animees[i] = (tab[o + 2], pose)
     # celles que le jeu anime apprennent la marche de leur type (debout seulement : pas accroupies ni a terre) ;
     # les autres la rejouent, posees sur leur entite (hauteur du jeu moins 0,12, comme ses pieds)
     now_w = time.time()

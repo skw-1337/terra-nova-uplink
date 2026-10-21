@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "1.5";
+    const string VERSION = "1.6";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "main";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string COOP_URL = "https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10";
@@ -37,6 +37,12 @@ static class Uplink
     const string GOG_ID = "1434984562";
     const string GAME_SUB = "Terra Nova Strike Force Centauri";
     static readonly string[] SIZES = { "1280x720", "1696x960", "1920x1080", "native" };
+    // campaign order (mission 1..37) -> MISSn.RES (as Uplink's tn_data.gd)
+    static readonly int[] CAMPAIGN = { 37, 38, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 10, 11, 12, 13, 34, 29, 15, 17, 16, 36,
+        14, 20, 39, 21, 35, 22, 23, 19, 24, 27, 25, 26, 30, 31 };
+    const string LAB_SAVE = "LAB Mission ";
+    // the lab shortcut (TN_LAB, scripts/lab.gd): a mission selector, to try a look on any map
+    static readonly bool LAB = Environment.GetEnvironmentVariable("TN_LAB") != null;
 
     static readonly Color CBack = Color.FromArgb(9, 17, 16), CPanel = Color.FromArgb(22, 41, 38), CField = Color.FromArgb(12, 26, 24);
     static readonly Color CText = Color.FromArgb(214, 226, 220), CDim = Color.FromArgb(122, 150, 142), CAmber = Color.FromArgb(240, 178, 48);
@@ -55,7 +61,7 @@ static class Uplink
     static Label gameLabel, statusLabel, verLabel, sensLabel;
     static Label[] checks;
     static Button playBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn;
-    static ComboBox sizeBox;
+    static ComboBox sizeBox, missionBox;
     static TrackBar sensBar;
     static CheckBox invertBox;
     static ProgressBar bar;
@@ -80,6 +86,8 @@ static class Uplink
             catch (Exception e) { Log(e.ToString()); Environment.Exit(1); }
         }
         if (args.Length > 1 && args[1] == "--report") { Report(); Environment.Exit(0); }   // the report, without the window
+        if (args.Length > 3 && args[1] == "--labsave")     // checks: the LAB save of mission N into a copy of a TNOVA folder
+        { Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
         try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
@@ -95,7 +103,8 @@ static class Uplink
     {
         form = new Form();
         form.Text = TITLE + " " + VERSION;
-        form.ClientSize = new Size(660, 640);
+        int L = LAB ? 34 : 0;                      // (the lab's mission row)
+        form.ClientSize = new Size(660, 640 + L);
         form.FormBorderStyle = FormBorderStyle.FixedSingle;
         form.MaximizeBox = false;
         form.StartPosition = FormStartPosition.CenterScreen;
@@ -139,7 +148,7 @@ static class Uplink
             ForeColor = CDim, AutoSize = true, Location = new Point(X + W - 298, 218) });
 
         // options
-        Panel op = new Panel { Location = new Point(X, 246), Size = new Size(W, 76), BackColor = CField };
+        Panel op = new Panel { Location = new Point(X, 246), Size = new Size(W, 76 + L), BackColor = CField };
         form.Controls.Add(op);
         op.Controls.Add(new Label { Text = "Uplink window", ForeColor = CDim, AutoSize = true, Location = new Point(10, 10) });
         sizeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 6), Size = new Size(146, 24),
@@ -159,41 +168,49 @@ static class Uplink
         keysBtn.Location = new Point(460, 4); keysBtn.Size = new Size(146, 28);
         keysBtn.Click += delegate { GameKeys(); };
         op.Controls.Add(keysBtn);
+        if (LAB)
+        {
+            op.Controls.Add(new Label { Text = "Mission (lab)", ForeColor = CDim, AutoSize = true, Location = new Point(10, 82) });
+            missionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 78), Size = new Size(482, 24),
+                BackColor = CPanel, ForeColor = CText, FlatStyle = FlatStyle.Flat, MaxDropDownItems = 20 };
+            op.Controls.Add(missionBox);
+            FillMissions();
+        }
         LoadOptions();
 
         string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus (live mode)", "Python (live mode)" };
         checks = new Label[names.Length];
         for (int i = 0; i < names.Length; i++)
         {
-            checks[i] = new Label { AutoSize = true, Location = new Point(X + 2 + (i % 2) * 310, 332 + (i / 2) * 21), ForeColor = CDim, Tag = names[i] };
+            checks[i] = new Label { AutoSize = true, Location = new Point(X + 2 + (i % 2) * 310, 332 + L + (i / 2) * 21), ForeColor = CDim, Tag = names[i] };
             form.Controls.Add(checks[i]);
         }
-        verLabel = new Label { AutoSize = true, Location = new Point(X + 2, 376), ForeColor = CDim };
+        verLabel = new Label { AutoSize = true, Location = new Point(X + 2, 376 + L), ForeColor = CDim };
         form.Controls.Add(verLabel);
 
-        statusLabel = new Label { Location = new Point(X, 400), Size = new Size(W, 42), ForeColor = CAmber, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
+        statusLabel = new Label { Location = new Point(X, 400 + L), Size = new Size(W, 42), ForeColor = CAmber, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
         form.Controls.Add(statusLabel);
-        bar = new ProgressBar { Location = new Point(X, 444), Size = new Size(W, 8), Style = ProgressBarStyle.Continuous };
+        bar = new ProgressBar { Location = new Point(X, 444 + L), Size = new Size(W, 8), Style = ProgressBarStyle.Continuous };
         form.Controls.Add(bar);
-        logBox = new TextBox { Location = new Point(X, 458), Size = new Size(W, 116), Multiline = true, ReadOnly = true,
+        logBox = new TextBox { Location = new Point(X, 458 + L), Size = new Size(W, 116), Multiline = true, ReadOnly = true,
             ScrollBars = ScrollBars.Vertical, BackColor = CField, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
         form.Controls.Add(logBox);
 
         reportBtn = Flat("Report a bug", CPanel);
-        reportBtn.Location = new Point(X + W - 270, 586); reportBtn.Size = new Size(160, 32);
+        reportBtn.Location = new Point(X + W - 270, 586 + L); reportBtn.Size = new Size(160, 32);
         reportBtn.Click += delegate { Report(); };
         form.Controls.Add(reportBtn);
         stopBtn = Flat("Stop", CPanel);
-        stopBtn.Location = new Point(X + W - 100, 586); stopBtn.Size = new Size(100, 32);
+        stopBtn.Location = new Point(X + W - 100, 586 + L); stopBtn.Size = new Size(100, 32);
         stopBtn.Click += delegate { new Thread(StopAll) { IsBackground = true }.Start(); };
         form.Controls.Add(stopBtn);
         LinkLabel co = new LinkLabel { Text = "Playing with a friend? Get Terra Nova Coop",
-            AutoSize = true, Location = new Point(X, 584), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
+            AutoSize = true, Location = new Point(X, 584 + L), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
         co.LinkArea = new LinkArea(co.Text.IndexOf("Terra Nova Coop"), 15);
         co.LinkClicked += delegate { try { Process.Start(COOP_URL); } catch { } };
         form.Controls.Add(co);
         LinkLabel dc = new LinkLabel { Text = "Help, bugs: Discord",
-            AutoSize = true, Location = new Point(X, 603), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
+            AutoSize = true, Location = new Point(X, 603 + L), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
         dc.LinkArea = new LinkArea(dc.Text.IndexOf("Discord"), 7);
         dc.LinkClicked += delegate { try { Process.Start(DISCORD); } catch { } };
         form.Controls.Add(dc);
@@ -285,6 +302,9 @@ static class Uplink
             Math.Max(2, Math.Min(30, (int)Math.Round(sens * 10))) : 10;
         sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture);
         invertBox.Checked = Cfg("invert_y") == "1";
+        int mi;
+        if (missionBox != null)
+            missionBox.SelectedIndex = int.TryParse(Cfg("lab_mission"), out mi) && mi >= 0 && mi < missionBox.Items.Count ? mi : 0;
     }
 
     static void SaveOptions()
@@ -293,6 +313,7 @@ static class Uplink
         Set("window", SIZES[Math.Max(0, sizeBox.SelectedIndex)]);
         Set("mouse", (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture));
         Set("invert_y", invertBox.Checked ? "1" : "0");
+        if (missionBox != null) Set("lab_mission", Math.Max(0, missionBox.SelectedIndex).ToString());
         SaveCfg();
     }
 
@@ -391,6 +412,13 @@ static class Uplink
         bool running;
         if (!Preflight(out running)) return;
         Process tnp = null;
+        string load = null;
+        int pick;
+        if (LAB && int.TryParse(Cfg("lab_mission"), out pick) && pick > 0)
+        {
+            load = MakeSave(Game(), pick - 1);
+            if (load == null) return;
+        }
         if (!running)
         {
             WriteTnpIni(Game());
@@ -421,7 +449,8 @@ static class Uplink
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
         }
         if (stopping || bridge == null) return;
-        Status("Uplink is open: click in its window to take the mouse, Y for the game's cursor, F12 for the old school look.", CGreen);
+        Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\"." :
+            "Uplink is open: click in its window to take the mouse, Y for the game's cursor, F12 for the old school look.", CGreen);
         int n = 0;
         while (!stopping && !bridge.HasExited)
         {
@@ -611,6 +640,164 @@ static class Uplink
         }
         lock (mine) mine.Add(p);
         return p;
+    }
+
+    // ------------------------------------------------------------------ mission selector (lab)
+    // A campaign mission is picked by a save: the most advanced one of the game (its squad, pilots and equipment) is
+    // copied into a free slot as "LAB Mission NN", its header (resource 1776: the mission's MISSn.RES and the campaign
+    // position + 3) set on the picked mission. The player loads it. (As Terra Nova Coop's.)
+    static void FillMissions()
+    {
+        missionBox.Items.Clear();
+        missionBox.Items.Add("From the game's menus (no change)");
+        string g = Game();
+        string[] names = g != null ? MissionNames(g) : null;
+        for (int i = 0; i < CAMPAIGN.Length; i++)
+        {
+            int n = CAMPAIGN[i];
+            string nm = names != null && n - 1 < names.Length && names[n - 1].Trim() != "" ? names[n - 1].Trim() : "MISS" + n;
+            missionBox.Items.Add((i + 1).ToString("00") + "   " + nm);
+        }
+    }
+
+    static string[] MissionNames(string game)
+    {
+        try
+        {
+            Res r = Res.Load(Path.Combine(game, "TNOVA", "DATA", "RESMISS.RES"));
+            List<string> l = new List<string>();
+            foreach (byte[] f in Res.Frames(r.Data(1706)))
+            {
+                int z = Array.IndexOf(f, (byte)0);
+                l.Add(Encoding.GetEncoding(850).GetString(f, 0, z < 0 ? f.Length : z));
+            }
+            return l.ToArray();
+        }
+        catch { return null; }
+    }
+
+    static string MakeSave(string game, int index)
+    {
+        string dir = Path.Combine(game, "TNOVA");
+        Res best = null;
+        int bestPos = -1, labSlot = -1, free = -1;
+        for (int slot = 1; slot <= 9; slot++)
+        {
+            string f = Path.Combine(dir, "SAVE" + slot.ToString("00") + ".RES");
+            if (!File.Exists(f)) { if (free < 0) free = slot; continue; }
+            try
+            {
+                Res r = Res.Load(f);
+                string name = Encoding.ASCII.GetString(r.Data(1775)).TrimEnd('\0');
+                if (name.StartsWith(LAB_SAVE)) { if (labSlot < 0) labSlot = slot; continue; }
+                if (name.StartsWith("COOP Mission ")) continue;
+                byte[] h = r.Data(1776);
+                int pos = BitConverter.ToInt32(h, 8);
+                if (BitConverter.ToInt32(h, 0) == 0x06EF0018 && pos > bestPos) { bestPos = pos; best = r; }
+            }
+            catch (Exception e) { Log("SAVE" + slot.ToString("00") + ": " + e.Message); }
+        }
+        if (best == null)
+        {
+            Status("To pick a mission, the game needs at least one save of yours (play the first mission and save).", CRed);
+            return null;
+        }
+        int target = labSlot > 0 ? labSlot : free;        // our own LAB slot again, else a free one: never a save of yours
+        if (target < 0)
+        {
+            Status("The 9 save slots are all used: free one in the game (or pick \"From the game's menus\").", CRed);
+            return null;
+        }
+        string label = LAB_SAVE + (index + 1).ToString("00");
+        byte[] head = (byte[])best.Data(1776).Clone();
+        Array.Copy(BitConverter.GetBytes(CAMPAIGN[index]), 0, head, 4, 4);
+        Array.Copy(BitConverter.GetBytes(index + 3), 0, head, 8, 4);
+        best.Set(1775, Encoding.ASCII.GetBytes(label + "\0"));
+        best.Set(1776, head);
+        string path = Path.Combine(dir, "SAVE" + target.ToString("00") + ".RES");
+        best.Save(path);
+        Log("mission " + (index + 1) + " (MISS" + CAMPAIGN[index] + ".RES) -> " + Path.GetFileName(path) + ", from the save at campaign position " + bestPos);
+        return label;
+    }
+
+    class Res
+    {
+        byte[] head;
+        List<int> ids = new List<int>();
+        Dictionary<int, uint[]> ab = new Dictionary<int, uint[]>();
+        Dictionary<int, byte[]> data = new Dictionary<int, byte[]>();
+
+        public static Res Load(string path)
+        {
+            byte[] d = File.ReadAllBytes(path);
+            if (Encoding.ASCII.GetString(d, 0, 14) != "LG Res File v2") throw new Exception("not an LG Res file");
+            Res r = new Res();
+            int diro = BitConverter.ToInt32(d, 0x7C);
+            int n = BitConverter.ToUInt16(d, diro), off = BitConverter.ToInt32(d, diro + 2), p = diro + 6;
+            r.head = new byte[off];
+            Array.Copy(d, r.head, off);
+            for (int i = 0; i < n; i++, p += 10)
+            {
+                int id = BitConverter.ToUInt16(d, p);
+                uint a = BitConverter.ToUInt32(d, p + 2), b = BitConverter.ToUInt32(d, p + 6);
+                int len = (int)(((a >> 24) & 1) != 0 ? b & 0xFFFFFF : a & 0xFFFFFF);
+                byte[] blk = new byte[len];
+                Array.Copy(d, off, blk, 0, len);
+                off += (len + 3) & ~3;
+                r.ids.Add(id);
+                r.ab[id] = new uint[] { a, b };
+                r.data[id] = blk;
+            }
+            return r;
+        }
+
+        public byte[] Data(int id) { return data[id]; }
+
+        public void Set(int id, byte[] d)
+        {   // a plain block (not packed, not compound)
+            uint[] x = ab[id];
+            ab[id] = new uint[] { (uint)d.Length | (x[0] & 0xFE000000), (uint)d.Length | (x[1] & 0xFF000000) };
+            data[id] = d;
+        }
+
+        public void Save(string path)
+        {
+            using (MemoryStream m = new MemoryStream())
+            {
+                m.Write(head, 0, head.Length);
+                foreach (int id in ids)
+                {
+                    m.Write(data[id], 0, data[id].Length);
+                    while (m.Length % 4 != 0) m.WriteByte(0);
+                }
+                int diro = (int)m.Length;
+                m.Write(BitConverter.GetBytes((ushort)ids.Count), 0, 2);
+                m.Write(BitConverter.GetBytes(head.Length), 0, 4);
+                foreach (int id in ids)
+                {
+                    m.Write(BitConverter.GetBytes((ushort)id), 0, 2);
+                    m.Write(BitConverter.GetBytes(ab[id][0]), 0, 4);
+                    m.Write(BitConverter.GetBytes(ab[id][1]), 0, 4);
+                }
+                byte[] o = m.ToArray();
+                Array.Copy(BitConverter.GetBytes(diro), 0, o, 0x7C, 4);
+                File.WriteAllBytes(path, o);
+            }
+        }
+
+        public static List<byte[]> Frames(byte[] d)
+        {
+            List<byte[]> l = new List<byte[]>();
+            int n = d.Length >= 2 ? BitConverter.ToUInt16(d, 0) : 0;
+            for (int k = 0; k < n; k++)
+            {
+                int a = BitConverter.ToInt32(d, 2 + 4 * k), b = BitConverter.ToInt32(d, 6 + 4 * k);
+                byte[] f = new byte[b - a];
+                Array.Copy(d, a, f, 0, b - a);
+                l.Add(f);
+            }
+            return l;
+        }
     }
 
     static void StopAll()

@@ -807,12 +807,12 @@ while True:
         marche.learn({i: v for i, v in animees.items() if max(v[1][1::3]) > 0.8 * hmax}, ou_unite, now_w)
     for i in figees:
         o = 0x25 * i
-        x, y, cap = ou_unite(i)
+        ux, uy, ucap = ou_unite(i)                 # (pas x, y : ceux de la camera, envoyes plus bas)
         # sa taille : la hauteur de sa derniere pose du jeu (articulations figees, mais a ses proportions)
         nf = struct.unpack_from('<H', tab, o + 3)[0]
         zs = [v / 65536 for v in struct.unpack('<48i', g.read(SOLDATS + nf * 0x582 + 0x1AF, 192))[2::3]] if nf <= 200 else []
         haut = max(zs) - min(zs) if zs and any(zs) else 0.0
-        p = marche.pose(i, tab[o + 2], x, y, cap, now_w, haut)
+        p = marche.pose(i, tab[o + 2], ux, uy, ucap, now_w, haut)
         if p:
             joints.append(struct.pack('<if', i, struct.unpack_from('<i', tab, o + 0x17)[0] / 65536 - 0.12) + p)
     if n % int(HZ * 5) == 0 and os.environ.get('TN_DEBUG_WALK'):

@@ -1782,6 +1782,7 @@ func _notification(what: int) -> void:
 
 
 func _live_update() -> void:
+	_smoke_linger()
 	if play and (absf(play_dx) >= 1.0 or absf(play_dy) >= 1.0):
 		var dx := clampi(int(play_dx), -32000, 32000)
 		var dy := clampi(int(play_dy), -32000, 32000)
@@ -2798,6 +2799,13 @@ const SMOKE_SIZE := 1.1                        # puff size for the game's bigges
 const SMOKE_DENSE := 1.7                       # puff opacity factor (the jetpack's: 1)
 var smoke_clouds := {}                         # game entity index -> true, the clouds of the last update
 var smoke_rng := RandomNumberGenerator.new()
+# the screen outlasts the game's cloud (half its particles gone after 4 s, all of them at ~17-20 s, too short): puffs
+# filling the same volume, thick for smoke_hold s, thinning out over smoke_fade s (vars: the lab can tune them)
+var smoke_hold := 25.0
+var smoke_fade := 15.0
+var smoke_screens := {}                        # game entity index -> [centre, start msec]
+var smoke_counts := {}                         # game entity index -> its particles in the last update
+var smoke_linger_t := 0
 
 
 func _smoke_packet_ok(q: PackedByteArray) -> bool:
@@ -2811,12 +2819,16 @@ func _smoke_packet_ok(q: PackedByteArray) -> bool:
 
 func _live_smoke(q: PackedByteArray) -> void:
 	smoke_clouds.clear()
+	smoke_counts.clear()
 	var o := 5
 	for _c in q[4]:
 		var idx := q.decode_s32(o)
 		var centre := Vector3(q.decode_float(o + 4), q.decode_float(o + 12), q.decode_float(o + 8))
 		var n := q.decode_u16(o + 16)
 		smoke_clouds[idx] = true
+		smoke_counts[idx] = n
+		if not smoke_screens.has(idx) or (smoke_screens[idx][0] as Vector3).distance_to(centre) > 1.0:
+			smoke_screens[idx] = [centre, Time.get_ticks_msec()]     # (a new cloud, maybe in an old one's slot)
 		var p0 := o + 18
 		o = p0 + 14 * n
 		if n == 0:
@@ -2835,6 +2847,43 @@ func _live_smoke(q: PackedByteArray) -> void:
 			var r := smoke_rng.randf_range(0.2, 1.3)
 			var pos := centre + Vector3(cos(a) * r, smoke_rng.randf_range(0.1, 0.6), sin(a) * r)
 			_spawn_puff(pos, 1.3, 0.0, Vector3(cos(a) * 0.2, 0.1, sin(a) * 0.2), 0.9, SMOKE_DENSE * thick)
+
+
+# what the game's own particles no longer give, 20 times a second: puffs in its volume (up to ~3.5 above the ground,
+# ~1.8 around), and at its foot
+func _smoke_linger() -> void:
+	var now := Time.get_ticks_msec()
+	if now - smoke_linger_t < 50 or smoke_screens.is_empty():
+		return
+	smoke_linger_t = now
+	for idx in smoke_screens.keys():
+		var age := (now - int(smoke_screens[idx][1])) / 1000.0
+		if age > smoke_hold + smoke_fade:
+			smoke_screens.erase(idx)
+			continue
+		var fill := 1.0 - clampf((age - smoke_hold) / smoke_fade, 0.0, 1.0)
+		var extra := fill - clampf(float(smoke_counts.get(idx, 0)) / SMOKE_FULL, 0.0, 1.0)
+		if extra <= 0.0:
+			continue
+		var centre: Vector3 = smoke_screens[idx][0]
+		var n := int(round(SMOKE_PUFFS * extra))
+		if smoke_rng.randf() < SMOKE_PUFFS * extra - n:
+			n += 1
+		for _k in n:
+			var a := smoke_rng.randf() * TAU
+			var r := sqrt(smoke_rng.randf()) * 1.8
+			var h := smoke_rng.randf_range(0.1, 3.5)
+			var grow := h / 3.5
+			var vel := Vector3(smoke_rng.randf_range(-0.15, 0.15), 0.15 + 0.15 * grow, smoke_rng.randf_range(-0.15, 0.15))
+			_spawn_puff(centre + Vector3(cos(a) * r, h, sin(a) * r), SMOKE_SIZE * (0.5 + 0.5 * grow),
+					smoke_rng.randf_range(0.0, 0.05), vel, 0.95, SMOKE_DENSE)
+		for _k in SMOKE_BASE:
+			if smoke_rng.randf() > extra:
+				continue
+			var a := smoke_rng.randf() * TAU
+			var r := smoke_rng.randf_range(0.2, 1.3)
+			_spawn_puff(centre + Vector3(cos(a) * r, smoke_rng.randf_range(0.1, 0.6), sin(a) * r), 1.3, 0.0,
+					Vector3(cos(a) * 0.2, 0.1, sin(a) * 0.2), 0.9, SMOKE_DENSE * fill)
 
 
 func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, tint := 1.0, dense := 1.0) -> void:

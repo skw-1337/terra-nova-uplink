@@ -327,6 +327,10 @@ func _read(ch: int) -> void:
 				if vp and mf != msn_want and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
 					msn_want = mf                           # once: not again every 2 s while it loads
 					vp._load_by_label(mf)
+			elif tag == "WTH" and data.size() == 15:          # snow / rain (coop_guest.py weather)
+				var wf := "WTHR".to_ascii_buffer()
+				wf.append_array(data.slice(3))
+				udp_out.put_packet(wf)
 			elif tag == "SMK" and data.size() > 3:           # smoke grenades' clouds (coop_guest.py smoke)
 				var sb := data.slice(3).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
 				if sb.size() > 0:

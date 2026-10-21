@@ -14,6 +14,7 @@ const PUFF = preload("res://puff.gdshader")
 const ANIM = preload("res://anim.gdshader")
 const BEAM = preload("res://beam.gdshader")
 const WATER = preload("res://water.gdshader")
+const SNOW = preload("res://snow.gdshader")
 const SKY_SHADER = preload("res://sky.gdshader")
 const SKY_DISTANCE := 2400.0             # sky sprites: far away, following the camera
 const SKY_PIXEL := 0.0024                # their angular size per image pixel (radians)
@@ -1858,6 +1859,8 @@ func _live_update() -> void:
 			_sub_views(q)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SMKC" and _smoke_packet_ok(q):
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
+		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
+			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
@@ -2900,6 +2903,70 @@ func _live_smoke(q: PackedByteArray) -> void:
 			var r := smoke_rng.randf_range(0.2, 1.3)
 			var pos := centre + Vector3(cos(a) * r, smoke_rng.randf_range(0.1, 0.6), sin(a) * r)
 			_spawn_puff(pos, 1.3, 0.0, Vector3(cos(a) * 0.2, 0.1, sin(a) * 0.2), 0.9, SMOKE_DENSE * thick)
+
+
+# Weather ('WTHR', 10 times a second: kind 0 snow, 1 rain, 0xFF none; colour index; drift and fall ranges; the
+# game's flake count and its view's area). The game's snow (missions 21 and 36, the ice planet's sky SKY1) is not in
+# the world: ~1000 dots on the screen (1 pixel far, 3 x 3 crosses near) with a fake depth that only sets their speed
+# and how far they slide when the camera moves, i.e. a shell ~1.6-3.2 units around the eye. Here: Uplink's own
+# flakes in a box around the camera, as many per volume as the game's in that shell, falling at the game's speed.
+const WEATHER_SHELL := 11.5                    # volume of the game's flakes in its view (units^3, ~100 deg x 40 deg)
+const WEATHER_BOX := Vector3(7.0, 5.0, 7.0)
+const WEATHER_FALL := 0.45                     # the game's fall step (1/16 px per depth per 32 ms) in units/s
+var weather_scale := 0.8                       # flakes per volume against the game's (they are bigger and softer)
+var weather_node: MultiMeshInstance3D = null
+var weather_key := ""
+
+
+func _live_weather(q: PackedByteArray) -> void:
+	var kind := q[4]
+	var n := q.decode_u16(10)
+	if kind == 0xFF or n == 0:
+		if weather_node != null:
+			weather_node.visible = false
+		return
+	if weather_node == null:
+		weather_node = MultiMeshInstance3D.new()
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_custom_data = true
+		mm.mesh = QuadMesh.new()
+		weather_node.multimesh = mm
+		var sm := ShaderMaterial.new()
+		sm.shader = SNOW
+		weather_node.material_override = sm
+		weather_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		weather_node.custom_aabb = AABB(Vector3(-1e5, -1e5, -1e5), Vector3(2e5, 2e5, 2e5))   # moved by the shader
+		add_child(weather_node)
+	var key := "%d/%d" % [kind, n]
+	if key != weather_key:
+		weather_key = key
+		var vol := WEATHER_BOX.x * WEATHER_BOX.y * WEATHER_BOX.z
+		var count := clampi(int(n / WEATHER_SHELL * vol * weather_scale), 0, 30000)
+		var buf := PackedFloat32Array()
+		buf.resize(count * 16)                     # per flake: identity transform (12), custom (4): seed, phase
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 36
+		for i in count:
+			var o := i * 16
+			buf[o] = 1.0
+			buf[o + 5] = 1.0
+			buf[o + 10] = 1.0
+			for k in 4:
+				buf[o + 12 + k] = rng.randf()
+		weather_node.multimesh.instance_count = count
+		weather_node.multimesh.buffer = buf
+	var rain := kind == 1
+	var fall := (q.decode_s8(8) + q.decode_s8(9)) * 0.5 * WEATHER_FALL
+	var sm := weather_node.material_override as ShaderMaterial
+	# rain: the game also moves its drops as if the camera went +x by 0x1249 (16.16) per 32 ms (wind towards -x)
+	sm.set_shader_parameter("drift", Vector3(-2.2 if rain else 0.0, -fall, 0.0))
+	sm.set_shader_parameter("sway", 0.0 if rain else 0.03 * (q.decode_s8(7) - q.decode_s8(6)))
+	sm.set_shader_parameter("size", 0.012 if rain else 0.03)
+	sm.set_shader_parameter("stretch", 6.0 if rain else 1.0)
+	var c := pal[q[5]] if pal.size() > q[5] else Color(0.92, 0.95, 1.0)
+	sm.set_shader_parameter("color", Color(c.r, c.g, c.b, 0.5 if rain else 0.9))
+	weather_node.visible = true
 
 
 # what the game's own particles no longer give, 20 times a second: puffs in its volume (up to ~3.5 above the ground,

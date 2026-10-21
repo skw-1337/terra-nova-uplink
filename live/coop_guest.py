@@ -113,6 +113,7 @@ class Guest:
         self.versus = versus or bool(os.environ.get('TN_COOP_VERSUS'))
         self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
         self.smoke_t, self.smoke_on = 0.0, False
+        self.weather_pk, self.weather_t = b'', 0.0
         self.joined = not remote                               # online: once his window speaks (coop_net.gd's 'R' / 'N')
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
@@ -647,6 +648,16 @@ class Guest:
             self.s.sendto(b'SMK' + zlib.compress(body, 6), ('127.0.0.1', REMOTE_VIEW))
         else:
             self.s.sendto(b'SMKC' + body, ('127.0.0.1', LIVE_PORT))
+
+    def weather(self, pk):
+        """The weather ('WTHR', live_bridge.py meteo) for the guest's window: local as it is; online 'WTH' when it
+        changes, else every 2 s (a joining guest gets it)."""
+        if not self.remote:
+            self.s.sendto(pk, ('127.0.0.1', LIVE_PORT))
+            return
+        if pk != self.weather_pk or time.time() - self.weather_t > 2.0:
+            self.weather_pk, self.weather_t = pk, time.time()
+            self.s.sendto(b'WTH' + pk[4:], ('127.0.0.1', REMOTE_VIEW))
 
     def send(self, view):
         if not self.remote:

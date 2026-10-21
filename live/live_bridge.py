@@ -141,6 +141,45 @@ if len(FUM) != 6:
     print('fumee : signatures introuvables (nuages non envoyes)', FUM)
     FUM = {}
 fumee_t, fumee_prev = 0.0, False
+# meteo (neige, pluie) : octet 0x27 de l'en-tete de mission (ressource 178 du MISSnn.RES : 0 rien, 1 neige, 2 pluie),
+# moins 1 = GENRE (0xFF : aucune) ; le mot suivant divise la surface de la vue en flocons (40 : mission 36, 80 : 21).
+# Ce sont des points de l'ecran, pas des objets du monde : par vue (4 blocs de 0x33 octets a VUES) +9 couleur,
+# +0xA/+0xB derive laterale min/max, +0xC/+0xD chute min/max, +0x12 tableau (6 octets : x, y en 1/16 de pixel,
+# profondeur 16-32, forme), +0x16 nombre, +0x2A x0, y0, x1, y1 (la vue + 1/8 autour). Le jeu les fait tomber,
+# trembler et glisser avec les mouvements de la camera, et les intercale dans son dessin par tranches de profondeur.
+# Uplink dessine sa propre chute autour de sa camera : il lui faut le genre, la couleur, les vitesses et la densite.
+# (ETAT : un etat du dessin, +0x20 non nul = pas de meteo dessinee ; SON : la boucle sonore de la pluie, inutilisee)
+METEO = {}
+for _nom, _sig in (('ETAT VUES', rb'\x83\xec\x0c\x89\xd3\x8b\x15(....)\x83\x7a\x20\x00\x0f\x85....\x89\xc2\xc1\xe0\x02'
+                                  rb'\x29\xd0\x89\xc2\xc1\xe0\x04\xbe(....)'),
+                   ('SON GENRE', rb'\x88\x04\x24\x89\xd6\x8b\x15(....)\xa2(....)\x85\xd2\x7c')):
+    _m = re.search(_sig, code, re.S)
+    if _m:
+        METEO.update({k: struct.unpack('<I', _m.group(j + 1))[0] for j, k in enumerate(_nom.split())})
+if len(METEO) != 4:
+    print('meteo : signatures introuvables (neige non envoyee)', METEO)
+    METEO = {}
+
+
+def meteo():
+    """'WTHR' + genre (u8 : 0 neige, 1 pluie, 0xFF aucune ou pas dessinee), couleur (u8, palette du jeu), derive
+    min/max, chute min/max (i8, en 1/16 de pixel par profondeur et par pas de 32 ms), flocons (u16) et surface de la
+    vue (u32, pixels 320 x 200) : la vue principale (la plus large des quatre)."""
+    genre = g.read(METEO['GENRE'], 1)[0]
+    etat = struct.unpack('<I', g.read(METEO['ETAT'], 4))[0]
+    best = None
+    for i in range(4):
+        w = g.read(METEO['VUES'] + 0x33 * i, 0x33)
+        p, n = struct.unpack_from('<I', w, 0x12)[0], struct.unpack_from('<H', w, 0x16)[0]
+        x0, y0, x1, y1 = struct.unpack_from('<4h', w, 0x2A)
+        if p in (0, 0xFFFFFFFF) or not n or x1 <= x0 or y1 <= y0:
+            continue
+        if best is None or x1 - x0 > best[0]:
+            best = (x1 - x0, w, n, (x1 - x0) * (y1 - y0))
+    if genre == 0xFF or best is None or (0x300000 <= etat < 0x4000000 and g.read(etat + 0x20, 4) != b'\0\0\0\0'):
+        return b'WTHR' + struct.pack('<BBbbbbHI', 0xFF, 0, 0, 0, 0, 0, 0, 0)
+    _, w, n, aire = best
+    return b'WTHR' + struct.pack('<BB4bHI', genre, w[9], *struct.unpack_from('<4b', w, 0xA), n, aire)
 
 
 def fumees(tab):
@@ -1006,6 +1045,10 @@ while True:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
         s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
+        if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
+            wthr = meteo()
+            s.sendto(wthr, ('127.0.0.1', 47821))
+            if guest: guest.weather(wthr)     # (la fenetre de l'invite aussi)
     if time.time() - brule_t > 0.5:           # sommets brules : lus 2 fois par seconde, envoyes s'ils changent (et toutes les 2 s)
         brule_t = time.time()
         carte = None

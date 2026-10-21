@@ -35,6 +35,8 @@ import walk_anim
 marche = walk_anim.WalkAnim()
 MARCHE_LOIN = os.environ.get('TN_FARWALK') != '0'     # (TN_FARWALK=0 : figees comme le jeu les laisse)
 LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
+OS_JAMBES = ((6, 4), (4, 2), (2, 0), (7, 5), (5, 3), (3, 1))          # hanche-genou-cheville-orteil, gauche puis droite
+OS_BRAS = ((9, 10), (9, 11), (10, 12), (12, 14), (11, 13), (13, 15))  # cou-epaules, epaule-coude-main
 # pieces articulees (porte du vaisseau, tourelles) : le jeu passe a son interpreteur de modeles deux mots de la fiche de
 # l'objet (routine 0x293AA0 de l'exe anglais), fiche n = mot a +3 de l'entree : (debut, pas, decalage des deux mots)
 FICHES_ART = {c: (b + (0xB0 if FR else 0), p, d) for c, (b, p, d) in
@@ -815,6 +817,15 @@ while True:
                 continue
             if hz > (0.95 if tab[o + 2] in LOURDES else 0.6) * 65536:   # ou etire en hauteur (immobile apres un dezoom :
                 continue                              # 0,73 de haut pour 0,10 de large ; posee : 0,38 a 0,48)
+            # longueur des os : le jeu recrit a chaque image orteils, chevilles, hanches, bassin et cou (0-3, 6-9), meme
+            # d'une armure qu'il ne dessine pas, mais laisse genoux, epaules, coudes et mains (4, 5, 10-15) la ou il l'a
+            # dessinee : les os entre les deux s'allongent quand elle marche (jusqu'a 1,27 pour 0,12 ; dessinee : 0,21 au
+            # plus, meme lue entre deux images du jeu). Un os trop long : pas envoyee, la marche rejouee la prend
+            os_max = (0.35 if tab[o + 2] in LOURDES else 0.25) * 65536
+            bras_max = (0.35 if tab[o + 2] in LOURDES else 0.2) * 65536
+            if any(math.dist(j[a], j[b]) > os_max for a, b in OS_JAMBES) or \
+                    any(math.dist(j[a], j[b]) > bras_max for a, b in OS_BRAS):
+                continue
         if prev is None:
             if any(math.hypot(v[0] - x0, v[1] - y0) > (0.9 if mech or tab[o + 2] in LOURDES else 0.45) * 65536 for v in used):
                 continue

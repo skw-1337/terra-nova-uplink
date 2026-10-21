@@ -986,6 +986,11 @@ func _facing(left: Vector3, right: Vector3) -> Vector3:
 # in live mode the game's own joints every frame (walking, arms, aiming). Returns the highest joint.
 func _pose_soldier(holder: Node3D, p: Array) -> float:
 	var top := 0.0
+	# last guard: a bone far longer than its limb (joints the game left where it last drew the suit) is not drawn, the
+	# suit keeps its previous pose (each sprite is scaled by its bone: such a limb came out several times too big)
+	for part in holder.get_meta("soldier"):
+		if (p[part[2]] - p[part[1]]).length() > 1.6 * float(part[3]) / 256.0 * BODY_SCALE:
+			return -1.0
 	# the body's right, which sets each limb's front (the views turn around the bone): the hips' line for the legs
 	# and feet, the shoulders' for the torso and arms (joints 6 / 7 hips, 10 / 11 shoulders). Front = right x bone:
 	# a leg hanging down faces forward, a foot (the same leg turned forward at the ankle) faces up

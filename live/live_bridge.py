@@ -508,7 +508,10 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
             img_n += 1
             if (x0, y0, x1, y1) == (0, 0, tw, th): sent_t = now
             prev = ech.copy()
-        time.sleep(max(0.0, 0.012 - (time.time() - now)))
+        # ~30 photos a second: each PrintWindow reads back the whole game window (Uplink's size since Terra Nova Coop
+        # 0.9), ~80 a second loaded the PC enough to make the game itself lag in its menus (at start-up mostly); the
+        # menu cursor is Uplink's own (no delay), the screens behind it change slowly
+        time.sleep(max(0.0, 0.033 - (time.time() - now)))
     return last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh
 
 

@@ -1904,7 +1904,7 @@ func _live_units(pk: PackedByteArray) -> void:
 		if pk.size() >= jo + 4:
 			_live_arts(pk, jo)
 	var mis: Array = current["mission"]["entities"]
-	if live_off < 0:
+	if live_off < 0 and not mis.is_empty():         # (the start-up flat map has none: searched once a mission loads)
 		var best_n := 0
 		for off in 64:
 			var hits := 0

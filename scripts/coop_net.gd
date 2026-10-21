@@ -819,7 +819,7 @@ func _draw_marker() -> void:
 	var font := ThemeDB.fallback_font
 	var c := cam.unproject_position(top)
 	var fs := int(clampf(marker.size.y * 0.028, 12.0, 26.0))
-	var t := "%s  %dm" % [steam.getFriendPersonaName(peer), int(round(cam.global_position.distance_to(guest_pos) * 10.0))]
+	var t := "%s  %dm" % [steam.getFriendPersonaName(peer), int(round(cam.global_position.distance_to(top) * 6.0))]   # the game's metres (its lock reads 51 m where 8.5 units)
 	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 	var p := c - Vector2(w / 2.0, 6.0)
 	marker.draw_string_outline(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 4, Color.BLACK)

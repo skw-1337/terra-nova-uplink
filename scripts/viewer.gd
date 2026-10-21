@@ -115,6 +115,7 @@ const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured 
 const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
 const LIVE_FOG_BEGIN := 250.0   # live mode: depth fog from here to there (game units), like the game's haze
 const LIVE_FOG_END := 700.0
+const LIVE_SATURATION := 1.4    # the 3D's colours (the sky and the water take it back: their "desat")
 const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
 const VIEW_CENTRE := 0.51        # the view's centre (the crosshair, screen row 144) in the 3D window, measured on lock boxes
 var hud := false
@@ -250,7 +251,7 @@ func _ready() -> void:
 		env.ambient_light_sky_contribution = LIVE_AMBIENT
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 		env.adjustment_enabled = true
-		env.adjustment_saturation = 1.4
+		env.adjustment_saturation = LIVE_SATURATION
 		# the game's view ends in its haze: depth fog (its colour is the planet's haze, set with the sky)
 		env.fog_mode = Environment.FOG_MODE_DEPTH
 		env.fog_depth_begin = LIVE_FOG_BEGIN
@@ -313,6 +314,8 @@ func _ready() -> void:
 		zones_on = false
 		panel.visible = false
 		status.visible = false
+	if OS.get_environment("TN_LAB") != "" and not ("--coop-guest" in args or "--coop-hud" in args):
+		add_child(load("res://scripts/lab.gd").new())   # live graphics lab (lab.gd): only with the lab shortcut
 	if "--all" in args:                       # test: load every mission, then quit
 		for k in missions.size():
 			await _load(k)
@@ -841,7 +844,7 @@ func _sky_to(sm: ShaderMaterial) -> void:
 		sm.set_shader_parameter("clouds_soft", sky_clouds)
 	sm.set_shader_parameter("light", Vector3(sky_light.r, sky_light.g, sky_light.b))
 	sm.set_shader_parameter("sun_dir", sun_to)
-	sm.set_shader_parameter("desat", 1.0 / env.adjustment_saturation if live and env.adjustment_enabled else 1.0)
+	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
 
 
@@ -1290,7 +1293,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 	env.sky.sky_material = mat
 	env.fog_light_color = haze
 	mat.set_shader_parameter("gain", LIVE_SKY if live else 1.0)
-	mat.set_shader_parameter("desat", 1.0 / env.adjustment_saturation if live and env.adjustment_enabled else 1.0)
+	mat.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	if sk.get("light") != null:                         # the clouds lighten towards the horizon
 		var lt: Color = sk["light"]
 		mat.set_shader_parameter("light", Vector3(lt.r, lt.g, lt.b))

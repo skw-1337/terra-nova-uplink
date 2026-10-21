@@ -1981,6 +1981,7 @@ func _live_arts(pk: PackedByteArray, at: int) -> void:
 # game frame (its length measured), from where it was drawn: one game frame later, but without the steps. Jumps
 # of more than SMOOTH_JUMP units (a teleport, a new mission) are not eased.
 const SMOOTH_JUMP := 4.0
+var smooth := OS.get_environment("TN_SMOOTH") == "1"   # off by default for now (tried by players: the view felt wrong)
 var sm_int := 33.0                                   # ms between two game states (measured, eased)
 var sm_last := 0                                     # when the camera last changed
 var cam_from := [Vector3.ZERO, 0.0, 0.0]             # camera: where its easing started (position, yaw, pitch)
@@ -1996,7 +1997,7 @@ func _cam_target(p: Vector3, y: float, pt: float) -> void:
 	if gap > 4 and gap < 200:
 		sm_int = lerpf(sm_int, float(gap), 0.1)
 	sm_last = now
-	cam_from = [camera.position, yaw, pitch] if p.distance_to(to) < SMOOTH_JUMP else [p, y, pt]
+	cam_from = [camera.position, yaw, pitch] if smooth and p.distance_to(to) < SMOOTH_JUMP else [p, y, pt]
 	cam_to = [p, y, pt]
 	cam_t = now
 
@@ -2021,6 +2022,8 @@ var smooth_nodes: Array[Node3D] = []
 func _smooth_capture() -> void:
 	var now := Time.get_ticks_msec()
 	smooth_nodes.clear()
+	if not smooth:
+		return
 	for node in live_nodes + live_extra.values():
 		if node == null or not is_instance_valid(node) or not node.visible or node.has_meta("corpse"):
 			continue

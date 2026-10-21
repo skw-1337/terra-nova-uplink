@@ -33,6 +33,7 @@ FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
 import walk_anim
 marche = walk_anim.WalkAnim()
+MARCHE_LOIN = os.environ.get('TN_FARWALK') == '1'     # coupe par defaut pour l'instant (essais des joueurs)
 LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
 # pieces articulees (porte du vaisseau, tourelles) : le jeu passe a son interpreteur de modeles deux mots de la fiche de
 # l'objet (routine 0x293AA0 de l'exe anglais), fiche n = mot a +3 de l'entree : (debut, pas, decalage des deux mots)
@@ -775,7 +776,7 @@ while True:
     if animees:
         hmax = max(max(p[1::3]) for _, p in animees.values())
         marche.learn({i: v for i, v in animees.items() if max(v[1][1::3]) > 0.8 * hmax}, ou_unite, now_w)
-    for i in figees:
+    for i in (figees if MARCHE_LOIN else []):
         o = 0x25 * i
         ux, uy, ucap = ou_unite(i)                 # (pas x, y : ceux de la camera, envoyes plus bas)
         # sa taille : la hauteur de sa derniere pose du jeu (articulations figees, mais a ses proportions)

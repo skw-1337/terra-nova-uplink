@@ -783,14 +783,16 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
-	# water tiles: the bluish ones of the planet's set (their mean colour)
+	# water tiles: the bluish ones of the planet's set (their mean colour); not the bright, barely blue snow and ice
+	# (an ice planet's (0.70, 0.78, 0.88) was taken for water: a mirror over the snow; water: (0.38, 0.54, 0.75))
 	var wt := Image.create(64, 1, false, Image.FORMAT_R8)
 	var tc: PackedColorArray = pl["tile_color"]
 	var wsum := Color(0, 0, 0)
 	var wn := 0
 	for i in mini(64, tc.size()):
 		var c := tc[i]
-		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25:
+		var lum := c.r * 0.3 + c.g * 0.59 + c.b * 0.11
+		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25 and (lum < 0.65 or c.b - maxf(c.r, c.g) > 0.15):
 			wt.set_pixel(i, 0, Color(1, 0, 0))
 			wsum += c
 			wn += 1

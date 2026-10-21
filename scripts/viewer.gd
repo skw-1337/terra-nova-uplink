@@ -1832,6 +1832,8 @@ func _live_update() -> void:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
 			_sub_views(q)
+		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SMKC" and _smoke_packet_ok(q):
+			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
@@ -2407,6 +2409,8 @@ func _live_fx(idx: int, e) -> void:
 	var cls: int = e[0]
 	var typ: int = e[1]
 	var pos0 := Vector3(e[3], e[5] - GAME_Z, e[4])
+	if cls == 6 and typ == 29 and smoke_clouds.has(idx):
+		return                                          # a smoke grenade's cloud: drawn by _live_smoke
 	if cls == 6 and typ == 29 and _live_puff(idx, pos0, e):
 		return                                          # at a unit's feet: its jetpack's smoke
 	if cls == 6 and typ == 33:
@@ -2779,6 +2783,58 @@ func _live_puff(idx: int, pos: Vector3, e) -> bool:
 	if fresh:
 		_spawn_puff(pos, 1.0)
 	return true
+
+
+# Smoke grenades (the game's 6/29 at the impact, alive ~17 s): their cloud is a particle system of the game's engine,
+# sent by the bridge 20 times a second ('SMKC': per cloud its entity, centre and up to 160 particles, world position,
+# size 24-127 growing as they rise, life left). The game draws each particle as a small faint grey puff (~190 at
+# first, fewer and fewer, up to ~3.5 units high and 1-2 units around): here each update starts a few of the
+# jetpack's puffs at some of its particles, bigger and denser, and a low wall around its foot while it is thick, so
+# the cloud screens like a smoke grenade should.
+const SMOKE_PUFFS := 8                         # puffs started at the cloud's particles per update (20 a second)
+const SMOKE_BASE := 3                          # and around its foot, while the cloud is at its thickest
+const SMOKE_FULL := 190.0                      # particles of a fresh cloud
+const SMOKE_SIZE := 1.1                        # puff size for the game's biggest particle (127)
+const SMOKE_DENSE := 1.7                       # puff opacity factor (the jetpack's: 1)
+var smoke_clouds := {}                         # game entity index -> true, the clouds of the last update
+var smoke_rng := RandomNumberGenerator.new()
+
+
+func _smoke_packet_ok(q: PackedByteArray) -> bool:
+	var o := 5
+	for _c in q[4]:
+		if o + 18 > q.size():
+			return false
+		o += 18 + 14 * q.decode_u16(o + 16)
+	return o == q.size()
+
+
+func _live_smoke(q: PackedByteArray) -> void:
+	smoke_clouds.clear()
+	var o := 5
+	for _c in q[4]:
+		var idx := q.decode_s32(o)
+		var centre := Vector3(q.decode_float(o + 4), q.decode_float(o + 12), q.decode_float(o + 8))
+		var n := q.decode_u16(o + 16)
+		smoke_clouds[idx] = true
+		var p0 := o + 18
+		o = p0 + 14 * n
+		if n == 0:
+			continue
+		for _k in mini(SMOKE_PUFFS, n):
+			var po := p0 + 14 * smoke_rng.randi_range(0, n - 1)
+			var pos := Vector3(q.decode_float(po), q.decode_float(po + 8), q.decode_float(po + 4))
+			var grow := float(q[po + 12]) / 127.0
+			var vel := Vector3(smoke_rng.randf_range(-0.15, 0.15), 0.2 + 0.2 * grow, smoke_rng.randf_range(-0.15, 0.15))
+			_spawn_puff(pos, SMOKE_SIZE * (0.5 + 0.5 * grow), smoke_rng.randf_range(0.0, 0.05), vel, 0.95, SMOKE_DENSE)
+		var thick := clampf(float(n) / SMOKE_FULL, 0.0, 1.0)
+		for _k in SMOKE_BASE:                            # the foot of the screen, thinning out with the cloud
+			if smoke_rng.randf() > thick:
+				continue
+			var a := smoke_rng.randf() * TAU
+			var r := smoke_rng.randf_range(0.2, 1.3)
+			var pos := centre + Vector3(cos(a) * r, smoke_rng.randf_range(0.1, 0.6), sin(a) * r)
+			_spawn_puff(pos, 1.3, 0.0, Vector3(cos(a) * 0.2, 0.1, sin(a) * 0.2), 0.9, SMOKE_DENSE * thick)
 
 
 func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, tint := 1.0, dense := 1.0) -> void:

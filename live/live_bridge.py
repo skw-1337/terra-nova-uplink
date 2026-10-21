@@ -117,6 +117,66 @@ nuages_t = 0.0
 # position apres la mort (0x38337F + n * 0x14E dans l'exe francais), la fiche soldat leur armure (+0xDE)
 CORPS = 0x38337F if FR else 0x3832CF
 corps_t, corps = 0.0, []
+# grenade fumigene : a l'impact le jeu cree une entite 6/29 (la meme que la poussiere d'un tir laser) qui ne bouge pas
+# et vit ~17 s ; le nuage est un systeme de particules du moteur (dessin : routine 0x29DF38 puis 0x2A56A8 de l'exe
+# anglais). Fiche n = mot a +3 de l'entree : FUM_REC + n * 0x2C, poignee (int32) a +0xA (-1 : aucune). Variables du
+# moteur (des pointeurs) : HANDLES[poignee] = numero du systeme si ; DESCS + si * 16 : centre x, y, z (16.16, = la
+# position de l'entite), +0xE = 8 pour la fumee (7 : la poussiere rouge d'un laser, 8 particules, 0,4 s) ; ANGLES +
+# si * 8 : trois angles u16, le troisieme = lacet (le nuage tourne sur lui-meme, ~36 deg/s) ; RANGES + si * 4 :
+# premiere particule et (au mot suivant) fin ; PARTS + i * 12 : x, y, z (int16, 2048 = 1 unite, dans le repere tourne
+# du systeme), +8 taille (24 a 127, grandit en montant), +9 couleur (253 : gris), +10 vie restante (~40 par seconde).
+# Un nuage : ~190 particules au depart, de moins en moins (les dernieres vers 17-20 s), jusqu'a ~3,5 au-dessus du sol
+# et ~1 a 2 unites autour. Adresses par signatures (exe anglais ou francais : donnees decalees de 0xB0)
+FUM = {}
+for _nom, _sig in (('REC', rb'\x8b\x50\x01\xc1\xfa\x10\x8d\x04\x95\x00\x00\x00\x00\x29\xd0\xc1\xe0\x02\x29\xd0\xbf(....)'
+                            rb'\xc1\xe0\x02\x01\xc7\x83\x7f\x0a\xff'),
+                   ('HANDLES DESCS', rb'\x56\x57\x55\x89\xc6\x85\xc0\x7c\x0b\xa1(....)\x83\x3c\xb0\x00\x7d\x07\x89\xf0\xe8....'
+                                     rb'\xa1....\x8b\x34\xb0\x89\xf0\x8b\x3d(....)'),
+                   ('RANGES PARTS', rb'\x0f\xb6\xe8\xa1(....)\x01\xc6\x8b\x46\x04\x8b\x1e\x8a\x4c\x24\x1c\x29\xd8\x8b\x15(....)'),
+                   ('ANGLES', rb'\x8d\x1c\xd5\x00\x00\x00\x00\x8b\x15(....)\x01\xda\x0f\xbf\x1a')):
+    _m = re.search(_sig, code, re.S)
+    if _m:
+        FUM.update({k: struct.unpack('<I', _m.group(j + 1))[0] for j, k in enumerate(_nom.split())})
+if len(FUM) != 6:
+    print('fumee : signatures introuvables (nuages non envoyes)', FUM)
+    FUM = {}
+fumee_t, fumee_prev = 0.0, False
+
+
+def fumees(tab):
+    """Les nuages des grenades fumigenes en cours : 'SMKC' + nombre (u8), puis par nuage : entite (i32), centre x, y, z
+    (3 f32), nombre de particules (u16), puis par particule x, y, z du monde (3 f32), taille (u8), vie (u8)."""
+    d32 = lambda a: struct.unpack('<I', g.read(a, 4))[0]
+    hd, ds, rg, pt, an = (d32(FUM[k]) for k in ('HANDLES', 'DESCS', 'RANGES', 'PARTS', 'ANGLES'))
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 6 or tab[o + 2] != 29:
+            continue
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        h = struct.unpack('<i', g.read(FUM['REC'] + nf * 0x2C + 0xA, 4))[0]
+        if not 0 <= h < 0x40:
+            continue
+        si = struct.unpack('<i', g.read(hd + 4 * h, 4))[0]
+        if not 0 <= si < 0x40:
+            continue
+        de = g.read(ds + 16 * si, 16)
+        if de[0xE] != 8:                      # la poussiere d'un laser (7) : dessinee comme avant
+            continue
+        cx, cy, cz = (v / 65536 for v in struct.unpack_from('<3i', de, 0))
+        a0, a1 = struct.unpack('<2I', g.read(rg + 4 * si, 8))
+        if not 0 <= a0 <= a1 <= a0 + 1024:
+            continue
+        lacet = struct.unpack('<3H', g.read(an + 8 * si, 6))[2] / 65536 * 2 * math.pi
+        c, sn = math.cos(lacet), math.sin(lacet)
+        raw = g.read(pt + 12 * a0, 12 * (a1 - a0))
+        pts = []
+        for k in range(0, len(raw), 12)[:160]:
+            px, py, pz = struct.unpack_from('<3h', raw, k)
+            pts.append(struct.pack('<3f2B', cx + (c * px + sn * py) / 2048, cy + (-sn * px + c * py) / 2048, cz + pz / 2048,
+                                   raw[k + 8], raw[k + 10]))
+        out.append(struct.pack('<i3fH', i, cx, cy, cz, len(pts)) + b''.join(pts))
+    return out
 
 
 def armure_debris(x, y, vivants):
@@ -925,6 +985,12 @@ while True:
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts), ('127.0.0.1', 47821))
     if guest: guest.step(body, joints, arts)
+    if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
+        fumee_t = time.time()
+        nuages = fumees(tab)
+        if nuages or fumee_prev:
+            s.sendto(b'SMKC' + bytes([len(nuages)]) + b''.join(nuages), ('127.0.0.1', 47821))
+        fumee_prev = bool(nuages)
     if '--once' in sys.argv or n % int(HZ * 2) == 0:
         print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
         if '--once' in sys.argv: break

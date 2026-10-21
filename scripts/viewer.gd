@@ -2143,11 +2143,13 @@ func _live_scorch(pk: PackedByteArray) -> void:
 const MUZZLE := Vector3(0.417, -0.089, -0.3)   # camera space, x to the side of the hand that fired (fitted on the game's beam)
 const MUZZLE_W := 0.0167                       # half width of the player's beam at the gun and at the bolt (world units)
 const BOLT_W := 0.0053
-const DUST_DOTS := 3                           # dots drawn for each dust particle, scattered DUST_SPREAD across and
-const DUST_SPREAD := 0.055                     # DUST_DROP up and down (radians from the camera: measured on the game's
-const DUST_DROP := 0.025                       # picture, ~15 x 7 pixels around each particle)
-const DUST_PX := 0.0027                        # dust radius per unit of distance: ~2 pixels of the game's picture (its
-                                               # dots along a laser's path; bigger and glowing, they made a second laser)
+const DUST_DOTS := 20                          # dots drawn for each dust particle, scattered DUST_SPREAD across and
+const DUST_SPREAD := 0.04                      # DUST_DROP up and down, most near the middle (radians from the camera:
+const DUST_DROP := 0.024                       # measured on the game's HD picture, a laser's impact on the ground is ~100
+                                               # dark red pixels in a 40 x 25 pixel cloud from its 8 particles 6/29)
+const DUST_PX := 0.0019                        # dust radius per unit of distance: ~2 pixels of the game's HD picture
+const DUST_HALO := 0.3                         # share of the dots in the sparse halo, 3 times as wide (its picture)
+const SPARK_DOTS := 6                          # the impact's spark (6/8): a few salmon pixels in the cloud's middle
 const STREAK := 1.5                            # length of a laser bolt in flight
 const FLASH_MS := 25                           # the beam from the gun, as the bolt leaves (the game: 1 frame)
 func _live_fx(idx: int, e) -> void:
@@ -2196,8 +2198,9 @@ func _live_fx(idx: int, e) -> void:
 			return                                      # other shots (5/24, 5/26, 5/27 on the hover tanks, 5/29...):
 			# nothing the game draws, at most a dot (a 0.8 unit glowing ball hid the walkers in a fight)
 	else:
-		kind = {29: 3, 28: 5, 7: 9, 5: 10}.get(typ, 2)
+		kind = {29: 3, 28: 5, 7: 9, 5: 10, 8: 11}.get(typ, 2)
 	var beam := kind == 1 or kind == 4
+	var dust := kind == 3 or kind == 5 or kind == 11
 	var mi: MeshInstance3D = live_fx.get(idx)
 	if mi == null:
 		mi = MeshInstance3D.new()
@@ -2208,7 +2211,7 @@ func _live_fx(idx: int, e) -> void:
 		mi.transform = Transform3D.IDENTITY             # the slot may have held a stretched beam
 		if beam:
 			mi.mesh = ImmediateMesh.new()               # a ribbon rebuilt every frame from the gun to the bolt
-		elif kind == 3 or kind == 5:
+		elif dust:
 			mi.mesh = ImmediateMesh.new()               # dust: its scattered dots, rebuilt every frame
 		elif kind == 6:
 			var cn := CylinderMesh.new()                # missile: a little cone, nose ahead
@@ -2238,13 +2241,13 @@ func _live_fx(idx: int, e) -> void:
 			var green := pal[137] if pal.size() > 137 else Color(0.1, 0.8, 0.1)
 			m.albedo_color = [Color(1.0, 0.85, 0.6), Color(1.0, 0.12, 0.08), Color(1.0, 0.75, 0.3), Color(1.0, 0.25, 0.15),
 					Color(0.15, 0.3, 1.0), Color(0.3, 0.45, 1.0), Color(1.0, 0.72, 0.15), Color(1.0, 0.2, 0.12), green,
-					Color(1.0, 0.97, 0.85), Color(0.99, 0.25, 0.25)][kind]
+					Color(1.0, 0.97, 0.85), Color(0.99, 0.25, 0.25), Color(0.93, 0.6, 0.5)][kind]
 			m.emission_enabled = true
 			m.emission = m.albedo_color
-			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0, 1.0][kind]
-			if kind == 3 or kind == 5:                  # dust: plain dots of the game's red / blue, no glow
+			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0, 1.0, 1.0][kind]
+			if dust:                                    # dust: plain dots of the game's red / blue / salmon, no glow
 				m.emission_enabled = false
-				m.albedo_color = Color(0.5, 0.01, 0.01) if kind == 3 else Color(0.3, 0.42, 0.95)
+				m.albedo_color = {3: Color(0.62, 0.0, 0.0), 5: Color(0.3, 0.42, 0.95)}.get(kind, m.albedo_color)
 				m.cull_mode = BaseMaterial3D.CULL_DISABLED  # (its dots are quads facing the camera)
 			m.disable_fog = true
 			fx_mats[kind] = m
@@ -2301,12 +2304,12 @@ func _live_fx(idx: int, e) -> void:
 		mi.extra_cull_margin = 4.0
 		mi.visible = true
 		return
-	if pos.distance_to(camera.position) < (0.3 if kind == 3 or kind == 5 else 1.5):   # at the gun: inside the cockpit
+	if pos.distance_to(camera.position) < (0.3 if dust else 1.5):   # at the gun: inside the cockpit
 		mi.visible = false
 		return
 	if kind == 6:
 		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail
-	if kind == 3 or kind == 5:
+	if dust:
 		# the game draws a dust particle (it does not move) as dots of a pixel scattered around it, mostly below,
 		# drawn again elsewhere when it draws a new random number (the bridge sends it in the heading): near the
 		# camera they spread over the view's lower left, far away they make a dense cloud at the impact (measured on
@@ -2318,12 +2321,13 @@ func _live_fx(idx: int, e) -> void:
 		im.clear_surfaces()
 		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, fx_mats[kind])
 		var rnd := int(e[6])
-		for j in DUST_DOTS:
+		var tight := 0.35 if kind == 11 else 1.0        # the spark: its few pixels in the middle
+		for j in {11: SPARK_DOTS, 5: 3}.get(kind, DUST_DOTS):   # (the ion beam's blue trail: barely seen)
 			var r1 := float(((idx + 1) * 2654435761 + rnd * 40503 + j * 7919) % 100000) / 100000.0
 			var r2 := float(((idx + 3) * 1103515245 + rnd * 12345 + j * 104729) % 100000) / 100000.0
 			var r3 := float(((idx + 7) * 69069 + rnd * 2891 + j * 31337) % 100000) / 100000.0
 			# (a spread of a few pixels of the game whatever the distance: wider than tall, a little below)
-			var c := pos + (cb.x * (r1 - 0.5) * 2.0 * DUST_SPREAD + cb.y * ((r2 - 0.6) * 2.0 * DUST_DROP)) * d * (0.3 + 0.7 * r3)
+			var c := pos + (cb.x * (r1 - 0.5) * 2.0 * DUST_SPREAD + cb.y * ((r2 - 0.55) * 2.0 * DUST_DROP)) * d * (0.25 + 0.75 * r3) * tight * (3.0 if kind == 3 and j % 10 < int(DUST_HALO * 10) else 1.0)
 			var q := [c - cb.x * hs - cb.y * hs, c + cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs,
 					c - cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs, c - cb.x * hs + cb.y * hs]
 			for v in q:

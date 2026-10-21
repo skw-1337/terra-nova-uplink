@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.15";
+    const string VERSION = "0.16";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -176,10 +176,14 @@ static class Coop
         keysBtn.Click += delegate { GameKeys(); };
         op.Controls.Add(keysBtn);
         op.Controls.Add(new Label { Text = "Mission (host)", ForeColor = CDim, AutoSize = true, Location = new Point(10, 110) });
-        missionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 106), Size = new Size(482, 24),
+        missionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 106), Size = new Size(376, 24),
             BackColor = CPanel, ForeColor = CText, FlatStyle = FlatStyle.Flat, MaxDropDownItems = 20 };
         op.Controls.Add(missionBox);
         FillMissions();
+        Button savesBtn = Flat("Saves...", CPanel);
+        savesBtn.Location = new Point(510, 104); savesBtn.Size = new Size(96, 28);
+        savesBtn.Click += delegate { Saves(); };
+        op.Controls.Add(savesBtn);
         LoadOptions();
 
         string[] names = { "Uplink (coop)", "Godot " + GODOT_VER, "TN+ Coop (host)", "Python (host)" };
@@ -662,7 +666,7 @@ static class Coop
         int target = coopSlot > 0 ? coopSlot : free;      // our own COOP slot again, else a free one: never a save of yours
         if (target < 0)
         {
-            Status("The 9 save slots are all used: free one in the game (or pick \"From the game's menus\").", CRed);
+            Status("The 9 save slots are all used: free one with Saves... (or pick \"From the game's menus\").", CRed);
             return null;
         }
         string label = COOP_SAVE + (index + 1).ToString("00");
@@ -1219,6 +1223,67 @@ static class Coop
             }
         }
         return dest;
+    }
+
+    // The game's 9 save slots: one can be deleted to free it (the file goes to components\save backups, not lost)
+    static void Saves()
+    {
+        string g = Game();
+        if (g == null) { PickGame(); g = Game(); if (g == null) return; }
+        string dir = Path.Combine(g, "TNOVA");
+        Form d = new Form { Text = "Saves", ClientSize = new Size(460, 300), FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, BackColor = CBack, ForeColor = CText,
+            Font = form.Font, ShowInTaskbar = false };
+        ListBox list = new ListBox { Location = new Point(12, 12), Size = new Size(436, 220), BackColor = CField, ForeColor = CText,
+            BorderStyle = BorderStyle.None, Font = new Font("Consolas", 10f) };
+        d.Controls.Add(list);
+        Action fill = delegate {
+            list.Items.Clear();
+            for (int slot = 1; slot <= 9; slot++)
+            {
+                string f = Path.Combine(dir, "SAVE" + slot.ToString("00") + ".RES");
+                string what = "(empty)";
+                if (File.Exists(f))
+                    try
+                    {
+                        Res r = Res.Load(f);
+                        what = Encoding.ASCII.GetString(r.Data(1775)).TrimEnd('\0');
+                        byte[] h = r.Data(1776);
+                        if (BitConverter.ToInt32(h, 0) == 0x06EF0018 && !what.StartsWith(COOP_SAVE))
+                            what += "  (mission " + (BitConverter.ToInt32(h, 8) - 2).ToString("00") + ")";
+                    }
+                    catch { what = "(unreadable)"; }
+                list.Items.Add(slot + "  " + what);
+            }
+        };
+        fill();
+        Button del = Flat("Delete", Color.FromArgb(110, 34, 30));
+        del.Location = new Point(12, 250); del.Size = new Size(120, 34);
+        del.Click += delegate {
+            int slot = list.SelectedIndex + 1;
+            string f = Path.Combine(dir, "SAVE" + slot.ToString("00") + ".RES");
+            if (slot < 1 || !File.Exists(f)) return;
+            if (MessageBox.Show(d, "Delete save " + list.SelectedItem + "?\nA copy is kept in components\\save backups.", "Saves",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            try
+            {
+                string bk = Path.Combine(Comp, "save backups");
+                Directory.CreateDirectory(bk);
+                string to = Path.Combine(bk, "SAVE" + slot.ToString("00") + " " + DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss") + ".RES");
+                File.Move(f, to);
+                Log("save " + slot + " deleted (copy: " + to + ")");
+                Status("Save " + slot + " deleted: the slot is free.", CGreen);
+            }
+            catch (Exception e) { Log("save " + slot + ": " + e.Message); MessageBox.Show(d, e.Message, "Saves"); }
+            fill();
+        };
+        d.Controls.Add(del);
+        Button close = Flat("Close", CPanel);
+        close.Location = new Point(328, 250); close.Size = new Size(120, 34);
+        close.Click += delegate { d.Close(); };
+        d.Controls.Add(close);
+        d.ShowDialog(form);
+        d.Dispose();
     }
 
     // Looking Glass "LG Res File v2": header (0x7C: directory offset), data blocks (4-aligned), directory at the end:

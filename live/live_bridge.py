@@ -31,12 +31,12 @@ print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage ca
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
-LOURDES = {2, 5, 20, 23}
+LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
 # pieces articulees (porte du vaisseau, tourelles) : le jeu passe a son interpreteur de modeles deux mots de la fiche de
 # l'objet (routine 0x293AA0 de l'exe anglais), fiche n = mot a +3 de l'entree : (debut, pas, decalage des deux mots)
 FICHES_ART = {c: (b + (0xB0 if FR else 0), p, d) for c, (b, p, d) in
               {2: (0x3A19E8, 0x128, 0x124), 3: (0x39E590, 0x14F, 0x14B), 4: (0x39C750, 0x79, 0x70)}.items()}
-arts_vus = set()                              # objets deja envoyes avec un angle (envoyes ensuite meme revenus a 0)                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
+arts_vus = set()                              # objets deja envoyes avec un angle (envoyes ensuite meme revenus a 0)
 joints_prev = {}                          # entite -> (articulations brutes, x, y) du tour precedent
 print('exe %s' % ('francais' if FR else 'anglais'))
 

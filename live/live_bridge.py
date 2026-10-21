@@ -193,8 +193,25 @@ def mouse_evt(ev, bt, pos=None):
     g.write(m_lect - 4, struct.pack('<H', (w + 1) % n))
 
 
-def post_key(sc, down):
+# touches tenues : Windows repete un appui maintenu (WM_KEYDOWN, bit 30 = deja enfoncee) apres ~250 ms, ~30 fois par
+# seconde ; joue directement, DOSBox en recoit autant. Depuis Uplink il n'en recevait qu'un : un saut tente pendant
+# une glissade en pente etait perdu tant qu'on ne rappuyait pas (le jeu ne voit que les appuis)
+tenues = {}                                   # code -> [instant de l'appui, derniere repetition]
+
+
+def repeter_touches():
+    now = time.time()
+    for sc, t in list(tenues.items()):
+        if now - t[0] > 0.25 and now - t[1] > 0.033:
+            t[1] = now
+            post_key(sc, True, True)
+
+
+def post_key(sc, down, rep=False):
     global alt
+    if not rep:
+        if down: tenues.setdefault(sc, [time.time(), 0.0])
+        else: tenues.pop(sc, None)
     if sc in (0x38, 0xE038): alt = down
     vk = u32w.MapVirtualKeyW(sc & 0xFF, 1) or 0
     if sc & 0xE000:
@@ -202,6 +219,7 @@ def post_key(sc, down):
               0x52: 0x2D, 0x53: 0x2E, 0x1D: 0xA3, 0x38: 0xA5, 0x1C: 0x0D, 0x35: 0x6F}.get(sc & 0xFF, vk)
     lp = 1 | ((sc & 0xFF) << 16) | ((1 << 24) if sc & 0xE000 else 0) | ((1 << 29) if alt or sc in (0x38, 0xE038) else 0)
     if not down: lp |= 0xC0000000
+    elif rep: lp |= 0x40000000
     sys_ = alt or sc in (0x38, 0xE038)
     msg = (0x104 if down else 0x105) if sys_ else (0x100 if down else 0x101)
     u32w.PostMessageW(ctypes.c_void_p(win), msg, vk, ctypes.c_ssize_t(lp - (1 << 32) if lp >= 1 << 31 else lp).value)
@@ -303,8 +321,12 @@ def send_hud():
         hud_fixe['n'][bouge] = 0; hud_fixe['diff'][bouge] = False
         hud_fixe['n'] += 1; hud_fixe['diff'] |= ~same
         cadre = (hud_fixe['n'] > 30) & hud_fixe['diff']
+        # un pixel de 3D depuis plusieurs images qui differe une seule image : ecran et image HD lus a un instant
+        # d'ecart (la vue qui bouge vite : saut, pente), pas un element du HUD ; opaque, il montrait l'image du jeu a
+        # travers celle d'Uplink. Transparent pour cette image ; un vrai element du HUD s'affiche a la suivante
+        eclair = ~same & (hud_rate > 0.9)
         hud_rate = hud_rate * 0.7 + same * 0.3
-        alpha[fy0:fy0 + fh, fx0:fx0 + fw][same & (hud_rate > 0.6) & ~cadre] = 0
+        alpha[fy0:fy0 + fh, fx0:fx0 + fw][((same & (hud_rate > 0.6)) | eclair) & ~cadre] = 0
     else:
         fx0 = fy0 = fw = fh = 0
     global hud_last                           # coop: the guest's cockpit is made from ours (coop_guest.py)
@@ -890,6 +912,7 @@ while True:
         threading.Thread(target=menu_loop, daemon=True).start()
     if PLAY:
         handle_input()
+        repeter_touches()
     if time.time() - nuages_t > 0.1:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))

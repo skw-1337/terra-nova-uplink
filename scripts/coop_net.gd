@@ -390,12 +390,14 @@ func _build_friends() -> void:
 	friends_fold.pressed.connect(func():
 		friends_folded = not friends_folded
 		friends_fold.text = "+" if friends_folded else "–"
+		if friends_search and friends_search.has_focus():
+			friends_search.release_focus()
 		friends_sig = ""
 		_fill_friends())
 	head.add_child(friends_fold)
 	if host_mode:
 		friends_search = LineEdit.new()
-		friends_search.placeholder_text = "Search a friend..."
+		friends_search.placeholder_text = "Search a friend...   (Esc: back to the game)"
 		friends_search.clear_button_enabled = true
 		friends_search.text_changed.connect(func(_t): friends_sig = ""; _fill_friends())
 		v.add_child(friends_search)
@@ -556,6 +558,20 @@ func owns_point(p: Vector2) -> bool:
 		if c and c.is_visible_in_tree() and c.get_global_rect().has_point(p):
 			return true
 	return false
+
+
+# out of the search or the chat (their keys are theirs while they have the focus, see wants_keys): Esc, Enter in the
+# search, or a click anywhere else gives the game its keys back (a click in the view did not: the player was stuck)
+func _input(event: InputEvent) -> void:
+	if not wants_keys():
+		return
+	var owner := get_viewport().gui_get_focus_owner()
+	if event is InputEventKey and event.pressed and not event.echo and (event.physical_keycode == KEY_ESCAPE or
+			(owner == friends_search and event.physical_keycode in [KEY_ENTER, KEY_KP_ENTER])):
+		get_viewport().gui_release_focus()
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.pressed and not owns_point(event.position):
+		get_viewport().gui_release_focus()
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -113,6 +113,7 @@ class Guest:
         self.versus = versus or bool(os.environ.get('TN_COOP_VERSUS'))
         self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
         self.smoke_t, self.smoke_on = 0.0, False
+        self.joined = not remote                               # online: once his window speaks (coop_net.gd's 'R' / 'N')
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
         self.fov_now, self.s = fov_now, sock
@@ -436,6 +437,12 @@ class Guest:
             self.read_input(False)                             # no stale look / F8 at the next mission start
             self.lobby_step(False)
             return
+        if not self.joined:                                    # online, nobody joined (or he left): the squad stays the
+            if self.gid:                                       # game's (a teammate held for "Player 2" stood still)
+                self.take(0)
+                self.state = OK
+            self.read_input(False)
+            return
         if self.state == OK and not self.alive(self.gid):
             if self.gid:                                       # his suit is destroyed: a few seconds, then the next one
                 self.take(0)
@@ -558,6 +565,14 @@ class Guest:
                 break
             except OSError:                                    # a datagram over 16 KB (WSAEMSGSIZE): dropped
                 continue
+            if pk == b'X':                                     # he left (coop_net.gd): his teammate back to the game
+                if self.joined:
+                    self.joined = False
+                    print('guest: left', flush=True)
+                continue
+            if not self.joined:
+                self.joined = True
+                print('guest: joined', flush=True)
             self.resync(pk)
             if pk[:1] == b'K' and len(pk) >= 4:
                 sc, down = struct.unpack('<HB', pk[1:4])

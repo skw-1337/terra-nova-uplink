@@ -90,6 +90,7 @@ var friends_t := -100.0
 var friends_sig := ""
 var invited := {}                     # host: friend id -> clock of the invite
 var friends_search: LineEdit          # host: filters the list by name
+var friends_hidden := false           # host: End hides / shows the invite list (in the way in a mission)
 var friends_scroll: ScrollContainer
 var friends_fold: Button
 var friends_folded := false
@@ -436,8 +437,8 @@ func _fill_friends() -> void:
 	if not friends_panel:
 		return
 	var want := steam != null and (lobby_id != 0 and not peer if host_mode else peer == 0 and version_msg == "")
-	friends_panel.visible = want
-	if not want:
+	friends_panel.visible = want and not friends_hidden
+	if not want or friends_hidden:
 		return
 	# [id, name, state, lobby, recent time]: friends hosting a game first, then recent ones, online, away
 	var rows := []
@@ -474,7 +475,7 @@ func _fill_friends() -> void:
 		return
 	friends_sig = sig
 	if host_mode:
-		friends_title.text = "INVITE A FRIEND  (%d online)" % online + ("" if free else "   Y: free the mouse")
+		friends_title.text = "INVITE A FRIEND  (%d online)   End: hide" % online + ("" if free else "   Y: free the mouse")
 	else:
 		friends_title.text = "FRIENDS HOSTING A GAME"
 	if friends_search:
@@ -563,6 +564,15 @@ func owns_point(p: Vector2) -> bool:
 # out of the search or the chat (their keys are theirs while they have the focus, see wants_keys): Esc, Enter in the
 # search, or a click anywhere else gives the game its keys back (a click in the view did not: the player was stuck)
 func _input(event: InputEvent) -> void:
+	if host_mode and friends_panel and event is InputEventKey and event.physical_keycode == KEY_END:
+		if event.pressed and not event.echo:              # End: the invite list hidden / shown (a key the game does not use)
+			friends_hidden = not friends_hidden
+			if friends_hidden:
+				get_viewport().gui_release_focus()
+			friends_sig = ""
+			_fill_friends()
+		get_viewport().set_input_as_handled()
+		return
 	if not wants_keys():
 		return
 	var owner := get_viewport().gui_get_focus_owner()
@@ -739,6 +749,7 @@ func _on_lobby_update(lobby: int, changed: int, _maker: int, change: int) -> voi
 			if was:
 				steam.closeP2PSessionWithUser(was)
 				_release_input()
+				udp_out.put_packet("X".to_ascii_buffer())   # the bridge: his teammate back to the game's AI
 			peer_hello = false
 			peer_ok = false
 	elif lobby_id and peer and not _in_lobby(peer):         # guest: the host left (quit, crash, Steam closed)

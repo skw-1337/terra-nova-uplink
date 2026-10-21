@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "1.0";
+    const string VERSION = "1.1";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "main";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string COOP_URL = "https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10";
@@ -153,6 +153,10 @@ static class Uplink
         op.Controls.Add(sensLabel);
         invertBox = new CheckBox { Text = "Invert vertical", AutoSize = true, Location = new Point(400, 42), ForeColor = CText };
         op.Controls.Add(invertBox);
+        Button keysBtn = Flat("Game keys...", CPanel);
+        keysBtn.Location = new Point(460, 4); keysBtn.Size = new Size(146, 28);
+        keysBtn.Click += delegate { GameKeys(); };
+        op.Controls.Add(keysBtn);
         LoadOptions();
 
         string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus (live mode)", "Python (live mode)" };
@@ -199,6 +203,7 @@ static class Uplink
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
         m.Items.Add("Check for updates now", null, delegate {
             Background(delegate { Install(true); Status("Up to date.", CGreen); CheckUpdates(); }); });
+        m.Items.Add("Import keys from my Terra Nova Plus...", null, delegate { ImportKeys(); });
         m.Items.Add("Repair (download everything again)", null, delegate { Repair(); });
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Uninstall...", null, delegate { Uninstall(); });
@@ -634,6 +639,56 @@ static class Uplink
             if (at >= 0) lines[at] = line; else lines.Add(line);
         }
         File.WriteAllLines(ini, lines);
+    }
+
+    // ------------------------------------------------------------------ the game's keys (TN+'s KEYBOARD page)
+    // TN+ changes the keys in the game itself (TNPlus.ini next to its exe: key_game_<id> = [SHIFT+|CTRL+|ALT+]scancode);
+    // "Game keys..." opens that page of our own TN+, "Import" copies the keys of a TN+ the player already set up
+    static void GameKeys()
+    {
+        if (busy) return;
+        Background(delegate {
+            if (!File.Exists(TnpExe))
+            {
+                Status("Downloading and building Terra Nova Plus (for its key settings)...", CAmber);
+                BuildTnp();
+                string tp = Get(Heads(), TNPLUS_REPO);
+                if (tp != null) Set("tnplus_sha", tp);
+                SaveCfg();
+            }
+            if (Game() != null) WriteTnpIni(Game());
+            Status("Set your keys in the window that opened, then click DONE.", CAmber);
+            Process p = Run(TnpExe, "--keys", TnpDir, null, false);
+            p.WaitForExit();
+            Status("Keys saved: " + KeysSummary(), CGreen);
+        });
+    }
+
+    static readonly string[] KEY_LINES = { "key_", "keys_", "mouse_", "invert_y" };
+
+    static void ImportKeys()
+    {
+        using (OpenFileDialog d = new OpenFileDialog())
+        {
+            d.Title = "Pick the TNPlus.ini of your Terra Nova Plus (next to its TNPlus.exe)";
+            d.Filter = "TNPlus.ini|TNPlus.ini|ini files|*.ini";
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            List<string> mine = File.Exists(Path.Combine(TnpDir, "TNPlus.ini")) ? new List<string>(File.ReadAllLines(Path.Combine(TnpDir, "TNPlus.ini"))) : new List<string>();
+            mine.RemoveAll(l => Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k)));
+            int n = 0;
+            foreach (string l in File.ReadAllLines(d.FileName))
+                if (Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k))) { mine.Add(l); n++; }
+            Directory.CreateDirectory(TnpDir);
+            File.WriteAllLines(Path.Combine(TnpDir, "TNPlus.ini"), mine);
+            Status(n + " key and mouse settings imported: " + KeysSummary(), CGreen);
+        }
+    }
+
+    static string KeysSummary()
+    {
+        string ini = Path.Combine(TnpDir, "TNPlus.ini");
+        int n = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)).FindAll(l => l.TrimStart().StartsWith("key_game_")).Count : 0;
+        return n == 0 ? "the game's own keys." : "your keys (" + n + " changed).";
     }
 
     // ------------------------------------------------------------------ install, update, repair

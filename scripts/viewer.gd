@@ -2659,12 +2659,14 @@ func _live_pulsar(idx: int, e) -> void:
 	var cam := camera.global_transform
 	var bx := cam.basis.x * PULSAR_BAR.x
 	var by := cam.basis.y * PULSAR_BAR.y
+	var parts: Array = pulsar_parts.get(idx, [Vector3(e[3], e[5], e[4])]).filter(func(c): return c.distance_to(cam.origin) >= 0.25)
+	if parts.is_empty():                              # all of it at the gun: nothing to draw (an empty surface is an error)
+		mi.visible = false
+		return
 	var im := mi.mesh as ImmediateMesh
 	im.clear_surfaces()
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, pulsar_mat)
-	for c in pulsar_parts.get(idx, [Vector3(e[3], e[5], e[4])]):
-		if c.distance_to(cam.origin) < 0.25:
-			continue
+	for c in parts:
 		for v in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]:
 			im.surface_set_uv(Vector2(v[0] * 0.5 + 0.5, v[1] * 0.5 + 0.5))
 			im.surface_add_vertex(c + bx * v[0] + by * v[1])

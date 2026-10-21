@@ -57,8 +57,13 @@ if '--launch' in sys.argv:
     print('mission', mission, '-> Uplink', res)
     pos = ['--position', os.environ['TN_POS']] if 'TN_POS' in os.environ else []   # tests : fenetre hors ecran
     taille = ['--', '--live', '--native'] if res == 'native' else ['--resolution', res] + pos + ['--', '--live']   # native : plein ecran
-    viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []))
+    viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []) +
+                              (['--coop-host'] if '--guest-remote' in sys.argv else []))
     print('visualiseur pid %d' % viewer.pid, flush=True)
+    if '--guest' in sys.argv:                   # coop: the guest's window (same Uplink, other ports, no HUD)
+        import coop_guest
+        gviewer = coop_guest.launch(godot, vpath, mission)
+        print('guest window pid %d' % gviewer.pid, flush=True)
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -252,6 +257,7 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 #   'P' + x, y (i16)  -> regard coupe (Y ou Pause dans le visualiseur) : curseur du jeu a cette position de son
 #        ecran 320 x 400 (boutons du HUD, carte, visee libre)
 #   'C' + bouton + appui + x, y -> clic a cette position
+#   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -7187, 6127
 if PLAY:
@@ -321,6 +327,7 @@ def post_key(sc, down, rep=False):
 
 
 def handle_input():
+    global guest
     look = False
     while True:
         try:
@@ -344,17 +351,30 @@ def handle_input():
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0)
         elif pk[:1] == b'P' and len(pk) >= 5:
             g.write(m_cur, pk[1:5]); g.write(m_warp, b'\x01')
+        elif pk[:4] == b'CHAT' and guest is not None:          # the host window's lobby chat
+            guest.lobby.say('host', pk[4:].decode('utf-8', 'ignore'))
+            guest.lobby_t = 0.0
         elif pk[:1] == b'C' and len(pk) >= 7:
             btn, down = pk[1], pk[2]
             pos = struct.unpack('<hh', pk[3:7])
             if btn == 1: mouse_evt(2 if down else 4, 1 if down else 0, pos)
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0, pos)
+        elif pk in (b'HOST', b'HOSTV') and guest is None:   # the viewer's "Host online" button: its coop_net.gd opens the lobby
+            import coop_guest
+            guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV')
+            guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
+            print('coop: hosting online', flush=True)
+        elif pk in (b'LOCK1', b'LOCK0') and guest is not None:   # the host window's lock of the guest's column
+            guest.lobby.locked = pk == b'LOCK1'
+            guest.lobby_t = 0.0
+            print('lobby: column', 'locked' if guest.lobby.locked else 'unlocked', flush=True)
     if look:                                  # le curseur du jeu reste au centre : on vise ou on regarde
         x, y = centre()
         g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')
 
 
 hud_rate, hud_rect, hud_fixe = None, None, {}
+hud_last = None
 
 
 def send_hud():
@@ -410,6 +430,8 @@ def send_hud():
         alpha[fy0:fy0 + fh, fx0:fx0 + fw][((same & (hud_rate > 0.6)) | eclair) & ~cadre] = 0
     else:
         fx0 = fy0 = fw = fh = 0
+    global hud_last                           # coop: the guest's cockpit is made from ours (coop_guest.py)
+    hud_last = (scr.copy(), alpha.copy(), (fx0, fy0, fw, fh), g.read(PAL, 768))
     if PLAY:
         curseur_hud(scr, alpha)
     hud_n += 1
@@ -810,7 +832,15 @@ def devant():
 
 
 import atexit
+guest = None
+if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop build): a teammate played by a second player
+    import coop_guest                           # (--guest-remote: online, through the host window's Steam link)
+    guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote='--guest-remote' in sys.argv,
+                             view_hz=arg('--view-hz', 20.0),   # online: views a second to the guest
+                             versus='--versus' in sys.argv)     # 1v1 (Terra Nova Coop's mode)
+    guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
 atexit.register(cursor_restore)
+atexit.register(lambda: guest and guest.tag.restore())   # coop: the pilot's own name back in the game
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi
     atexit.register(lambda: viewer.poll() is None and viewer.terminate())
 if PLAY:
@@ -993,12 +1023,14 @@ while True:
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts), ('127.0.0.1', 47821))
+    if guest: guest.step(body, joints, arts)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()
         nuages = fumees(tab)
         if nuages or fumee_prev:
             s.sendto(b'SMKC' + bytes([len(nuages)]) + b''.join(nuages), ('127.0.0.1', 47821))
         fumee_prev = bool(nuages)
+        if guest: guest.smoke(nuages)          # (the coop guest's window too)
     if '--once' in sys.argv or n % int(HZ * 2) == 0:
         print('x %.2f y %.2f z %.2f cap %.1f deg tangage %.1f deg' % (x, y, z, math.degrees(head), math.degrees(pitch)))
         if '--once' in sys.argv: break
@@ -1014,7 +1046,9 @@ while True:
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
         s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
         if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
-            s.sendto(meteo(), ('127.0.0.1', 47821))
+            wthr = meteo()
+            s.sendto(wthr, ('127.0.0.1', 47821))
+            if guest: guest.weather(wthr)     # (la fenetre de l'invite aussi)
     if time.time() - brule_t > 0.5:           # sommets brules : lus 2 fois par seconde, envoyes s'ils changent (et toutes les 2 s)
         brule_t = time.time()
         carte = None

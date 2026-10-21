@@ -75,6 +75,8 @@ Close Uplink to stop. Menus, briefings and videos are shown as the game draws th
 
 It's a prototype: Windows only, a few weapon effects aren't drawn yet, and the bridge writes into the game's memory for your controls, like Terra Nova Plus does.
 
+**Online co-op** (prototype): a friend drives one of your squadmates from his PC, over Steam. How to install and play: [COOP.md](COOP.md).
+
 For modders: [technical notes](docs/formats.md).
 
 ## Legal

@@ -55,6 +55,9 @@ const PROBE_TILT := 0.3
 const SUB_FOV := 100.0            # horizontal, degrees
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
+var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
+var live_player := -1             # the entity whose body is hidden (the view's own suit)
+var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
 var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
 var sub_layer: CanvasLayer
 var oldschool_key := ""
@@ -78,7 +81,7 @@ var sky_root: Node3D
 var mats := {}
 # --live: the camera follows the running game (sent by live/live_bridge.py over UDP, port 47821:
 # x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
-const LIVE_PORT := 47821
+var LIVE_PORT := 47821                         # --live-port N (coop: the guest's window)
 const GAME_Z := 0.12          # the game's heights are this much above the ground (units, shots)
 var live := false
 var udp: PacketPeerUDP
@@ -150,15 +153,27 @@ var hud_win := Rect2i()           # 3D window in the game's 320 x 400 screen
 # --play: keyboard and mouse go to the game through the bridge (port 47824): keys as PC scancodes of their physical
 # position ('K'), mouse moves ('M', the bridge turns them into the look), left / right buttons ('B'). A click in the
 # window captures the mouse; Pause gives it back (also when the window loses the focus).
-const PLAY_PORT := 47824
+var PLAY_PORT := 47824                         # --play-port N
 var play := false
 var play_udp: PacketPeerUDP
 var play_dx := 0.0
+# coop guest's window (--coop-hud / --coop-guest): free look, the middle button or Alt held: the mouse turns only
+# his camera (up to 120 degrees aside, 60 up / down), his suit and aim stay; let go: the view comes back
+var guest_win := false
+var lobby_was_open := false
+var free_look := false
+var look_off := Vector2.ZERO
 var play_dy := 0.0
 var mouse_sens := maxf(0.1, OS.get_environment("TN_MOUSE_SENS").to_float()) if OS.get_environment("TN_MOUSE_SENS") != "" else 1.0
 var invert_y := OS.get_environment("TN_INVERT_Y") == "1"    # the launcher's settings (its environment)
 var play_held := {}
 var play_started := false        # the first click in the window only takes the mouse
+# live mode without coop: "Host online" (top left, while the mouse is free) turns this game into an online coop host,
+# as Coop online - host.bat does: coop_net.gd opens the Steam lobby, the bridge ('HOST') starts its coop module
+# (only with TN_COOP set: it needs the TN+ coop build, which the solo game does not run; the Coop launcher hosts with
+# --coop-host itself)
+var host_btn: Button
+var versus_btn: Button           # "1v1 (versus)": the same, the guest drives a suit of the other side (experimental)
 # the game's own screen when it is not in its 3D (menus, death screen, briefing, video, pause): the bridge captures
 # the DOSBox window and sends it (see live_bridge.py menu_loop); shown over everything, the mouse goes to the game
 var menu_mode := false
@@ -199,7 +214,7 @@ func _ready() -> void:
 	_build_ui()
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
-	var given := OS.get_environment("TN_GAME_DIR").replace("\\", "/")   # the launcher (Terra Nova Uplink): its game
+	var given := OS.get_environment("TN_GAME_DIR").replace("\\", "/")   # the launcher (Uplink or Coop): its game
 	var root := TNData.find_root(given if given != "" else cfg.get_value("game", "root", ""))
 	if root == "" or not data.setup(root):
 		_ask_path("Terra Nova folder not found. Paste the game folder (the one containing TNOVA):")
@@ -272,6 +287,12 @@ func _ready() -> void:
 		env.fog_aerial_perspective = 0.7
 		env.fog_sun_scatter = 0.1
 		env.fog_sky_affect = 0.0
+		var lpi := args.find("--live-port")
+		if lpi >= 0 and lpi + 1 < args.size():
+			LIVE_PORT = int(args[lpi + 1])
+		var ppi := args.find("--play-port")
+		if ppi >= 0 and ppi + 1 < args.size():
+			PLAY_PORT = int(args[ppi + 1])
 		udp = PacketPeerUDP.new()
 		udp.bind(LIVE_PORT, "127.0.0.1")
 		var ls := args.find("--shot")
@@ -282,12 +303,38 @@ func _ready() -> void:
 			live_shot_frame = int(args[lf + 1])
 	if not live:                              # the map viewer: old school too (F12), to see a map as in the game
 		_make_oldschool()
+	if live and ("--coop-host" in args or "--coop-guest" in args):   # coop over Steam (coop_net.gd)
+		add_child(load("res://scripts/coop_net.gd").new())
+	if live and ("--coop-hud" in args or "--coop-guest" in args):  # the coop guest's HUD (coop_hud.gd)
+		add_child(load("res://scripts/coop_hud.gd").new())
+		guest_win = true
 	if live and "--hud" in args:
 		_hud_setup()
 	if live and "--play" in args:
 		play = true
 		play_udp = PacketPeerUDP.new()
 		play_udp.set_dest_address("127.0.0.1", PLAY_PORT)
+		if OS.get_environment("TN_COOP") != "" and not ("--coop-host" in args or "--coop-guest" in args or "--coop-hud" in args):
+			var bl := CanvasLayer.new()
+			bl.layer = 21                               # over the game's screens (menus)
+			add_child(bl)
+			host_btn = Button.new()
+			host_btn.text = "Host online"
+			host_btn.tooltip_text = "Online coop: a Steam friend drives a teammate (TN+ Coop build, Steam running)"
+			host_btn.position = Vector2(12, 8)
+			host_btn.focus_mode = Control.FOCUS_NONE        # keys stay the game's
+			host_btn.add_theme_font_size_override("font_size", 16)
+			host_btn.pressed.connect(_host_online)
+			bl.add_child(host_btn)
+			versus_btn = Button.new()
+			versus_btn.text = "1v1 (versus)"
+			versus_btn.tooltip_text = "Experimental: a Steam friend drives an enemy suit and fights you (pick a mission or a\n" + \
+				"scenario with enemy suits, then start it)"
+			versus_btn.position = Vector2(12, 44)
+			versus_btn.focus_mode = Control.FOCUS_NONE
+			versus_btn.add_theme_font_size_override("font_size", 16)
+			versus_btn.pressed.connect(_host_online.bind(true))
+			bl.add_child(versus_btn)
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8
@@ -1610,11 +1657,33 @@ func _play_scancode(e: InputEventKey) -> int:
 			return 0x36 if e.location == KEY_LOCATION_RIGHT else 0x2A
 		KEY_ALT:
 			return 0xE038 if e.location == KEY_LOCATION_RIGHT else 0x38
-	return SCANCODES.get(k, 0)
+	var sc: int = SCANCODES.get(k, 0)
+	return key_map.get(sc, sc)
+
+
+# The coop guest's own keys (his launcher's Game keys, in TN+'s KEYBOARD page): TN_KEYS = "2C:11,11:0,...", the key
+# pressed -> the game's key for that command (0: none). The host's are TN+'s own, in his game.
+var key_map := _key_map()
+
+static func _key_map() -> Dictionary:
+	var m := {}
+	for pair in OS.get_environment("TN_KEYS").split(",", false):
+		var ab := pair.split(":")
+		if ab.size() == 2:
+			m[ab[0].hex_to_int()] = ab[1].hex_to_int()
+	return m
 
 
 func _play_send(bytes: PackedByteArray) -> void:
 	play_udp.put_packet(bytes)
+
+
+func _host_online(versus := false) -> void:
+	host_btn.get_parent().queue_free()
+	host_btn = null
+	versus_btn = null
+	_play_send(("HOSTV" if versus else "HOST").to_ascii_buffer())
+	add_child(load("res://scripts/coop_net.gd").new())
 
 
 func _play_key(sc: int, down: bool) -> void:
@@ -1710,13 +1779,42 @@ func _play_game_pos(p: Vector2) -> Vector2i:
 	return Vector2i(clampi(int(p.x / vs.x * 320.0), 0, 319), clampi(int(p.y / vs.y * 400.0), 0, 399))
 
 
+func _lobby_open() -> bool:
+	for n in get_children():                              # coop guest: the outfitting lobby (coop_lobby.gd) is on screen
+		if n.get("lobby") and n.lobby.root and n.lobby.root.visible:
+			return true
+	return false
+
+
 func _input(event: InputEvent) -> void:
 	if not play:
 		return
+	if guest_win and _lobby_open():                       # its buttons, lists and chat get the mouse and keys
+		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		if not lobby_was_open:
+			_play_release_all()                              # nothing held from the mission into the lobby
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		lobby_was_open = true
+		return
+	if lobby_was_open:                                     # the mission starts: the next click takes the mouse again
+		lobby_was_open = false
+		play_started = false
 	# Two modes, swapped by Y (the freelook key) or Pause, which stay in the viewer: look (mouse captured, it turns
 	# the view, clicks at the view's centre) and cursor (the game's own cursor follows the mouse, clicks where it
 	# is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if host_btn and host_btn.visible and event is InputEventMouse and (host_btn.get_global_rect().has_point(event.position) or
+			(versus_btn and versus_btn.get_global_rect().has_point(event.position))):
+		return                                          # the "Host online" button's, not the game's
+	if event is InputEventKey:
+		for n in get_children():                         # typing in coop_net.gd's search or chat
+			if n.has_method("wants_keys") and n.wants_keys():
+				return
+	if event is InputEventMouse:
+		for n in get_children():                         # coop_net.gd's own buttons (invite a friend, lock, chat)
+			if n.has_method("owns_point") and n.owns_point(event.position):
+				return
 	if menu_mode and (event is InputEventMouseButton or event is InputEventMouseMotion):
 		var mp := _menu_game_pos(event.position)          # the game's own screen: its cursor follows the mouse
 		if event is InputEventMouseMotion:
@@ -1736,6 +1834,17 @@ func _input(event: InputEvent) -> void:
 			if event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 				play_started = true
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click only takes the mouse
+		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
+			free_look = event.pressed
+		elif guest_win and not captured and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and \
+				(Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position))) or
+				Rect2(240, 256, 44, 14).has_point(Vector2(_play_game_pos(event.position)))):
+			var on_map := Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position)))
+			for n in get_children():                     # coop guest: the cockpit's MAP / STATUS buttons, mouse free (Y)
+				if on_map and n.has_method("toggle_map"):
+					n.toggle_map()
+				elif not on_map and n.has_method("toggle_status"):
+					n.toggle_status()
 		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
 			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
 			if captured:
@@ -1748,13 +1857,28 @@ func _input(event: InputEvent) -> void:
 				_play_send(b)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
-		if captured:
+		if captured and guest_win and (free_look or Input.is_physical_key_pressed(KEY_ALT)):
+			look_off.x = clampf(look_off.x - event.relative.x * 0.004, -2.1, 2.1)
+			look_off.y = clampf(look_off.y - event.relative.y * 0.004, -1.05, 1.05)
+		elif captured:
 			play_dx += event.relative.x * mouse_sens
 			play_dy += event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
 		elif play_started:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey:
+		if guest_win and event.physical_keycode == KEY_TAB and event.pressed and not event.echo:
+			for n in get_children():                 # coop guest: WEAPON / STATUS page (coop_hud.gd)
+				if n.has_method("toggle_status"):
+					n.toggle_status()
+			get_viewport().set_input_as_handled()
+			return
+		if guest_win and event.physical_keycode == KEY_M and event.pressed and not event.echo:
+			for n in get_children():                 # coop guest: his map, big or small (coop_hud.gd)
+				if n.has_method("toggle_map"):
+					n.toggle_map()
+			get_viewport().set_input_as_handled()
+			return
 		if event.physical_keycode == KEY_F12:           # the viewer's own: old school mode on / off
 			if event.pressed and not event.echo:
 				_oldschool_toggle()
@@ -1795,6 +1919,10 @@ func _live_update() -> void:
 		c.encode_s16(3, play_cursor.y)
 		_play_send(c)
 		play_cursor_sent = play_cursor
+	if host_btn:
+		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+		if versus_btn:
+			versus_btn.visible = host_btn.visible
 	if hud:
 		_hud_update()
 	_puffs_update()
@@ -1839,7 +1967,7 @@ func _live_update() -> void:
 	camera.keep_aspect = Camera3D.KEEP_WIDTH        # the game gives its horizontal field of view
 	camera.fov = pk.decode_float(20)
 	_live_smooth()
-	if hud:
+	if hud or hud_win.size.y > 0:                     # coop guest: its cockpit's window (coop_hud.gd)
 		_hud_camera(camera.fov)
 	live_seen += 1
 	if play and OS.has_environment("TN_PLAYTEST") and (live_seen == 100 or live_seen == 220):
@@ -1861,7 +1989,22 @@ func _live_update() -> void:
 func _live_units(pk: PackedByteArray) -> void:
 	var n := pk.decode_s32(24)
 	var player := pk.decode_s32(28)
+	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
+	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
+	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
+	var pn: Node3D = _live_node(player) if player >= 0 else null
+	if player != live_player or pn != live_player_node:
+		var was: Node3D = live_player_node
+		if was != null and is_instance_valid(was) and was != pn:
+			was.remove_meta("player_body")
+			_sub_hide(was, false, PLAYER_LAYER)
+			was.remove_meta("player_body")
+		if pn != null:
+			_sub_hide(pn, true, PLAYER_LAYER)
+		live_player = player
+		live_player_node = pn
 	var ents := {}
+	live_ents = ents
 	for k in n:
 		var o := 32 + 32 * k
 		if o + 32 > pk.size():
@@ -2131,7 +2274,7 @@ func _live_smooth() -> void:
 	camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
 	yaw = lerp_angle(cam_from[1], cam_to[1], a)
 	pitch = lerpf(cam_from[2], cam_to[2], a)
-	camera.rotation = Vector3(pitch, yaw, 0)
+	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
 	for node in smooth_nodes:
 		if not is_instance_valid(node):
 			continue
@@ -3035,6 +3178,10 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 func _process(delta: float) -> void:
 	if not live:
 		_oldschool_palette()
+	if guest_win and look_off != Vector2.ZERO:
+		if not (free_look or Input.is_physical_key_pressed(KEY_ALT)):
+			look_off = look_off.move_toward(Vector2.ZERO, delta * 6.0)   # back to the suit's view in ~0.3 s
+		camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
 	if hd_movie_box != null and hd_movie_box.visible and hd_movie.get_video_texture() != null:
 		var vsz := hd_movie.get_video_texture().get_size()
 		if vsz.y > 0:

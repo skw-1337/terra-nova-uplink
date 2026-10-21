@@ -1,0 +1,918 @@
+# Coop over Steam (TN+ Coop build, prototype). Steam test App ID 480 ("Spacewar"), friends-only lobby for two, P2P
+# through Steam's relays: no port is opened on either PC.
+#  --coop-host  (the player's window): opens the lobby, shows ONLINE / CONNECTABLE / GUEST CONNECTED (F9 = invite).
+#               The bridge (live_bridge.py --guest-remote) sends the guest's view to 127.0.0.1:47841 as coop_view.py
+#               messages: keyframes (VKF) and decor (VDC) go reliable, deltas (VDL, VDP parts) unreliable; the guest's
+#               input comes back and goes to 127.0.0.1:47834 (the bridge's coop module, which only turns it into move /
+#               turn / aim / fire commands). A guest that connects gets an 'R' to the bridge: decor and keyframe now.
+#  --coop-guest (the second player's window, his own copy of the game files): joins the host's lobby (Steam invite,
+#               "Join game" in the friends list, or --connect-lobby ID / +connect_lobby ID), rebuilds the full view
+#               packet (coop_view.gd) for its own live port, asks for the decor again ('R') while it lacks it, and sends its keys, mouse and buttons (its --play port) to the host, plus its
+#               gamepad ('P' packets, ~60 a second: left stick move / strafe, right stick look, right trigger fire).
+#               HUD packets ('GHD') from the host go as they are to 127.0.0.1:47832 (coop_hud.gd). F8: next teammate.
+# Both sides must run the same coop files: the lobby carries "coop_version" and the guest says "HELLO" + COOP_VERSION;
+# a guest with another version leaves, the host ignores the input of one that stays (an older guest).
+# GodotSteam (addons/godotsteam) is loaded at run time and reached through Engine.get_singleton("Steam").
+# --fake-steam: scripts/fake_steam.gd instead (one process only: nobody else to meet). live/test_coop_net.gd runs a
+# host and a guest side by side over one fake Steam (fake_steam, role and the ports set before _ready).
+extends CanvasLayer
+
+const COOP_VERSION := "3"           # bump when the host / guest packets change
+const APP_ID := 480
+const LOBBY_FRIENDS_ONLY := 1        # ELobbyType
+const RESULT_OK := 1                 # EResult
+const SEND_UNRELIABLE_NO_DELAY := 1
+const SEND_RELIABLE := 2
+const UNRELIABLE_MAX := 1200         # Steam P2P: the biggest unreliable packet (the bridge cuts deltas to fit)
+const CH_VIEW := 0                   # host -> guest: view (coop_view messages), HUD and mission name
+const CH_INPUT := 1                  # guest -> host: HELLO, input packets (K / M / B) as the viewer sends them, gamepad (P), R
+const VIEW_IN := 47841               # host: the bridge's guest view
+const INPUT_OUT := 47834             # host: to the bridge's coop module
+const LIVE_IN := 47831               # guest: its viewer's live port
+const PLAY_IN := 47834               # guest: its viewer's play port
+const HUD_OUT := 47832               # guest: its coop_hud.gd
+const PAD_DEAD := 0.2
+
+var steam: Object = null
+var fake_steam: Object = null        # set before _ready (tests): this instead of GodotSteam; --fake-steam: a lone one
+var role := ""                       # set before _ready (tests): "host" / "guest"; else from --coop-guest
+var view_in := VIEW_IN               # the ports, which the tests move (host and guest in one process)
+var input_out := INPUT_OUT
+var live_in := LIVE_IN
+var play_in := PLAY_IN
+var hud_out_port := HUD_OUT
+var host_mode := true
+var lobby_id := 0
+var peer := 0                        # the other player's Steam ID
+var peer_hello := false              # host: the guest said HELLO...
+var peer_ok := false                 # ... with our coop version (only then its input goes to the bridge)
+var version_msg := ""                # guest: the host runs another coop version
+var hello_t := -100.0
+var pad_t := -100.0
+var pad_live := false                # guest: the last gamepad packet was not all zero
+var udp_in := PacketPeerUDP.new()
+var udp_out := PacketPeerUDP.new()
+var hud_out := PacketPeerUDP.new()
+var label: Label
+var sent := 0
+var recv := 0
+var rate_t := 0.0
+var rate := ""
+# ping: the guest sends 'PNG' + its clock (ms, 8 bytes) + its last ping (u16) every 2 s, the host answers 'PNO' + the
+# same clock; both show it. Session log: user://coop_logs/<host|guest>_<date>.log (events, and a status every 10 s)
+var ping_ms := -1
+var ping_t := 0.0
+var log_f: FileAccess
+# host: the guest's name over his suit, from the HUD packets the bridge sends him through us (online only)
+var marker: Control
+var guest_pos := Vector3.ZERO
+var guest_seen := -100.0
+var guest_ent := 0                    # host: the guest's suit (his name follows it as the viewer draws it)
+var status_t := 0.0
+# guest: waiting screen until the host's view arrives (not connected yet, or the host is in the game's menus)
+var wait_panel: ColorRect
+var wait_title: Label
+var wait_text: Label
+var last_view := -100.0
+var view: RefCounted = preload("res://scripts/coop_view.gd").new()   # guest: rebuilds the host's view
+var resync_t := -100.0
+var clock := 0.0
+var mission_t := 0.0
+var msn_want := ""                   # guest: the host's mission last asked of the viewer (loading takes a while)
+var lock_btn: Button                 # host: locks the guest's column on the Mission Outfitting screen (coop_lobby.py)
+var lobby_label: Label               # host: the guest's column / ready, and the lobby chat ('GLB' packets going by)
+var chat_edit: LineEdit
+var guest_locked := false
+var friends_panel: PanelContainer      # host: online friends with an Invite button / guest: friends hosting, Join
+var friends_box: VBoxContainer
+var friends_title: Label
+var friends_t := -100.0
+var friends_sig := ""
+var invited := {}                     # host: friend id -> clock of the invite
+var friends_search: LineEdit          # host: filters the list by name
+var friends_hidden := false           # host: End or its x hides the invite list (in the way in a mission)
+var friends_open: Button              # host: brings it back while it is hidden
+var friends_scroll: ScrollContainer
+var friends_fold: Button
+var friends_folded := false
+var recent := {}                      # friend id -> unix time: invited or played with (user://coop_recent.json)
+const RECENT_FILE := "user://coop_recent.json"
+const STATE_NAMES := ["offline", "online", "busy", "away", "snooze", "online", "online"]
+var ok_col := Color(0.35, 1.0, 0.45)
+var warn_col := Color(1.0, 0.75, 0.25)
+var bad_col := Color(1.0, 0.35, 0.3)
+
+
+func _ready() -> void:
+	_log_open()
+	host_mode = role == "host" if role != "" else not ("--coop-guest" in OS.get_cmdline_user_args())
+	layer = 21 if host_mode else 10       # host: over the game's screens (menus, quarters: layer 10); guest: under his lobby
+	if not host_mode:
+		wait_panel = ColorRect.new()
+		wait_panel.color = Color(0.04, 0.06, 0.08)
+		wait_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+		wait_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(wait_panel)
+		var box := VBoxContainer.new()
+		box.set_anchors_preset(Control.PRESET_CENTER)
+		box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+		box.grow_vertical = Control.GROW_DIRECTION_BOTH
+		box.alignment = BoxContainer.ALIGNMENT_CENTER
+		wait_panel.add_child(box)
+		wait_title = Label.new()
+		wait_title.text = "TERRA NOVA  ·  COOP"
+		wait_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		wait_title.add_theme_font_size_override("font_size", 44)
+		wait_title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.3))
+		box.add_child(wait_title)
+		wait_text = Label.new()
+		wait_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		wait_text.add_theme_font_size_override("font_size", 20)
+		wait_text.add_theme_color_override("font_color", Color(0.8, 0.85, 0.9))
+		box.add_child(wait_text)
+	marker = Control.new()
+	marker.set_anchors_preset(Control.PRESET_FULL_RECT)
+	marker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	marker.draw.connect(_draw_marker)
+	add_child(marker)
+	label = Label.new()
+	label.position = Vector2(12, 8)
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_outline_color", Color.BLACK)
+	label.add_theme_constant_override("outline_size", 4)
+	add_child(label)
+	if host_mode:
+		lock_btn = Button.new()
+		lock_btn.position = Vector2(12, 64)
+		lock_btn.focus_mode = Control.FOCUS_NONE           # keys stay the game's
+		lock_btn.tooltip_text = "Mission Outfitting: the guest's column (pilot and loadout) can't be changed by him"
+		lock_btn.pressed.connect(_toggle_lock)
+		add_child(lock_btn)
+		_paint_lock()
+		lobby_label = Label.new()
+		lobby_label.position = Vector2(12, 100)
+		lobby_label.add_theme_font_size_override("font_size", 14)
+		lobby_label.add_theme_color_override("font_outline_color", Color.BLACK)
+		lobby_label.add_theme_constant_override("outline_size", 4)
+		add_child(lobby_label)
+		chat_edit = LineEdit.new()
+		chat_edit.placeholder_text = "Lobby chat (Enter)"
+		chat_edit.custom_minimum_size = Vector2(320, 0)
+		chat_edit.position = Vector2(12, 300)
+		chat_edit.max_length = 120
+		chat_edit.text_submitted.connect(_on_chat)
+		chat_edit.visible = false
+		add_child(chat_edit)
+	_build_friends()
+	_show("STEAM...", "", warn_col)
+	if fake_steam == null and "--fake-steam" in OS.get_cmdline_user_args():
+		fake_steam = load("res://scripts/fake_steam.gd").new()
+	if fake_steam:
+		steam = fake_steam
+	else:
+		if not Engine.has_singleton("Steam"):
+			var r := GDExtensionManager.load_extension("res://addons/godotsteam/godotsteam.gdextension")
+			if r != GDExtensionManager.LOAD_STATUS_OK and r != GDExtensionManager.LOAD_STATUS_ALREADY_LOADED:
+				_show("OFFLINE", "GodotSteam not loaded (%d)" % r, bad_col)
+				return
+		steam = Engine.get_singleton("Steam")
+	var init: Dictionary = steam.steamInitEx(APP_ID, false)
+	if int(init.get("status", 1)) != 0:
+		_show("OFFLINE", "Steam: %s" % init.get("verbal", "?"), bad_col)
+		steam = null
+		return
+	steam.connect("lobby_created", _on_lobby_created)
+	steam.connect("lobby_chat_update", _on_lobby_update)
+	steam.connect("lobby_joined", _on_lobby_joined)
+	steam.connect("join_requested", _on_join_requested)
+	steam.connect("p2p_session_request", _on_p2p_request)
+	if steam.has_signal("avatar_loaded"):
+		steam.connect("avatar_loaded", _on_avatar)
+	if host_mode:
+		udp_in.bind(view_in, "127.0.0.1")
+		udp_out.set_dest_address("127.0.0.1", input_out)
+		_show("ONLINE", "%s - opening a friends-only lobby..." % steam.getPersonaName(), warn_col)
+		steam.createLobby(LOBBY_FRIENDS_ONLY, 2)
+	else:
+		udp_in.bind(play_in, "127.0.0.1")
+		udp_out.set_dest_address("127.0.0.1", live_in)
+		hud_out.set_dest_address("127.0.0.1", hud_out_port)
+		var want := _lobby_arg()
+		if want:
+			_show("ONLINE", "joining the host's lobby...", warn_col)
+			steam.joinLobby(want)
+		else:
+			_show("ONLINE", "%s - waiting for an invite (or Join game from your friends list)" % steam.getPersonaName(), warn_col)
+
+
+func _lobby_arg() -> int:
+	var a := OS.get_cmdline_args() + OS.get_cmdline_user_args()
+	for i in a.size() - 1:
+		if a[i] == "+connect_lobby" or a[i] == "--connect-lobby":
+			return int(a[i + 1])
+	return 0
+
+
+func _process(delta: float) -> void:
+	clock += delta
+	if wait_panel:
+		_waiting()
+	if not steam:
+		return
+	steam.run_callbacks()
+	if clock - friends_t > 3.0:
+		friends_t = clock
+		_fill_friends()
+	if host_mode:
+		while udp_in.get_available_packet_count() > 0:
+			var pk := udp_in.get_packet()
+			if peer_ok and pk.size() >= 3:                 # only to a guest that said HELLO with our version
+				var tag := pk.slice(0, 3).get_string_from_ascii()
+				if tag == "GLB" and lobby_label:
+					_lobby_seen(pk)
+				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
+				if tag == "GHD" and pk.size() >= 40:
+					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
+					guest_ent = pk.decode_u16(8)
+					guest_seen = clock
+				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)
+				sent += pk.size()
+		mission_t += delta
+		var vp := get_parent()
+		if peer_ok and mission_t > 2.0 and vp and not vp.current.is_empty():
+			mission_t = 0.0
+			steam.sendP2PPacket(peer, ("MSN" + str(vp.current["entry"]["file"]).get_file().to_upper()).to_ascii_buffer(), SEND_RELIABLE, CH_VIEW)
+		_read(CH_INPUT)
+		_drop(CH_VIEW)                                  # nothing comes this way: never let it pile up
+	else:
+		while udp_in.get_available_packet_count() > 0:
+			var pk := udp_in.get_packet()
+			if peer and pk.size() > 0:
+				# mouse moves may be dropped; keys and buttons must arrive
+				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if pk[0] == 77 else SEND_RELIABLE, CH_INPUT)
+				sent += pk.size()
+		if peer:
+			if clock - ping_t > 2.0:
+				ping_t = clock
+				var png := "PNG".to_ascii_buffer()
+				png.resize(13)
+				png.encode_u64(3, Time.get_ticks_msec())
+				png.encode_u16(11, ping_ms if ping_ms >= 0 else 65535)
+				steam.sendP2PPacket(peer, png, SEND_UNRELIABLE_NO_DELAY, CH_INPUT)
+			if clock - hello_t > 2.0:                       # again now and then: the host may have missed it
+				_hello()
+			_pad()
+		_read(CH_VIEW)
+		if peer and view.waiting_decor() and clock - resync_t > 1.0:   # joined late: the decor again, please
+			resync_t = clock
+			steam.sendP2PPacket(peer, "R".to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
+			sent += 1
+		_drop(CH_INPUT)
+	rate_t += delta
+	if rate_t >= 1.0:
+		rate = "%d KB/s out, %d KB/s in" % [sent / 1024, recv / 1024]
+		sent = 0
+		recv = 0
+		rate_t = 0.0
+		_refresh()
+	if host_mode:
+		marker.queue_redraw()
+	status_t += delta
+	if status_t >= 10.0:
+		status_t = 0.0
+		if peer:
+			_log("status: %s, %s, ping %s, %s" % [steam.getFriendPersonaName(peer), rate,
+				"%d ms" % ping_ms if ping_ms >= 0 else "?",
+				("guest ok" if peer_ok else "guest not ok") if host_mode else ("last view %.1f s ago" % (clock - last_view))])
+
+
+func _read(ch: int) -> void:
+	var n: int = steam.getAvailableP2PPacketSize(ch)
+	while n > 0:
+		var r: Dictionary = steam.readP2PPacket(n, ch)
+		var data: PackedByteArray = r.get("data", PackedByteArray())
+		var from: int = int(r.get("remote_steam_id", 0))      # GodotSteam 4: remote_steam_id
+		if from == peer and data.size() > 0:
+			recv += data.size()
+			var tag := data.slice(0, 3).get_string_from_ascii()
+			if host_mode:
+				if tag == "PNG" and data.size() >= 13:
+					ping_ms = data.decode_u16(11) if data.decode_u16(11) < 65535 else -1
+					var pong := "PNO".to_ascii_buffer()
+					pong.append_array(data.slice(3, 11))
+					steam.sendP2PPacket(peer, pong, SEND_UNRELIABLE_NO_DELAY, CH_VIEW)
+				elif data.size() >= 5 and data.slice(0, 5).get_string_from_ascii() == "HELLO":
+					var ok := data.get_string_from_ascii() == "HELLO" + COOP_VERSION
+					if ok != peer_ok or not peer_hello:
+						_log("guest %s said HELLO: %s" % [steam.getFriendPersonaName(peer), "same version" if ok else "ANOTHER VERSION: " + data.get_string_from_ascii()])
+						peer_hello = true
+						peer_ok = ok
+						if ok:
+							_remember(peer)               # first in the friends list next time
+						if ok:
+							udp_out.put_packet("R".to_ascii_buffer())   # the bridge: full decor and a keyframe for him
+							udp_out.put_packet(("N" + steam.getFriendPersonaName(peer)).to_utf8_buffer())   # his name on our HUD
+							if steam.has_method("getPlayerAvatar"):
+								steam.getPlayerAvatar(2, peer)          # and his avatar as the portrait (avatar_loaded)
+						_refresh()
+				elif peer_ok:
+					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
+			elif tag == "PNO" and data.size() >= 11:
+				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
+			elif tag == "GHD" or tag == "GCK" or tag == "GLB":   # HUD, cockpit and lobby: to coop_hud.gd
+				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
+			elif data.size() > 3 and tag == "MSN":
+				var mf := data.slice(3).get_string_from_ascii()
+				var vp := get_parent()
+				if vp and mf != msn_want and (vp.current.is_empty() or str(vp.current["entry"]["file"]).get_file().to_upper() != mf):
+					msn_want = mf                           # once: not again every 2 s while it loads
+					vp._load_by_label(mf)
+			elif tag == "WTH" and data.size() == 15:          # snow / rain (coop_guest.py weather)
+				var wf := "WTHR".to_ascii_buffer()
+				wf.append_array(data.slice(3))
+				udp_out.put_packet(wf)
+			elif tag == "SMK" and data.size() > 3:           # smoke grenades' clouds (coop_guest.py smoke)
+				var sb := data.slice(3).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
+				if sb.size() > 0:
+					var full := "SMKC".to_ascii_buffer()
+					full.append_array(sb)
+					udp_out.put_packet(full)               # to the viewer, as the bridge sends it
+			elif tag == "VKF" or tag == "VDL" or tag == "VDP" or tag == "VDC":
+				var full: PackedByteArray = view.feed(data)
+				if full.size() > 0:
+					if clock - last_view > 5.0:
+						_log("views from the host: %s" % ("first" if last_view < 0 else "again after %.1f s" % (clock - last_view)))
+					udp_out.put_packet(full)                   # the same packet as the local coop's
+					last_view = clock
+		n = steam.getAvailableP2PPacketSize(ch)
+
+
+func _drop(ch: int) -> void:
+	var n: int = steam.getAvailableP2PPacketSize(ch)
+	while n > 0:
+		steam.readP2PPacket(n, ch)
+		n = steam.getAvailableP2PPacketSize(ch)
+
+
+# host: the guest left (or another one came): let go of his keys and fire, their releases will never arrive
+func _release_input() -> void:
+	for sc in [0x11, 0x1F, 0x1E, 0x20]:
+		udp_out.put_packet(PackedByteArray([0x4B, sc, 0, 0]))
+	udp_out.put_packet(PackedByteArray([0x42, 1, 0]))
+	udp_out.put_packet(PackedByteArray([80, 0, 0, 0, 0, 0]))
+
+
+# Steam's overlay (F9's invite dialog) doesn't open in Uplink: the host invites from a list of his online friends,
+# the guest joins from a list of the friends who host one (their rich presence game is our lobby).
+func _build_friends() -> void:
+	var f := FileAccess.open(RECENT_FILE, FileAccess.READ)
+	if f:
+		var j = JSON.parse_string(f.get_as_text())
+		if j is Dictionary:
+			for k in j:
+				recent[int(k)] = int(j[k])
+	friends_panel = PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.08, 0.07, 0.9)
+	sb.border_color = Color(0.3, 0.55, 0.38)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(10)
+	friends_panel.add_theme_stylebox_override("panel", sb)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	friends_panel.add_child(v)
+	var head := HBoxContainer.new()
+	v.add_child(head)
+	friends_title = Label.new()
+	friends_title.add_theme_font_size_override("font_size", 16)
+	friends_title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.3))
+	friends_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(friends_title)
+	friends_fold = Button.new()
+	friends_fold.text = "–"
+	friends_fold.focus_mode = Control.FOCUS_NONE
+	friends_fold.tooltip_text = "Fold / unfold the list"
+	friends_fold.pressed.connect(func():
+		friends_folded = not friends_folded
+		friends_fold.text = "+" if friends_folded else "–"
+		if friends_search and friends_search.has_focus():
+			friends_search.release_focus()
+		friends_sig = ""
+		_fill_friends())
+	head.add_child(friends_fold)
+	if host_mode:
+		var close := Button.new()
+		close.text = "×"
+		close.focus_mode = Control.FOCUS_NONE
+		close.tooltip_text = "Close the list (End, or the Invite a friend button brings it back)"
+		close.pressed.connect(_hide_friends.bind(true))
+		head.add_child(close)
+	if host_mode:
+		friends_search = LineEdit.new()
+		friends_search.placeholder_text = "Search a friend...  (Esc: back to game)"
+		friends_search.clear_button_enabled = true
+		friends_search.text_changed.connect(func(_t): friends_sig = ""; _fill_friends())
+		v.add_child(friends_search)
+	friends_scroll = ScrollContainer.new()
+	friends_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(friends_scroll)
+	friends_box = VBoxContainer.new()
+	friends_box.add_theme_constant_override("separation", 2)
+	friends_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	friends_scroll.add_child(friends_box)
+	friends_panel.visible = false
+	if host_mode:
+		friends_panel.custom_minimum_size = Vector2(320, 0)
+		add_child(friends_panel)
+		# its right edge 12 px from the screen's, growing to the left (with only a position it grew off the screen,
+		# its fold and close buttons out of reach)
+		friends_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
+		friends_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		friends_panel.offset_top = 44
+		friends_open = Button.new()
+		friends_open.text = "Invite a friend"
+		friends_open.focus_mode = Control.FOCUS_NONE
+		friends_open.visible = false
+		friends_open.pressed.connect(_hide_friends.bind(false))
+		add_child(friends_open)
+		friends_open.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
+		friends_open.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		friends_open.offset_top = 44
+	else:
+		friends_panel.custom_minimum_size = Vector2(440, 0)
+		wait_title.get_parent().add_child(friends_panel)
+
+
+func _remember(id: int) -> void:
+	# a friend invited or played with: first in the list next time (and Steam's "recently played with")
+	if id == 0:
+		return
+	recent[id] = int(Time.get_unix_time_from_system())
+	var f := FileAccess.open(RECENT_FILE, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(recent))
+	if steam and steam.has_method("setPlayedWith"):
+		steam.setPlayedWith(id)
+
+
+func _fill_friends() -> void:
+	if not friends_panel:
+		return
+	var want := steam != null and (lobby_id != 0 and not peer if host_mode else peer == 0 and version_msg == "")
+	friends_panel.visible = want and not friends_hidden
+	if friends_open:
+		friends_open.visible = want and friends_hidden
+	if not want or friends_hidden:
+		return
+	# [id, name, state, lobby, recent time]: friends hosting a game first, then recent ones, online, away
+	var rows := []
+	var online := 0
+	if steam.has_method("getFriendCount"):
+		for i in steam.getFriendCount(4):                 # k_EFriendFlagImmediate: the friends list
+			var id: int = steam.getFriendByIndex(i, 4)
+			var st: int = steam.getFriendPersonaState(id)
+			if st == 0:                                   # offline
+				continue
+			online += 1
+			var lobby := 0
+			var g: Dictionary = steam.getFriendGamePlayed(id)
+			if int(g.get("id", 0)) == APP_ID:
+				lobby = int(g.get("lobby", 0))
+			if host_mode or lobby != 0:
+				rows.append([id, steam.getFriendPersonaName(id), st, lobby, int(recent.get(id, 0))])
+	var q := friends_search.text.strip_edges().to_lower() if friends_search else ""
+	if q != "":
+		rows = rows.filter(func(r): return r[1].to_lower().contains(q))
+	var rank := func(r) -> int:
+		if r[3] != 0: return 0                            # hosting / in a coop lobby
+		if r[4] != 0: return 1                            # recent
+		return 2 if r[2] in [1, 5, 6] else 3 if r[2] == 2 else 4
+	rows.sort_custom(func(a, b):
+		var ra: int = rank.call(a)
+		var rb: int = rank.call(b)
+		if ra != rb: return ra < rb
+		if ra == 1 and a[4] != b[4]: return a[4] > b[4]
+		return a[1].nocasecmp_to(b[1]) < 0)
+	var free := Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+	var sig := str(rows) + str(invited.keys()) + str(free) + str(friends_folded) + q
+	if sig == friends_sig:
+		return
+	friends_sig = sig
+	if host_mode:
+		friends_title.text = "INVITE A FRIEND  (%d online)" % online + ("" if free else "   Y: free the mouse")
+	else:
+		friends_title.text = "FRIENDS HOSTING A GAME"
+	if friends_search:
+		friends_search.visible = not friends_folded
+	friends_scroll.visible = not friends_folded
+	if friends_folded:
+		return
+	var keep := friends_scroll.scroll_vertical
+	for c in friends_box.get_children():
+		c.queue_free()
+	if rows.is_empty():
+		var l := Label.new()
+		l.text = ("No friend online matches \"%s\"." % q if q != "" else "No friend online in Steam.") if host_mode else \
+			"Nobody yet. Your friend clicks HOST in Terra Nova Coop,\nthen his name shows up here."
+		l.add_theme_color_override("font_color", Color(0.75, 0.8, 0.85))
+		friends_box.add_child(l)
+	var section := -1
+	var heads := ["HOSTING A COOP GAME", "RECENT", "ONLINE", "BUSY", "AWAY"]
+	for r in rows:
+		var rk: int = rank.call(r)
+		if host_mode and rk != section:
+			section = rk
+			var hl := Label.new()
+			hl.text = heads[rk]
+			hl.add_theme_font_size_override("font_size", 11)
+			hl.add_theme_color_override("font_color", Color(0.5, 0.65, 0.58))
+			friends_box.add_child(hl)
+		var h := HBoxContainer.new()
+		var dot := Label.new()
+		dot.text = "●"
+		dot.add_theme_color_override("font_color", Color(0.35, 1.0, 0.45) if r[2] in [1, 5, 6] else Color(0.95, 0.75, 0.3) if r[2] == 2 else Color(0.5, 0.6, 0.65))
+		h.add_child(dot)
+		var n := Label.new()
+		n.text = r[1]
+		n.tooltip_text = "%s (%s)" % [r[1], STATE_NAMES[clampi(r[2], 0, 6)]]
+		n.mouse_filter = Control.MOUSE_FILTER_PASS
+		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		n.clip_text = true
+		h.add_child(n)
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_NONE
+		var id: int = r[0]
+		if host_mode:
+			var done: bool = invited.has(id) and clock - invited[id] < 60.0
+			b.text = "Invited" if done else "Invite"
+			b.disabled = done
+			b.pressed.connect(func():
+				steam.inviteUserToLobby(lobby_id, id)
+				invited[id] = clock
+				_remember(id)
+				_log("invited %s" % steam.getFriendPersonaName(id))
+				friends_sig = ""
+				_fill_friends())
+		else:
+			var lobby: int = r[3]
+			b.text = "JOIN"
+			b.custom_minimum_size = Vector2(90, 0)
+			b.pressed.connect(func():
+				_remember(id)
+				_show("ONLINE", "joining %s..." % steam.getFriendPersonaName(id), warn_col)
+				steam.joinLobby(lobby))
+		h.add_child(b)
+		friends_box.add_child(h)
+	# as many rows as fit: the list scrolls past half the window's height
+	var lines := friends_box.get_child_count()
+	friends_scroll.custom_minimum_size = Vector2(0, minf(lines * 28.0 + 4.0, get_viewport().get_visible_rect().size.y * 0.55))
+	friends_scroll.set_deferred("scroll_vertical", keep)
+
+
+func wants_keys() -> bool:
+	# typing in the search or the chat: the keys are for it, not the game (viewer.gd asks)
+	for c in [friends_search, chat_edit]:
+		if c and c.is_visible_in_tree() and c.has_focus():
+			return true
+	return false
+
+
+func owns_point(p: Vector2) -> bool:
+	# a click here is for these buttons, not the game (viewer.gd asks before sending the mouse to the game)
+	for c in [friends_panel, friends_open, lock_btn, chat_edit]:
+		if c and c.is_visible_in_tree() and c.get_global_rect().has_point(p):
+			return true
+	return false
+
+
+# out of the search or the chat (their keys are theirs while they have the focus, see wants_keys): Esc, Enter in the
+# search, or a click anywhere else gives the game its keys back (a click in the view did not: the player was stuck)
+func _input(event: InputEvent) -> void:
+	if host_mode and friends_panel and event is InputEventKey and event.physical_keycode == KEY_END:
+		if event.pressed and not event.echo:              # End: the invite list hidden / shown (a key the game does not use)
+			_hide_friends(not friends_hidden)
+		get_viewport().set_input_as_handled()
+		return
+	if not wants_keys():
+		return
+	var owner := get_viewport().gui_get_focus_owner()
+	if event is InputEventKey and event.pressed and not event.echo and (event.physical_keycode == KEY_ESCAPE or
+			(owner == friends_search and event.physical_keycode in [KEY_ENTER, KEY_KP_ENTER])):
+		get_viewport().gui_release_focus()
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.pressed and not owns_point(event.position):
+		get_viewport().gui_release_focus()
+
+
+func _hide_friends(hide: bool) -> void:
+	friends_hidden = hide
+	if hide:
+		get_viewport().gui_release_focus()
+	friends_sig = ""
+	_fill_friends()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if steam and host_mode and lobby_id and event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_F9:
+		steam.activateGameOverlayInviteDialog(lobby_id)
+
+
+func _on_lobby_created(result: int, id: int) -> void:
+	if result != RESULT_OK:
+		_show("ONLINE", "lobby not created (result %d)" % result, warn_col)
+		return
+	lobby_id = id
+	steam.setLobbyJoinable(id, true)
+	steam.setLobbyData(id, "game", "terra-nova-coop")
+	steam.setLobbyData(id, "coop_version", COOP_VERSION)
+	steam.setRichPresence("connect", "+connect_lobby %d" % id)
+	steam.setRichPresence("status", "Terra Nova coop: room for a second player")
+	_refresh()
+
+
+func _on_join_requested(id: int, _friend: int) -> void:
+	if not host_mode:
+		version_msg = ""
+		if lobby_id and lobby_id != id:
+			steam.leaveLobby(lobby_id)
+			if peer:
+				steam.closeP2PSessionWithUser(peer)
+			lobby_id = 0
+			peer = 0
+		_show("ONLINE", "joining the host's lobby...", warn_col)
+		steam.joinLobby(id)
+
+
+func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -> void:
+	if host_mode:
+		return
+	if response != 1:                                       # k_EChatRoomEnterResponseSuccess
+		_show("ONLINE", "could not join the lobby (%d)" % response, bad_col)
+		return
+	var hv := str(steam.getLobbyData(id, "coop_version"))
+	if hv != COOP_VERSION:
+		steam.leaveLobby(id)
+		peer = 0
+		lobby_id = 0
+		var hs := hv if hv != "" else "older"
+		version_msg = "The host has another coop version (host %s, you %s): both need the same Uplink coop files." % [hs, COOP_VERSION]
+		_show("ONLINE · ANOTHER COOP VERSION", "host %s, you %s" % [hs, COOP_VERSION], bad_col)
+		return
+	version_msg = ""
+	lobby_id = id
+	peer = steam.getLobbyOwner(id)
+	view = preload("res://scripts/coop_view.gd").new()     # nothing kept from another host
+	_hello()                                                # opens the P2P session
+	for n in get_parent().get_children():                   # the host's name now, his avatar when Steam has it
+		if n.has_method("set_mate"):
+			n.set_mate(steam.getFriendPersonaName(peer), null)
+	if steam.has_method("getPlayerAvatar"):
+		steam.getPlayerAvatar(2, peer)
+		steam.getPlayerAvatar(2, steam.getSteamID())          # ours too: the lobby shows both players
+	_refresh()
+
+
+func _hello() -> void:
+	hello_t = clock
+	steam.sendP2PPacket(peer, ("HELLO" + COOP_VERSION).to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
+
+
+# guest: gamepad 0 through Godot, XInput signs (stick up = positive), at most 60 packets a second while it is used:
+# 'P' + lx, ly, rx, ry (int8, -127..127) + fire (0 / 1); the host's coop_guest.py drops values older than 0.3 s
+func _pad() -> void:
+	if clock - pad_t < 1.0 / 60.0 or not (0 in Input.get_connected_joypads()) or OS.get_environment("TN_NO_PAD") == "1":
+		return
+	var lx := _axis(JOY_AXIS_LEFT_X, 1.0)
+	var ly := _axis(JOY_AXIS_LEFT_Y, -1.0)                # Godot: up = negative
+	var rx := _axis(JOY_AXIS_RIGHT_X, 1.0)
+	var ry := _axis(JOY_AXIS_RIGHT_Y, -1.0)
+	var fire := 1 if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT) > 0.25 else 0
+	if Input.is_joy_button_pressed(0, JOY_BUTTON_A):
+		fire |= 2                                         # bit 1: jump
+	if Input.is_joy_button_pressed(0, JOY_BUTTON_RIGHT_SHOULDER):
+		fire |= 4                                         # bit 2: lock target
+	if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.25:
+		fire |= 8                                         # bit 3: jump jets
+	var used := lx != 0 or ly != 0 or rx != 0 or ry != 0 or fire != 0
+	if not used and not pad_live:                         # idle pad: nothing to send (one last all-zero packet)
+		return
+	pad_live = used
+	pad_t = clock
+	var pk := PackedByteArray([80, 0, 0, 0, 0, fire])     # 'P'
+	pk.encode_s8(1, lx)
+	pk.encode_s8(2, ly)
+	pk.encode_s8(3, rx)
+	pk.encode_s8(4, ry)
+	steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY, CH_INPUT)
+	sent += pk.size()
+
+
+func _axis(a: JoyAxis, sign_: float) -> int:
+	var v := Input.get_joy_axis(0, a) * sign_
+	if absf(v) < PAD_DEAD:
+		return 0
+	return clampi(roundi(signf(v) * (absf(v) - PAD_DEAD) / (1.0 - PAD_DEAD) * 127.0), -127, 127)
+
+
+# host: the guest's Steam avatar, 21 x 27 like the game's portraits (the bridge turns it into the game's colours)
+func _on_avatar(id: int, size: int, data: PackedByteArray) -> void:
+	if size <= 0 or data.size() != size * size * 4:
+		return
+	if not host_mode and id == steam.getSteamID():          # guest: ours, for the lobby (coop_lobby.gd)
+		var me := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+		for n in get_parent().get_children():
+			if n.has_method("set_self"):
+				n.set_self(steam.getPersonaName(), me)
+		return
+	if id != peer:
+		return
+	var img := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	if host_mode:                                           # the menus have square pixels: 64 x 64 for the lobby's
+		var sq := img.duplicate()                           # portrait on our outfitting screen (coop_lobby.py)
+		sq.resize(64, 64, Image.INTERPOLATE_LANCZOS)
+		sq.convert(Image.FORMAT_RGB8)
+		udp_out.put_packet("Q".to_ascii_buffer() + sq.get_data())
+	# the game's screen has half-height rows (320 x 400 shown 4:3): a portrait's 21 x 27 pixels show a wide band,
+	# 1.73 wide for 1 high; the avatar's middle band, a little above the centre (faces)
+	var h := int(size / 1.73)
+	img = img.get_region(Rect2i(0, int((size - h) * 0.4), size, h))
+	if not host_mode:                                       # guest: the host's face in our cockpit's COMM panel
+		for n in get_parent().get_children():
+			if n.has_method("set_mate"):
+				n.set_mate(steam.getFriendPersonaName(peer), img)
+		return
+	img.resize(21, 27, Image.INTERPOLATE_LANCZOS)
+	img.convert(Image.FORMAT_RGB8)
+	udp_out.put_packet("A".to_ascii_buffer() + img.get_data())
+
+
+func _on_p2p_request(remote: int) -> void:
+	if remote == peer or (host_mode and lobby_id and _in_lobby(remote)):
+		steam.acceptP2PSessionWithUser(remote)
+
+
+func _in_lobby(id: int) -> bool:
+	for i in steam.getNumLobbyMembers(lobby_id):
+		if steam.getLobbyMemberByIndex(lobby_id, i) == id:
+			return true
+	return false
+
+
+func _on_lobby_update(lobby: int, changed: int, _maker: int, change: int) -> void:
+	if not host_mode and peer and lobby == lobby_id and changed == peer and change & 30:   # host left / disconnected
+		steam.leaveLobby(lobby_id)                          # (else Steam makes us the owner of an empty room)
+		peer = 0
+		lobby_id = 0
+		view = preload("res://scripts/coop_view.gd").new()
+		_show("ONLINE", "the host left - waiting for an invite (or Join game from your friends list)", warn_col)
+		return
+	if host_mode:
+		var was := peer
+		peer = 0
+		for i in steam.getNumLobbyMembers(lobby_id):
+			var m: int = steam.getLobbyMemberByIndex(lobby_id, i)
+			if m != steam.getSteamID():
+				peer = m
+		if peer != was:
+			if was:
+				steam.closeP2PSessionWithUser(was)
+				_release_input()
+				udp_out.put_packet("X".to_ascii_buffer())   # the bridge: his teammate back to the game's AI
+			peer_hello = false
+			peer_ok = false
+	elif lobby_id and peer and not _in_lobby(peer):         # guest: the host left (quit, crash, Steam closed)
+		steam.leaveLobby(lobby_id)
+		steam.closeP2PSessionWithUser(peer)
+		lobby_id = 0
+		peer = 0
+		msn_want = ""
+		_show("ONLINE", "the host left - waiting for an invite", warn_col)
+		return
+	_refresh()
+
+
+func _on_chat(t: String) -> void:
+	chat_edit.clear()
+	chat_edit.release_focus()
+	var vp := get_parent()
+	if t.strip_edges() != "" and vp and vp.has_method("_play_send"):
+		vp._play_send(("CHAT" + t.strip_edges()).to_utf8_buffer())
+
+
+# host: the lobby state going to the guest (the bridge's 'GLB'): his column, ready, the chat, under the lock button
+func _lobby_seen(pk: PackedByteArray) -> void:
+	var j = JSON.parse_string(pk.slice(3).get_string_from_utf8())
+	if typeof(j) != TYPE_DICTIONARY:
+		return
+	var show: bool = not bool(j.get("mission", false))
+	chat_edit.visible = show
+	if not show:
+		lobby_label.text = ""
+		return
+	var col := int(j.get("col", 0))
+	var t := "Player 2: " + ("column %d%s" % [col + 1, "  ·  READY" if j.get("ready", false) else "  ·  choosing"] if col else "no column yet")
+	for c in j.get("chat", []).slice(-8):
+		t += "
+%s: %s" % ["You" if c[1] == "host" else steam.getFriendPersonaName(peer) if steam and peer else "Player 2", c[2]]
+	lobby_label.text = t
+
+
+func _toggle_lock() -> void:
+	guest_locked = not guest_locked
+	var vp := get_parent()
+	if vp and vp.has_method("_play_send"):
+		vp._play_send(("LOCK1" if guest_locked else "LOCK0").to_ascii_buffer())   # to the bridge (live_bridge.py)
+	_paint_lock()
+
+
+func _paint_lock() -> void:
+	lock_btn.text = "Guest column: " + ("locked" if guest_locked else "unlocked")
+	lock_btn.modulate = warn_col if guest_locked else Color.WHITE
+
+
+func _refresh() -> void:
+	if not steam:
+		return
+	if host_mode:
+		if not lobby_id:
+			return
+		if peer and peer_ok:
+			_show("ONLINE · GUEST CONNECTED", "%s   %s%s" % [steam.getFriendPersonaName(peer), rate, _ping_text()], ok_col)
+		elif peer and peer_hello:
+			_show("ONLINE · GUEST HAS ANOTHER VERSION", "%s: both need the same Uplink coop files (yours: %s)" % [
+				steam.getFriendPersonaName(peer), COOP_VERSION], warn_col)
+		elif peer:
+			_show("ONLINE · GUEST JOINING", steam.getFriendPersonaName(peer), warn_col)
+		else:
+			_show("ONLINE · CONNECTABLE", "invite a friend from the list on the right", ok_col)
+	elif peer:
+		_show("ONLINE · CONNECTED TO HOST", "%s   %s%s" % [steam.getFriendPersonaName(peer), rate, _ping_text()],
+			ok_col if ping_ms < 150 else warn_col)
+
+
+func _waiting() -> void:
+	var live := steam != null and peer != 0 and clock - last_view < 2.0
+	wait_panel.visible = not live
+	if live:
+		return
+	var dots := ".".repeat(1 + int(clock * 2.0) % 3)
+	wait_text.add_theme_color_override("font_color", bad_col if version_msg != "" and peer == 0 else Color(0.8, 0.85, 0.9))
+	if steam == null:
+		wait_text.text = "Steam is not available: start Steam, then this window again."
+	elif peer == 0 and version_msg != "":
+		wait_text.text = version_msg
+	elif peer == 0:
+		wait_text.text = "Waiting for a game%s\nClick JOIN next to your friend below, or accept his Steam invite." % dots
+	else:
+		wait_text.text = "Connected to %s.\nWaiting for the host to start a mission%s\nYou will drive the teammate nearest to the host: W/S/A/D, mouse, left button to fire,\nor a gamepad (left stick move, right stick look, right trigger fire). F8: next teammate." % [
+			steam.getFriendPersonaName(peer), dots]
+
+
+func _draw_marker() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if not (host_mode and peer_ok) or clock - guest_seen > 1.0 or guest_pos == Vector3.ZERO or cam == null:
+		return
+	var vp := get_parent()
+	var n: Node3D = vp._live_node(guest_ent) if guest_ent > 0 and vp != null and vp.has_method("_live_node") else null
+	var top := (n.global_position if n != null and is_instance_valid(n) and n.visible else guest_pos) + Vector3(0, 0.72, 0)   # just over his head
+	if cam.is_position_behind(top):
+		return
+	var font := ThemeDB.fallback_font
+	var c := cam.unproject_position(top)
+	var fs := int(clampf(marker.size.y * 0.028, 12.0, 26.0))
+	var t := "%s  %dm" % [steam.getFriendPersonaName(peer), int(round(cam.global_position.distance_to(top) * 6.0))]   # the game's metres (its lock reads 51 m where 8.5 units)
+	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var p := c - Vector2(w / 2.0, 6.0)
+	marker.draw_string_outline(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 4, Color.BLACK)
+	marker.draw_string(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.45, 0.85, 1.0))
+	marker.draw_colored_polygon(PackedVector2Array([c + Vector2(-5, -2), c + Vector2(5, -2), c + Vector2(0, 5)]),
+		Color(0.45, 0.85, 1.0))
+
+
+func _ping_text() -> String:
+	return "   ping %d ms" % ping_ms if ping_ms >= 0 else ""
+
+
+func _log_open() -> void:
+	DirAccess.make_dir_recursive_absolute("user://coop_logs")
+	var role := "guest" if "--coop-guest" in OS.get_cmdline_user_args() else "host"
+	var path := "user://coop_logs/%s_%s.log" % [role, Time.get_datetime_string_from_system().replace(":", "-")]
+	log_f = FileAccess.open(path, FileAccess.WRITE)
+	_log("Terra Nova Uplink coop %s, version %s, %s" % [role, COOP_VERSION, OS.get_name()])
+	_log("log file: %s" % ProjectSettings.globalize_path(path))
+
+
+func _log(msg: String) -> void:
+	var line := "[%s] %s" % [Time.get_time_string_from_system(), msg]
+	print("coop: ", line)
+	if log_f:
+		log_f.store_line(line)
+		log_f.flush()
+
+
+func _show(t: String, d: String, c: Color) -> void:
+	if label and not label.text.begins_with("● " + t):
+		_log("%s  %s" % [t, d])
+	label.text = "● " + t + ("\n   " + d if d != "" else "")
+	label.add_theme_color_override("font_color", c)

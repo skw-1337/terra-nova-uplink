@@ -90,7 +90,8 @@ var friends_t := -100.0
 var friends_sig := ""
 var invited := {}                     # host: friend id -> clock of the invite
 var friends_search: LineEdit          # host: filters the list by name
-var friends_hidden := false           # host: End hides / shows the invite list (in the way in a mission)
+var friends_hidden := false           # host: End or its x hides the invite list (in the way in a mission)
+var friends_open: Button              # host: brings it back while it is hidden
 var friends_scroll: ScrollContainer
 var friends_fold: Button
 var friends_folded := false
@@ -397,8 +398,15 @@ func _build_friends() -> void:
 		_fill_friends())
 	head.add_child(friends_fold)
 	if host_mode:
+		var close := Button.new()
+		close.text = "×"
+		close.focus_mode = Control.FOCUS_NONE
+		close.tooltip_text = "Close the list (End, or the Invite a friend button brings it back)"
+		close.pressed.connect(_hide_friends.bind(true))
+		head.add_child(close)
+	if host_mode:
 		friends_search = LineEdit.new()
-		friends_search.placeholder_text = "Search a friend...   (Esc: back to the game)"
+		friends_search.placeholder_text = "Search a friend...  (Esc: back to game)"
 		friends_search.clear_button_enabled = true
 		friends_search.text_changed.connect(func(_t): friends_sig = ""; _fill_friends())
 		v.add_child(friends_search)
@@ -411,11 +419,22 @@ func _build_friends() -> void:
 	friends_scroll.add_child(friends_box)
 	friends_panel.visible = false
 	if host_mode:
-		friends_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-		friends_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-		friends_panel.position = Vector2(-12, 44)
 		friends_panel.custom_minimum_size = Vector2(320, 0)
 		add_child(friends_panel)
+		# its right edge 12 px from the screen's, growing to the left (with only a position it grew off the screen,
+		# its fold and close buttons out of reach)
+		friends_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
+		friends_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		friends_panel.offset_top = 44
+		friends_open = Button.new()
+		friends_open.text = "Invite a friend"
+		friends_open.focus_mode = Control.FOCUS_NONE
+		friends_open.visible = false
+		friends_open.pressed.connect(_hide_friends.bind(false))
+		add_child(friends_open)
+		friends_open.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
+		friends_open.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		friends_open.offset_top = 44
 	else:
 		friends_panel.custom_minimum_size = Vector2(440, 0)
 		wait_title.get_parent().add_child(friends_panel)
@@ -438,6 +457,8 @@ func _fill_friends() -> void:
 		return
 	var want := steam != null and (lobby_id != 0 and not peer if host_mode else peer == 0 and version_msg == "")
 	friends_panel.visible = want and not friends_hidden
+	if friends_open:
+		friends_open.visible = want and friends_hidden
 	if not want or friends_hidden:
 		return
 	# [id, name, state, lobby, recent time]: friends hosting a game first, then recent ones, online, away
@@ -475,7 +496,7 @@ func _fill_friends() -> void:
 		return
 	friends_sig = sig
 	if host_mode:
-		friends_title.text = "INVITE A FRIEND  (%d online)   End: hide" % online + ("" if free else "   Y: free the mouse")
+		friends_title.text = "INVITE A FRIEND  (%d online)" % online + ("" if free else "   Y: free the mouse")
 	else:
 		friends_title.text = "FRIENDS HOSTING A GAME"
 	if friends_search:
@@ -555,7 +576,7 @@ func wants_keys() -> bool:
 
 func owns_point(p: Vector2) -> bool:
 	# a click here is for these buttons, not the game (viewer.gd asks before sending the mouse to the game)
-	for c in [friends_panel, lock_btn, chat_edit]:
+	for c in [friends_panel, friends_open, lock_btn, chat_edit]:
 		if c and c.is_visible_in_tree() and c.get_global_rect().has_point(p):
 			return true
 	return false
@@ -566,11 +587,7 @@ func owns_point(p: Vector2) -> bool:
 func _input(event: InputEvent) -> void:
 	if host_mode and friends_panel and event is InputEventKey and event.physical_keycode == KEY_END:
 		if event.pressed and not event.echo:              # End: the invite list hidden / shown (a key the game does not use)
-			friends_hidden = not friends_hidden
-			if friends_hidden:
-				get_viewport().gui_release_focus()
-			friends_sig = ""
-			_fill_friends()
+			_hide_friends(not friends_hidden)
 		get_viewport().set_input_as_handled()
 		return
 	if not wants_keys():
@@ -582,6 +599,14 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton and event.pressed and not owns_point(event.position):
 		get_viewport().gui_release_focus()
+
+
+func _hide_friends(hide: bool) -> void:
+	friends_hidden = hide
+	if hide:
+		get_viewport().gui_release_focus()
+	friends_sig = ""
+	_fill_friends()
 
 
 func _unhandled_input(event: InputEvent) -> void:

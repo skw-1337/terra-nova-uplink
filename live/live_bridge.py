@@ -31,6 +31,8 @@ print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage ca
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
+import walk_anim
+marche = walk_anim.WalkAnim()
 LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
 # pieces articulees (porte du vaisseau, tourelles) : le jeu passe a son interpreteur de modeles deux mots de la fiche de
 # l'objet (routine 0x293AA0 de l'exe anglais), fiche n = mot a +3 de l'entree : (debut, pas, decalage des deux mots)
@@ -755,6 +757,8 @@ while True:
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
     # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds
     joints = []
+    figees = []                                   # armures que le jeu n'anime pas (loin) : marche rejouee (walk_anim)
+    animees = {}
     for i in range(NENT):
         o = 0x25 * i
         if not tab[o] or tab[o + 1] != 1: continue      # (le joueur aussi : il se voit dans les vues annexes)
@@ -765,6 +769,8 @@ while True:
         x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
         mech = tab[o + 2] == 9                     # le mech (type 9, squelette 886) : 10 articulations, grande foulee
         used = j[:10] if mech else j
+        if not mech and i != pid:
+            figees.append(i)                          # retiree plus bas si le jeu l'anime
         if any(v == (0, 0, 0) for v in used):
             continue
         # pas affiche par le jeu : articulations pas a jour (Godot etirerait le maillage en gros bloc noir). Avant :
@@ -786,7 +792,34 @@ while True:
         q = [((v[0] - x0) / 65536, (v[1] - y0) / 65536, v[2] / 65536) for v in j]
         sg = 1 if q[9][2] > q[8][2] else -1
         sol = min(w[2] * sg for w in q[:4])
-        joints.append(struct.pack('<if48f', i, sol * sg, *[c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]))
+        pose = [c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]
+        joints.append(struct.pack('<if48f', i, sol * sg, *pose))
+        if i in figees:
+            figees.remove(i)
+            animees[i] = (tab[o + 2], pose)
+    # celles que le jeu anime apprennent la marche de leur type (debout seulement : pas accroupies ni a terre) ;
+    # les autres la rejouent, posees sur leur entite (hauteur du jeu moins 0,12, comme ses pieds)
+    now_w = time.time()
+    ou_unite = lambda i: (*(v / 65536 for v in struct.unpack_from('<ii', tab, 0x25 * i + 0x0F)),
+                          struct.unpack_from('<H', tab, 0x25 * i + 0x1B)[0] / 65536 * 2 * math.pi)
+    if animees:
+        hmax = max(max(p[1::3]) for _, p in animees.values())
+        marche.learn({i: v for i, v in animees.items() if max(v[1][1::3]) > 0.8 * hmax}, ou_unite, now_w)
+    for i in figees:
+        o = 0x25 * i
+        x, y, cap = ou_unite(i)
+        # sa taille : la hauteur de sa derniere pose du jeu (articulations figees, mais a ses proportions)
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        zs = [v / 65536 for v in struct.unpack('<48i', g.read(SOLDATS + nf * 0x582 + 0x1AF, 192))[2::3]] if nf <= 200 else []
+        haut = max(zs) - min(zs) if zs and any(zs) else 0.0
+        p = marche.pose(i, tab[o + 2], x, y, cap, now_w, haut)
+        if p:
+            joints.append(struct.pack('<if', i, struct.unpack_from('<i', tab, o + 0x17)[0] / 65536 - 0.12) + p)
+    if n % int(HZ * 5) == 0 and os.environ.get('TN_DEBUG_WALK'):
+        print('marche : %d animees par le jeu, %d figees, %d rejouees' % (len(animees), len(figees),
+              sum(1 for i in figees if i in marche.rep and marche.rep[i][2])), flush=True)
+    if n % int(HZ * 5) == 0:
+        marche.forget({i for i in range(NENT) if tab[0x25 * i] and tab[0x25 * i + 1] == 1})
     arts = []
     fiches = {c: [] for c in FICHES_ART}
     for i in range(NENT):

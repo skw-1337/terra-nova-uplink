@@ -1529,7 +1529,21 @@ func _play_scancode(e: InputEventKey) -> int:
 			return 0x36 if e.location == KEY_LOCATION_RIGHT else 0x2A
 		KEY_ALT:
 			return 0xE038 if e.location == KEY_LOCATION_RIGHT else 0x38
-	return SCANCODES.get(k, 0)
+	var sc: int = SCANCODES.get(k, 0)
+	return key_map.get(sc, sc)
+
+
+# The coop guest's own keys (his launcher's Game keys, in TN+'s KEYBOARD page): TN_KEYS = "2C:11,11:0,...", the key
+# pressed -> the game's key for that command (0: none). The host's are TN+'s own, in his game.
+var key_map := _key_map()
+
+static func _key_map() -> Dictionary:
+	var m := {}
+	for pair in OS.get_environment("TN_KEYS").split(",", false):
+		var ab := pair.split(":")
+		if ab.size() == 2:
+			m[ab[0].hex_to_int()] = ab[1].hex_to_int()
+	return m
 
 
 func _play_send(bytes: PackedByteArray) -> void:
@@ -1820,14 +1834,14 @@ func _live_update() -> void:
 		else:
 			pk = q
 	if pk.size() < 24:
+		_live_smooth()
 		return
 	var h := pk.decode_float(12)
-	camera.position = Vector3(pk.decode_float(0), pk.decode_float(8), pk.decode_float(4))
+	# game heading 0 = +x, then towards +y (Godot +z)
+	_cam_target(Vector3(pk.decode_float(0), pk.decode_float(8), pk.decode_float(4)), atan2(-cos(h), -sin(h)), pk.decode_float(16))
 	camera.keep_aspect = Camera3D.KEEP_WIDTH        # the game gives its horizontal field of view
 	camera.fov = pk.decode_float(20)
-	yaw = atan2(-cos(h), -sin(h))                   # game heading 0 = +x, then towards +y (Godot +z)
-	pitch = pk.decode_float(16)
-	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
+	_live_smooth()
 	if hud or hud_win.size.y > 0:                     # coop guest: its cockpit's window (coop_hud.gd)
 		_hud_camera(camera.fov)
 	live_seen += 1
@@ -1838,6 +1852,7 @@ func _live_update() -> void:
 		Input.parse_input_event(ev)
 	if pk.size() >= 32 and not current.is_empty():
 		_live_units(pk)
+		_smooth_capture()
 	if live_shot != "" and live_seen == live_shot_frame:
 		_screenshot(live_shot)
 
@@ -2100,6 +2115,70 @@ func _live_arts(pk: PackedByteArray, at: int) -> void:
 		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr)
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
+
+
+# Smooth motion. The game moves the camera and the units once per frame of its own (often 25-40 a second) while
+# Uplink draws up to a few hundred: shown as they come, they moved by jerks. Each new game state is reached in one
+# game frame (its length measured), from where it was drawn: one game frame later, but without the steps. Jumps
+# of more than SMOOTH_JUMP units (a teleport, a new mission) are not eased.
+const SMOOTH_JUMP := 4.0
+var sm_int := 33.0                                   # ms between two game states (measured, eased)
+var sm_last := 0                                     # when the camera last changed
+var cam_from := [Vector3.ZERO, 0.0, 0.0]             # camera: where its easing started (position, yaw, pitch)
+var cam_to := [Vector3.ZERO, 0.0, 0.0]               # ... and the game's newest state
+var cam_t := -100000
+
+func _cam_target(p: Vector3, y: float, pt: float) -> void:
+	var to: Vector3 = cam_to[0]
+	if p.is_equal_approx(to) and is_equal_approx(y, cam_to[1]) and is_equal_approx(pt, cam_to[2]):
+		return
+	var now := Time.get_ticks_msec()
+	var gap := now - sm_last
+	if gap > 4 and gap < 200:
+		sm_int = lerpf(sm_int, float(gap), 0.1)
+	sm_last = now
+	cam_from = [camera.position, yaw, pitch] if p.distance_to(to) < SMOOTH_JUMP else [p, y, pt]
+	cam_to = [p, y, pt]
+	cam_t = now
+
+
+func _live_smooth() -> void:
+	var now := Time.get_ticks_msec()
+	var a := clampf(float(now - cam_t) / sm_int, 0.0, 1.0)
+	camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
+	yaw = lerp_angle(cam_from[1], cam_to[1], a)
+	pitch = lerpf(cam_from[2], cam_to[2], a)
+	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
+	for node in smooth_nodes:
+		if not is_instance_valid(node):
+			continue
+		var sm: Array = node.get_meta("sm")
+		node.position = (sm[0] as Vector3).lerp(sm[1], clampf(float(now - int(sm[2])) / sm_int, 0.0, 1.0))
+
+
+# after the units are placed (their game positions): each one eased from where it is drawn to there
+var smooth_nodes: Array[Node3D] = []
+
+func _smooth_capture() -> void:
+	var now := Time.get_ticks_msec()
+	smooth_nodes.clear()
+	for node in live_nodes + live_extra.values():
+		if node == null or not is_instance_valid(node) or not node.visible or node.has_meta("corpse"):
+			continue
+		var to: Vector3 = node.position
+		var sm: Array = node.get_meta("sm", [])
+		if sm.is_empty() or not node.get_meta("sm_vis", false) or to.distance_to(sm[1]) >= SMOOTH_JUMP:
+			sm = [to, to, now]                       # new, shown again or jumped: no easing
+		elif not to.is_equal_approx(sm[1]):
+			var drawn: Vector3 = (sm[0] as Vector3).lerp(sm[1], clampf(float(now - int(sm[2])) / sm_int, 0.0, 1.0))
+			sm = [drawn, to, now]
+		node.set_meta("sm", sm)
+		node.set_meta("sm_vis", true)
+		smooth_nodes.append(node)
+	for node in live_nodes + live_extra.values():
+		if node != null and is_instance_valid(node) and not node.visible:
+			node.set_meta("sm_vis", false)
+	_live_smooth()                                   # drawn eased from this frame on
 
 
 func _live_node(idx: int) -> Node3D:

@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.10";
+    const string VERSION = "0.11";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -169,6 +169,10 @@ static class Coop
         op.Controls.Add(invertBox);
         padBox = new CheckBox { Text = "Use a gamepad (guest)", AutoSize = true, Location = new Point(10, 76), ForeColor = CText };
         op.Controls.Add(padBox);
+        Button keysBtn = Flat("Game keys...", CPanel);
+        keysBtn.Location = new Point(460, 72); keysBtn.Size = new Size(146, 28);
+        keysBtn.Click += delegate { GameKeys(); };
+        op.Controls.Add(keysBtn);
         op.Controls.Add(new Label { Text = "Mission (host)", ForeColor = CDim, AutoSize = true, Location = new Point(10, 110) });
         missionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 106), Size = new Size(482, 24),
             BackColor = CPanel, ForeColor = CText, FlatStyle = FlatStyle.Flat, MaxDropDownItems = 20 };
@@ -225,6 +229,7 @@ static class Coop
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
         m.Items.Add("Check for updates now", null, delegate {
             Background(delegate { Install(true); Status("Up to date.", CGreen); CheckUpdates(); }); });
+        m.Items.Add("Import keys from my Terra Nova Plus...", null, delegate { ImportKeys(); });
         m.Items.Add("Repair (download everything again)", null, delegate { Repair(); });
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Uninstall...", null, delegate { Uninstall(); });
@@ -548,8 +553,12 @@ static class Coop
         Status("Opening Uplink...", CAmber);
         string size = Cfg("window");
         string win = size == "native" ? "" : "--resolution " + size + " ";
+        Dictionary<string, string> env = Env();
+        List<string> km = new List<string>();                  // his keys (Game keys...): Uplink turns them before sending
+        foreach (KeyValuePair<int, int> kv in KeyMap()) km.Add(kv.Key.ToString("X2") + ":" + kv.Value.ToString("X2"));
+        env["TN_KEYS"] = string.Join(",", km.ToArray());
         Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + "-- --live --coop-guest --live-port 47831 --play --play-port 47834" +
-            (size == "native" ? " --native" : ""), UplinkDir, Env(), true);
+            (size == "native" ? " --native" : ""), UplinkDir, env, true);
         Status("Uplink is open: click JOIN next to your friend (he must have clicked HOST A GAME).", CGreen);
         while (!stopping && !g.HasExited) Thread.Sleep(500);
         if (!stopping) { Status("Uplink was closed.", CText); Session("No session.", CDim); }
@@ -854,6 +863,83 @@ static class Coop
             if (at >= 0) lines[at] = line; else lines.Add(line);
         }
         File.WriteAllLines(ini, lines);
+    }
+
+    // ------------------------------------------------------------------ the game's keys (TN+'s KEYBOARD page)
+    // TN+ changes the keys in the game itself (TNPlus.ini next to its exe: key_game_<id> = [SHIFT+|CTRL+|ALT+]scancode);
+    // "Game keys..." opens that page of our own TN+, "Import" copies the keys of a TN+ the player already set up
+    static void GameKeys()
+    {
+        if (busy) return;
+        Background(delegate {
+            if (!File.Exists(TnpExe))
+            {
+                Status("Downloading and building Terra Nova Plus (for its key settings)...", CAmber);
+                BuildTnp();
+                string tp = Get(Heads(), TNPLUS_REPO);
+                if (tp != null) Set("tnplus_sha", tp);
+                SaveCfg();
+            }
+            if (Game() != null) WriteTnpIni(Game());
+            Status("Set your keys in the window that opened, then click DONE.", CAmber);
+            Process p = Run(TnpExe, "--keys", TnpDir, null, false);
+            p.WaitForExit();
+            Status("Keys saved: " + KeysSummary(), CGreen);
+        });
+    }
+
+    static readonly string[] KEY_LINES = { "key_", "keys_", "mouse_", "invert_y" };
+
+    static void ImportKeys()
+    {
+        using (OpenFileDialog d = new OpenFileDialog())
+        {
+            d.Title = "Pick the TNPlus.ini of your Terra Nova Plus (next to its TNPlus.exe)";
+            d.Filter = "TNPlus.ini|TNPlus.ini|ini files|*.ini";
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            List<string> mine = File.Exists(Path.Combine(TnpDir, "TNPlus.ini")) ? new List<string>(File.ReadAllLines(Path.Combine(TnpDir, "TNPlus.ini"))) : new List<string>();
+            mine.RemoveAll(l => Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k)));
+            int n = 0;
+            foreach (string l in File.ReadAllLines(d.FileName))
+                if (Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k))) { mine.Add(l); n++; }
+            Directory.CreateDirectory(TnpDir);
+            File.WriteAllLines(Path.Combine(TnpDir, "TNPlus.ini"), mine);
+            Status(n + " key and mouse settings imported: " + KeysSummary(), CGreen);
+        }
+    }
+
+    // TN+'s commands that have a key of their own by default (id, scancode): the guest's keys are turned by Uplink
+    static readonly string[] DEFAULT_KEYS = {
+        "fwd:11", "back:2D", "turnl:1E", "turnr:20", "stop:1F", "sidel:2C", "sider:2E", "jump:39", "crouch:29",
+        "lookup:13", "lookdn:2F", "lookl:10", "lookr:12", "centre:21", "v360:30", "full:22", "ir:17", "zoomin:0D",
+        "zoomout:0C", "mfd:0F", "w1:02", "w2:03", "w3:04", "w4:05", "asf:06", "tnext:14", "tprev:15",
+        "sq1:3B", "sq2:3C", "sq3:3D", "sqall:3E", "drop:1C", "recentre:31", "maphud:32", "mapout:33", "mapin:34",
+        "squadinfo:43", "sensor:44", "wrange:57", "minfo:58" };
+
+    static Dictionary<int, int> KeyMap()
+    {
+        Dictionary<int, int> m = new Dictionary<int, int>();
+        string ini = Path.Combine(TnpDir, "TNPlus.ini");
+        if (!File.Exists(ini)) return m;
+        Dictionary<string, int> def = new Dictionary<string, int>();
+        foreach (string dk in DEFAULT_KEYS) def[dk.Split(':')[0]] = Convert.ToInt32(dk.Split(':')[1], 16);
+        Dictionary<int, int> moved = new Dictionary<int, int>();          // new key -> the command's default key
+        foreach (string l in File.ReadAllLines(ini))
+        {
+            Match mm = Regex.Match(l, @"^\s*key_game_(\w+)\s*=\s*([0-9A-Fa-f]{1,2})\s*$");   // plain keys only (no modifier)
+            int d;
+            if (mm.Success && def.TryGetValue(mm.Groups[1].Value, out d)) moved[Convert.ToInt32(mm.Groups[2].Value, 16)] = d;
+        }
+        foreach (KeyValuePair<int, int> kv in moved) m[kv.Key] = kv.Value;
+        foreach (int d in moved.Values) if (!moved.ContainsKey(d)) m[d] = 0;   // the old key of a moved command: nothing
+        return m;
+    }
+
+    static string KeysSummary()
+    {
+        int n = KeyMap().Count;
+        return n == 0 ? "the game's own keys." : "your keys (" + new List<string>(File.ReadAllLines(Path.Combine(TnpDir, "TNPlus.ini"))).FindAll(
+            l => l.TrimStart().StartsWith("key_game_")).Count + " changed).";
     }
 
     // ------------------------------------------------------------------ install, update, repair

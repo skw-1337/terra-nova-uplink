@@ -226,6 +226,8 @@ func _build_briefing() -> void:
 	map_cam.projection = Camera3D.PROJECTION_ORTHOGONAL
 	map_cam.size = 360.0
 	map_cam.far = 4000.0
+	if _viewer() and _viewer().has_method("env_nofog"):
+		map_cam.environment = _viewer().env_nofog()     # (200 above the map: the live view's fog would cover it)
 	map_view.add_child(map_cam)
 	var mf := PanelContainer.new()
 	mf.add_theme_stylebox_override("panel", _box(Color(0, 0, 0), FRAME, 1, 1))
@@ -682,7 +684,7 @@ func _map_aim() -> void:
 	if n == 0:
 		return
 	var c := sum / n
-	map_cam.global_transform = Transform3D(Basis.looking_at(Vector3.DOWN, Vector3.FORWARD), Vector3(c.x, 200.0, c.y))   # under the live view's depth fog (250)
+	map_cam.global_transform = Transform3D(Basis.looking_at(Vector3.DOWN, Vector3.FORWARD), Vector3(c.x, 200.0, c.y))   # (its camera has no fog: env_nofog)
 
 
 func _chat_refresh() -> void:

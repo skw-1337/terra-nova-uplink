@@ -109,6 +109,7 @@ func _ready() -> void:
 	map_cam.projection = Camera3D.PROJECTION_ORTHOGONAL
 	map_cam.size = 60.0
 	map_cam.far = 600.0
+	map_cam.environment = get_parent().env_nofog()       # (high above the map: the live view's fog would cover it)
 	map_view.add_child(map_cam)
 	map_rect = TextureRect.new()
 	map_rect.texture = map_view.get_texture()

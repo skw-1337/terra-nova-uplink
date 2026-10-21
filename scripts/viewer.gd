@@ -113,8 +113,10 @@ const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the am
 const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
 const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
-const LIVE_FOG_BEGIN := 250.0   # live mode: depth fog from here to there (game units), like the game's haze
-const LIVE_FOG_END := 700.0
+const LIVE_FOG_BEGIN := 35.0    # live mode: a light depth fog from here to there (game units): the far hills fade
+const LIVE_FOG_END := 320.0     # into the sky's colour (aerial perspective), the map looks deeper and bigger
+const LIVE_FOG_MAX := 0.65      # (never a wall: 65 % at the most)
+const LIVE_SHADOW := 70.0       # live mode: the objects' shadows up to there (the ground casts none)
 const LIVE_SATURATION := 1.4    # the 3D's colours (the sky and the water take it back: their "desat")
 const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
 const VIEW_CENTRE := 0.51        # the view's centre (the crosshair, screen row 144) in the 3D window, measured on lock boxes
@@ -245,9 +247,21 @@ func _ready() -> void:
 		# ground's light is mostly the sky's ambient, which only its sky contribution scales (not its energy), and
 		# the blurred sky reflection Godot adds to every surface: off
 		sun.light_energy = LIVE_LIGHT
-		# no cast shadows: the game has none (seen beside it: hills and units darkened ground the game leaves lit, and
-		# the sprites, drawn unlit like the game's, stood bright inside them)
-		sun.shadow_enabled = false
+		# shadows: trees, objects and suits (the player's too, see _shadow_twin) cast them; the ground does not (its
+		# hills darkened ground the game leaves lit). Sharper near the eye: 8192 atlas, splits at 4, 14, 35 units
+		sun.shadow_enabled = true
+		sun.directional_shadow_max_distance = LIVE_SHADOW
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+		sun.directional_shadow_split_1 = 0.06
+		sun.directional_shadow_split_2 = 0.2
+		sun.directional_shadow_split_3 = 0.5
+		sun.directional_shadow_blend_splits = true
+		sun.shadow_blur = 0.6
+		sun.shadow_opacity = 0.75
+		sun.shadow_bias = 0.03
+		sun.shadow_normal_bias = 1.0
+		RenderingServer.directional_shadow_atlas_set_size(8192, true)
+		RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_HIGH)
 		env.ambient_light_sky_contribution = LIVE_AMBIENT
 		env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 		env.adjustment_enabled = true
@@ -256,7 +270,10 @@ func _ready() -> void:
 		env.fog_mode = Environment.FOG_MODE_DEPTH
 		env.fog_depth_begin = LIVE_FOG_BEGIN
 		env.fog_depth_end = LIVE_FOG_END
-		env.fog_density = 1.0
+		env.fog_density = LIVE_FOG_MAX
+		env.fog_depth_curve = 1.2
+		env.fog_aerial_perspective = 0.7
+		env.fog_sun_scatter = 0.1
 		env.fog_sky_affect = 0.0
 		var lpi := args.find("--live-port")
 		if lpi >= 0 and lpi + 1 < args.size():
@@ -493,6 +510,10 @@ func _load(index: int) -> void:
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
+	if live:                                  # the ground takes the objects' shadows, casts none of its own
+		for gi in world.find_children("*", "GeometryInstance3D", true, false):
+			if gi.material_override == det_mat or gi.material_override == out_mat:
+				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var wl := Terrain.water_level(m["detail"])
 	if not is_nan(wl):
 		var plane := MeshInstance3D.new()
@@ -500,6 +521,7 @@ func _load(index: int) -> void:
 		pm.size = Vector2(1024, 1024)
 		plane.mesh = pm
 		plane.material_override = mats["water"]
+		plane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		plane.position = Vector3(256, wl - 0.05, 256)     # under the water tiles: 0.12 above them it rose up the
 		# river banks, wider than the game's river (its tiles, with their own far colour, are the game's water)
 		world.add_child(plane)
@@ -966,7 +988,6 @@ func _add_soldier(holder: Node3D, suit: int) -> float:
 		var seg := MeshInstance3D.new()
 		seg.mesh = _limb_quad(ld)
 		seg.material_override = _limb_mat(suit, sg[2], ld)
-		seg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		holder.add_child(seg)
 		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x)])
 	holder.set_meta("soldier", parts)
@@ -2210,9 +2231,40 @@ func _sub_hide(node: Node3D, hide: bool, layer: int = SUB_HIDE_LAYER) -> void:
 	var stack: Array = [node]
 	while not stack.is_empty():
 		var nd = stack.pop_back()
+		if nd.has_meta("shadow_twin"):
+			continue
 		if nd is VisualInstance3D:
 			(nd as VisualInstance3D).layers = layer if hide else 1
+			if layer == PLAYER_LAYER and hide and nd is MeshInstance3D and not nd.has_meta("twinned"):
+				_shadow_twin(nd)
 		stack.append_array(nd.get_children())
+
+
+# The player's body is on a layer the main camera does not draw, and Godot only casts the shadows of what the camera
+# draws: each of its pieces gets a twin on the main layer that only casts the shadow (a child: it follows the piece).
+func _shadow_twin(mi: MeshInstance3D) -> void:
+	mi.set_meta("twinned", true)
+	if mi.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
+		return
+	var tw := MeshInstance3D.new()
+	tw.set_meta("shadow_twin", true)
+	tw.mesh = mi.mesh
+	tw.material_override = mi.material_override
+	tw.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	tw.extra_cull_margin = mi.extra_cull_margin
+	mi.add_child(tw)
+
+
+# The same environment without its fog, for the cameras high above the map (the coop's maps): the live view's depth
+# fog begins 35 units away
+var env_nofog_cache: Environment
+
+
+func env_nofog() -> Environment:
+	if env_nofog_cache == null:
+		env_nofog_cache = env.duplicate()
+		env_nofog_cache.fog_enabled = false
+	return env_nofog_cache
 
 
 # A burst suit (6/33): one entity, drawn by the game as a pile of the suit's armour pieces (its limb sprites: torso,
@@ -2268,7 +2320,6 @@ func _live_debris(idx: int, e) -> void:
 			var seg := MeshInstance3D.new()
 			seg.mesh = _limb_quad(ld)
 			seg.material_override = _limb_mat(suit, part, ld, PILE_SHADE)
-			seg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			seg.extra_cull_margin = 1.0
 			# Y = the bone (lying), X = its front (up: seen from above), from joint a: the piece centred on its spot
 			seg.transform = Transform3D(Basis(Vector3.UP * PILE_SCALE, dir * PILE_SCALE, Vector3.UP.cross(dir) * PILE_SCALE),

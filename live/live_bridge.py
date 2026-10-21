@@ -808,6 +808,11 @@ while True:
         lim = (2.0 if mech or tab[o + 2] in LOURDES else 1.0) * 65536
         if any(math.hypot(v[0] - x0, v[1] - y0) > lim for v in used):
             continue
+        if not mech:                                  # squelette etire : le jeu ne pose plus l'armure (vue dezoomee,
+            hz = max(v[2] for v in used) - min(v[2] for v in used)          # articulations laissees en route : 1,2 a 1,8
+            larg = max(math.hypot(v[0] - used[0][0], v[1] - used[0][1]) for v in used)   # de large pour 0,5 de haut ;
+            if larg > 1.4 * hz + 0.15 * 65536:        # posee : 0,1 a 0,5 de large, ~0,43 de haut)
+                continue
         if prev is None:
             if any(math.hypot(v[0] - x0, v[1] - y0) > (0.9 if mech or tab[o + 2] in LOURDES else 0.45) * 65536 for v in used):
                 continue

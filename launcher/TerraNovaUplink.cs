@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "1.1";
+    const string VERSION = "1.2";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "main";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string COOP_URL = "https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10";
@@ -625,12 +625,13 @@ static class Uplink
     static void WriteTnpIni(string game)
     {
         string ini = Path.Combine(TnpDir, "TNPlus.ini");
-        // HD 848x480 stays (the bridge reads the cockpit from it); the rest at its lightest: Uplink draws the world,
-        // the game's own picture is only there to keep it running, behind Uplink
+        // HD 848x480 (the bridge reads the cockpit from it). Terrain and distances: TN+'s own (SHARPER, FAR, MAX), not
+        // the game's: the game moves the player on the ground it draws, and with its own terrain detail that ground is
+        // not kept up to date while he looks up (jets into a slope pushed him down and back; tested 21/10/2026), behind Uplink
         Dictionary<string, string> want = new Dictionary<string, string> {
             { "display", "HD" }, { "widescreen", "2" }, { "update_check", "0" }, { "game_dir", game },
-            { "terrain_detail", "GAME" }, { "object_distance", "GAME" }, { "view_distance", "NORMAL" },
-            { "small_views", "0" }, { "edge_objects", "0" }, { "field_of_view", "GAME" } };
+            { "terrain_detail", "SHARPER" }, { "object_distance", "MAX" }, { "view_distance", "FAR" },
+            { "small_views", "0" }, { "edge_objects", "1" }, { "field_of_view", "GAME" } };
         List<string> lines = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)) : new List<string> { "; Terra Nova Plus settings (written by Terra Nova Uplink)" };
         foreach (KeyValuePair<string, string> kv in want)
         {

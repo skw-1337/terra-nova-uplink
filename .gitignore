@@ -7,3 +7,4 @@ live/__pycache__/
 live/snaps/
 live/shots/
 movies_hd/
+launcher/*.exe

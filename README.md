@@ -18,6 +18,14 @@ It reads everything from your own copy of the game (GOG or Steam). No game files
 | ![Storm sky](docs/storm.jpg) | ![Dawn](docs/dawn.jpg) |
 | ![Power suit](docs/power_suit.jpg) | ![Model gallery](docs/model_gallery.jpg) |
 
+## Quick start
+
+Download **Terra Nova Uplink.exe** from the [latest release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), put it in an empty folder and run it. It finds your game and downloads the rest by itself (Uplink, Godot, Terra Nova Plus, Python for the live mode), and keeps them up to date. Then click **PLAY** (live mode) or **MAP VIEWER**.
+
+Windows may warn about an unknown app (not signed): More info, then Run anyway. The manual install is below.
+
+Playing with a friend? There's a separate online co-op: [Terra Nova Coop](https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10).
+
 ## Map viewer
 
 1. Have the game installed (GOG or Steam).

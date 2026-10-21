@@ -11,6 +11,14 @@ Tout est lu depuis ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n
 
 ![La planète rouge](docs/red_planet.jpg)
 
+## Démarrage rapide
+
+Télécharger **Terra Nova Uplink.exe** depuis la [dernière release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), le mettre dans un dossier vide et le lancer. Il trouve le jeu et télécharge le reste tout seul (Uplink, Godot, Terra Nova Plus, Python pour le mode Live), et le garde à jour. Ensuite **PLAY** (mode Live) ou **MAP VIEWER**.
+
+Windows peut prévenir d'une application inconnue (non signée) : Informations complémentaires, puis Exécuter quand même. L'installation manuelle est plus bas.
+
+Pour jouer avec un ami, il y a une coop en ligne à part : [Terra Nova Coop](https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10).
+
 ## Visualiseur de cartes
 
 1. Avoir le jeu installé (GOG ou Steam).

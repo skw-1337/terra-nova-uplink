@@ -132,6 +132,8 @@ var play := false
 var play_udp: PacketPeerUDP
 var play_dx := 0.0
 var play_dy := 0.0
+var mouse_sens := maxf(0.1, OS.get_environment("TN_MOUSE_SENS").to_float()) if OS.get_environment("TN_MOUSE_SENS") != "" else 1.0
+var invert_y := OS.get_environment("TN_INVERT_Y") == "1"    # the launcher's settings (its environment)
 var play_held := {}
 var play_started := false        # the first click in the window only takes the mouse
 # the game's own screen when it is not in its 3D (menus, death screen, briefing, video, pause): the bridge captures
@@ -174,7 +176,8 @@ func _ready() -> void:
 	_build_ui()
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
-	var root := TNData.find_root(cfg.get_value("game", "root", ""))
+	var given := OS.get_environment("TN_GAME_DIR").replace("\\", "/")   # the launcher (Terra Nova Uplink): its game
+	var root := TNData.find_root(given if given != "" else cfg.get_value("game", "root", ""))
 	if root == "" or not data.setup(root):
 		_ask_path("Terra Nova folder not found. Paste the game folder (the one containing TNOVA):")
 		return
@@ -1620,8 +1623,8 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		if captured:
-			play_dx += event.relative.x
-			play_dy += event.relative.y
+			play_dx += event.relative.x * mouse_sens
+			play_dy += event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
 		elif play_started:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()

@@ -10,7 +10,7 @@
 # lab's own nodes and tweens): a line taken out is undone. What the viewer sets meanwhile (a new mission's haze, its sun)
 # becomes the base and the lab's values stay on top; a new mission applies the version again (its materials are new).
 # A lab.gd or shader that does not compile is refused: the last good one stays on screen, the errors go to status.txt.
-# Insert: the lab's effects off / on, to compare (a key the game does not use).
+# K (or Insert): the lab's effects off / on, to compare (keys the game does not use).
 extends Node
 
 const POLL := 0.15                    # seconds between looks at the folder
@@ -209,7 +209,7 @@ func _frame_start() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.physical_keycode == KEY_INSERT:   # (before the viewer: it would go to the game)
+	if event is InputEventKey and event.physical_keycode in [KEY_K, KEY_INSERT]:   # (before the viewer: it would go to the game)
 		if event.pressed and not event.echo:
 			enabled = not enabled
 			_revert()
@@ -488,7 +488,7 @@ func _status() -> void:
 	var cur: Dictionary = v.current
 	var st := "waiting for a lab.gd that compiles"
 	if not enabled:
-		st = "lab off (Insert), lab.gd v%d waiting" % on_screen
+		st = "lab off (K), lab.gd v%d waiting" % on_screen
 	elif applied:
 		st = "lab.gd v%d applied %s%s" % [on_screen, applied_at, " WITH ERRORS (below)" if applied_bad else ""]
 	if refused:
@@ -507,7 +507,7 @@ func _status() -> void:
 	out.append_array(lines)
 	_write("status.txt", "\n".join(out) + "\n")
 	var bad := not errors.is_empty()
-	label.text = ("LAB off (Insert)" if not enabled else "LAB v%d" % on_screen) + \
+	label.text = ("LAB off (K)" if not enabled else "LAB v%d" % on_screen) + \
 		("  (v%d refused)" % refused if refused else "") + ("  errors: status.txt" if bad else "")
 	label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6) if not enabled else
 		(Color(1, 0.4, 0.3) if bad else Color(0.5, 1, 0.6)))

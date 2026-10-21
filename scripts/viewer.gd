@@ -207,17 +207,7 @@ func _ready() -> void:
 		fps_label.add_theme_color_override("font_outline_color", Color.BLACK)
 		fps_label.add_theme_constant_override("outline_size", 4)
 		fl.add_child(fps_label)
-		var rl := CanvasLayer.new()                     # old school mode: the game's look over the 3D view, under its HUD (F12)
-		rl.layer = -1
-		add_child(rl)
-		oldschool_rect = ColorRect.new()
-		oldschool_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-		oldschool_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var rm := ShaderMaterial.new()
-		rm.shader = OLDSCHOOL
-		oldschool_rect.material = rm
-		oldschool_rect.visible = false                      # shown once the planet's palette is known
-		rl.add_child(oldschool_rect)
+		_make_oldschool()
 		var il := CanvasLayer.new()                     # the game's infrared view, under the old school mode and the HUD
 		il.layer = -2
 		add_child(il)
@@ -271,6 +261,8 @@ func _ready() -> void:
 		var lf := args.find("--shot-frame")
 		if lf >= 0 and lf + 1 < args.size():
 			live_shot_frame = int(args[lf + 1])
+	if not live:                              # the map viewer: old school too (F12), to see a map as in the game
+		_make_oldschool()
 	if live and "--hud" in args:
 		_hud_setup()
 	if live and "--play" in args:
@@ -1230,6 +1222,34 @@ func _unhandled_input(event: InputEvent) -> void:
 				_oldschool_toggle()
 
 
+# old school mode: the game's look over the 3D view, under its HUD (F12)
+func _make_oldschool() -> void:
+	var rl := CanvasLayer.new()
+	rl.layer = -1
+	add_child(rl)
+	oldschool_rect = ColorRect.new()
+	oldschool_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	oldschool_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var rm := ShaderMaterial.new()
+	rm.shader = OLDSCHOOL
+	oldschool_rect.material = rm
+	oldschool_rect.visible = false                      # shown once the planet's palette is known
+	rl.add_child(oldschool_rect)
+
+
+# the planet's palette for it (each new map); live: on from the start (--smooth: off), the map viewer: off (F12)
+func _oldschool_palette() -> void:
+	if oldschool_rect != null and pal_key != oldschool_key and pal.size() >= 256:
+		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
+		for i in 256:
+			pimg.set_pixel(i, 0, pal[i])
+		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
+		if oldschool_key == "":
+			oldschool_rect.visible = live and not ("--smooth" in OS.get_cmdline_user_args())
+			_apply_look()
+		oldschool_key = pal_key
+
+
 func _oldschool_toggle() -> void:
 	if oldschool_rect != null and oldschool_key != "":
 		oldschool_rect.visible = not oldschool_rect.visible
@@ -1706,15 +1726,7 @@ func _live_update() -> void:
 	_anims_update()
 	if fps_label != null:
 		fps_label.text = "%d fps" % Engine.get_frames_per_second()
-	if oldschool_rect != null and pal_key != oldschool_key and pal.size() >= 256:
-		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
-		for i in 256:
-			pimg.set_pixel(i, 0, pal[i])
-		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
-		if oldschool_key == "":
-			oldschool_rect.visible = not ("--smooth" in OS.get_cmdline_user_args())
-			_apply_look()
-		oldschool_key = pal_key
+	_oldschool_palette()
 	var pk := PackedByteArray()
 	while udp.get_available_packet_count() > 0:
 		var q := udp.get_packet()
@@ -2946,6 +2958,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	if not live:
+		_oldschool_palette()
 	if hd_movie_box != null and hd_movie_box.visible and hd_movie.get_video_texture() != null:
 		var vsz := hd_movie.get_video_texture().get_size()
 		if vsz.y > 0:

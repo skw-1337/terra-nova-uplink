@@ -31,6 +31,8 @@ print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage ca
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
+LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
+joints_prev = {}                          # entite -> (articulations brutes, x, y) du tour precedent
 print('exe %s' % ('francais' if FR else 'anglais'))
 
 viewer = None
@@ -728,9 +730,22 @@ while True:
         x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
         mech = tab[o + 2] == 9                     # le mech (type 9, squelette 886) : 10 articulations, grande foulee
         used = j[:10] if mech else j
-        if any(math.hypot(v[0] - x0, v[1] - y0) > (0.9 if mech else 0.45) * 65536 for v in used) or any(v == (0, 0, 0) for v in used):
-            continue                          # pas affiche : articulations pas a jour (une armure tient dans 0,25 ;
-                                              # au-dela Godot etire le maillage en gros bloc noir)
+        if any(v == (0, 0, 0) for v in used):
+            continue
+        # pas affiche par le jeu : articulations pas a jour (Godot etirerait le maillage en gros bloc noir). Avant :
+        # toutes a moins de 0,45 du centre, ce qui ecartait toujours les armures lourdes (plus grandes : jamais
+        # animees). Maintenant : a jour si elles ont change depuis le tour precedent ou si l'unite n'a pas bouge,
+        # dans une limite large (2 pour le mech et les lourdes, 1 sinon) ; la premiere fois, l'ancienne regle
+        prev = joints_prev.get(i)
+        joints_prev[i] = (jr, x0, y0)
+        lim = (2.0 if mech or tab[o + 2] in LOURDES else 1.0) * 65536
+        if any(math.hypot(v[0] - x0, v[1] - y0) > lim for v in used):
+            continue
+        if prev is None:
+            if any(math.hypot(v[0] - x0, v[1] - y0) > (0.9 if mech or tab[o + 2] in LOURDES else 0.45) * 65536 for v in used):
+                continue
+        elif prev[0] == jr and (prev[1], prev[2]) != (x0, y0):
+            continue                          # l'unite a bouge, ses articulations non : plus dessinee
         cap = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
         av, dr = (math.cos(cap), math.sin(cap)), (-math.sin(cap), math.cos(cap))
         q = [((v[0] - x0) / 65536, (v[1] - y0) / 65536, v[2] / 65536) for v in j]

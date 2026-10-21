@@ -362,15 +362,15 @@ func model_name(ref: Vector2i) -> String:
 # {"mesh": ArrayMesh, "name": String, "height": float}, or {} when the ref is not a model.
 # Mesh axes: the model's forward axis is +X (heading 0 = east), up is +Y; turn the node by
 # rotation.y = -heading.
-func model(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary:
-	var key := "%d/%d/%s" % [ref.x, ref.y, pal_key]
+func model(ref: Vector2i, pal: PackedColorArray, pal_key: String, params := PackedByteArray()) -> Dictionary:
+	var key := "%d/%d/%s/%s" % [ref.x, ref.y, pal_key, params.hex_encode()]
 	if model_cache.has(key):
 		return model_cache[key]
 	var out := {}
 	if is_model(ref) or (ref.x >= MECH_PARTS.x and ref.x <= MECH_PARTS.y):
 		var fr := LGRes.frames(res.data(ref.x))
 		if ref.y < fr.size():
-			out = _build(fr[ref.y], pal, pal_key)
+			out = _build(fr[ref.y], pal, pal_key, params)
 	model_cache[key] = out
 	return out
 
@@ -483,11 +483,12 @@ static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x
 	return Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
 
 
-func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String) -> Dictionary:
+func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params := PackedByteArray()) -> Dictionary:
 	if f.size() < 0x5e:
 		return {}
 	var d := Decoder.new()
 	d.f = f
+	d.params = params
 	var nvhots := f[0x47]
 	var ntex := f[0x49]
 	var code := f.decode_u32(0x4e)
@@ -560,13 +561,17 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String) -> Dicti
 		lm.vertex_color_is_srgb = true
 		sl.set_material(lm)
 		sl.commit(mesh)
-	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top}
+	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top, "params": f.decode_u16(0x44)}
 
 
-# Walks the bytecode like the game's interpreter, but draws every polygon (no back-face jumps)
-# and leaves articulated parts (turrets, gun barrels) at their rest angle.
+# Walks the bytecode like the game's interpreter, but draws every polygon (no back-face jumps).
+# Articulated parts (turrets, gun barrels, the dropship's door) turn by the object's parameters, as
+# the game copies them to its table (0x361AA8 in the English exe) before drawing: a part's angle is
+# the word at its byte offset there (empty: their rest angle).
 class Decoder:
 	var f: PackedByteArray
+	var params := PackedByteArray()
+	const ART_SIGN := 1.0   # the way a part turns for a growing angle (checked on the dropship's door)
 	var pts := {}           # point index -> position (model space, y down)
 	var uv := {}            # point index -> Vector2
 	var polys := []         # [PackedVector3Array, PackedVector2Array, texture slot or -1, color]
@@ -664,7 +669,12 @@ class Decoder:
 					pc += 0xe
 				0x10, 0x11, 0x12:                  # articulated part (pitch / bank / heading)
 					var target := f.decode_u32(pc + 2)
-					var t2 := Transform3D(xf.basis, xf * v3(pc + 6))
+					var po := f.decode_u16(pc + 0x12)
+					var ang := 0.0
+					if po + 2 <= params.size():
+						ang = params.decode_u16(po) / 65536.0 * TAU
+					var axis: Vector3 = [Vector3.RIGHT, Vector3.BACK, Vector3.UP][op - 0x10]   # model x, z, y (y down)
+					var t2 := Transform3D(xf.basis * Basis(axis, ang * ART_SIGN), xf * v3(pc + 6))
 					run(target, t2, depth + 1)
 					pc += 0x14
 				0x14:                              # subroutine
@@ -718,7 +728,16 @@ class Decoder:
 							Vector3(fx(pc + 0x18), fx(pc + 0x24), fx(pc + 0x30)))
 					if bs.determinant() == 0.0:
 						bs = Basis.IDENTITY
-					run(pc + 0x34, Transform3D(xf.basis * bs, xf * v3(pc + 4)), depth + 1)
+					# then turned about its x by parameter n (u16 at +2: the dword n of the table; the dropship's
+					# door and ramp), or for 0x29 slid along its x by it (16.16)
+					var pn := 4 * f.decode_u16(pc + 2)
+					var at := xf * v3(pc + 4)
+					if pn + 4 <= params.size():
+						if op == 0x28:
+							bs = bs * Basis(Vector3.RIGHT, params.decode_u16(pn) / 65536.0 * TAU * ART_SIGN)
+						else:
+							at -= (xf.basis * bs).x * (params.decode_s32(pn) / 65536.0)
+					run(pc + 0x34, Transform3D(xf.basis * bs, at), depth + 1)
 					return
 				0x2a, 0x2c:
 					pc += 0x10

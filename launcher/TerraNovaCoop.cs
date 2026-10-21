@@ -24,7 +24,7 @@ using Microsoft.Win32;
 static class Coop
 {
     const string TITLE = "Terra Nova Coop";
-    const string VERSION = "0.13";
+    const string VERSION = "0.14";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "coop";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
@@ -86,6 +86,8 @@ static class Coop
             catch (Exception e) { Log(e.ToString()); Environment.Exit(1); }
         }
         if (args.Length > 1 && args[1] == "--report") { Report(); Environment.Exit(0); }   // the report, without the window
+        if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
+        { Environment.Exit(CloseOurGame() ? 0 : 2); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
         { Res.Load(args[2]).Save(args[3]); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--makesave")    // checks: the COOP save of mission N into a copy of a TNOVA folder
@@ -496,7 +498,8 @@ static class Coop
         }
         if (!stopping)
         {
-            Status(tnp.HasExited ? "The game was closed. Session over." :
+            Status(tnp.HasExited && Process.GetProcessesByName("dosbox-staging").Length == 0 ? "The game was closed. Session over." :
+                CloseOurGame() ? "Uplink was closed: the game too. Session over." :
                 "Uplink was closed. Click HOST A GAME to open it again.", CText);
             Session("No session.", CDim);
         }
@@ -696,6 +699,30 @@ static class Coop
             }
         }
         return true;
+    }
+
+    // Uplink closed: the game this launcher started goes with it (its DOSBox, started by our TN+ with our conf in
+    // tnplus\, then TN+ itself, which ends with it). A game the player started himself is left alone.
+    static bool CloseOurGame()
+    {
+        bool any = false;
+        foreach (Proc p in Procs())
+            if (p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                any = true;
+                try
+                {
+                    Process d = Process.GetProcessById(p.Id);
+                    Log("closing the game (DOSBox " + p.Id + ")");
+                    d.CloseMainWindow();
+                    if (!d.WaitForExit(3000)) d.Kill();
+                }
+                catch { }
+            }
+        Thread.Sleep(500);
+        foreach (Proc p in Procs())
+            if (p.Name == "TNPlus.exe" && p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0) Kill(p.Id);
+        return any;
     }
 
     static void Kill(int id)

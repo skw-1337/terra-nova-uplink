@@ -520,9 +520,7 @@ func _add_vegetation(m: Dictionary) -> int:
 		if TNObjects.is_sprite(ref):
 			var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 			if not sp.is_empty():
-				var low: String = data.type_name(key.x, key.y).to_lower()
-				var rock := low.contains("roch") or low.contains("rock")
-				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * (ROCK_SCALE if rock else 1.0), ROCK_TALL if rock else 1.0)
+				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL)
 				mat = _sprite_mat(ref, sp)
 		elif TNObjects.is_model(ref):
 			var md: Dictionary = objects.model(ref, pal, pal_key)
@@ -555,10 +553,12 @@ func _add_vegetation(m: Dictionary) -> int:
 	return n
 
 
-# Rocks are drawn a little wider than their radius by the game ("width = radius" was measured on a tree; a decor rock
-# seen at 1.5 and 5 units: 1.2 x, the same at both distances). Trees and bushes not checked again (few on Panama).
-const ROCK_SCALE := 1.2
-const ROCK_TALL := 1.5     # and 1.5 x taller than their picture's proportions (same rock, both distances)
+# The game draws its plant and rock sprites a little wider than their radius and taller than their picture's
+# proportions: a decor rock seen at 1.5 and 5 units, 1.2 x and 1.5 x; trees and bushes side by side with the game
+# (21/10/2026, MISS37, same moment and view): fir 1.5 x wider and 1.8-1.9 x taller, bush 1.2 x and 1.7 x (drawn at
+# 1 x and 1 x before, units looked oversized next to them)
+const SPRITE_SCALE := 1.2
+const SPRITE_TALL := 1.5
 
 
 # Simple stand-in shapes, standing on their base, when the game data has no sprite / model.
@@ -858,8 +858,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
-			var rock := low.contains("roch") or low.contains("rock")
-			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * (ROCK_SCALE if rock else 1.0), ROCK_TALL if rock else 1.0)
+			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL)
 			mi.mesh = q
 			mi.material_override = _sprite_mat(ref, sp)
 			top = q.size.y

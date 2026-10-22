@@ -27,10 +27,11 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.1";
+    const string VERSION = "2.2";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
-    // Uplink's branch "stable": main once its checks have passed (.github/workflows/stable.yml), never a broken push
-    const string UPLINK_BRANCH = "stable";
+    // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
+    // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
+    const string UPLINK_BRANCH = "stable", TNPLUS_BRANCH = "stable", TNPLUS_COOP_BRANCH = "coop-stable";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
     const string GODOT_URL = "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip";
@@ -1416,7 +1417,7 @@ static class Uplink
             {
                 Status("Downloading and building Terra Nova Plus (for its key settings)...", CAmber);
                 BuildTnp(false);
-                string tp = Get(Heads(), Head(TNPLUS_REPO, "main"));
+                string tp = Get(Heads(), Head(TNPLUS_REPO, TNPLUS_BRANCH));
                 if (tp != null) Set("tnplus_sha", tp);
                 SaveCfg();
             }
@@ -1528,7 +1529,7 @@ static class Uplink
         if (mode == Mode.Play || mode == Mode.Host)
         {
             bool coop = mode == Mode.Host;
-            string tp = Get(heads, Head(TNPLUS_REPO, coop ? "coop" : "main")), key = coop ? "tnplus_coop_sha" : "tnplus_sha";
+            string tp = Get(heads, Head(TNPLUS_REPO, coop ? TNPLUS_COOP_BRANCH : TNPLUS_BRANCH)), key = coop ? "tnplus_coop_sha" : "tnplus_sha";
             if (!File.Exists(coop ? TnpCoopExe : TnpExe) || (tp != null && tp != Cfg(key)))
             {
                 Status("Downloading and building Terra Nova Plus" + (coop ? " (co-op build)" : "") + "...", CAmber);
@@ -1550,9 +1551,9 @@ static class Uplink
     static string Head(string repo, string branch) { return repo + "@" + branch; }
 
     static Dictionary<string, string> Heads()
-    {   // the last commits of Uplink (stable), TN+ (main) and its co-op build (coop): both co-op PCs must run the same
+    {   // the last commits of Uplink (stable), TN+ (stable) and its co-op build (coop-stable): both co-op PCs must run the same
         Dictionary<string, string> d = new Dictionary<string, string>();
-        foreach (string[] rb in new[] { new[] { UPLINK_REPO, UPLINK_BRANCH }, new[] { TNPLUS_REPO, "main" }, new[] { TNPLUS_REPO, "coop" } })
+        foreach (string[] rb in new[] { new[] { UPLINK_REPO, UPLINK_BRANCH }, new[] { TNPLUS_REPO, TNPLUS_BRANCH }, new[] { TNPLUS_REPO, TNPLUS_COOP_BRANCH } })
             try
             {
                 string j = Text("https://api.github.com/repos/" + rb[0] + "/commits/" + rb[1]);
@@ -1651,7 +1652,7 @@ static class Uplink
     static void BuildTnp(bool coop)
     {
         string src = Path.Combine(Comp, coop ? "tnplus_coop_src" : "tnplus_src");
-        Repo(TNPLUS_REPO, coop ? "coop" : "main", src);
+        Repo(TNPLUS_REPO, coop ? TNPLUS_COOP_BRANCH : TNPLUS_BRANCH, src);
         string cmd = File.ReadAllText(Path.Combine(src, "src", "build.bat"));
         Match m = Regex.Match(cmd, "(?m)^\"%CSC%\"([^\\r\\n]+)");   // build.bat's compiler line, without its pause
         if (!m.Success) throw new Exception("TN+ build.bat not understood");

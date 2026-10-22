@@ -1,9 +1,10 @@
 # Terra Nova Uplink
 
-*Terra Nova: Strike Force Centauri* (1996) redrawn in modern 3D. Two ways to use it:
+*Terra Nova: Strike Force Centauri* (1996) redrawn in modern 3D. Three ways to use it:
 
 - **Map viewer**: fly around every map of the game.
 - **Live mode** (prototype): play the real game in DOSBox while Uplink redraws it live on your graphics card, cockpit included.
+- **Online co-op** (prototype): two players in the same mission over Steam, see [COOP.md](COOP.md).
 
 It reads everything from your own copy of the game (GOG or Steam). No game files are included.
 

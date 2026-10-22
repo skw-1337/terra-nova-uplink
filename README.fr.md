@@ -1,9 +1,10 @@
 # Terra Nova Uplink
 
-*Terra Nova: Strike Force Centauri* (1996) redessiné en 3D moderne. Deux façons de s'en servir :
+*Terra Nova: Strike Force Centauri* (1996) redessiné en 3D moderne. Trois façons de s'en servir :
 
 - **Visualiseur de cartes** : survoler toutes les cartes du jeu.
 - **Mode Live** (prototype) : jouer au vrai jeu dans DOSBox pendant qu'Uplink le redessine en direct sur la carte graphique, cockpit compris.
+- **Coop en ligne** (prototype) : deux joueurs dans la même mission via Steam, voir [COOP.md](COOP.md) (en anglais).
 
 Tout est lu depuis ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n'est fourni.
 
@@ -13,11 +14,11 @@ Tout est lu depuis ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n
 
 ## Démarrage rapide
 
-Télécharger **Terra Nova Uplink.exe** depuis la [dernière release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), le mettre dans un dossier vide et le lancer. Il trouve le jeu et télécharge le reste tout seul (Uplink, Godot, Terra Nova Plus, Python pour le mode Live), et le garde à jour. Ensuite **PLAY** (mode Live) ou **MAP VIEWER**.
+Télécharger **Terra Nova Uplink.exe** depuis la [dernière release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), le mettre dans un dossier vide et le lancer. Il trouve le jeu et télécharge le reste tout seul (Uplink, Godot, Terra Nova Plus, Python pour le mode Live), et le garde à jour. Ensuite **PLAY** (mode Live), **MAP VIEWER**, ou **HOST A GAME** / **JOIN A FRIEND** pour jouer avec un ami en ligne.
 
 Windows peut prévenir d'une application inconnue (non signée) : Informations complémentaires, puis Exécuter quand même. L'installation manuelle est plus bas.
 
-Pour jouer avec un ami, il y a une coop en ligne à part : [Terra Nova Coop](https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10).
+Pour jouer avec un ami : voir [COOP.md](COOP.md). L'ancien lanceur Terra Nova Coop se met à jour tout seul vers celui-ci.
 
 ## Visualiseur de cartes
 

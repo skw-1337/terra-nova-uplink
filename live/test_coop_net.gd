@@ -17,6 +17,7 @@ const LIVE := 47831
 const HUD := 47832
 const PLAY := 47844                  # the guest's play port (47834 is the bridge's here: one machine)
 const CTL := 47851                   # the simulator's control port
+const VIEW_IN := 47841               # the host's coop_net.gd: what the bridge sends the guest
 const CH_INPUT := 1
 
 
@@ -50,6 +51,7 @@ var resyncs := []                    # t of each 'R' at the bridge's coop port
 var lefts := []                      # t of each 'X' there (a guest left: his teammate back to the game's AI)
 var views := []                      # [t, md5] on the guest's live port
 var huds := []                       # [t, hex] on the guest's HUD port
+var fxs := []                        # [t, packet] FX29 on the guest's live port (what each 6/29 is)
 var results := []                    # [ok, name, detail]
 
 
@@ -74,7 +76,11 @@ func _process(_delta: float) -> bool:
 		else:
 			inputs.append([now(), pk, host.peer_ok if host else false])
 	while live.get_available_packet_count() > 0:
-		views.append([now(), _md5(live.get_packet())])
+		var lp := live.get_packet()
+		if lp.size() >= 4 and lp.slice(0, 4).get_string_from_ascii() == "FX29":
+			fxs.append([now(), lp])
+		else:
+			views.append([now(), _md5(lp)])
 	while hud.get_available_packet_count() > 0:
 		huds.append([now(), hud.get_packet().hex_encode()])
 	return false
@@ -259,6 +265,17 @@ func _run() -> void:
 		guest.label.text.replace("\n", " "))
 	check(count(huds, t_join) >= 4, "GHD packets on the guest's 47832", "%d in %.1f s" % [count(huds, t_join), now() - t_join])
 	check(guest_vp.loaded.has("M07.MIS"), "guest loads the host's mission (MSN)", str(guest_vp.loaded))
+	# what each 6/29 is (a jetpack's trail, a tree's smoke), as coop_guest.py fx29 sends it: FXS -> FX29 on his viewer
+	var pay := PackedByteArray([2, 0, 7, 0, 0, 0, 9, 9, 0, 0, 0, 8])   # entity 7 a jetpack's trail, 9 smoke
+	var fx_pk := "FXS".to_ascii_buffer()
+	fx_pk.append_array(pay)
+	var fx_out := PacketPeerUDP.new()
+	fx_out.set_dest_address("127.0.0.1", VIEW_IN)
+	var t_fx := now()
+	fx_out.put_packet(fx_pk)
+	await until(func(): return count(fxs, t_fx) > 0, 2.0)
+	check(count(fxs, t_fx) == 1 and (fxs[-1][1] as PackedByteArray).slice(4) == pay, "6/29 sorts reach the guest's viewer (FXS -> FX29)",
+		"%d" % count(fxs, t_fx))
 
 	# --- the guest's input, to the bridge (peer_ok)
 	var t_in := now()

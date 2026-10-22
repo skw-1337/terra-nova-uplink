@@ -331,6 +331,10 @@ func _read(ch: int) -> void:
 				var wf := "WTHR".to_ascii_buffer()
 				wf.append_array(data.slice(3))
 				udp_out.put_packet(wf)
+			elif tag == "FXS" and data.size() >= 5:           # what each 6/29 is (coop_guest.py fx29): jetpack, smoke
+				var ff := "FX29".to_ascii_buffer()
+				ff.append_array(data.slice(3))
+				udp_out.put_packet(ff)
 			elif tag == "SMK" and data.size() > 3:           # smoke grenades' clouds (coop_guest.py smoke)
 				var sb := data.slice(3).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
 				if sb.size() > 0:

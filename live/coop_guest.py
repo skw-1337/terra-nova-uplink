@@ -114,6 +114,7 @@ class Guest:
         self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
         self.smoke_t, self.smoke_on = 0.0, False
         self.weather_pk, self.weather_t = b'', 0.0
+        self.fx_pk, self.fx_sent, self.fx_t = b'', b'', 0.0
         self.joined = not remote                               # online: once his window speaks (coop_net.gd's 'R' / 'N')
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
@@ -659,6 +660,21 @@ class Guest:
             self.weather_pk, self.weather_t = pk, time.time()
             self.s.sendto(b'WTH' + pk[4:], ('127.0.0.1', REMOTE_VIEW))
 
+    def fx29(self, pk=None):
+        """What each 6/29 is when not a shot's dust ('FX29', live_bridge.py sortes_29: a jetpack's trail, a tree's
+        smoke) for the guest's window: local as it is; online 'FXS', reliable, at most 20 a second (his views come at
+        that rate), the last one once it is due. pk None: only what is due (called with each view)."""
+        if pk is not None:
+            self.fx_pk = pk
+        if not self.remote:
+            if pk is not None:
+                self.s.sendto(pk, ('127.0.0.1', LIVE_PORT))
+            return
+        now = time.time()
+        if self.fx_pk != self.fx_sent and now - self.fx_t >= 0.05:
+            self.fx_sent, self.fx_t = self.fx_pk, now
+            self.s.sendto(b'FXS' + self.fx_pk[4:], ('127.0.0.1', REMOTE_VIEW))
+
     def send(self, view):
         if not self.remote:
             self.s.sendto(view, ('127.0.0.1', LIVE_PORT))
@@ -667,5 +683,6 @@ class Guest:
         if now - self.sent_t < 1 / self.view_hz:              # online: view_hz views a second (--view-hz)
             return
         self.sent_t = max(self.sent_t + 1 / self.view_hz, now - 1 / self.view_hz)   # on the beat, not the bridge's frames
+        self.fx29()                                           # a 6/29 sort held back by the 20 a second
         for m in self.enc.encode(view, now):
             self.s.sendto(m, ('127.0.0.1', REMOTE_VIEW))

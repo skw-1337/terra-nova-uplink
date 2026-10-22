@@ -911,7 +911,9 @@ while True:
     tab = g.read(A_MASTER, 0x25 * NENT)
     fx = sortes_29(tab)
     if fx != fx_prev:
-        s.sendto(b'FX29' + struct.pack('<H', len(fx)) + b''.join(struct.pack('<iB', *f) for f in fx), ('127.0.0.1', 47821))
+        pk = b'FX29' + struct.pack('<H', len(fx)) + b''.join(struct.pack('<iB', *f) for f in fx)
+        s.sendto(pk, ('127.0.0.1', 47821))
+        if guest: guest.fx29(pk)               # (la fenetre de l'invite aussi)
         fx_prev = fx
     body = []
     if time.time() - corps_t > 0.5:

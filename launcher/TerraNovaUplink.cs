@@ -1,14 +1,17 @@
-// Terra Nova Uplink: one window, two buttons. It installs what Uplink needs in its own folder (Uplink, Godot, Terra
-// Nova Plus, an embedded Python for the live mode's bridge), keeps them up to date (itself included: a newer launcher
-// in Uplink's files is built and swapped in) and starts everything in order:
+// Terra Nova Uplink: one window for everything Uplink does. It installs what each mode needs in its own folder
+// (Uplink, Godot, Terra Nova Plus and its co-op build, an embedded Python for the live mode's bridge), keeps them up
+// to date (itself included: a newer launcher in Uplink's files is built and swapped in) and starts everything in order:
 //   PLAY: the game through TN+ (no menu, HD 848x480, windowed behind Uplink), then the bridge, which opens Uplink live.
+//   HOST A GAME: the same with the TN+ co-op build and Uplink's Steam lobby (the host plays, a friend joins).
+//   JOIN A FRIEND: Uplink's guest window, where the friends hosting a game show up with a JOIN button.
 //   MAP VIEWER: Uplink's map viewer, every map of the game.
-// The online co-op has its own launcher (Terra Nova Coop, on the coop branch).
-// Built with the C# compiler that comes with Windows (.NET Framework 4.5+): build.bat.
+// Since 2.0 it replaces Terra Nova Coop too (launcher\TerraNovaCoop.cs is a copy of this file, so that Coop launchers
+// update themselves into this one). Built with the C# compiler that comes with Windows (.NET Framework 4.5+): build.bat.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -24,10 +27,9 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "1.7";
-    const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus", BRANCH = "main";
+    const string VERSION = "2.0";
+    const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
-    const string COOP_URL = "https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10";
     const string GODOT_VER = "4.7.2";
     const string GODOT_URL = "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip";
     const string PY_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip";
@@ -36,17 +38,20 @@ static class Uplink
         new[] { "psutil", "7.2.2", "-cp37-abi3-win_amd64.whl" } };
     const string GOG_ID = "1434984562";
     const string GAME_SUB = "Terra Nova Strike Force Centauri";
+    const long EN_EXE = 1856641;      // __FF.EXE v1.09 English (Steam, GOG); the French one is 1856813
     static readonly string[] SIZES = { "1280x720", "1696x960", "1920x1080", "native" };
     // campaign order (mission 1..37) -> MISSn.RES (as Uplink's tn_data.gd)
     static readonly int[] CAMPAIGN = { 37, 38, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 10, 11, 12, 13, 34, 29, 15, 17, 16, 36,
         14, 20, 39, 21, 35, 22, 23, 19, 24, 27, 25, 26, 30, 31 };
-    const string LAB_SAVE = "LAB Mission ";
-    // the lab shortcut (TN_LAB, scripts/lab.gd): a mission selector, to try a look on any map
-    static readonly bool LAB = Environment.GetEnvironmentVariable("TN_LAB") != null;
+    const string PLAY_SAVE = "UPLINK Mission ", COOP_SAVE = "COOP Mission ";
+    static readonly string[] OUR_SAVES = { PLAY_SAVE, COOP_SAVE, "LAB Mission " };   // ours: never taken as the player's
 
-    static readonly Color CBack = Color.FromArgb(9, 17, 16), CPanel = Color.FromArgb(22, 41, 38), CField = Color.FromArgb(12, 26, 24);
+    // Terra Nova's cockpit: dark green-black, teal panels, amber, green lights, the outfitting screen's orange
+    static readonly Color CBack = Color.FromArgb(8, 17, 16), CPanel = Color.FromArgb(13, 26, 24), CLine = Color.FromArgb(29, 53, 49);
+    static readonly Color CButton = Color.FromArgb(17, 34, 31), CButtonLine = Color.FromArgb(42, 74, 68), CTeal = Color.FromArgb(47, 106, 94);
     static readonly Color CText = Color.FromArgb(214, 226, 220), CDim = Color.FromArgb(122, 150, 142), CAmber = Color.FromArgb(240, 178, 48);
-    static readonly Color CGreen = Color.FromArgb(56, 214, 92), CRed = Color.FromArgb(236, 72, 60), CBlue = Color.FromArgb(38, 76, 178);
+    static readonly Color CGreen = Color.FromArgb(56, 214, 92), CRed = Color.FromArgb(236, 72, 60), COrange = Color.FromArgb(214, 122, 28);
+    static readonly Color CBlue = Color.FromArgb(32, 65, 143), CLedOff = Color.FromArgb(40, 64, 58);
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
@@ -58,16 +63,25 @@ static class Uplink
     static string Root, Comp, Ini, LogPath;
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
     static Form form;
-    static Label gameLabel, statusLabel, verLabel, sensLabel;
-    static Label[] checks;
-    static Button playBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn;
+    static Font FHead, FBody, FSmall, FIcon;
+    static Label gameBadge, gameLabel, statusLabel, verLabel, sessionLabel, sensLabel;
+    static Led sessionLed;
+    static Led[] leds;
+    static Label[] ledText;
+    static Tile playBtn, hostBtn, joinBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn, logBtn;
+    static RadioButton modeCoop, modeVs;
     static ComboBox sizeBox, missionBox;
     static TrackBar sensBar;
-    static CheckBox invertBox;
+    static CheckBox invertBox, padBox;
     static ProgressBar bar;
     static TextBox logBox;
-    static volatile bool busy, stopping;
+    static Panel sessionRow, lower;
+    static int sessionTop;
+    static volatile bool busy, stopping, coopRun;
     static readonly List<Process> mine = new List<Process>();
+    static string sessionName = "", sessionPing = "";
+
+    enum Mode { Play, Host, Join, Maps }
 
     [STAThread]
     static void Main()
@@ -78,18 +92,22 @@ static class Uplink
         Directory.CreateDirectory(Path.Combine(Comp, "logs"));
         LogPath = Path.Combine(Comp, "logs", "launcher.log");
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2 (GitHub, python.org, PyPI)
+        Migrate();
         LoadCfg();
         string[] args = Environment.GetCommandLineArgs();
         if (args.Length > 2 && args[1] == "--install")    // checks: install / update only, no window (exit code 0 = ok)
         {
-            try { Install(args[2] == "live"); Console.WriteLine("installed"); Environment.Exit(0); }
+            Mode m = args[2] == "host" ? Mode.Host : args[2] == "join" ? Mode.Join : args[2] == "maps" ? Mode.Maps : Mode.Play;
+            try { Install(m); Console.WriteLine("installed"); Environment.Exit(0); }
             catch (Exception e) { Log(e.ToString()); Environment.Exit(1); }
         }
         if (args.Length > 1 && args[1] == "--report") { Report(); Environment.Exit(0); }   // the report, without the window
-        if (args.Length > 3 && args[1] == "--labsave")     // checks: the LAB save of mission N into a copy of a TNOVA folder
-        { Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1) ?? "failed"); Environment.Exit(0); }
+        if (args.Length > 3 && (args[1] == "--labsave" || args[1] == "--makesave"))   // checks: the save of mission N in a TNOVA copy
+        { Set("game_dir", args[3]); Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1, args[1] == "--makesave" ? COOP_SAVE : PLAY_SAVE) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
+        if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
+        { Res.Load(args[2]).Save(args[3]); Environment.Exit(0); }
         try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
         Application.EnableVisualStyles();
         Build();
@@ -98,126 +116,304 @@ static class Uplink
         Application.Run(form);
     }
 
+    // A Terra Nova Coop folder that updated itself into this launcher: its settings and its TN+ (the co-op build)
+    // are taken over (TerraNovaCoop.ini, components\tnplus -> tnplus_coop)
+    static void Migrate()
+    {
+        try
+        {
+            string coopIni = Path.Combine(Root, "TerraNovaCoop.ini");
+            if (File.Exists(Ini) || !File.Exists(coopIni)) return;
+            string t = File.ReadAllText(coopIni);
+            t = Regex.Replace(t, "(?m)^\\s*tnplus_sha\\s*=", "tnplus_coop_sha =");
+            t = Regex.Replace(t, "(?m)^\\s*mission\\s*=", "start_at =");
+            File.WriteAllText(Ini, t.Replace("; Terra Nova Coop", "; Terra Nova Uplink (taken over from Terra Nova Coop)"));
+            if (Directory.Exists(Path.Combine(Comp, "tnplus")) && !Directory.Exists(Path.Combine(Comp, "tnplus_coop")))
+                Directory.Move(Path.Combine(Comp, "tnplus"), Path.Combine(Comp, "tnplus_coop"));
+            if (Directory.Exists(Path.Combine(Comp, "tnplus_src")) && !Directory.Exists(Path.Combine(Comp, "tnplus_coop_src")))
+                Directory.Move(Path.Combine(Comp, "tnplus_src"), Path.Combine(Comp, "tnplus_coop_src"));
+        }
+        catch (Exception e) { Log("taking over Terra Nova Coop's settings: " + e.Message); }
+    }
+
     // ------------------------------------------------------------------ window
     static void Build()
     {
+        FHead = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 13f, FontStyle.Regular);
+        FBody = new Font("Segoe UI", 9.5f);
+        FSmall = new Font("Segoe UI", 8.5f);
+        FIcon = Pick(new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" }, 16f, FontStyle.Regular);
+
         form = new Form();
         form.Text = TITLE + " " + VERSION;
-        int L = LAB ? 34 : 0;                      // (the lab's mission row)
-        form.ClientSize = new Size(660, 640 + L);
         form.FormBorderStyle = FormBorderStyle.FixedSingle;
         form.MaximizeBox = false;
         form.StartPosition = FormStartPosition.CenterScreen;
         form.BackColor = CBack;
         form.ForeColor = CText;
-        form.Font = new Font("Segoe UI", 10f);
+        form.Font = FBody;
         try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        int W = 616, X = 22;
+        int W = 652, X = 20, y = 16;
 
-        form.Controls.Add(new Label { Text = "TERRA NOVA  ·  UPLINK", Font = new Font("Segoe UI", 22f, FontStyle.Bold), ForeColor = CAmber,
-            AutoSize = true, Location = new Point(X, 14) });
-        form.Controls.Add(new Label { Text = "The 1996 game redrawn in modern 3D, from your own copy (GOG or Steam).",
-            ForeColor = CDim, AutoSize = true, Location = new Point(X + 3, 58) });
-        toolsBtn = Flat("Tools ▾", CPanel);
-        toolsBtn.Location = new Point(X + W - 96, 20); toolsBtn.Size = new Size(96, 30);
+        // title: TERRA NOVA · UPLINK, an amber line under it
+        Label t1 = new Label { Text = "TERRA NOVA", Font = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 22f, FontStyle.Regular),
+            ForeColor = CAmber, AutoSize = true, Location = new Point(X - 2, y) };
+        form.Controls.Add(t1);
+        Label t2 = new Label { Text = "·  UPLINK", Font = t1.Font, ForeColor = CText, AutoSize = true, Location = new Point(t1.Right + 4, y) };
+        form.Controls.Add(t2);
+        form.Controls.Add(new Panel { BackColor = CAmber, Location = new Point(X, y + 44), Size = new Size(130, 2) });
+        toolsBtn = new Tile("Tools", "\uE90F", CButton, CButtonLine, CText) { Location = new Point(X + W - 96, y + 6), Size = new Size(96, 32), Small = true };
         toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height)); };
         form.Controls.Add(toolsBtn);
+        y += 60;
 
-        Panel gp = new Panel { Location = new Point(X, 88), Size = new Size(W, 34), BackColor = CField };
+        // the game folder: badge (GOG / Steam, language), path, Change
+        Box gp = new Box { Location = new Point(X, y), Size = new Size(W, 40) };
         form.Controls.Add(gp);
-        gameLabel = new Label { Location = new Point(8, 7), Size = new Size(W - 116, 22), ForeColor = CText };
+        gameBadge = new Label { AutoSize = false, Size = new Size(84, 20), Location = new Point(10, 10), TextAlign = ContentAlignment.MiddleCenter,
+            Font = FSmall, ForeColor = CGreen, BackColor = Color.FromArgb(18, 58, 34) };
+        gp.Controls.Add(gameBadge);
+        gameLabel = new Label { Location = new Point(104, 11), Size = new Size(W - 210, 20), ForeColor = CDim, BackColor = CPanel, AutoEllipsis = true };
         gp.Controls.Add(gameLabel);
-        gameBtn = Flat("Change...", CPanel);
-        gameBtn.Location = new Point(W - 102, 3); gameBtn.Size = new Size(98, 28);
+        gameBtn = new Tile("Change", null, CButton, CButtonLine, CText) { Location = new Point(W - 94, 5), Size = new Size(86, 30), Small = true };
         gameBtn.Click += delegate { PickGame(); };
         gp.Controls.Add(gameBtn);
+        y += 52;
 
-        playBtn = Flat("PLAY", Color.FromArgb(20, 80, 74));
-        playBtn.Font = new Font("Segoe UI", 15f, FontStyle.Bold);
-        playBtn.Location = new Point(X, 134); playBtn.Size = new Size(300, 80);
-        playBtn.Click += delegate { Start(true); };
+        // the four actions: PLAY | HOST A GAME, JOIN A FRIEND (+ co-op options) | MAP VIEWER
+        int third = (W - 20) / 4;
+        playBtn = new Tile("PLAY", "\uE768", COrange, Color.FromArgb(236, 146, 44), Color.FromArgb(30, 14, 0)) { Location = new Point(X, y), Size = new Size(third, 104) };
+        playBtn.Click += delegate { Start(Mode.Play); };
         form.Controls.Add(playBtn);
-        mapBtn = Flat("MAP VIEWER", CBlue);
-        mapBtn.Font = new Font("Segoe UI", 15f, FontStyle.Bold);
-        mapBtn.Location = new Point(X + W - 300, 134); mapBtn.Size = new Size(300, 80);
-        mapBtn.Click += delegate { Start(false); };
+        Box cp = new Box { Location = new Point(X + third + 10, y), Size = new Size(2 * third, 104) };
+        form.Controls.Add(cp);
+        int half = (2 * third - 24) / 2;
+        hostBtn = new Tile("HOST A GAME", "\uE716", CButton, CTeal, CText) { Location = new Point(8, 8), Size = new Size(half, 62), IconColor = Color.FromArgb(93, 202, 165) };
+        hostBtn.Click += delegate { Start(Mode.Host); };
+        cp.Controls.Add(hostBtn);
+        joinBtn = new Tile("JOIN A FRIEND", "\uE8FA", CButton, CTeal, CText) { Location = new Point(16 + half, 8), Size = new Size(half, 62), IconColor = Color.FromArgb(93, 202, 165) };
+        joinBtn.Click += delegate { Start(Mode.Join); };
+        cp.Controls.Add(joinBtn);
+        modeCoop = new Dot { Text = "Squad", AutoSize = true, Location = new Point(40, 78), ForeColor = CDim, BackColor = CPanel };
+        modeVs = new Dot { Text = "1v1", AutoSize = true, Location = new Point(118, 78), ForeColor = CDim, BackColor = CPanel };
+        padBox = new Tick { Text = "Gamepad (guest)", AutoSize = true, Location = new Point(180, 78), ForeColor = CDim, BackColor = CPanel };
+        cp.Controls.Add(modeCoop); cp.Controls.Add(modeVs); cp.Controls.Add(padBox);
+        mapBtn = new Tile("MAP VIEWER", "\uE707", CBlue, Color.FromArgb(47, 92, 196), Color.FromArgb(230, 238, 252)) { Location = new Point(X + 3 * third + 20, y), Size = new Size(W - 3 * third - 20, 104) };
+        mapBtn.Click += delegate { Start(Mode.Maps); };
         form.Controls.Add(mapBtn);
-        form.Controls.Add(new Label { Text = "The real game, redrawn live (prototype).",
-            ForeColor = CDim, AutoSize = true, Location = new Point(X + 2, 218) });
-        form.Controls.Add(new Label { Text = "Fly around every map of the game.",
-            ForeColor = CDim, AutoSize = true, Location = new Point(X + W - 298, 218) });
+        y += 116;
 
-        // options
-        Panel op = new Panel { Location = new Point(X, 246), Size = new Size(W, 76 + L), BackColor = CField };
+        // settings shared by every mode
+        Box op = new Box { Location = new Point(X, y), Size = new Size(W, 116) };
         form.Controls.Add(op);
-        op.Controls.Add(new Label { Text = "Uplink window", ForeColor = CDim, AutoSize = true, Location = new Point(10, 10) });
-        sizeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 6), Size = new Size(146, 24),
-            BackColor = CPanel, ForeColor = CText, FlatStyle = FlatStyle.Flat };
+        op.Controls.Add(Caption("START AT", 12, 15));
+        missionBox = Combo(new Point(96, 10), W - 210);
+        missionBox.MaxDropDownItems = 20;
+        op.Controls.Add(missionBox);
+        FillMissions();
+        Tile savesBtn = new Tile("Saves", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 8), Size = new Size(94, 28), Small = true };
+        savesBtn.Click += delegate { Saves(); };
+        op.Controls.Add(savesBtn);
+        op.Controls.Add(Caption("WINDOW", 12, 49));
+        sizeBox = Combo(new Point(96, 44), W - 210);
         sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" });
         op.Controls.Add(sizeBox);
-        op.Controls.Add(new Label { Text = "Mouse", ForeColor = CDim, AutoSize = true, Location = new Point(10, 44) });
-        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickFrequency = 2, Location = new Point(118, 38), Size = new Size(200, 30),
-            BackColor = CField, AutoSize = false };
-        sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
-        op.Controls.Add(sensBar);
-        sensLabel = new Label { ForeColor = CText, AutoSize = true, Location = new Point(322, 44) };
-        op.Controls.Add(sensLabel);
-        invertBox = new CheckBox { Text = "Invert vertical", AutoSize = true, Location = new Point(400, 42), ForeColor = CText };
-        op.Controls.Add(invertBox);
-        Button keysBtn = Flat("Game keys...", CPanel);
-        keysBtn.Location = new Point(460, 4); keysBtn.Size = new Size(146, 28);
+        Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 42), Size = new Size(94, 28), Small = true };
         keysBtn.Click += delegate { GameKeys(); };
         op.Controls.Add(keysBtn);
-        if (LAB)
-        {
-            op.Controls.Add(new Label { Text = "Mission (lab)", ForeColor = CDim, AutoSize = true, Location = new Point(10, 82) });
-            missionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 78), Size = new Size(376, 24),
-                BackColor = CPanel, ForeColor = CText, FlatStyle = FlatStyle.Flat, MaxDropDownItems = 20 };
-            op.Controls.Add(missionBox);
-            FillMissions();
-            Button savesBtn = Flat("Saves...", CPanel);
-            savesBtn.Location = new Point(510, 76); savesBtn.Size = new Size(96, 28);
-            savesBtn.Click += delegate { Saves(); };
-            op.Controls.Add(savesBtn);
-        }
+        op.Controls.Add(Caption("MOUSE", 12, 84));
+        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 78), Size = new Size(W - 300, 30),
+            BackColor = CPanel, AutoSize = false };
+        sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
+        op.Controls.Add(sensBar);
+        sensLabel = new Label { ForeColor = CText, BackColor = CPanel, AutoSize = true, Location = new Point(W - 204, 84) };
+        op.Controls.Add(sensLabel);
+        invertBox = new Tick { Text = "Invert", AutoSize = true, Location = new Point(W - 150, 82), ForeColor = CDim, BackColor = CPanel };
+        op.Controls.Add(invertBox);
         LoadOptions();
+        y += 128;
 
-        string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus (live mode)", "Python (live mode)" };
-        checks = new Label[names.Length];
+        // what is installed: green lights
+        string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus", "TN+ co-op build", "Python", "Steam (co-op only)" };
+        leds = new Led[names.Length]; ledText = new Label[names.Length];
         for (int i = 0; i < names.Length; i++)
         {
-            checks[i] = new Label { AutoSize = true, Location = new Point(X + 2 + (i % 2) * 310, 332 + L + (i / 2) * 21), ForeColor = CDim, Tag = names[i] };
-            form.Controls.Add(checks[i]);
+            int cx = X + 2 + (i % 3) * (W / 3), cy = y + (i / 3) * 22;
+            leds[i] = new Led { Location = new Point(cx, cy + 5), Size = new Size(9, 9) };
+            ledText[i] = new Label { AutoSize = true, Location = new Point(cx + 14, cy), ForeColor = CDim, Font = FSmall, Tag = names[i], Text = names[i] };
+            form.Controls.Add(leds[i]); form.Controls.Add(ledText[i]);
         }
-        verLabel = new Label { AutoSize = true, Location = new Point(X + 2, 376 + L), ForeColor = CDim };
-        form.Controls.Add(verLabel);
+        y += 50;
 
-        statusLabel = new Label { Location = new Point(X, 400 + L), Size = new Size(W, 42), ForeColor = CAmber, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
-        form.Controls.Add(statusLabel);
-        bar = new ProgressBar { Location = new Point(X, 444 + L), Size = new Size(W, 8), Style = ProgressBarStyle.Continuous };
-        form.Controls.Add(bar);
-        logBox = new TextBox { Location = new Point(X, 458 + L), Size = new Size(W, 116), Multiline = true, ReadOnly = true,
-            ScrollBars = ScrollBars.Vertical, BackColor = CField, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
-        form.Controls.Add(logBox);
+        // the session (co-op): what Uplink says (lobby open, friend connected, ping...), shown while one runs
+        sessionRow = new Box { Location = new Point(X, y), Size = new Size(W, 34), Visible = false };
+        form.Controls.Add(sessionRow);
+        sessionLed = new Led { Location = new Point(12, 12), Size = new Size(10, 10), On = CDim };
+        sessionRow.Controls.Add(sessionLed);
+        sessionLabel = new Label { Location = new Point(30, 8), Size = new Size(W - 40, 20), ForeColor = CText, BackColor = CPanel, Text = "No session." };
+        sessionRow.Controls.Add(sessionLabel);
+        sessionTop = y;
 
-        reportBtn = Flat("Report a bug", CPanel);
-        reportBtn.Location = new Point(X + W - 270, 586 + L); reportBtn.Size = new Size(160, 32);
-        reportBtn.Click += delegate { Report(); };
-        form.Controls.Add(reportBtn);
-        stopBtn = Flat("Stop", CPanel);
-        stopBtn.Location = new Point(X + W - 100, 586 + L); stopBtn.Size = new Size(100, 32);
-        stopBtn.Click += delegate { new Thread(StopAll) { IsBackground = true }.Start(); };
-        form.Controls.Add(stopBtn);
-        LinkLabel co = new LinkLabel { Text = "Playing with a friend? Get Terra Nova Coop",
-            AutoSize = true, Location = new Point(X, 584 + L), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
-        co.LinkArea = new LinkArea(co.Text.IndexOf("Terra Nova Coop"), 15);
-        co.LinkClicked += delegate { try { Process.Start(COOP_URL); } catch { } };
-        form.Controls.Add(co);
-        LinkLabel dc = new LinkLabel { Text = "Help, bugs: Discord",
-            AutoSize = true, Location = new Point(X, 603 + L), Font = new Font("Segoe UI", 8.5f), LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
-        dc.LinkArea = new LinkArea(dc.Text.IndexOf("Discord"), 7);
+        // below it (moved down while the session row shows): the status, the footer, the log
+        lower = new Panel { Location = new Point(0, y), Size = new Size(W + 2 * X, 106), BackColor = CBack };
+        form.Controls.Add(lower);
+        statusLabel = new Label { Location = new Point(X, 0), Size = new Size(W, 40), ForeColor = CAmber, Font = new Font("Segoe UI Semibold", 10f) };
+        lower.Controls.Add(statusLabel);
+        bar = new ProgressBar { Location = new Point(X, 42), Size = new Size(W, 4), Style = ProgressBarStyle.Continuous, Visible = false };
+        lower.Controls.Add(bar);
+        // footer: update state, Discord | Log, Report a bug, Stop
+        lower.Controls.Add(new Panel { BackColor = CLine, Location = new Point(X, 52), Size = new Size(W, 1) });
+        verLabel = new Label { AutoSize = true, Location = new Point(X, 68), ForeColor = CDim, Font = FSmall };
+        lower.Controls.Add(verLabel);
+        LinkLabel dc = new LinkLabel { Text = "Discord", AutoSize = true, Location = new Point(X + 250, 68), Font = FSmall,
+            LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
         dc.LinkClicked += delegate { try { Process.Start(DISCORD); } catch { } };
-        form.Controls.Add(dc);
+        lower.Controls.Add(dc);
+        logBtn = new Tile("Log", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 308, 62), Size = new Size(70, 30), Small = true };
+        logBtn.Click += delegate { logBox.Visible = !logBox.Visible; Fit(); if (logBox.Visible) { logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); } };
+        lower.Controls.Add(logBtn);
+        reportBtn = new Tile("Report a bug", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 230, 62), Size = new Size(124, 30), Small = true };
+        reportBtn.Click += delegate { Report(); };
+        lower.Controls.Add(reportBtn);
+        stopBtn = new Tile("Stop", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 96, 62), Size = new Size(96, 30), Small = true };
+        stopBtn.Click += delegate { new Thread(StopAll) { IsBackground = true }.Start(); };
+        lower.Controls.Add(stopBtn);
+        logBox = new TextBox { Location = new Point(X, 106), Size = new Size(W, 140), Multiline = true, ReadOnly = true, Visible = false,
+            ScrollBars = ScrollBars.Vertical, BackColor = CPanel, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
+        lower.Controls.Add(logBox);
+        Fit();
+    }
+
+    static void Fit()
+    {
+        lower.Top = sessionTop + (sessionRow.Visible ? 42 : 0);
+        lower.Height = 106 + (logBox.Visible ? 152 : 0);
+        form.ClientSize = new Size(lower.Width, lower.Bottom);
+    }
+
+    static Font Pick(string[] families, float size, FontStyle style)
+    {
+        foreach (string f in families)
+            using (Font t = new Font(f, size, style))
+                if (t.Name == f) return new Font(f, size, style);
+        return null;
+    }
+
+    static Label Caption(string text, int x, int y)
+    {
+        return new Label { Text = text, AutoSize = true, Location = new Point(x, y), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
+    }
+
+    static ComboBox Combo(Point at, int w)
+    {
+        return new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = at, Size = new Size(w, 24),
+            BackColor = CButton, ForeColor = CText, FlatStyle = FlatStyle.Flat };
+    }
+
+    // a panel with rounded corners and a thin border
+    class Box : Panel
+    {
+        public Box() { BackColor = CPanel; DoubleBuffered = true; ResizeRedraw = true; }
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            e.Graphics.Clear(Parent != null ? Parent.BackColor : CBack);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath p = Round(new Rectangle(0, 0, Width - 1, Height - 1), 10))
+            using (Brush b = new SolidBrush(CPanel))
+            using (Pen l = new Pen(CLine))
+            { e.Graphics.FillPath(b, p); e.Graphics.DrawPath(l, p); }
+        }
+    }
+
+    // a flat rounded button: an icon (Segoe's icon font) above its label, or the label alone (Small)
+    class Tile : Control
+    {
+        public string Icon; public Color Fill, Line, Ink; public Color? IconColor; public bool Small; bool over;
+        public Tile(string text, string icon, Color fill, Color line, Color ink)
+        {
+            Text = text; Icon = icon; Fill = fill; Line = line; Ink = ink; Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+        protected override void OnMouseEnter(EventArgs e) { over = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { over = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : CBack);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            Color f = !Enabled ? Mix(Fill, CBack, 0.5f) : over ? ControlPaint.Light(Fill, 0.18f) : Fill;
+            using (GraphicsPath p = Round(new Rectangle(0, 0, Width - 1, Height - 1), Small ? 8 : 10))
+            using (Brush b = new SolidBrush(f))
+            using (Pen l = new Pen(over && Enabled ? ControlPaint.Light(Line, 0.4f) : Line, Small ? 1f : 1.5f))
+            { g.FillPath(b, p); g.DrawPath(l, p); }
+            Color ink = Enabled ? Ink : Mix(Ink, CBack, 0.5f);
+            Font tf = Small ? FBody : FHead;
+            Size ts = TextRenderer.MeasureText(Text, tf);
+            if (Icon == null || FIcon == null || Small)
+            {
+                TextRenderer.DrawText(g, Text, tf, ClientRectangle, ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                return;
+            }
+            Size isz = TextRenderer.MeasureText(Icon, FIcon);
+            int top = (Height - isz.Height - ts.Height + 2) / 2;
+            TextRenderer.DrawText(g, Icon, FIcon, new Rectangle(0, top, Width, isz.Height), IconColor.HasValue && Enabled ? IconColor.Value : ink,
+                TextFormatFlags.HorizontalCenter);
+            TextRenderer.DrawText(g, Text, tf, new Rectangle(0, top + isz.Height - 2, Width, ts.Height), ink, TextFormatFlags.HorizontalCenter);
+        }
+    }
+
+    // a check box and a radio button in the cockpit's colours (amber when on)
+    class Tick : CheckBox { protected override void OnPaint(PaintEventArgs e) { PaintTick(this, e.Graphics, Checked, false); } }
+    class Dot : RadioButton { protected override void OnPaint(PaintEventArgs e) { PaintTick(this, e.Graphics, Checked, true); } }
+
+    static void PaintTick(Control c, Graphics g, bool on, bool round)
+    {
+        g.Clear(c.BackColor);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        Rectangle r = new Rectangle(1, (c.Height - 14) / 2, 13, 13);
+        using (Brush b = new SolidBrush(on ? CAmber : CButton))
+        using (Pen l = new Pen(on ? CAmber : CButtonLine))
+        using (GraphicsPath p = Round(r, 3))
+        {
+            if (round) { g.FillEllipse(b, r); g.DrawEllipse(l, r); }
+            else { g.FillPath(b, p); g.DrawPath(l, p); }
+        }
+        if (on && round) using (Brush d = new SolidBrush(CBack)) g.FillEllipse(d, r.X + 4, r.Y + 4, 5, 5);
+        if (on && !round) using (Pen d = new Pen(CBack, 2f)) g.DrawLines(d, new[] { new Point(r.X + 3, r.Y + 7), new Point(r.X + 5, r.Y + 10), new Point(r.X + 10, r.Y + 3) });
+        TextRenderer.DrawText(g, c.Text, c.Font, new Rectangle(19, 0, c.Width - 19, c.Height), on ? CText : CDim,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+    }
+
+    // a status light
+    class Led : Control
+    {
+        public Color On = CLedOff;
+        public Led() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.Clear(Parent != null ? Parent.BackColor : CBack);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (Brush b = new SolidBrush(On)) e.Graphics.FillEllipse(b, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
+    static GraphicsPath Round(Rectangle r, int rad)
+    {
+        GraphicsPath p = new GraphicsPath();
+        int d = rad * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+
+    static Color Mix(Color a, Color b, float k)
+    {
+        return Color.FromArgb((int)(a.R + (b.R - a.R) * k), (int)(a.G + (b.G - a.G) * k), (int)(a.B + (b.B - a.B) * k));
     }
 
     static ContextMenuStrip ToolsMenu()
@@ -225,20 +421,12 @@ static class Uplink
         ContextMenuStrip m = new ContextMenuStrip();
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
         m.Items.Add("Check for updates now", null, delegate {
-            Background(delegate { Install(true); Status("Up to date.", CGreen); CheckUpdates(); }); });
+            Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); });
         m.Items.Add("Import keys from my Terra Nova Plus...", null, delegate { ImportKeys(); });
         m.Items.Add("Repair (download everything again)", null, delegate { Repair(); });
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Uninstall...", null, delegate { Uninstall(); });
         return m;
-    }
-
-    static Button Flat(string text, Color back)
-    {
-        Button b = new Button { Text = text, FlatStyle = FlatStyle.Flat, BackColor = back, ForeColor = Color.White, Cursor = Cursors.Hand };
-        b.FlatAppearance.BorderSize = 0;
-        b.FlatAppearance.MouseOverBackColor = ControlPaint.Light(back, 0.25f);
-        return b;
     }
 
     static void Ui(Action a)
@@ -248,7 +436,18 @@ static class Uplink
     }
 
     static void Status(string s, Color c) { Ui(delegate { statusLabel.Text = s; statusLabel.ForeColor = c; }); Log("== " + s); }
-    static void Progress(int pct) { Ui(delegate { bar.Value = Math.Max(0, Math.Min(100, pct)); }); }
+    static void Progress(int pct) { Ui(delegate { bar.Value = Math.Max(0, Math.Min(100, pct)); bar.Visible = pct > 0; }); }
+
+    // the session line (co-op only): it takes the status line's place while a session runs
+    static void Session(string s, Color c)
+    {
+        Ui(delegate {
+            sessionLabel.Text = s + (sessionPing != "" && c == CGreen ? "   ·   " + sessionPing : "");
+            sessionLed.On = c; sessionLed.Invalidate();
+            bool on = s != "No session.";
+            if (sessionRow.Visible != on) { sessionRow.Visible = on; Fit(); }
+        });
+    }
 
     static void Log(string s)
     {
@@ -260,18 +459,23 @@ static class Uplink
     static void RefreshUi()
     {
         string g = Game();
-        gameLabel.Text = g == null ? "Game: not found - click Change... and pick the folder that contains TNOVA" : "Game: " + g;
-        gameLabel.ForeColor = g != null ? CText : CRed;
-        bool[] have = { File.Exists(Path.Combine(UplinkDir, "project.godot")), File.Exists(GodotExe), File.Exists(TnpExe), File.Exists(PythonExe) };
-        for (int i = 0; i < checks.Length; i++)
+        bool en = g != null && IsEnglish(g);
+        gameBadge.Text = g == null ? "NO GAME" : (IsSteam(g) ? "STEAM" : "GOG") + " · " + (en ? "EN" : "FR");
+        gameBadge.ForeColor = g == null ? CRed : CGreen;
+        gameBadge.BackColor = g == null ? Color.FromArgb(70, 24, 20) : Color.FromArgb(18, 58, 34);
+        gameLabel.Text = g ?? "Not found: Change, then pick the folder that contains TNOVA";
+        bool[] have = { File.Exists(Path.Combine(UplinkDir, "project.godot")), File.Exists(GodotExe), File.Exists(TnpExe), File.Exists(TnpCoopExe),
+                        File.Exists(PythonExe), Process.GetProcessesByName("steam").Length > 0 };
+        for (int i = 0; i < leds.Length; i++)
         {
-            checks[i].Text = (have[i] ? "●  " : "○  ") + checks[i].Tag + (have[i] ? "" : "  (installed when needed)");
-            checks[i].ForeColor = have[i] ? CGreen : CDim;
+            leds[i].On = have[i] ? CGreen : CLedOff; leds[i].Invalidate();
+            ledText[i].ForeColor = have[i] ? Color.FromArgb(159, 182, 175) : CDim;
+            ledText[i].Text = (string)ledText[i].Tag + (i == 0 && have[0] && Cfg("uplink_sha").Length >= 7 ? " " + Cfg("uplink_sha").Substring(0, 7) : "");
         }
-        playBtn.Enabled = mapBtn.Enabled = gameBtn.Enabled = toolsBtn.Enabled = !busy;
+        playBtn.Enabled = hostBtn.Enabled = joinBtn.Enabled = mapBtn.Enabled = gameBtn.Enabled = toolsBtn.Enabled = !busy;
         if (statusLabel.Text == "")
         {
-            statusLabel.Text = "Ready. PLAY to play the game in Uplink, MAP VIEWER to fly around its maps.";
+            statusLabel.Text = "Ready.";
             statusLabel.ForeColor = CText;
         }
     }
@@ -299,6 +503,7 @@ static class Uplink
 
     static void LoadOptions()
     {
+        (Cfg("mode") == "versus" ? modeVs : modeCoop).Checked = true;
         int s = Array.IndexOf(SIZES, Cfg("window"));
         sizeBox.SelectedIndex = s >= 0 ? s : 1;
         double sens;
@@ -306,30 +511,46 @@ static class Uplink
             Math.Max(2, Math.Min(30, (int)Math.Round(sens * 10))) : 10;
         sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture);
         invertBox.Checked = Cfg("invert_y") == "1";
+        padBox.Checked = Cfg("gamepad") != "0";
         int mi;
-        if (missionBox != null)
-            missionBox.SelectedIndex = int.TryParse(Cfg("lab_mission"), out mi) && mi >= 0 && mi < missionBox.Items.Count ? mi : 0;
+        string start = Cfg("start_at") != "" ? Cfg("start_at") : Cfg("lab_mission");   // (1.x: the lab's selector)
+        missionBox.SelectedIndex = int.TryParse(start, out mi) && mi >= 0 && mi < missionBox.Items.Count ? mi : 0;
     }
 
     static void SaveOptions()
     {
         if (sizeBox == null) return;
+        Set("mode", modeVs.Checked ? "versus" : "coop");
         Set("window", SIZES[Math.Max(0, sizeBox.SelectedIndex)]);
         Set("mouse", (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture));
         Set("invert_y", invertBox.Checked ? "1" : "0");
-        if (missionBox != null) Set("lab_mission", Math.Max(0, missionBox.SelectedIndex).ToString());
+        Set("gamepad", padBox.Checked ? "1" : "0");
+        Set("start_at", Math.Max(0, missionBox.SelectedIndex).ToString());
         SaveCfg();
     }
 
     static string UplinkDir { get { return Path.Combine(Comp, "uplink"); } }
     static string GodotExe { get { return Path.Combine(Comp, "godot", "Godot_v" + GODOT_VER + "-stable_win64.exe"); } }
-    static string TnpDir { get { return Path.Combine(Comp, "tnplus"); } }
+    static string TnpDir { get { return Path.Combine(Comp, "tnplus"); } }                // TN+ (main): PLAY
     static string TnpExe { get { return Path.Combine(TnpDir, "TNPlus.exe"); } }
+    static string TnpCoopDir { get { return Path.Combine(Comp, "tnplus_coop"); } }       // TN+ co-op build: HOST
+    static string TnpCoopExe { get { return Path.Combine(TnpCoopDir, "TNPlus.exe"); } }
     static string PythonExe { get { return Path.Combine(Comp, "python", "python.exe"); } }
     static string GodotData { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Godot", "app_userdata", "Terra Nova Uplink"); } }
 
     // ------------------------------------------------------------------ the game folder (GOG, Steam, or picked)
     static bool IsGame(string d) { return !string.IsNullOrEmpty(d) && File.Exists(Path.Combine(d, "TNOVA", "DATA", "RESMISS.RES")); }
+    static bool IsSteam(string d) { return d.IndexOf("steamapps", StringComparison.OrdinalIgnoreCase) >= 0; }
+
+    static bool IsEnglish(string d)
+    {   // the co-op code only knows the English exe; TN+ keeps the original next to its patched copy
+        foreach (string f in new[] { "__FF.EXE.tnplus-original", "__FF.EXE" })
+        {
+            string p = Path.Combine(d, "TNOVA", f);
+            if (File.Exists(p)) return new FileInfo(p).Length == EN_EXE;
+        }
+        return false;
+    }
 
     static string Game()
     {
@@ -374,7 +595,7 @@ static class Uplink
             string p = d.SelectedPath;
             if (!IsGame(p) && IsGame(Path.GetDirectoryName(p) ?? "")) p = Path.GetDirectoryName(p);
             if (!IsGame(p)) { MessageBox.Show(form, "No TNOVA\\DATA\\RESMISS.RES in that folder.", TITLE); return; }
-            Set("game_dir", p); SaveCfg(); RefreshUi();
+            Set("game_dir", p); SaveCfg(); FillMissions(); RefreshUi();
         }
     }
 
@@ -400,39 +621,54 @@ static class Uplink
         }) { IsBackground = true }.Start();
     }
 
-    // ------------------------------------------------------------------ play / map viewer
-    static void Start(bool live)
+    // ------------------------------------------------------------------ play / host / join / map viewer
+    static void Start(Mode m)
     {
         if (busy) return;
         SaveOptions();
         if (Game() == null) { PickGame(); if (Game() == null) return; }
-        Background(delegate { if (live) Play(); else Maps(); });
+        if (m == Mode.Host && !IsEnglish(Game()))
+        {
+            MessageBox.Show(form, "Hosting needs the English game (the co-op code only knows its exe). Pick an English install with Change.", TITLE);
+            return;
+        }
+        sessionName = sessionPing = "";
+        coopRun = m == Mode.Host || m == Mode.Join;
+        Background(delegate {
+            if (m == Mode.Play || m == Mode.Host) Live(m == Mode.Host);
+            else if (m == Mode.Join) Join();
+            else Maps();
+        });
     }
 
-    static void Play()
+    // PLAY and HOST A GAME: the game through TN+ (its co-op build to host), then the bridge, which opens Uplink live
+    static void Live(bool host)
     {
         Status("Getting things ready...", CAmber);
-        Install(true);
+        Install(host ? Mode.Host : Mode.Play);
         bool running;
-        if (!Preflight(out running)) return;
-        Process tnp = null;
+        if (!Preflight(host, out running) || (host && !SteamUp())) return;
+        string dir = host ? TnpCoopDir : TnpDir, exe = host ? TnpCoopExe : TnpExe;
         string load = null;
         int pick;
-        if (LAB && int.TryParse(Cfg("lab_mission"), out pick) && pick > 0)
+        if (int.TryParse(Cfg("start_at"), out pick) && pick > 0)
         {
-            load = MakeSave(Game(), pick - 1);
+            load = MakeSave(Game(), pick - 1, host ? COOP_SAVE : PLAY_SAVE);
             if (load == null) return;
         }
+        Process tnp = null;
         if (!running)
         {
-            WriteTnpIni(Game());
-            Status("Starting the game (Terra Nova Plus)...", CAmber);
+            WriteTnpIni(dir, Game());
+            if (host) SyncKeys();
+            Status("Starting the game (Terra Nova Plus" + (host ? ", co-op build" : "") + ")...", CAmber);
+            if (host) Session("Starting the game...", CAmber);
             // the game windowed, Uplink's size (the editions start DOSBox fullscreen, and a fullscreen DOSBox comes back
             // over Uplink at each video mode change): on the menus the bridge reads the game's screen from this window
-            string conf = Path.Combine(TnpDir, "uplink_live.conf");
+            string conf = Path.Combine(dir, host ? "coop_host.conf" : "uplink_live.conf");
             File.WriteAllLines(conf, new[] { "# Terra Nova Uplink: the game in a window behind Uplink's (Uplink draws it)",
                 "[sdl]", "fullscreen = false", "windowresolution = " + (Cfg("window") == "native" || Cfg("window") == "" ? "1696x960" : Cfg("window")) });
-            tnp = Run(TnpExe, "--launch --conf \"" + conf + "\"", TnpDir, null, false);
+            tnp = Run(exe, "--launch --conf \"" + conf + "\"", dir, null, false);
         }
         else Log("the game is already running: Uplink attaches to it (it needs TN+ Display HD 848x480)");
         // the bridge needs the game's code loaded: tried every few seconds until it stays up
@@ -442,19 +678,23 @@ static class Uplink
         while (!stopping)
         {
             if ((tnp == null || tnp.HasExited) && Process.GetProcessesByName("dosbox-staging").Length == 0)
-            { Status("The game was closed.", CText); return; }
+            { Status("The game was closed.", CText); Session("No session.", CDim); return; }
             if ((DateTime.Now - t0).TotalMinutes > 5)
-            { Status("The game didn't load in 5 minutes: see the log below.", CRed); return; }
+            { Status("The game didn't load in 5 minutes: see the log (Log).", CRed); return; }
             Thread.Sleep(3000);
-            bridge = Bridge();
+            bridge = Bridge(host, dir);
             DateTime b0 = DateTime.Now;
             while (!bridge.HasExited && (DateTime.Now - b0).TotalSeconds < 12) Thread.Sleep(250);
             if (!bridge.HasExited) break;
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
         }
         if (stopping || bridge == null) return;
-        Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\"." :
-            "Uplink is open: click in its window to take the mouse, Y for the game's cursor, F12 for the old school look.", CGreen);
+        if (host)
+            Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\". Invite your friend from Uplink's list (top right)." :
+                "Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.", CGreen);
+        else
+            Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\"." :
+                "Uplink is open: click in its window to take the mouse, Y for the game's cursor, F12 for the old school look.", CGreen);
         int n = 0;
         while (!stopping && !bridge.HasExited)
         {
@@ -462,9 +702,12 @@ static class Uplink
             if (tnp != null && ++n % 4 == 0) KeepGameBehind();
         }
         if (!stopping)
+        {
             Status(tnp != null && CloseOurGame() ? "Uplink was closed: the game too." :
                 Process.GetProcessesByName("dosbox-staging").Length == 0 ? "The game was closed." :
-                "Uplink was closed. Click PLAY to open it again.", CText);
+                "Uplink was closed. Click " + (host ? "HOST A GAME" : "PLAY") + " to open it again.", CText);
+            Session("No session.", CDim);
+        }
     }
 
     // the game's window tucked right behind Uplink's: out of sight, but not minimized (on the menus the bridge
@@ -487,7 +730,7 @@ static class Uplink
             {
                 d.Refresh();
                 IntPtr h = d.MainWindowHandle;
-                if (h == IntPtr.Zero || GetForegroundWindow() == h || !Ours(d, TnpDir)) continue;
+                if (h == IntPtr.Zero || GetForegroundWindow() == h || !(Ours(d, TnpDir) || Ours(d, TnpCoopDir))) continue;
                 WRect r;
                 GetWindowRect(h, out r);
                 bool iconic = IsIconic(h);
@@ -501,8 +744,8 @@ static class Uplink
             catch { }
     }
 
-    // only what this launcher started: its DOSBox (our conf, in tnplus\) and its Uplink (in uplink\). Another DOSBox
-    // game or another Uplink open on the PC is left where it is. Looked up once per process
+    // only what this launcher started: its DOSBox (our conf, in tnplus\ or tnplus_coop\) and its Uplink (in uplink\).
+    // Another DOSBox game or another Uplink open on the PC is left where it is. Looked up once per process
     static Dictionary<string, bool> ours = new Dictionary<string, bool>();
 
     static bool Ours(Process p, string dir)
@@ -514,28 +757,50 @@ static class Uplink
         {
             using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + p.Id))
                 foreach (ManagementObject o in s.Get())
-                    b = ((string)o["CommandLine"] ?? "").IndexOf(dir, StringComparison.OrdinalIgnoreCase) >= 0;
+                    b = ((string)o["CommandLine"] ?? "").IndexOf(dir + "\\", StringComparison.OrdinalIgnoreCase) >= 0;
         }
         catch { return false; }
         return ours[key] = b;
     }
 
-    static Process Bridge()
+    static Process Bridge(bool host, string dir)
     {
         Dictionary<string, string> env = Env();
         env["PYTHONIOENCODING"] = "utf-8";
         env["PYTHONUNBUFFERED"] = "1";
         // the game this launcher started: with another DOSBox open too, the bridge would not know which one to read
-        Proc game = Procs().Find(p => p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0);
+        Proc game = Procs().Find(p => p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(dir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
         if (game != null) env["TNRE_PID"] = game.Id.ToString();
-        return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") + "\" --launch --hud --play --fov 91.5 --res " +
-            Cfg("window"), UplinkDir, env, true);
+        return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") + "\" --launch --hud --play" +
+            (host ? " --guest-remote" : "") + " --fov 91.5 --res " + Cfg("window") + (host && Cfg("mode") == "versus" ? " --versus" : ""),
+            UplinkDir, env, true);
+    }
+
+    static void Join()
+    {
+        Status("Getting things ready...", CAmber);
+        Install(Mode.Join);
+        bool running;
+        if (!Preflight(false, out running) || !SteamUp()) return;
+        Status("Opening Uplink...", CAmber);
+        Session("Opening Uplink...", CAmber);
+        string size = Cfg("window");
+        string win = size == "native" ? "" : "--resolution " + size + " ";
+        Dictionary<string, string> env = Env();
+        List<string> km = new List<string>();                  // his keys (Game keys): Uplink turns them before sending
+        foreach (KeyValuePair<int, int> kv in KeyMap()) km.Add(kv.Key.ToString("X2") + ":" + kv.Value.ToString("X2"));
+        env["TN_KEYS"] = string.Join(",", km.ToArray());
+        Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + "-- --live --coop-guest --live-port 47831 --play --play-port 47834" +
+            (size == "native" ? " --native" : ""), UplinkDir, env, true);
+        Status("Uplink is open: click JOIN next to your friend (he must have clicked HOST A GAME).", CGreen);
+        while (!stopping && !g.HasExited) Thread.Sleep(500);
+        if (!stopping) { Status("Uplink was closed.", CText); Session("No session.", CDim); }
     }
 
     static void Maps()
     {
         Status("Getting things ready...", CAmber);
-        Install(false);
+        Install(Mode.Maps);
         Status("Opening the map viewer...", CAmber);
         string size = Cfg("window");
         string win = size == "native" ? "" : "--resolution " + size + " ";
@@ -552,6 +817,7 @@ static class Uplink
         env["TN_GAME_DIR"] = Game();
         env["TN_MOUSE_SENS"] = Cfg("mouse");
         env["TN_INVERT_Y"] = Cfg("invert_y");
+        env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         return env;
     }
 
@@ -572,11 +838,12 @@ static class Uplink
         return l;
     }
 
-    // running: the game is already open (started by the player with TN+): Uplink attaches to it
-    static bool Preflight(out bool running)
+    // running: the game is already open (started by the player with TN+): PLAY attaches to it. HOST needs the game
+    // started by its co-op build: another one is closed first (asked)
+    static bool Preflight(bool host, out bool running)
     {
         List<Proc> ps = Procs();
-        running = ps.Exists(p => p.Name == "dosbox-staging.exe");
+        running = false;
         // an Uplink or bridge already open (another launch, a .bat): same ports, the new one would not get its packets
         List<Proc> old = ps.FindAll(p => (p.Name.StartsWith("Godot") && p.Cmd.Contains("--live")) ||
                                          (p.Name == "python.exe" && p.Cmd.Contains("live_bridge.py")));
@@ -587,16 +854,32 @@ static class Uplink
             foreach (Proc p in old) Kill(p.Id);
             Thread.Sleep(1000);
         }
+        List<Proc> games = ps.FindAll(p => p.Name == "dosbox-staging.exe");
+        if (host)
+        {   // a game started without the co-op build has no co-op code: it must be started again from here
+            bool ok = games.Exists(p => p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (games.Count > 0 && !ok)
+            {
+                if (!Ask("Terra Nova is already running, started without the co-op build. Close it so it can start again for the co-op? (save your game first)"))
+                { Status("Close the game first.", CRed); return false; }
+                foreach (Proc p in games) Kill(p.Id);
+                foreach (Proc p in ps.FindAll(q => q.Name == "TNPlus.exe")) Kill(p.Id);
+                Thread.Sleep(1500);
+            }
+            else running = ok;
+        }
+        else running = games.Count > 0;
         return true;
     }
 
-    // Uplink closed: the game this launcher started goes with it (its DOSBox, started by our TN+ with our conf in
-    // tnplus\, then TN+ itself, which ends with it). A game the player started himself is left alone.
+    // Uplink closed: the game this launcher started goes with it (its DOSBox, started by our TN+ with our conf, then
+    // TN+ itself, which ends with it). A game the player started himself is left alone.
     static bool CloseOurGame()
     {
         bool any = false;
         foreach (Proc p in Procs())
-            if (p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0)
+            if (p.Name == "dosbox-staging.exe" && (p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                   p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0))
             {
                 any = true;
                 try
@@ -610,13 +893,28 @@ static class Uplink
             }
         Thread.Sleep(500);
         foreach (Proc p in Procs())
-            if (p.Name == "TNPlus.exe" && p.Cmd.IndexOf(TnpDir, StringComparison.OrdinalIgnoreCase) >= 0) Kill(p.Id);
+            if (p.Name == "TNPlus.exe" && (p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                           p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0)) Kill(p.Id);
         return any;
     }
 
     static void Kill(int id)
     {
         try { Process p = Process.GetProcessById(id); Log("closing " + p.ProcessName + " " + id); p.Kill(); p.WaitForExit(3000); } catch { }
+    }
+
+    static bool SteamUp()
+    {
+        if (Process.GetProcessesByName("steam").Length > 0) return true;
+        Status("Starting Steam...", CAmber);
+        try { Process.Start("steam://open/main"); } catch { }
+        for (int i = 0; i < 60 && !stopping; i++)
+        {
+            Thread.Sleep(1000);
+            if (Process.GetProcessesByName("steam").Length > 0) { Thread.Sleep(8000); return true; }
+        }
+        Status("Steam isn't running: start it, log in, then click again.", CRed);
+        return false;
     }
 
     static Process Run(string exe, string args, string dir, Dictionary<string, string> env, bool capture)
@@ -636,8 +934,7 @@ static class Uplink
         if (capture)
         {
             string tag = Path.GetFileNameWithoutExtension(exe).Split('_')[0];
-            p.OutputDataReceived += (s, e) => { if (e.Data != null && !e.Data.StartsWith("x ") && e.Data.Trim() != "" &&
-                !e.Data.StartsWith("Godot Engine") && !e.Data.StartsWith("Vulkan")) Log(tag + ": " + e.Data); };
+            p.OutputDataReceived += (s, e) => { if (e.Data != null) Line(tag, e.Data); };
             p.ErrorDataReceived += (s, e) => { if (e.Data != null && e.Data.Trim() != "") Log(tag + "! " + e.Data); };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
@@ -646,14 +943,56 @@ static class Uplink
         return p;
     }
 
-    // ------------------------------------------------------------------ mission selector (lab)
+    // Uplink's coop lines (coop_net.gd; on the host they come through the bridge, which started Uplink): the session line
+    static readonly Regex COOP = new Regex(@"coop: \[[0-9:]+\] (.*)$");
+    static readonly Regex PING = new Regex(@"ping (\d+) ms");
+
+    static void Line(string tag, string l)
+    {
+        if (l.StartsWith("x ") || l.Trim() == "" || l.StartsWith("Godot Engine") || l.StartsWith("Vulkan")) return;
+        Log(tag + ": " + l);
+        if (!coopRun) return;                                              // PLAY, MAP VIEWER: no session to show
+        Match m = COOP.Match(l);
+        string t = m.Success ? m.Groups[1].Value : l;
+        Match pm = PING.Match(t);
+        if (pm.Success) sessionPing = pm.Groups[1].Value + " ms";
+        if (t.Contains("OFFLINE"))
+            Session("Steam not available: " + t.Substring(t.IndexOf("OFFLINE") + 7).Trim(), CRed);
+        else if (t.Contains("ANOTHER COOP VERSION") || t.Contains("ANOTHER VERSION") || t.Contains("another coop version"))
+            Session("Different versions: both of you click HOST / JOIN again (it updates).", CRed);
+        else if (t.Contains("GUEST CONNECTED") || t.Contains("CONNECTED TO HOST"))
+        {
+            string rest = t.Substring(t.IndexOf("CONNECTED") + 9).Replace("TO HOST", "").Trim();
+            int cut = rest.IndexOf("  ");
+            sessionName = cut > 0 ? rest.Substring(0, cut) : rest;
+            Session((t.Contains("GUEST") ? "Connected: " : "Connected to ") + sessionName, CGreen);
+        }
+        else if (t.StartsWith("status:") && sessionName != "")
+            Session("Connected: " + sessionName, CGreen);
+        else if (t.Contains("GUEST JOINING"))
+            Session("Your friend is joining...", CAmber);
+        else if (t.Contains("CONNECTABLE"))
+            Session("Lobby open: invite your friend from the list in Uplink (top right).", CAmber);
+        else if (t.Contains("the host left"))
+            Session("The host left.", CAmber);
+        else if (t.Contains("waiting for an invite") || t.Contains("waiting for a game"))
+            Session("Waiting: click JOIN next to your friend in Uplink.", CAmber);
+        else if (t.StartsWith("invited "))
+            Session("Invite sent to " + t.Substring(8) + ".", CAmber);
+        else if (t.StartsWith("guest: entity"))
+            Session("Your friend is in the mission" + (sessionName != "" ? " (" + sessionName + ")" : "") + ".", CGreen);
+    }
+
+    // ------------------------------------------------------------------ start at a mission
     // A campaign mission is picked by a save: the most advanced one of the game (its squad, pilots and equipment) is
-    // copied into a free slot as "LAB Mission NN", its header (resource 1776: the mission's MISSn.RES and the campaign
-    // position + 3) set on the picked mission. The player loads it. (As Terra Nova Coop's.)
+    // copied into a free slot as "UPLINK Mission NN" (PLAY) or "COOP Mission NN" (HOST), its header (resource 1776,
+    // read by the game into 0x359708 = the mission's MISSn.RES and 0x35D0EC = the campaign position + 3) set on the
+    // picked mission. The player loads it.
     static void FillMissions()
     {
+        int keep = missionBox.SelectedIndex;
         missionBox.Items.Clear();
-        missionBox.Items.Add("From the game's menus (no change)");
+        missionBox.Items.Add("From the game's menus");
         string g = Game();
         string[] names = g != null ? MissionNames(g) : null;
         for (int i = 0; i < CAMPAIGN.Length; i++)
@@ -662,6 +1001,7 @@ static class Uplink
             string nm = names != null && n - 1 < names.Length && names[n - 1].Trim() != "" ? names[n - 1].Trim() : "MISS" + n;
             missionBox.Items.Add((i + 1).ToString("00") + "   " + nm);
         }
+        if (keep >= 0 && keep < missionBox.Items.Count) missionBox.SelectedIndex = keep;
     }
 
     static string[] MissionNames(string game)
@@ -680,11 +1020,11 @@ static class Uplink
         catch { return null; }
     }
 
-    static string MakeSave(string game, int index)
+    static string MakeSave(string game, int index, string prefix)
     {
         string dir = Path.Combine(game, "TNOVA");
         Res best = null;
-        int bestPos = -1, labSlot = -1, free = -1;
+        int bestPos = -1, ourSlot = -1, free = -1;
         for (int slot = 1; slot <= 9; slot++)
         {
             string f = Path.Combine(dir, "SAVE" + slot.ToString("00") + ".RES");
@@ -693,8 +1033,9 @@ static class Uplink
             {
                 Res r = Res.Load(f);
                 string name = Encoding.ASCII.GetString(r.Data(1775)).TrimEnd('\0');
-                if (name.StartsWith(LAB_SAVE)) { if (labSlot < 0) labSlot = slot; continue; }
-                if (name.StartsWith("COOP Mission ")) continue;
+                if (name.StartsWith(prefix) || (prefix == PLAY_SAVE && name.StartsWith("LAB Mission ")))   // (1.x: the lab's)
+                { if (ourSlot < 0) ourSlot = slot; continue; }
+                if (Array.Exists(OUR_SAVES, s => name.StartsWith(s))) continue;
                 byte[] h = r.Data(1776);
                 int pos = BitConverter.ToInt32(h, 8);
                 if (BitConverter.ToInt32(h, 0) == 0x06EF0018 && pos > bestPos) { bestPos = pos; best = r; }
@@ -703,16 +1044,16 @@ static class Uplink
         }
         if (best == null)
         {
-            Status("To pick a mission, the game needs at least one save of yours (play the first mission and save).", CRed);
+            Status("To start at a mission, the game needs at least one save of yours (play the first mission and save).", CRed);
             return null;
         }
-        int target = labSlot > 0 ? labSlot : free;        // our own LAB slot again, else a free one: never a save of yours
+        int target = ourSlot > 0 ? ourSlot : free;          // our own slot again, else a free one: never a save of yours
         if (target < 0)
         {
-            Status("The 9 save slots are all used: free one with Saves... (or pick \"From the game's menus\").", CRed);
+            Status("The 9 save slots are all used: free one with Saves (or start from the game's menus).", CRed);
             return null;
         }
-        string label = LAB_SAVE + (index + 1).ToString("00");
+        string label = prefix + (index + 1).ToString("00");
         byte[] head = (byte[])best.Data(1776).Clone();
         Array.Copy(BitConverter.GetBytes(CAMPAIGN[index]), 0, head, 4, 4);
         Array.Copy(BitConverter.GetBytes(index + 3), 0, head, 8, 4);
@@ -733,7 +1074,7 @@ static class Uplink
         Form d = new Form { Text = "Saves", ClientSize = new Size(460, 300), FormBorderStyle = FormBorderStyle.FixedDialog,
             MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, BackColor = CBack, ForeColor = CText,
             Font = form.Font, ShowInTaskbar = false };
-        ListBox list = new ListBox { Location = new Point(12, 12), Size = new Size(436, 220), BackColor = CField, ForeColor = CText,
+        ListBox list = new ListBox { Location = new Point(12, 12), Size = new Size(436, 220), BackColor = CPanel, ForeColor = CText,
             BorderStyle = BorderStyle.None, Font = new Font("Consolas", 10f) };
         d.Controls.Add(list);
         Action fill = delegate {
@@ -748,7 +1089,7 @@ static class Uplink
                         Res r = Res.Load(f);
                         what = Encoding.ASCII.GetString(r.Data(1775)).TrimEnd('\0');
                         byte[] h = r.Data(1776);
-                        if (BitConverter.ToInt32(h, 0) == 0x06EF0018 && !what.StartsWith(LAB_SAVE))
+                        if (BitConverter.ToInt32(h, 0) == 0x06EF0018 && !Array.Exists(OUR_SAVES, s => what.StartsWith(s)))
                             what += "  (mission " + (BitConverter.ToInt32(h, 8) - 2).ToString("00") + ")";
                     }
                     catch { what = "(unreadable)"; }
@@ -756,8 +1097,7 @@ static class Uplink
             }
         };
         fill();
-        Button del = Flat("Delete", Color.FromArgb(110, 34, 30));
-        del.Location = new Point(12, 250); del.Size = new Size(120, 34);
+        Tile del = new Tile("Delete", null, Color.FromArgb(110, 34, 30), Color.FromArgb(150, 54, 46), CText) { Location = new Point(12, 250), Size = new Size(120, 34), Small = true };
         del.Click += delegate {
             int slot = list.SelectedIndex + 1;
             string f = Path.Combine(dir, "SAVE" + slot.ToString("00") + ".RES");
@@ -777,8 +1117,7 @@ static class Uplink
             fill();
         };
         d.Controls.Add(del);
-        Button close = Flat("Close", CPanel);
-        close.Location = new Point(328, 250); close.Size = new Size(120, 34);
+        Tile close = new Tile("Close", null, CButton, CButtonLine, CText) { Location = new Point(328, 250), Size = new Size(120, 34), Small = true };
         close.Click += delegate { d.Close(); };
         d.Controls.Add(close);
         d.ShowDialog(form);
@@ -875,6 +1214,7 @@ static class Uplink
             mine.Clear();
         }
         Status("Stopped.", CText);
+        Session("No session.", CDim);
     }
 
     // ------------------------------------------------------------------ bug report: one zip on the desktop
@@ -887,14 +1227,20 @@ static class Uplink
             using (ZipArchive a = ZipFile.Open(zip, ZipArchiveMode.Create))
             {
                 StringBuilder info = new StringBuilder();
+                string g = Game();
                 info.AppendLine(TITLE + " " + VERSION + ", " + Environment.OSVersion + (Environment.Is64BitOperatingSystem ? ", 64-bit" : ""));
-                info.AppendLine("game: " + Game());
-                info.AppendLine("uplink " + Cfg("uplink_sha") + ", tnplus " + Cfg("tnplus_sha"));
-                info.AppendLine("options: window " + Cfg("window") + ", mouse " + Cfg("mouse") + ", invert " + Cfg("invert_y"));
+                info.AppendLine("game: " + g + (g != null && IsEnglish(g) ? " (English)" : " (not English)"));
+                info.AppendLine("uplink " + Cfg("uplink_sha") + ", tnplus " + Cfg("tnplus_sha") + ", tnplus coop " + Cfg("tnplus_coop_sha"));
+                info.AppendLine("options: mode " + Cfg("mode") + ", window " + Cfg("window") + ", mouse " + Cfg("mouse") +
+                                ", invert " + Cfg("invert_y") + ", gamepad " + Cfg("gamepad") + ", start at " + Cfg("start_at"));
+                info.AppendLine("session: " + (sessionLabel != null ? sessionLabel.Text : "-"));
                 foreach (Proc p in Procs()) info.AppendLine("running: " + p.Name + " " + p.Id);
                 using (StreamWriter w = new StreamWriter(a.CreateEntry("info.txt").Open())) w.Write(info.ToString());
                 Add(a, LogPath, "launcher.log");
                 Add(a, Path.Combine(TnpDir, "TNPlus.ini"), "TNPlus.ini");
+                Add(a, Path.Combine(TnpCoopDir, "TNPlus.ini"), "TNPlus_coop.ini");
+                Newest(a, Path.Combine(UplinkDir, "live", "logs"), "coop_host_*.log", 3, "bridge/");
+                Newest(a, Path.Combine(GodotData, "coop_logs"), "*.log", 4, "uplink_coop/");
                 Newest(a, Path.Combine(GodotData, "logs"), "*.log", 2, "uplink_godot/");
             }
             Status("Report saved on your desktop: send it on Discord with a few words on what happened.", CGreen);
@@ -923,9 +1269,11 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ TN+ settings: HD 848x480 (the live mode's)
-    static void WriteTnpIni(string game)
+    static void WriteTnpIni(string dir, string game)
     {
-        string ini = Path.Combine(TnpDir, "TNPlus.ini");
+        Directory.CreateDirectory(dir);
+        string ini = Path.Combine(dir, "TNPlus.ini"), other = Path.Combine(dir == TnpDir ? TnpCoopDir : TnpDir, "TNPlus.ini");
+        if (!File.Exists(ini) && File.Exists(other)) CopyKeys(other, ini);    // a first TN+ of the two: the keys of the other
         // HD 848x480 (the bridge reads the cockpit from it). Terrain detail: TN+'s SHARPER, not the game's: the game
         // moves the player on the ground it draws, and with its own detail that ground is not kept up to date while he
         // looks up (jets into a slope pushed him down and back; SHARPER alone fixes it, tested 21/10/2026). Distances:
@@ -945,8 +1293,9 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ the game's keys (TN+'s KEYBOARD page)
-    // TN+ changes the keys in the game itself (TNPlus.ini next to its exe: key_game_<id> = [SHIFT+|CTRL+|ALT+]scancode);
-    // "Game keys..." opens that page of our own TN+, "Import" copies the keys of a TN+ the player already set up
+    // TN+ changes the keys in the game itself (TNPlus.ini next to its exe: key_game_<id> = [SHIFT+|CTRL+|ALT+]scancode).
+    // "Game keys" opens that page of our TN+ (tnplus\, the one PLAY uses); the co-op build gets the same keys (SyncKeys),
+    // and a guest's keys are turned by Uplink from them (KeyMap). "Import" copies the keys of a TN+ already set up
     static void GameKeys()
     {
         if (busy) return;
@@ -954,15 +1303,16 @@ static class Uplink
             if (!File.Exists(TnpExe))
             {
                 Status("Downloading and building Terra Nova Plus (for its key settings)...", CAmber);
-                BuildTnp();
-                string tp = Get(Heads(), TNPLUS_REPO);
+                BuildTnp(false);
+                string tp = Get(Heads(), Head(TNPLUS_REPO, "main"));
                 if (tp != null) Set("tnplus_sha", tp);
                 SaveCfg();
             }
-            if (Game() != null) WriteTnpIni(Game());
+            if (Game() != null) WriteTnpIni(TnpDir, Game());
             Status("Set your keys in the window that opened, then click DONE.", CAmber);
             Process p = Run(TnpExe, "--keys", TnpDir, null, false);
             p.WaitForExit();
+            SyncKeys();
             Status("Keys saved: " + KeysSummary(), CGreen);
         });
     }
@@ -976,34 +1326,82 @@ static class Uplink
             d.Title = "Pick the TNPlus.ini of your Terra Nova Plus (next to its TNPlus.exe)";
             d.Filter = "TNPlus.ini|TNPlus.ini|ini files|*.ini";
             if (d.ShowDialog(form) != DialogResult.OK) return;
-            List<string> mine = File.Exists(Path.Combine(TnpDir, "TNPlus.ini")) ? new List<string>(File.ReadAllLines(Path.Combine(TnpDir, "TNPlus.ini"))) : new List<string>();
-            mine.RemoveAll(l => Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k)));
-            int n = 0;
-            foreach (string l in File.ReadAllLines(d.FileName))
-                if (Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k))) { mine.Add(l); n++; }
-            Directory.CreateDirectory(TnpDir);
-            File.WriteAllLines(Path.Combine(TnpDir, "TNPlus.ini"), mine);
+            int n = CopyKeys(d.FileName, Path.Combine(TnpDir, "TNPlus.ini"));
+            SyncKeys();
             Status(n + " key and mouse settings imported: " + KeysSummary(), CGreen);
         }
     }
 
+    // the key lines of one TNPlus.ini into another (its other settings kept)
+    static int CopyKeys(string from, string to)
+    {
+        if (!File.Exists(from)) return 0;
+        List<string> mine = File.Exists(to) ? new List<string>(File.ReadAllLines(to)) : new List<string>();
+        mine.RemoveAll(l => Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k)));
+        int n = 0;
+        foreach (string l in File.ReadAllLines(from))
+            if (Array.Exists(KEY_LINES, k => l.TrimStart().StartsWith(k))) { mine.Add(l); n++; }
+        Directory.CreateDirectory(Path.GetDirectoryName(to));
+        File.WriteAllLines(to, mine);
+        return n;
+    }
+
+    static void SyncKeys()
+    {
+        string solo = Path.Combine(TnpDir, "TNPlus.ini");
+        if (File.Exists(solo) && Directory.Exists(TnpCoopDir)) CopyKeys(solo, Path.Combine(TnpCoopDir, "TNPlus.ini"));
+    }
+
+    // TN+'s commands that have a key of their own by default (id, scancode): the guest's keys are turned by Uplink
+    static readonly string[] DEFAULT_KEYS = {
+        "fwd:11", "back:2D", "turnl:1E", "turnr:20", "stop:1F", "sidel:2C", "sider:2E", "jump:39", "crouch:29",
+        "lookup:13", "lookdn:2F", "lookl:10", "lookr:12", "centre:21", "v360:30", "full:22", "ir:17", "zoomin:0D",
+        "zoomout:0C", "mfd:0F", "w1:02", "w2:03", "w3:04", "w4:05", "asf:06", "tnext:14", "tprev:15",
+        "sq1:3B", "sq2:3C", "sq3:3D", "sqall:3E", "drop:1C", "recentre:31", "maphud:32", "mapout:33", "mapin:34",
+        "squadinfo:43", "sensor:44", "wrange:57", "minfo:58" };
+
+    static string KeysIni()
+    {
+        string solo = Path.Combine(TnpDir, "TNPlus.ini"), coop = Path.Combine(TnpCoopDir, "TNPlus.ini");
+        return File.Exists(solo) ? solo : coop;
+    }
+
+    static Dictionary<int, int> KeyMap()
+    {
+        Dictionary<int, int> m = new Dictionary<int, int>();
+        string ini = KeysIni();
+        if (!File.Exists(ini)) return m;
+        Dictionary<string, int> def = new Dictionary<string, int>();
+        foreach (string dk in DEFAULT_KEYS) def[dk.Split(':')[0]] = Convert.ToInt32(dk.Split(':')[1], 16);
+        Dictionary<int, int> moved = new Dictionary<int, int>();          // new key -> the command's default key
+        foreach (string l in File.ReadAllLines(ini))
+        {
+            Match mm = Regex.Match(l, @"^\s*key_game_(\w+)\s*=\s*([0-9A-Fa-f]{1,2})\s*$");   // plain keys only (no modifier)
+            int d;
+            if (mm.Success && def.TryGetValue(mm.Groups[1].Value, out d)) moved[Convert.ToInt32(mm.Groups[2].Value, 16)] = d;
+        }
+        foreach (KeyValuePair<int, int> kv in moved) m[kv.Key] = kv.Value;
+        foreach (int d in moved.Values) if (!moved.ContainsKey(d)) m[d] = 0;   // the old key of a moved command: nothing
+        return m;
+    }
+
     static string KeysSummary()
     {
-        string ini = Path.Combine(TnpDir, "TNPlus.ini");
+        string ini = KeysIni();
         int n = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)).FindAll(l => l.TrimStart().StartsWith("key_game_")).Count : 0;
         return n == 0 ? "the game's own keys." : "your keys (" + n + " changed).";
     }
 
     // ------------------------------------------------------------------ install, update, repair
-    // live: also what the live mode needs (TN+, Python); the map viewer only needs Uplink and Godot
-    static void Install(bool live)
+    // PLAY: Uplink, Godot, TN+, Python. HOST: the same with TN+'s co-op build. JOIN and MAP VIEWER: Uplink and Godot
+    static void Install(Mode mode)
     {
         Dictionary<string, string> heads = Heads();
-        string up = Get(heads, UPLINK_REPO);
+        string up = Get(heads, Head(UPLINK_REPO, "main"));
         if (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha")))
         {
             Status("Downloading Uplink...", CAmber);
-            Repo(UPLINK_REPO, UplinkDir);
+            Repo(UPLINK_REPO, "main", UplinkDir);
             if (up != null) Set("uplink_sha", up);
             SaveCfg();
             SelfUpdate();
@@ -1015,14 +1413,15 @@ static class Uplink
             Unzip(z, Path.GetDirectoryName(GodotExe));
             File.Delete(z);
         }
-        if (live)
+        if (mode == Mode.Play || mode == Mode.Host)
         {
-            string tp = Get(heads, TNPLUS_REPO);
-            if (!File.Exists(TnpExe) || (tp != null && tp != Cfg("tnplus_sha")))
+            bool coop = mode == Mode.Host;
+            string tp = Get(heads, Head(TNPLUS_REPO, coop ? "coop" : "main")), key = coop ? "tnplus_coop_sha" : "tnplus_sha";
+            if (!File.Exists(coop ? TnpCoopExe : TnpExe) || (tp != null && tp != Cfg(key)))
             {
-                Status("Downloading and building Terra Nova Plus...", CAmber);
-                BuildTnp();
-                if (tp != null) Set("tnplus_sha", tp);
+                Status("Downloading and building Terra Nova Plus" + (coop ? " (co-op build)" : "") + "...", CAmber);
+                BuildTnp(coop);
+                if (tp != null) Set(key, tp);
                 SaveCfg();
             }
             if (!File.Exists(PythonExe) || !File.Exists(Path.Combine(Comp, "python", "Lib", "site-packages", "psutil", "__init__.py")))
@@ -1036,17 +1435,19 @@ static class Uplink
         Progress(0);
     }
 
+    static string Head(string repo, string branch) { return repo + "@" + branch; }
+
     static Dictionary<string, string> Heads()
-    {   // the main branches' last commits
+    {   // the last commits of Uplink (main), TN+ (main) and its co-op build (coop): both co-op PCs must run the same
         Dictionary<string, string> d = new Dictionary<string, string>();
-        foreach (string r in new[] { UPLINK_REPO, TNPLUS_REPO })
+        foreach (string[] rb in new[] { new[] { UPLINK_REPO, "main" }, new[] { TNPLUS_REPO, "main" }, new[] { TNPLUS_REPO, "coop" } })
             try
             {
-                string j = Text("https://api.github.com/repos/" + r + "/commits/" + BRANCH);
+                string j = Text("https://api.github.com/repos/" + rb[0] + "/commits/" + rb[1]);
                 Match m = Regex.Match(j, "\"sha\"\\s*:\\s*\"([0-9a-f]{40})\"");
-                if (m.Success) d[r] = m.Groups[1].Value;
+                if (m.Success) d[Head(rb[0], rb[1])] = m.Groups[1].Value;
             }
-            catch (Exception e) { Log("GitHub not reachable (" + e.Message + "): keeping the installed files"); }
+            catch (Exception e) { Log("GitHub not reachable (" + e.Message + "): keeping the installed files"); break; }
         return d;
     }
 
@@ -1055,13 +1456,12 @@ static class Uplink
     static void CheckUpdates()
     {
         Dictionary<string, string> h = Heads();
-        string up = Get(h, UPLINK_REPO);
+        string up = Get(h, Head(UPLINK_REPO, "main"));
         Ui(delegate {
-            if (up == null) verLabel.Text = "Couldn't check for updates (offline?).";
-            else if (Cfg("uplink_sha") == "") verLabel.Text = "Uplink " + up.Substring(0, 7) + " will be installed.";
-            else if (up == Cfg("uplink_sha")) verLabel.Text = "Up to date (Uplink " + up.Substring(0, 7) + ").";
-            else verLabel.Text = "Update available: installed when you click PLAY or MAP VIEWER.";
-            verLabel.ForeColor = up != null && up != Cfg("uplink_sha") && Cfg("uplink_sha") != "" ? CAmber : CDim;
+            if (up == null) { verLabel.Text = "●  Couldn't check for updates (offline?)"; verLabel.ForeColor = CDim; }
+            else if (Cfg("uplink_sha") == "") { verLabel.Text = "●  Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.ForeColor = CAmber; }
+            else if (up == Cfg("uplink_sha")) { verLabel.Text = "●  Up to date"; verLabel.ForeColor = CGreen; }
+            else { verLabel.Text = "●  Update available: installed when you start"; verLabel.ForeColor = CAmber; }
         });
     }
 
@@ -1091,15 +1491,16 @@ static class Uplink
     static void Repair()
     {
         if (busy) return;
-        if (!Ask("Download and install everything again? (your settings are kept)")) return;
+        if (!Ask("Download and install everything again? (your settings and keys are kept)")) return;
         Background(delegate {
             StopAll();
             stopping = false;
-            foreach (string d in new[] { "uplink", "godot", "python", "tnplus_src", "tmp" })
+            foreach (string d in new[] { "uplink", "godot", "python", "tnplus_src", "tnplus_coop_src", "tmp" })
                 try { if (Directory.Exists(Path.Combine(Comp, d))) Directory.Delete(Path.Combine(Comp, d), true); } catch (Exception e) { Log(e.Message); }
             try { File.Delete(TnpExe); } catch { }
-            Set("uplink_sha", ""); Set("tnplus_sha", ""); SaveCfg();
-            Install(true);
+            try { File.Delete(TnpCoopExe); } catch { }
+            Set("uplink_sha", ""); Set("tnplus_sha", ""); Set("tnplus_coop_sha", ""); SaveCfg();
+            Install(Mode.Play);
             Status("Repaired: everything is installed again.", CGreen);
         });
     }
@@ -1107,11 +1508,11 @@ static class Uplink
     static void Uninstall()
     {
         if (busy) return;
-        if (!Ask("Remove everything Terra Nova Uplink installed in this folder (about 250 MB)? Your game is not touched.")) return;
+        if (!Ask("Remove everything Terra Nova Uplink installed in this folder (about 300 MB)? Your game is not touched.")) return;
         StopAll();
         try { Directory.Delete(Comp, true); } catch (Exception e) { Log(e.Message); }
         try { File.Delete(Ini); } catch { }
-        MessageBox.Show(form, "Done. You can now delete Terra Nova Uplink.exe.", TITLE);
+        MessageBox.Show(form, "Done. You can now delete " + Path.GetFileName(Application.ExecutablePath) + ".", TITLE);
         Environment.Exit(0);
     }
 
@@ -1121,9 +1522,9 @@ static class Uplink
         return File.Exists(c) ? c : Path.Combine(Environment.GetEnvironmentVariable("WINDIR"), @"Microsoft.NET\Framework\v4.0.30319\csc.exe");
     }
 
-    static void Repo(string repo, string dest)
+    static void Repo(string repo, string branch, string dest)
     {
-        string z = Download("https://github.com/" + repo + "/archive/refs/heads/" + BRANCH + ".zip", "repo.zip");
+        string z = Download("https://github.com/" + repo + "/archive/refs/heads/" + branch + ".zip", "repo.zip");
         string tmp = Path.Combine(Comp, "tmp");
         if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
         Unzip(z, tmp);
@@ -1134,10 +1535,11 @@ static class Uplink
         Directory.Delete(tmp, true);
     }
 
-    static void BuildTnp()
+    // TN+ from its sources (main for PLAY, coop for HOST), built with build.bat's compiler line
+    static void BuildTnp(bool coop)
     {
-        string src = Path.Combine(Comp, "tnplus_src");
-        Repo(TNPLUS_REPO, src);
+        string src = Path.Combine(Comp, coop ? "tnplus_coop_src" : "tnplus_src");
+        Repo(TNPLUS_REPO, coop ? "coop" : "main", src);
         string cmd = File.ReadAllText(Path.Combine(src, "src", "build.bat"));
         Match m = Regex.Match(cmd, "(?m)^\"%CSC%\"([^\\r\\n]+)");   // build.bat's compiler line, without its pause
         if (!m.Success) throw new Exception("TN+ build.bat not understood");
@@ -1145,8 +1547,9 @@ static class Uplink
         p.WaitForExit();
         string built = Path.Combine(src, "src", "TNPlus.exe");
         if (p.ExitCode != 0 || !File.Exists(built)) throw new Exception("Terra Nova Plus didn't build (see the log)");
-        Directory.CreateDirectory(TnpDir);
-        File.Copy(built, TnpExe, true);       // its TNPlus.ini stays in tnplus\
+        string dir = coop ? TnpCoopDir : TnpDir;
+        Directory.CreateDirectory(dir);
+        File.Copy(built, Path.Combine(dir, "TNPlus.exe"), true);       // its TNPlus.ini stays next to it
     }
 
     static void InstallPython()

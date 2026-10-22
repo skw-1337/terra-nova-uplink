@@ -20,11 +20,11 @@ It reads everything from your own copy of the game (GOG or Steam). No game files
 
 ## Quick start
 
-Download **Terra Nova Uplink.exe** from the [latest release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), put it in an empty folder and run it. It finds your game and downloads the rest by itself (Uplink, Godot, Terra Nova Plus, Python for the live mode), and keeps them up to date. Then click **PLAY** (live mode) or **MAP VIEWER**.
+Download **Terra Nova Uplink.exe** from the [latest release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), put it in an empty folder and run it. It finds your game and downloads the rest by itself (Uplink, Godot, Terra Nova Plus, Python for the live mode), and keeps them up to date. Then click **PLAY** (live mode), **MAP VIEWER**, or **HOST A GAME** / **JOIN A FRIEND** to play with a friend online.
 
 Windows may warn about an unknown app (not signed): More info, then Run anyway. The manual install is below.
 
-Playing with a friend? There's a separate online co-op: [Terra Nova Coop](https://github.com/skw-1337/terra-nova-uplink/releases/tag/coop-v0.10).
+Playing with a friend: see [COOP.md](COOP.md). The old Terra Nova Coop launcher updates itself into this one.
 
 ## Map viewer
 

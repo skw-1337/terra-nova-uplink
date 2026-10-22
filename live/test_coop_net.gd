@@ -47,6 +47,7 @@ var sim_out := ""
 var t0 := 0.0
 var inputs := []                     # [t, packet, host peer_ok then] at the bridge's coop port (not 'R')
 var resyncs := []                    # t of each 'R' at the bridge's coop port
+var lefts := []                      # t of each 'X' there (a guest left: his teammate back to the game's AI)
 var views := []                      # [t, md5] on the guest's live port
 var huds := []                       # [t, hex] on the guest's HUD port
 var results := []                    # [ok, name, detail]
@@ -68,6 +69,8 @@ func _process(_delta: float) -> bool:
 		if pk.size() == 1 and pk[0] == 82:                 # 'R': to the simulator, as the bridge would apply it
 			resyncs.append([now()])
 			ctl.put_packet(pk)
+		elif pk.size() == 1 and pk[0] == 88:               # 'X': not the guest's input but the host's word on him
+			lefts.append([now()])
 		else:
 			inputs.append([now(), pk, host.peer_ok if host else false])
 	while live.get_available_packet_count() > 0:
@@ -304,9 +307,12 @@ func _run() -> void:
 	check(count(views, t_after) >= 15, "views back to full rate", "%d in 1 s" % count(views, t_after))
 
 	# --- the guest leaves (window closed) and comes back
+	var t_gone := now()
 	gs.leaveLobby(host.lobby_id)
 	await until(func(): return host.peer == 0, 2.0)
 	check(host.peer == 0 and not host.peer_ok and host.label.text.contains("CONNECTABLE"), "guest gone: host connectable again")
+	await until(func(): return count(lefts, t_gone) > 0, 1.0)
+	check(count(lefts, t_gone) == 1, "guest gone: his teammate back to the game's AI ('X' to the bridge)", "%d" % count(lefts, t_gone))
 	var t_back := now()
 	hs.invite(gs.steam_id, host.lobby_id)
 	await until(func(): return host.peer_ok and count(views, t_back + 0.3) > 0, 5.0)

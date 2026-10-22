@@ -1,0 +1,62 @@
+# The stable channel: the launchers download the branch "stable", not main. Each push to main is checked here, and
+# when everything is green "stable" moves to it (and "coop", which Terra Nova Coop 0.16 and older read). A red check:
+# the players keep the last good version. Pushes to ci/* run the checks without moving anything.
+name: stable
+
+on:
+  push:
+    branches: [main, "ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-${{ github.ref }}
+
+jobs:
+  godot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Godot 4.7.2
+        run: |
+          curl -sSfL -o godot.zip https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          unzip -q godot.zip && mv Godot_v4.7.2-stable_linux.x86_64 "$RUNNER_TEMP/godot" && rm godot.zip
+      - name: Scripts and scenes load
+        run: |
+          "$RUNNER_TEMP/godot" --headless --path . --import || true
+          "$RUNNER_TEMP/godot" --headless --path . --script res://tools/check_project.gd
+      - name: Co-op network
+        run: timeout 300 "$RUNNER_TEMP/godot" --headless --path . --script res://live/test_coop_net.gd
+      - name: Co-op lobby
+        run: timeout 300 "$RUNNER_TEMP/godot" --headless --path . --script res://live/test_coop_lobby.gd
+      - name: Co-op view
+        run: GODOT="$RUNNER_TEMP/godot" timeout 600 python3 live/test_coop_view.py
+      - name: Python compiles
+        run: python3 -m compileall -q live tools
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: TerraNovaCoop.cs is a copy of TerraNovaUplink.cs
+        shell: bash
+        run: cmp launcher/TerraNovaUplink.cs launcher/TerraNovaCoop.cs
+      - name: Launchers build
+        shell: cmd
+        run: |
+          call launcher\build.bat nopause
+          if not exist "launcher\Terra Nova Uplink.exe" exit /b 1
+          if not exist "launcher\Terra Nova Coop.exe" exit /b 1
+
+  stable:
+    if: github.ref == 'refs/heads/main'
+    needs: [godot, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Move stable (and coop) here
+        run: git push origin HEAD:refs/heads/stable HEAD:refs/heads/coop

@@ -141,6 +141,11 @@ if len(FUM) != 6:
     print('fumee : signatures introuvables (nuages non envoyes)', FUM)
     FUM = {}
 fumee_t, fumee_prev = 0.0, False
+# un arbre qui saute (et une armure qui eclate) : boule de feu 6/23, puis le meme nuage qu'une grenade fumigene (meme
+# systeme, ~190 particules, 1 a 15 s) au meme endroit. Uplink dessine deja la fumee d'un arbre (sa colonne noire) :
+# un nuage ne pres d'une 6/23 vue dans les 3 s avant (ou juste apres) n'est pas envoye, il serait pris pour un ecran
+EXPLOS = []                              # (temps, x, y) des 6/23 vues
+SORTES = {}                              # entite -> [premiere vue, x, y, nuage d'arbre]
 # meteo (neige, pluie) : octet 0x27 de l'en-tete de mission (ressource 178 du MISSnn.RES : 0 rien, 1 neige, 2 pluie),
 # moins 1 = GENRE (0xFF : aucune) ; le mot suivant divise la surface de la vue en flocons (40 : mission 36, 80 : 21).
 # Ce sont des points de l'ecran, pas des objets du monde : par vue (4 blocs de 0x33 octets a VUES) +9 couleur,
@@ -188,6 +193,12 @@ def fumees(tab):
     d32 = lambda a: struct.unpack('<I', g.read(a, 4))[0]
     hd, ds, rg, pt, an = (d32(FUM[k]) for k in ('HANDLES', 'DESCS', 'RANGES', 'PARTS', 'ANGLES'))
     out = []
+    now = time.time()
+    EXPLOS[:] = [e for e in EXPLOS if now - e[0] < 4.0]
+    for i in range(NENT):
+        o = 0x25 * i
+        if tab[o] and tab[o + 1] == 6 and tab[o + 2] == 23:
+            EXPLOS.append((now,) + tuple(v / 65536 for v in struct.unpack_from('<2i', tab, o + 0xF)))
     for i in range(NENT):
         o = 0x25 * i
         if not tab[o] or tab[o + 1] != 6 or tab[o + 2] != 29:
@@ -203,6 +214,12 @@ def fumees(tab):
         if de[0xE] != 8:                      # la poussiere d'un laser (7) : dessinee comme avant
             continue
         cx, cy, cz = (v / 65536 for v in struct.unpack_from('<3i', de, 0))
+        so = SORTES.get(i)
+        if so is None or math.hypot(so[1] - cx, so[2] - cy) > 1.0:
+            so = SORTES[i] = [now, cx, cy, False]
+        so[3] = so[3] or any(-0.6 < so[0] - t < 3.0 and math.hypot(x - cx, y - cy) < 2.5 for t, x, y in EXPLOS)
+        if so[3] or now - so[0] < 0.2:     # un arbre, ou pas encore sur (sa boule de feu vient avec, au plus tard juste apres)
+            continue
         a0, a1 = struct.unpack('<2I', g.read(rg + 4 * si, 8))
         if not 0 <= a0 <= a1 <= a0 + 1024:
             continue

@@ -18,7 +18,7 @@ jobs:
   godot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Godot 4.7.2
         run: |
           curl -sSfL -o godot.zip https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
@@ -39,7 +39,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: TerraNovaCoop.cs is a copy of TerraNovaUplink.cs
         shell: bash
         run: cmp launcher/TerraNovaUplink.cs launcher/TerraNovaCoop.cs
@@ -47,15 +47,15 @@ jobs:
         shell: cmd
         run: |
           call launcher\build.bat nopause
-          if not exist "launcher\Terra Nova Uplink.exe" exit /b 1
-          if not exist "launcher\Terra Nova Coop.exe" exit /b 1
+          if not exist "%GITHUB_WORKSPACE%\launcher\Terra Nova Uplink.exe" exit /b 1
+          if not exist "%GITHUB_WORKSPACE%\launcher\Terra Nova Coop.exe" exit /b 1
 
   stable:
     if: github.ref == 'refs/heads/main'
     needs: [godot, windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Move stable (and coop) here

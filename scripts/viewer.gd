@@ -1946,6 +1946,10 @@ func _live_update() -> void:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
 			_sub_views(q)
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "FX29" and q.size() == 6 + 5 * q.decode_u16(4):
+			fx29.clear()                                    # the 6/29 that are not a shot's dust (live_bridge.py)
+			for k in q.decode_u16(4):
+				fx29[q.decode_s32(6 + 5 * k)] = q[10 + 5 * k]
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SMKC" and _smoke_packet_ok(q):
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
@@ -2557,8 +2561,15 @@ func _live_fx(idx: int, e) -> void:
 	var pos0 := Vector3(e[3], e[5] - GAME_Z, e[4])
 	if cls == 6 and typ == 29 and smoke_clouds.has(idx):
 		return                                          # a smoke grenade's cloud: drawn by _live_smoke
+	if cls == 6 and typ == 29 and fx29.get(idx, 7) == 8:
+		return                                          # the same smoke from a blown-up tree: its column is drawn
+	if cls == 6 and typ == 29 and fx29.get(idx, 7) == 9:
+		if puff_seen.get(idx, -10) != live_seen - 1:
+			_spawn_puff(pos0, 1.0)                      # a jetpack's trail (anyone's), not a shot's red dust
+		puff_seen[idx] = live_seen
+		return
 	if cls == 6 and typ == 29 and _live_puff(idx, pos0, e):
-		return                                          # at a unit's feet: its jetpack's smoke
+		return                                          # at the player's feet: his jetpack's smoke
 	if cls == 6 and typ == 33:
 		_live_debris(idx, e)
 		return
@@ -2921,6 +2932,7 @@ func _anims_update() -> void:
 var fps_label: Label
 var dead_suits := []       # [position, suit] of the soldiers killed: their pieces of armour around
 var puff_units := []      # positions of the units this update (jetpacks)
+var fx29 := {}            # 6/29 entity -> its particles' kind when not a shot's dust: 8 smoke, 9 a jetpack's trail
 func _live_puff(idx: int, pos: Vector3, e) -> bool:
 	if not puff_units.any(func(u): return Vector2(u.x, u.z).distance_to(Vector2(e[3], e[4])) < 0.25):
 		return false                                # not right under a unit: a weapon's red dust

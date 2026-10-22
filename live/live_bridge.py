@@ -140,7 +140,7 @@ for _nom, _sig in (('REC', rb'\x8b\x50\x01\xc1\xfa\x10\x8d\x04\x95\x00\x00\x00\x
 if len(FUM) != 6:
     print('fumee : signatures introuvables (nuages non envoyes)', FUM)
     FUM = {}
-fumee_t, fumee_prev = 0.0, False
+fumee_t, fumee_prev, fx_prev = 0.0, False, ()
 # un arbre qui saute (et une armure qui eclate) : boule de feu 6/23, puis le meme nuage qu'une grenade fumigene (meme
 # systeme, ~190 particules, 1 a 15 s) au meme endroit. Uplink dessine deja la fumee d'un arbre (sa colonne noire) :
 # un nuage ne pres d'une 6/23 vue dans les 3 s avant (ou juste apres) n'est pas envoye, il serait pris pour un ecran
@@ -233,6 +233,36 @@ def fumees(tab):
                                    raw[k + 8], raw[k + 10]))
         out.append(struct.pack('<i3fH', i, cx, cy, cz, len(pts)) + b''.join(pts))
     return out
+
+
+# Les 6/29 n'ont pas toutes le meme systeme de particules (+0xE du descripteur) : 7 la poussiere rouge d'un tir,
+# 8 la fumee (fumigene, arbre qui saute), 9 la trainee d'un jetpack (au pied d'un soldat en vol, plusieurs par seconde
+# chez chacun ; mesure le 23/10/2026 : 445 en une minute, toutes au pied d'un soldat). Uplink ne dessine en poussiere
+# rouge que la premiere : 'FX29' + nombre (u16) + (entite i32, sorte u8) des autres, a chaque changement, avant les
+# entites. Lu une fois par entite (sa fiche ne change pas de sa vie)
+FX_SORTES = {}                           # (entite, fiche) -> sorte
+
+
+def sortes_29(tab):
+    if not FUM: return ()
+    hd = ds = None
+    out, vus = [], set()
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 6 or tab[o + 2] != 29: continue
+        cle = (i, struct.unpack_from('<H', tab, o + 3)[0])
+        vus.add(cle)
+        k = FX_SORTES.get(cle)
+        if k is None:
+            if hd is None:
+                hd, ds = (struct.unpack('<I', g.read(FUM[n], 4))[0] for n in ('HANDLES', 'DESCS'))
+            h = struct.unpack('<i', g.read(FUM['REC'] + cle[1] * 0x2C + 0xA, 4))[0]
+            si = struct.unpack('<i', g.read(hd + 4 * h, 4))[0] if 0 <= h < 0x40 else -1
+            if not 0 <= si < 0x40: continue     # pas encore de systeme : revu a l'image suivante
+            k = FX_SORTES[cle] = g.read(ds + 16 * si + 0xE, 1)[0]
+        if k != 7: out.append((i, k))
+    for cle in [c for c in FX_SORTES if c not in vus]: del FX_SORTES[cle]
+    return tuple(out)
 
 
 def armure_debris(x, y, vivants):
@@ -879,6 +909,10 @@ while True:
     # entites du jeu (table de 0x25 octets) : classes 0 a 4 (decor, unites, vehicules, sondes, batiments), 5 = tirs
     # et 6 = eclats d'impact (ephemeres : envoyes seulement actifs)
     tab = g.read(A_MASTER, 0x25 * NENT)
+    fx = sortes_29(tab)
+    if fx != fx_prev:
+        s.sendto(b'FX29' + struct.pack('<H', len(fx)) + b''.join(struct.pack('<iB', *f) for f in fx), ('127.0.0.1', 47821))
+        fx_prev = fx
     body = []
     if time.time() - corps_t > 0.5:
         corps_t = time.time()

@@ -27,8 +27,10 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.0";
+    const string VERSION = "2.1";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
+    // Uplink's branch "stable": main once its checks have passed (.github/workflows/stable.yml), never a broken push
+    const string UPLINK_BRANCH = "stable";
     const string DISCORD = "https://discord.gg/AHpqNeT7s";
     const string GODOT_VER = "4.7.2";
     const string GODOT_URL = "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip";
@@ -1507,11 +1509,11 @@ static class Uplink
     static void Install(Mode mode)
     {
         Dictionary<string, string> heads = Heads();
-        string up = Get(heads, Head(UPLINK_REPO, "main"));
+        string up = Get(heads, Head(UPLINK_REPO, UPLINK_BRANCH));
         if (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha")))
         {
             Status("Downloading Uplink...", CAmber);
-            Repo(UPLINK_REPO, "main", UplinkDir);
+            Repo(UPLINK_REPO, UPLINK_BRANCH, UplinkDir);
             if (up != null) Set("uplink_sha", up);
             SaveCfg();
             SelfUpdate();
@@ -1548,9 +1550,9 @@ static class Uplink
     static string Head(string repo, string branch) { return repo + "@" + branch; }
 
     static Dictionary<string, string> Heads()
-    {   // the last commits of Uplink (main), TN+ (main) and its co-op build (coop): both co-op PCs must run the same
+    {   // the last commits of Uplink (stable), TN+ (main) and its co-op build (coop): both co-op PCs must run the same
         Dictionary<string, string> d = new Dictionary<string, string>();
-        foreach (string[] rb in new[] { new[] { UPLINK_REPO, "main" }, new[] { TNPLUS_REPO, "main" }, new[] { TNPLUS_REPO, "coop" } })
+        foreach (string[] rb in new[] { new[] { UPLINK_REPO, UPLINK_BRANCH }, new[] { TNPLUS_REPO, "main" }, new[] { TNPLUS_REPO, "coop" } })
             try
             {
                 string j = Text("https://api.github.com/repos/" + rb[0] + "/commits/" + rb[1]);
@@ -1566,7 +1568,7 @@ static class Uplink
     static void CheckUpdates()
     {
         Dictionary<string, string> h = Heads();
-        string up = Get(h, Head(UPLINK_REPO, "main"));
+        string up = Get(h, Head(UPLINK_REPO, UPLINK_BRANCH));
         Ui(delegate {
             if (up == null) { verLabel.Text = "●  Couldn't check for updates (offline?)"; verLabel.ForeColor = CDim; }
             else if (Cfg("uplink_sha") == "") { verLabel.Text = "●  Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.ForeColor = CAmber; }

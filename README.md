@@ -1,27 +1,36 @@
 # Terra Nova Uplink
 
-*Terra Nova: Strike Force Centauri* (1996) redrawn in modern 3D. Three ways to use it:
+*Terra Nova: Strike Force Centauri* (1996) redrawn in modern 3D, from your own copy of the game (GOG or Steam). No game files are included.
+
+![The red planet](docs/red_planet.jpg)
 
 - **Map viewer**: fly around every map of the game.
-- **Live mode** (prototype): play the real game in DOSBox while Uplink redraws it live on your graphics card, cockpit included.
+- **Live mode** (prototype): play the real game while Uplink redraws it live, cockpit included.
 - **Online co-op** (prototype): two players in the same mission over Steam, see [COOP.md](COOP.md).
-
-It reads everything from your own copy of the game (GOG or Steam). No game files are included.
 
 *Made with the help of Claude Code (an AI coding tool), mostly for reverse engineering the game and writing the code. Every change is tested in the real game before release.*
 
 *Version française : [README.fr.md](README.fr.md)*
 
-![The red planet](docs/red_planet.jpg)
+## Quick start
 
-| | |
-|---|---|
-| ![Planetrise over the moon](docs/moon_planetrise.jpg) | ![Ships at the dock](docs/dock_ships.jpg) |
-| ![The Bishop farm](docs/farm.jpg) | ![Biped mech](docs/biped_mech.jpg) |
-| ![Storm sky](docs/storm.jpg) | ![Dawn](docs/dawn.jpg) |
-| ![Power suit](docs/power_suit.jpg) | ![Model gallery](docs/model_gallery.jpg) |
+1. Download **Terra Nova Uplink.exe** from the [latest release](https://github.com/skw-1337/terra-nova-uplink/releases/latest).
+2. Put it in an empty folder and run it. It finds your game, downloads the rest and keeps it up to date.
+3. Click **PLAY** (live mode), **MAP VIEWER**, or **HOST A GAME** / **JOIN A FRIEND**.
 
-Each planet with its own sky and ambiance:
+Windows may warn about an unknown app (not signed): More info, then Run anyway.
+
+## Live mode
+
+Same moment: the original game, Uplink, and Uplink with its old school filter (`F12`).
+
+![The game, Uplink and Uplink old school](docs/live_compare_base.jpg)
+
+The game keeps running in DOSBox, so it's still the real game you play. A small bridge reads its state about 120 times a second and Uplink draws the same scene, with the game's own cockpit on top.
+
+Click in the window to take the mouse: it looks around, the buttons fire and lock. `Y` or `Pause` gives you the game's cursor (cockpit buttons, map). `F12` switches to the old school look. Every other key goes to the game. Close Uplink to stop.
+
+## Gallery
 
 | | |
 |---|---|
@@ -30,67 +39,41 @@ Each planet with its own sky and ambiance:
 | ![Ice base](docs/ice_base.jpg) | ![Green planet base](docs/green_base.jpg) |
 | ![Lake and islands](docs/golden_lake.jpg) | ![Night](docs/night_base.jpg) |
 | ![Green valley](docs/green_valley.jpg) | ![Storm and rain](docs/storm_rain.jpg) |
-
-## Quick start
-
-Download **Terra Nova Uplink.exe** from the [latest release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), put it in an empty folder and run it. It finds your game and downloads the rest by itself (Uplink, Godot, Terra Nova Plus, Python for the live mode), and keeps them up to date. Then click **PLAY** (live mode), **MAP VIEWER**, or **HOST A GAME** / **JOIN A FRIEND** to play with a friend online.
-
-Windows may warn about an unknown app (not signed): More info, then Run anyway. The manual install is below.
-
-Playing with a friend: see [COOP.md](COOP.md). The old Terra Nova Coop launcher updates itself into this one.
+| ![Biped mech](docs/biped_mech.jpg) | ![Power suit](docs/power_suit.jpg) |
 
 ## Map viewer
 
-1. Have the game installed (GOG or Steam).
-2. Get [Godot 4.7](https://godotengine.org/download/windows/) (standard version) and unzip it.
-3. Download this repo (**Code** → **Download ZIP**), unzip it and double-click **`Map viewer.bat`**.
-
-If the game isn't found, Uplink asks for its folder. The first time you open a map it takes a few seconds.
+All 37 campaign missions, training, the two cut missions, the mission generator maps and the demos, with the game's own ground, 3D models, soldiers, forests and skies. The last entry of the list is a gallery of all 119 3D models.
 
 | Key | Action |
 |---|---|
 | Right mouse button + mouse | look around |
 | WASD / ZQSD | move |
 | Space / Ctrl | up / down |
-| Shift | faster |
-| Mouse wheel | speed |
+| Shift / mouse wheel | faster / speed |
 | Tab | mission list |
 | F2 / F3 / F4 | labels / mission markers / trees |
 
-What's in it:
-
-- All 37 campaign missions, training, the two cut missions, the mission generator maps and the demos
-- The game's own ground textures, 3D models, soldiers, forests and skies
-- A gallery of all 119 3D models (last entry in the list)
-
 Fun find: there are Easter Island heads hidden on the red planet in *Operation Pigpen*.
 
-## Live mode (prototype)
+## Good to know
 
-![Uplink, live on Operation Panama](docs/uplink_shore.jpg)
+- It's a prototype: Windows only, a few weapon effects aren't drawn yet, and the bridge writes into the game's memory for your controls, like [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus) does.
+- HD cutscenes: `tools/upscale_movies.py` upscales the game's videos once on your PC (needs ffmpeg, Real-ESRGAN and RIFE).
+- For modders: [technical notes](docs/formats.md).
 
-The game keeps running in DOSBox, so it's still the real game you play. A small Python bridge reads its state from DOSBox's memory about 120 times a second (camera, units, soldiers' joints, shots, explosions, sky, cockpit screen), and Uplink draws the same scene on the graphics card, with the game's own cockpit on top. You play from Uplink's window: your keys and mouse go back to the game.
+<details>
+<summary>Manual install (without the launcher)</summary>
 
-Same moment, same camera: the game in DOSBox, Uplink, and Uplink with its old school filter (`F12`):
+Map viewer:
+1. Get [Godot 4.7](https://godotengine.org/download/windows/) (standard version) and unzip it.
+2. Download this repo (**Code** → **Download ZIP**), unzip it and double-click **`Map viewer.bat`**. If the game isn't found, Uplink asks for its folder.
 
-![The game, Uplink and Uplink old school](docs/live_compare_base.jpg)
-
-| | |
-|---|---|
-| ![The lake and the locks](docs/uplink_lake.jpg) | ![The lake mirrors the sky](docs/uplink_water.jpg) |
-
+Live mode, also:
 1. Install 64-bit [Python 3](https://www.python.org/downloads/), then run `pip install numpy psutil`.
-2. Start the game with [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus), Display **HD 848x480** (the live mode doesn't support 1280x720 yet).
-3. Double-click **`Live (prototype).bat`**. It finds the mission in progress and opens Uplink on it. Starting from the menus works too.
-4. Click in the window to take the mouse: the mouse looks around, the buttons fire and lock. `Y` or `Pause` gives you the game's cursor (cockpit buttons, map) and back. `F12` switches between Uplink's own look (smooth ground, water that mirrors the sky, softer clouds) and the "old school" one (the game's pixels and palette). Every other key goes to the game.
-
-Close Uplink to stop. Menus, briefings and videos are shown as the game draws them. For HD cutscenes, `tools/upscale_movies.py` upscales the game's videos once on your PC (needs ffmpeg, Real-ESRGAN and RIFE).
-
-It's a prototype: Windows only, a few weapon effects aren't drawn yet, and the bridge writes into the game's memory for your controls, like Terra Nova Plus does.
-
-**Online co-op** (prototype): a friend drives one of your squadmates from his PC, over Steam. How to install and play: [COOP.md](COOP.md).
-
-For modders: [technical notes](docs/formats.md).
+2. Start the game with [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus), Display **HD 848x480**.
+3. Double-click **`Live (prototype).bat`**. It finds the mission in progress and opens Uplink on it.
+</details>
 
 ## Legal
 

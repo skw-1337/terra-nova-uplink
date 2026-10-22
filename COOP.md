@@ -1,90 +1,56 @@
 # Online co-op (prototype)
 
-Two players, one mission, over Steam. The host plays the real game. The guest drives one of the host's squadmates from his own PC, in Uplink.
+Two players, one mission, over Steam. The host plays the real game, the guest drives one of his squadmates from his own PC.
 
-It's a prototype: expect bugs. Windows only, two players, English game only for now.
+It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: [Discord](https://discord.gg/AHpqNeT7s).
 
-Help, bug reports, or looking for someone to play with: [Discord](https://discord.gg/AHpqNeT7s).
+## What you need
 
-## The easy way: the launcher
-
-**`Terra Nova Uplink.exe`** ([download](https://github.com/skw-1337/terra-nova-uplink/releases/latest)) does everything for both players. Put it in an empty folder and start it. Windows may warn about an unknown app (it isn't signed): More info, then Run anyway. (Terra Nova Coop.exe still works: it updates itself into this launcher and keeps its settings.)
-
-- **HOST A GAME**: downloads what's missing (Uplink, Godot, Python for the bridge, and builds TN+'s co-op version), starts the game without TN+'s menu, waits for it to load, then opens Uplink with the Steam lobby. Invite your friend from the list at the top right of Uplink's window. **Squad** or **1v1** under it.
-- **Start at**: pick a campaign mission instead of going through the game's menus. The launcher writes a save named `COOP Mission NN` in a free slot (never over one of yours), made from your most advanced save (your squad and equipment) and set on that mission. In the game: Load Game, then that save. **Saves** frees a slot when all 9 are used.
-- **JOIN A FRIEND**: downloads Uplink and Godot, then opens the guest window. Your friend's name shows up there once he hosts: click **JOIN**.
-
-Everything goes in that folder (about 250 MB once installed). Before each game it checks GitHub and updates, so both PCs stay on the same version. It finds every Terra Nova on the PC (GOG, Steam, other drives) and lists them at the top: pick one, or add another with **Browse**. HOST A GAME switches to an English one by itself. To build it yourself: `launcher\build.bat` (C# compiler that comes with Windows).
-
-The rest of this page is the manual way, and what the launcher does for you.
-
-## What each player needs
-
-| | Host | Guest |
-|---|---|---|
-| Terra Nova (GOG or Steam, English) | yes | yes |
-| Steam running, the other player in your friends | yes | yes |
-| [Godot 4.7](https://godotengine.org/download/windows/), standard Windows version | yes | yes |
-| Uplink (`main`) | yes | yes |
-| 64-bit [Python 3](https://www.python.org/downloads/) + `pip install numpy psutil` | yes | no |
-| Terra Nova Plus, `coop` build | yes | no |
-
-Both players must use the same Uplink files. The version is checked when the guest joins. If one of you updates, the other updates too.
-
-## Install Uplink (both players)
-
-1. Download https://github.com/skw-1337/terra-nova-uplink/archive/refs/heads/main.zip and unzip it.
-2. Unzip Godot and put **`Godot_v4.7.x-stable_win64.exe`** (not the `console` one) inside the `terra-nova-uplink-main` folder, next to the `.bat` files. A `Godot...` subfolder next to the `.bat` files works too.
-3. Don't open Godot by itself: that only shows its project manager. Always start Uplink with the `.bat` files.
-
-The first start takes 20 to 30 seconds while Godot prepares its files.
-
-If Uplink can't find the game, it asks for the game folder (the one that contains `TNOVA`). On the Steam edition the maps are only inside the CD image (`_ISO\TNF108.ISO`). Uplink copies them out by itself the first time, so the first mission takes a few more seconds to load.
+- Windows, Steam running, and each other in your Steam friends.
+- Your own Terra Nova (GOG or Steam). The host needs the English version (Steam's is).
+- **[Terra Nova Uplink.exe](https://github.com/skw-1337/terra-nova-uplink/releases/latest)**: put it in an empty folder and run it. It downloads everything else and keeps it up to date. Windows may warn about an unknown app (not signed): More info, then Run anyway.
 
 ## Host
 
-1. Get the co-op build of Terra Nova Plus: download https://github.com/skw-1337/terra-nova-plus/archive/refs/heads/coop.zip, unzip it, and double-click **`src\build.bat`**. It builds `src\TNPlus.exe` with the C# compiler that comes with Windows.
-2. Start the game with that `TNPlus.exe`, Display **HD 848x480**. It doesn't touch your normal game files: the co-op code goes in a copy next to the tool.
-3. In the game, go to the **Mission Outfitting** screen (the one with the pilots).
-4. Double-click **`Live (prototype).bat`** in the Uplink folder. Leave its black console window open.
-5. Click **Host online** at the top left (press `Y` first if the mouse is taken). Wait for **ONLINE · CONNECTABLE**.
-6. Tell your friend to join (see below). `F9` opens the Steam invite, but only if Steam's overlay works in Uplink. It usually doesn't, so the guest joining from his friends list is the reliable way.
-7. When your friend has taken a column and pressed **READY**, click **Outfit Complete** in the game and play as usual. The **Guest column** button at the top left locks his choices.
+1. Click **HOST A GAME**. The game starts, then Uplink opens.
+2. In the game, go to **Mission Outfitting** (the screen with the pilots). Or pick a mission in **Start at** first, then in the game: Load Game, `COOP Mission NN`.
+3. Invite your friend from the list at the top right of Uplink.
+4. When he has pressed **READY**, click **Outfit Complete** in the game and play.
 
 ## Guest
 
-1. Start Steam.
-2. Double-click **`Coop online - join (prototype).bat`**. A waiting screen opens.
-3. In your Steam friends list, click the arrow next to the host's name, then **Join game**. The host shows as playing "Spacewar": that's Steam's test app, it's normal. **Join game** only appears while your Uplink is open.
-4. In the lobby, click **TAKE THIS COLUMN** on a squadmate, then pick your pilot, suit, weapons and ASF. The host sees your name, your face and your choices on his screen. Press **READY** when you're done. The chat is at the bottom right.
-5. When the host starts the mission, click in the window to take the mouse.
-
-### Guest controls
+1. Click **JOIN A FRIEND**.
+2. Click **JOIN** next to your friend (he must have clicked HOST A GAME).
+3. Click **TAKE THIS COLUMN** on a squadmate, pick your pilot, suit and weapons, then **READY**.
+4. When the mission starts, click in the window to take the mouse.
 
 | Key | Action |
 |---|---|
 | W / S / A / D | move |
 | Mouse | look |
-| Left button | fire |
-| Right button | lock a target |
-| Space (hold) | jump jets (they use energy) |
-| Shift + direction | jump |
+| Left / right button | fire / lock a target |
+| Space (hold) | jump jets |
 | 1 - 4 | weapon |
 | F8 | next squadmate |
-| Enter, or **CALL DROPSHIP** | call the dropship at the end of the mission |
+| Enter | call the dropship |
 | Y | free the mouse |
 
-A gamepad works too: left stick move, right stick look, right trigger fire, left trigger jets, A jump, RB lock.
+A gamepad works too (untick **Gamepad** in the launcher if you don't want it).
 
 ## If something goes wrong
 
-| Problem | Fix |
-|---|---|
-| "Godot 4.7 not found" | The Godot exe isn't next to the `.bat` files (or in a `Godot...` folder there). Move it. |
-| F9 does nothing | Normal, Steam's overlay doesn't open in Uplink. Use the **Invite** list in Uplink (host), or **JOIN** in the guest window. |
-| No **Join game** on the host | The guest's Uplink must be open first, and you must be Steam friends. |
-| "ANOTHER COOP VERSION" | You don't have the same Uplink files. Both download the zip again. |
-| The guest's suit keeps firing | Unplug a gamepad whose trigger doesn't go back to zero. |
-| Brown ground, no terrain for the guest | Update Uplink: older versions didn't read the Steam edition's maps. |
+- **Your friend isn't in the list**: you must be Steam friends, and he must have clicked HOST A GAME.
+- **"Different versions"**: both close Uplink and click again, it updates.
+- **The guest keeps firing**: a gamepad trigger that doesn't go back to zero. Untick **Gamepad**.
+- **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/AHpqNeT7s), with a few words on what happened.
 
-To report a bug, send the newest file in `%APPDATA%\Godot\app_userdata\Terra Nova Uplink\coop_logs` (paste that path in the Explorer address bar). The host also sends the newest `live\logs\coop_host_*.log` in the Uplink folder. Add a few words on what happened, and a screenshot if you can.
+<details>
+<summary>Without the launcher (developers)</summary>
+
+Both: Godot 4.7 (standard Windows version) next to the `.bat` files of this repo (`main`). Host: also 64-bit Python 3 with `pip install numpy psutil`, and Terra Nova Plus built from its [`coop` branch](https://github.com/skw-1337/terra-nova-plus/tree/coop) (`src\build.bat`), started with Display HD 848x480.
+
+- Host: in Mission Outfitting, run `Coop online - host (prototype).bat` and wait for ONLINE · CONNECTABLE.
+- Guest: run `Coop online - join (prototype).bat`.
+
+Logs: `%APPDATA%\Godot\app_userdata\Terra Nova Uplink\coop_logs`, and on the host `live\logs\coop_host_*.log`.
+</details>

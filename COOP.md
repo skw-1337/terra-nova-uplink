@@ -14,7 +14,7 @@ Help, bug reports, or looking for someone to play with: [Discord](https://discor
 - **Start at**: pick a campaign mission instead of going through the game's menus. The launcher writes a save named `COOP Mission NN` in a free slot (never over one of yours), made from your most advanced save (your squad and equipment) and set on that mission. In the game: Load Game, then that save. **Saves** frees a slot when all 9 are used.
 - **JOIN A FRIEND**: downloads Uplink and Godot, then opens the guest window. Your friend's name shows up there once he hosts: click **JOIN**.
 
-Everything goes in that folder (about 250 MB once installed). Before each game it checks GitHub and updates, so both PCs stay on the same version. It finds the game on its own (GOG or Steam, the English one first); **Change** picks another folder. To build it yourself: `launcher\build.bat` (C# compiler that comes with Windows).
+Everything goes in that folder (about 250 MB once installed). Before each game it checks GitHub and updates, so both PCs stay on the same version. It finds every Terra Nova on the PC (GOG, Steam, other drives) and lists them at the top: pick one, or add another with **Browse**. HOST A GAME switches to an English one by itself. To build it yourself: `launcher\build.bat` (C# compiler that comes with Windows).
 
 The rest of this page is the manual way, and what the launcher does for you.
 

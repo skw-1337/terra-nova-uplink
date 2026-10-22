@@ -64,13 +64,13 @@ static class Uplink
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
     static Form form;
     static Font FHead, FBody, FSmall, FIcon;
-    static Label gameBadge, gameLabel, statusLabel, verLabel, sessionLabel, sensLabel;
+    static Label statusLabel, verLabel, sessionLabel, sensLabel;
     static Led sessionLed;
     static Led[] leds;
     static Label[] ledText;
     static Tile playBtn, hostBtn, joinBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn, logBtn;
     static RadioButton modeCoop, modeVs;
-    static ComboBox sizeBox, missionBox;
+    static ComboBox gameBox, sizeBox, missionBox;
     static TrackBar sensBar;
     static CheckBox invertBox, padBox;
     static ProgressBar bar;
@@ -106,6 +106,8 @@ static class Uplink
         { Set("game_dir", args[3]); Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1, args[1] == "--makesave" ? COOP_SAVE : PLAY_SAVE) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
+        if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
+        { foreach (string d in Installs()) Console.WriteLine(Edition(d) + (IsEnglish(d) ? " EN  " : "     ") + d); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
         { Res.Load(args[2]).Save(args[3]); Environment.Exit(0); }
         try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
@@ -167,17 +169,21 @@ static class Uplink
         form.Controls.Add(toolsBtn);
         y += 60;
 
-        // the game folder: badge (GOG / Steam, language), path, Change
+        // the game: every Terra Nova found on the PC (GOG, Steam, other drives, the ones added with Browse), one picked
         Box gp = new Box { Location = new Point(X, y), Size = new Size(W, 40) };
         form.Controls.Add(gp);
-        gameBadge = new Label { AutoSize = false, Size = new Size(84, 20), Location = new Point(10, 10), TextAlign = ContentAlignment.MiddleCenter,
-            Font = FSmall, ForeColor = CGreen, BackColor = Color.FromArgb(18, 58, 34) };
-        gp.Controls.Add(gameBadge);
-        gameLabel = new Label { Location = new Point(104, 11), Size = new Size(W - 210, 20), ForeColor = CDim, BackColor = CPanel, AutoEllipsis = true };
-        gp.Controls.Add(gameLabel);
-        gameBtn = new Tile("Change", null, CButton, CButtonLine, CText) { Location = new Point(W - 94, 5), Size = new Size(86, 30), Small = true };
+        gameBox = Combo(new Point(10, 8), W - 116);
+        gameBox.DrawMode = DrawMode.OwnerDrawFixed;
+        gameBox.ItemHeight = 18;
+        gameBox.MaxDropDownItems = 12;
+        gameBox.DrawItem += DrawGame;
+        gameBox.DropDown += delegate { FillGames(); };          // looked for again each time it opens
+        gameBox.SelectionChangeCommitted += delegate { PickInstall(); };
+        gp.Controls.Add(gameBox);
+        gameBtn = new Tile("Browse", null, CButton, CButtonLine, CText) { Location = new Point(W - 94, 5), Size = new Size(86, 30), Small = true };
         gameBtn.Click += delegate { PickGame(); };
         gp.Controls.Add(gameBtn);
+        FillGames();
         y += 52;
 
         // the four actions: PLAY | HOST A GAME, JOIN A FRIEND (+ co-op options) | MAP VIEWER
@@ -458,12 +464,6 @@ static class Uplink
 
     static void RefreshUi()
     {
-        string g = Game();
-        bool en = g != null && IsEnglish(g);
-        gameBadge.Text = g == null ? "NO GAME" : (IsSteam(g) ? "STEAM" : "GOG") + " · " + (en ? "EN" : "FR");
-        gameBadge.ForeColor = g == null ? CRed : CGreen;
-        gameBadge.BackColor = g == null ? Color.FromArgb(70, 24, 20) : Color.FromArgb(18, 58, 34);
-        gameLabel.Text = g ?? "Not found: Change, then pick the folder that contains TNOVA";
         bool[] have = { File.Exists(Path.Combine(UplinkDir, "project.godot")), File.Exists(GodotExe), File.Exists(TnpExe), File.Exists(TnpCoopExe),
                         File.Exists(PythonExe), Process.GetProcessesByName("steam").Length > 0 };
         for (int i = 0; i < leds.Length; i++)
@@ -472,7 +472,7 @@ static class Uplink
             ledText[i].ForeColor = have[i] ? Color.FromArgb(159, 182, 175) : CDim;
             ledText[i].Text = (string)ledText[i].Tag + (i == 0 && have[0] && Cfg("uplink_sha").Length >= 7 ? " " + Cfg("uplink_sha").Substring(0, 7) : "");
         }
-        playBtn.Enabled = hostBtn.Enabled = joinBtn.Enabled = mapBtn.Enabled = gameBtn.Enabled = toolsBtn.Enabled = !busy;
+        playBtn.Enabled = hostBtn.Enabled = joinBtn.Enabled = mapBtn.Enabled = gameBtn.Enabled = toolsBtn.Enabled = gameBox.Enabled = !busy;
         if (statusLabel.Text == "")
         {
             statusLabel.Text = "Ready.";
@@ -556,17 +556,68 @@ static class Uplink
     {
         string g = Cfg("game_dir");
         if (IsGame(g)) return g;
-        foreach (string c in Candidates())
-            if (IsGame(c)) { Set("game_dir", c); SaveCfg(); return c; }
-        return null;
+        List<string> l = Installs();
+        if (l.Count == 0) return null;
+        Set("game_dir", l[0]); SaveCfg();
+        return l[0];
     }
 
+    static string Edition(string d)
+    {
+        if (IsSteam(d)) return "STEAM";
+        try { if (Directory.GetFiles(d, "goggame-*.info").Length > 0 || d.IndexOf("GOG", StringComparison.OrdinalIgnoreCase) >= 0) return "GOG"; }
+        catch { }
+        return "GAME";
+    }
+
+    // every Terra Nova on the PC: those of the candidates that hold the game, each once
+    static List<string> Installs()
+    {
+        List<string> l = new List<string>();
+        foreach (string c in Candidates())
+            try
+            {
+                string d = Path.GetFullPath(c.Trim().Trim('"'));
+                if (d.Length > 3) d = d.TrimEnd('\\');
+                if (IsGame(d) && !l.Exists(x => string.Equals(x, d, StringComparison.OrdinalIgnoreCase))) l.Add(d);
+            }
+            catch { }
+        return l;
+    }
+
+    // where a Terra Nova can be: GOG's and Steam's own records, Windows' list of installed programs (any edition), the
+    // usual game folders of every drive, and the folders added with Browse
     static IEnumerable<string> Candidates()
     {
         List<string> l = new List<string>();
-        foreach (string k in new[] { @"SOFTWARE\WOW6432Node\GOG.com\Games\" + GOG_ID, @"SOFTWARE\GOG.com\Games\" + GOG_ID })
-            try { using (RegistryKey r = Registry.LocalMachine.OpenSubKey(k)) if (r != null && r.GetValue("path") != null) l.Add((string)r.GetValue("path")); }
+        foreach (string k in new[] { @"SOFTWARE\WOW6432Node\GOG.com\Games", @"SOFTWARE\GOG.com\Games" })
+            try
+            {
+                using (RegistryKey r = Registry.LocalMachine.OpenSubKey(k))
+                    if (r != null)
+                        foreach (string id in r.GetSubKeyNames())
+                            using (RegistryKey gk = r.OpenSubKey(id))
+                            {
+                                string name = (gk.GetValue("gameName") ?? gk.GetValue("GAMENAME") ?? "") as string ?? "";
+                                if ((id == GOG_ID || name.IndexOf("Terra Nova", StringComparison.OrdinalIgnoreCase) >= 0) && gk.GetValue("path") != null)
+                                    l.Add((string)gk.GetValue("path"));
+                            }
+            }
             catch { }
+        foreach (RegistryKey hive in new[] { Registry.LocalMachine, Registry.CurrentUser })
+            foreach (string k in new[] { @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" })
+                try
+                {
+                    using (RegistryKey r = hive.OpenSubKey(k))
+                        if (r != null)
+                            foreach (string id in r.GetSubKeyNames())
+                                using (RegistryKey u = r.OpenSubKey(id))
+                                {
+                                    string name = u == null ? null : u.GetValue("DisplayName") as string, at = u == null ? null : u.GetValue("InstallLocation") as string;
+                                    if (name != null && at != null && name.IndexOf("Terra Nova", StringComparison.OrdinalIgnoreCase) >= 0) l.Add(at);
+                                }
+                }
+                catch { }
         try
         {
             using (RegistryKey r = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
@@ -581,9 +632,60 @@ static class Uplink
                 }
         }
         catch { }
-        l.Add(@"C:\Program Files (x86)\GOG Galaxy\Games\" + GAME_SUB);
-        l.Add(@"C:\GOG Games\" + GAME_SUB);
+        foreach (DriveInfo dr in DriveInfo.GetDrives())
+            try
+            {
+                if (dr.DriveType != DriveType.Fixed || !dr.IsReady) continue;
+                l.Add(dr.RootDirectory.FullName);                          // a plain DOS install (X:\TNOVA)
+                foreach (string sub in new[] { "", "GOG Games", "Games", @"Program Files (x86)\GOG Galaxy\Games", @"Program Files\GOG Galaxy\Games",
+                                               @"SteamLibrary\steamapps\common", @"Steam\steamapps\common", @"Program Files (x86)\Steam\steamapps\common",
+                                               "Program Files (x86)", "Program Files" })
+                {
+                    string at = Path.Combine(dr.RootDirectory.FullName, sub);
+                    if (Directory.Exists(at)) l.AddRange(Directory.GetDirectories(at, "*Terra*Nova*"));
+                }
+            }
+            catch { }
+        foreach (string d in Cfg("game_dirs").Split('|'))
+            if (d.Trim() != "") l.Add(d);
         return l;
+    }
+
+    static void FillGames()
+    {
+        List<string> l = Installs();
+        string g = Game();
+        if (g != null && !l.Exists(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase))) l.Insert(0, g);
+        gameBox.Items.Clear();
+        foreach (string d in l) gameBox.Items.Add(d);
+        if (l.Count == 0) gameBox.Items.Add("");
+        int at = l.FindIndex(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase));
+        gameBox.SelectedIndex = Math.Max(0, at);
+    }
+
+    static void PickInstall()
+    {
+        string d = gameBox.SelectedItem as string;
+        if (string.IsNullOrEmpty(d) || string.Equals(d, Cfg("game_dir"), StringComparison.OrdinalIgnoreCase)) return;
+        Set("game_dir", d); SaveCfg(); FillMissions(); RefreshUi();
+        Log("game: " + d);
+    }
+
+    // an install: GOG / STEAM on green, then its folder
+    static void DrawGame(object s, DrawItemEventArgs e)
+    {
+        ComboBox c = (ComboBox)s;
+        bool edit = (e.State & DrawItemState.ComboBoxEdit) != 0, sel = (e.State & DrawItemState.Selected) != 0 && !edit;
+        using (Brush b = new SolidBrush(sel ? CTeal : CButton)) e.Graphics.FillRectangle(b, e.Bounds);
+        if (e.Index < 0) return;
+        string d = (string)c.Items[e.Index];
+        Rectangle tag = new Rectangle(e.Bounds.X + 3, e.Bounds.Y + 2, 58, e.Bounds.Height - 4);
+        using (Brush b = new SolidBrush(d == "" ? Color.FromArgb(70, 24, 20) : Color.FromArgb(18, 58, 34))) e.Graphics.FillRectangle(b, tag);
+        TextRenderer.DrawText(e.Graphics, d == "" ? "NONE" : Edition(d), FSmall, tag, d == "" ? CRed : CGreen,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(e.Graphics, d == "" ? "No Terra Nova found: Browse, then pick the folder that contains TNOVA" : d, c.Font,
+            new Rectangle(tag.Right + 8, e.Bounds.Y, e.Bounds.Right - tag.Right - (edit ? 28 : 10), e.Bounds.Height), d == "" ? CDim : CText,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis | TextFormatFlags.NoPrefix);
     }
 
     static void PickGame()
@@ -595,7 +697,9 @@ static class Uplink
             string p = d.SelectedPath;
             if (!IsGame(p) && IsGame(Path.GetDirectoryName(p) ?? "")) p = Path.GetDirectoryName(p);
             if (!IsGame(p)) { MessageBox.Show(form, "No TNOVA\\DATA\\RESMISS.RES in that folder.", TITLE); return; }
-            Set("game_dir", p); SaveCfg(); FillMissions(); RefreshUi();
+            if (!Installs().Exists(x => string.Equals(x, p, StringComparison.OrdinalIgnoreCase)))
+                Set("game_dirs", (Cfg("game_dirs") + "|" + p).Trim('|'));          // kept in the list
+            Set("game_dir", p); SaveCfg(); FillGames(); FillMissions(); RefreshUi();
         }
     }
 
@@ -628,9 +732,15 @@ static class Uplink
         SaveOptions();
         if (Game() == null) { PickGame(); if (Game() == null) return; }
         if (m == Mode.Host && !IsEnglish(Game()))
-        {
-            MessageBox.Show(form, "Hosting needs the English game (the co-op code only knows its exe). Pick an English install with Change.", TITLE);
-            return;
+        {   // the co-op code only knows the English exe: another install of the PC that has it
+            string en = Installs().Find(IsEnglish);
+            if (en == null)
+            {
+                MessageBox.Show(form, "Hosting needs the English version of the game (Steam's, or GOG's in English), and none was found. Add one with Browse.", TITLE);
+                return;
+            }
+            Set("game_dir", en); SaveCfg(); FillGames(); FillMissions(); RefreshUi();
+            Log("hosting: the English game, " + en);
         }
         sessionName = sessionPing = "";
         coopRun = m == Mode.Host || m == Mode.Join;

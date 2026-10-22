@@ -8,6 +8,8 @@
 
 It reads everything from your own copy of the game (GOG or Steam). No game files are included.
 
+*Made with the help of Claude Code (an AI coding tool), mostly for reverse engineering the game and writing the code. Every change is tested in the real game before release.*
+
 *Version française : [README.fr.md](README.fr.md)*
 
 ![The red planet](docs/red_planet.jpg)

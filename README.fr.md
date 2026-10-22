@@ -8,6 +8,8 @@
 
 Tout est lu depuis ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n'est fourni.
 
+*Fait avec l'aide de Claude Code (un outil de programmation par IA), surtout pour la rétro-ingénierie du jeu et l'écriture du code. Chaque changement est testé dans le vrai jeu avant publication.*
+
 *English version: [README.md](README.md)*
 
 ![La planète rouge](docs/red_planet.jpg)

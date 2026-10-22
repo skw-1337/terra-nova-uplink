@@ -21,6 +21,16 @@ It reads everything from your own copy of the game (GOG or Steam). No game files
 | ![Storm sky](docs/storm.jpg) | ![Dawn](docs/dawn.jpg) |
 | ![Power suit](docs/power_suit.jpg) | ![Model gallery](docs/model_gallery.jpg) |
 
+Each planet with its own sky and ambiance:
+
+| | |
+|---|---|
+| ![Moon base, Earth in the sky](docs/moon_base_earth.jpg) | ![Snowy valley](docs/snow_valley.jpg) |
+| ![Red desert canyon](docs/red_canyon.jpg) | ![Desert base](docs/desert_base.jpg) |
+| ![Ice base](docs/ice_base.jpg) | ![Green planet base](docs/green_base.jpg) |
+| ![Lake and islands](docs/golden_lake.jpg) | ![Night](docs/night_base.jpg) |
+| ![Green valley](docs/green_valley.jpg) | ![Storm and rain](docs/storm_rain.jpg) |
+
 ## Quick start
 
 Download **Terra Nova Uplink.exe** from the [latest release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), put it in an empty folder and run it. It finds your game and downloads the rest by itself (Uplink, Godot, Terra Nova Plus, Python for the live mode), and keeps them up to date. Then click **PLAY** (live mode), **MAP VIEWER**, or **HOST A GAME** / **JOIN A FRIEND** to play with a friend online.
@@ -61,9 +71,9 @@ Fun find: there are Easter Island heads hidden on the red planet in *Operation P
 
 The game keeps running in DOSBox, so it's still the real game you play. A small Python bridge reads its state from DOSBox's memory about 120 times a second (camera, units, soldiers' joints, shots, explosions, sky, cockpit screen), and Uplink draws the same scene on the graphics card, with the game's own cockpit on top. You play from Uplink's window: your keys and mouse go back to the game.
 
-Same moment, same camera: the game in DOSBox, Uplink with its old school filter (`F12`), and Uplink's own look:
+Same moment, same camera: the game in DOSBox, Uplink, and Uplink with its old school filter (`F12`):
 
-![The game, Uplink old school and Uplink](docs/live_compare_shore.jpg)
+![The game, Uplink and Uplink old school](docs/live_compare_base.jpg)
 
 | | |
 |---|---|

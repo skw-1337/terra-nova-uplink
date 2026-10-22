@@ -14,6 +14,16 @@ Tout est lu depuis ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n
 
 ![La planète rouge](docs/red_planet.jpg)
 
+Chaque planète avec son ciel et son ambiance :
+
+| | |
+|---|---|
+| ![Base lunaire, la Terre dans le ciel](docs/moon_base_earth.jpg) | ![Vallée enneigée](docs/snow_valley.jpg) |
+| ![Canyon du désert rouge](docs/red_canyon.jpg) | ![Base dans le désert](docs/desert_base.jpg) |
+| ![Base de glace](docs/ice_base.jpg) | ![Base de la planète verte](docs/green_base.jpg) |
+| ![Lac et îlots](docs/golden_lake.jpg) | ![La nuit](docs/night_base.jpg) |
+| ![Vallée verte](docs/green_valley.jpg) | ![Orage et pluie](docs/storm_rain.jpg) |
+
 ## Démarrage rapide
 
 Télécharger **Terra Nova Uplink.exe** depuis la [dernière release](https://github.com/skw-1337/terra-nova-uplink/releases/latest), le mettre dans un dossier vide et le lancer. Il trouve le jeu et télécharge le reste tout seul (Uplink, Godot, Terra Nova Plus, Python pour le mode Live), et le garde à jour. Ensuite **PLAY** (mode Live), **MAP VIEWER**, ou **HOST A GAME** / **JOIN A FRIEND** pour jouer avec un ami en ligne.
@@ -54,9 +64,9 @@ Petite trouvaille : des têtes de l'île de Pâques sont cachées sur la planèt
 
 Le jeu tourne toujours dans DOSBox : c'est bien le vrai jeu qui joue. Un petit pont en Python lit son état dans la mémoire de DOSBox environ 120 fois par seconde (caméra, unités, articulations des soldats, tirs, explosions, ciel, écran du cockpit), et Uplink dessine la même scène sur la carte graphique, avec le vrai cockpit du jeu par-dessus. On joue depuis la fenêtre d'Uplink : clavier et souris sont renvoyés au jeu.
 
-Même instant, même caméra : le jeu dans DOSBox, Uplink avec son filtre old school (`F12`), et le rendu d'Uplink :
+Même instant, même caméra : le jeu dans DOSBox, Uplink, et Uplink avec son filtre old school (`F12`) :
 
-![Le jeu, Uplink old school et Uplink](docs/live_compare_shore.jpg)
+![Le jeu, Uplink et Uplink old school](docs/live_compare_base.jpg)
 
 | | |
 |---|---|

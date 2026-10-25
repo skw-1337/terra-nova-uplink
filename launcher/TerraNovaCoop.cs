@@ -27,7 +27,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.2";
+    const string VERSION = "2.3";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
@@ -1389,11 +1389,12 @@ static class Uplink
         if (!File.Exists(ini) && File.Exists(other)) CopyKeys(other, ini);    // a first TN+ of the two: the keys of the other
         // HD 848x480 (the bridge reads the cockpit from it). Terrain detail: TN+'s SHARPER, not the game's: the game
         // moves the player on the ground it draws, and with its own detail that ground is not kept up to date while he
-        // looks up (jets into a slope pushed him down and back; SHARPER alone fixes it, tested 21/10/2026). Distances:
-        // the game's (with TN+'s MAX the game drew far units enlarged, and Uplink with them), behind Uplink
+        // looks up (jets into a slope pushed him down and back; SHARPER alone fixes it, tested 21/10/2026). Objects: TN+'s
+        // MAX (the game locks only what it draws: at its own distance far targets could not be locked; the far suits it
+        // then draws enlarged are left out by the bridge, Uplink walks them at their own size)
         Dictionary<string, string> want = new Dictionary<string, string> {
             { "display", "HD" }, { "widescreen", "2" }, { "update_check", "0" }, { "game_dir", game },
-            { "terrain_detail", "SHARPER" }, { "object_distance", "GAME" }, { "view_distance", "NORMAL" },
+            { "terrain_detail", "SHARPER" }, { "object_distance", "MAX" }, { "view_distance", "NORMAL" },
             { "small_views", "0" }, { "edge_objects", "0" }, { "field_of_view", "GAME" } };
         List<string> lines = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)) : new List<string> { "; Terra Nova Plus settings (written by Terra Nova Uplink)" };
         foreach (KeyValuePair<string, string> kv in want)

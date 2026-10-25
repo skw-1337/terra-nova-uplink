@@ -15,6 +15,8 @@ vec3 tn_sky(vec3 d, vec3 eye, sampler2D tex, bool has_clouds, vec3 light, vec3 h
 		float l = dot(c, vec3(0.3, 0.59, 0.11));
 		c = clamp(mix(vec3(l), c, 1.25), 0.0, 1.5);           // a little more colour: deeper blue between
 		col = mix(horizon, c, smoothstep(0.0, 0.3, y));
+	} else {                                                      // no clouds (night, airless): black above the
+		col = mix(horizon, vec3(0.0), smoothstep(0.0, 0.08, max(d.y, 0.0)));   // horizon, as the sky shows it
 	}
 	float s = max(dot(d, sun), 0.0);
 	col += vec3(1.0, 0.95, 0.85) * (0.1 * pow(s, 8.0) + 0.25 * pow(s, 90.0));

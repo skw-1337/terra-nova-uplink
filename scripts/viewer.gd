@@ -603,6 +603,7 @@ func _add_vegetation(m: Dictionary) -> int:
 	veg_values = vmap.duplicate()
 	var sun_dir := sun.global_transform.basis.z.normalized()     # towards the sun (the planet's, set before)
 	var flat := VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0)
+	sprite_gain = _sprite_gain(sun_dir)
 	for key in groups:                # key = (class, type)
 		var mesh: Mesh = null
 		var mat: Material = null
@@ -674,7 +675,23 @@ func _sprite_lit(ref: Vector2i, sp: Dictionary, k: float) -> StandardMaterial3D:
 func _veg_light(m: Dictionary, p: Vector3, sun_dir: Vector3, flat: float) -> float:
 	var nrm := Vector3(TNData.height_at(m, p.x - 0.6, p.z) - TNData.height_at(m, p.x + 0.6, p.z), 1.2,
 			TNData.height_at(m, p.x, p.z - 0.6) - TNData.height_at(m, p.x, p.z + 0.6)).normalized()
-	return clampf((VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(nrm.dot(sun_dir), 0.0)) / flat, VEG_LIGHT.x, VEG_LIGHT.y)
+	return clampf((VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(nrm.dot(sun_dir), 0.0)) / flat, VEG_LIGHT.x, VEG_LIGHT.y) * sprite_gain
+
+
+# ... and as bright as flat ground there is lit: the sun's or the moon's light (energy, colour, height) and the
+# sky's share of the ambient, against the planet they were matched with (Panama, temperate, sun at 34 deg:
+# SPRITE_LIGHT_REF); never brighter. At night they stayed as bright as at noon on a dark ground
+const SPRITE_LIGHT_REF := 0.53
+var sprite_gain := 1.0
+
+
+func _sprite_gain(sun_dir: Vector3) -> float:
+	var c := sun.light_color
+	var direct := sun.light_energy * (0.3 * c.r + 0.59 * c.g + 0.11 * c.b) * maxf(sun_dir.y, 0.05)
+	var ambient := env.ambient_light_sky_contribution * env.ambient_light_energy * \
+			(0.3 * sky_light.r + 0.59 * sky_light.g + 0.11 * sky_light.b)
+	var l := direct + ambient
+	return clampf(l / SPRITE_LIGHT_REF, 0.25, 1.0)
 
 
 # The game draws its plant and rock sprites a little wider than their radius and taller than their picture's
@@ -1807,6 +1824,9 @@ func _set_sky(path: String, light: Vector2) -> void:
 		var lt: Color = sk["light"]
 		mat.set_shader_parameter("light", Vector3(lt.r, lt.g, lt.b))
 		sky_light = lt
+	else:
+		sky_light = haze                                # (no clouds: the horizon's haze, not the last sky's clouds:
+		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
 	for sm in ground_mats + [mats["water"]]:
@@ -2761,6 +2781,9 @@ func _sub_views(q: PackedByteArray) -> void:
 			_sub_hide(sv["node"], false)
 			_sub_hide(node, true)
 			sv["node"] = node
+		# from the player's own suit (the target camera): without its body, which the other side views show (walking,
+		# its head and arms came in front of the lens: the picture went black)
+		cam.cull_mask = 0xFFFFF & ~SUB_HIDE_LAYER & (~PLAYER_LAYER if node != null and node.has_meta("player_body") else 0xFFFFF)
 		sv["seen"] = now
 	for panel in sub_views:
 		var sv: Dictionary = sub_views[panel]

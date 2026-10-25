@@ -13,7 +13,8 @@ uniform float squash = 1.0;       // sprite height factor
 uniform float pixel_aspect = 1.2; // the game's pixels on the screen: 320 x 400 (848 x 400 wide) shown 4:3 / 16:9
 uniform float shade = 1.0;        // live mode: the game draws its suits much darker than the raw sprites
 uniform float pull = 0.25;        // drawn this much nearer the camera: the game paints its suits over the ground,
-                                  // a foot reaching just under it is not cut off
+                                  // a foot reaching just under it is not cut off (a standing suit: its feet and
+                                  // shins only, viewer.gd LIMB_PULL; the pieces of a burst suit lying around: all)
 
 instance uniform float spin = -1.0;  // >= 0: a fixed angle on the screen (radians; a piece of a burst suit lying
                                      // on the ground, drawn turned like the game's) instead of following the bone

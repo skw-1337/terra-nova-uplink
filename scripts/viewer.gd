@@ -53,6 +53,7 @@ const SUB_RECTS := {1: true, 2: true, 3: true}
 const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels
 const PROBE_TILT := 0.3
 const SUB_FOV := 100.0            # horizontal, degrees
+const SUB_EASE := 0.2             # side view cameras: share of the way to the new reading (~120 a second)
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
 var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
@@ -259,8 +260,9 @@ func _ready() -> void:
 		# ground's light is mostly the sky's ambient, which only its sky contribution scales (not its energy), and
 		# the blurred sky reflection Godot adds to every surface: off
 		sun.light_energy = LIVE_LIGHT
-		# shadows: trees, objects and suits (the player's too, see _shadow_twin) cast them; the ground does not (its
-		# hills darkened ground the game leaves lit). Sharper near the eye: 8192 atlas, splits at 4, 14, 35 units
+		# shadows: trees, objects, suits (the player's too, see _shadow_twin) and the hills cast them (the game leaves
+		# its hills lit: without theirs, a suit's shadow lay on a slope the hill should have darkened). Sharper near
+		# the eye: 8192 atlas, splits at 4, 14, 35 units
 		sun.shadow_enabled = true
 		sun.directional_shadow_max_distance = LIVE_SHADOW
 		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
@@ -525,10 +527,10 @@ func _load(index: int) -> void:
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
-	if live:                                  # the ground takes the objects' shadows, casts none of its own
+	if live:                                  # the hills' shadows (both sides: no light through a thin crest)
 		for gi in world.find_children("*", "GeometryInstance3D", true, false):
 			if gi.material_override == det_mat or gi.material_override == out_mat:
-				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_DOUBLE_SIDED
 	var wl := Terrain.water_level(m["detail"])
 	if not is_nan(wl):
 		var plane := MeshInstance3D.new()
@@ -599,6 +601,8 @@ func _add_vegetation(m: Dictionary) -> int:
 				n += 1
 	veg_cells.clear()
 	veg_values = vmap.duplicate()
+	var sun_dir := sun.global_transform.basis.z.normalized()     # towards the sun (the planet's, set before)
+	var flat := VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0)
 	for key in groups:                # key = (class, type)
 		var mesh: Mesh = null
 		var mat: Material = null
@@ -622,11 +626,16 @@ func _add_vegetation(m: Dictionary) -> int:
 			mat = mats["rock"] if shape == "rock" else mats["tree"]
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
+		var lit := live and mat is StandardMaterial3D
+		mm.use_colors = lit                   # (before the count)
 		mm.mesh = mesh
 		var trs: Array = groups[key]
 		mm.instance_count = trs.size()
 		for i in trs.size():
 			mm.set_instance_transform(i, trs[i][0])
+			if lit:
+				var k := _veg_light(m, trs[i][0].origin, sun_dir, flat)
+				mm.set_instance_color(i, Color(k, k, k))
 			var cell: int = trs[i][1]
 			if not veg_cells.has(cell):
 				veg_cells[cell] = []
@@ -635,10 +644,37 @@ func _add_vegetation(m: Dictionary) -> int:
 		mmi.multimesh = mm
 		if mat != null:
 			mmi.material_override = mat
+		if lit:
+			(mat as StandardMaterial3D).vertex_color_use_as_albedo = true
 		mmi.add_to_group("vegetation")
 		mmi.visible = veg_on
 		world.add_child(mmi)
 	return n
+
+
+# Live mode: the plants are sprites drawn unlit (the game draws them so) on a ground Godot lights: on a slope turned
+# away from the sun the ground went dark and they stayed bright. Each one takes the light of the ground at its foot,
+# its slope's towards the sun against flat ground's (VEG_AMBIENT of it does not come from the sun), within VEG_LIGHT
+const VEG_AMBIENT := 0.25
+const VEG_LIGHT := Vector2(0.3, 1.1)
+
+
+# (a sprite object: its own copy of the sprite's material at that light, one per twentieth of light)
+func _sprite_lit(ref: Vector2i, sp: Dictionary, k: float) -> StandardMaterial3D:
+	var key := "sprite%s/lit%d" % [ref, roundi(k * 20.0)]
+	if not mats.has(key):
+		var sm := _sprite_mat(ref, sp).duplicate() as StandardMaterial3D
+		sm.vertex_color_use_as_albedo = false
+		var l := roundi(k * 20.0) / 20.0
+		sm.albedo_color = Color(l, l, l)                 # (alpha untouched: the sprite's cut-out)
+		mats[key] = sm
+	return mats[key]
+
+
+func _veg_light(m: Dictionary, p: Vector3, sun_dir: Vector3, flat: float) -> float:
+	var nrm := Vector3(TNData.height_at(m, p.x - 0.6, p.z) - TNData.height_at(m, p.x + 0.6, p.z), 1.2,
+			TNData.height_at(m, p.x, p.z - 0.6) - TNData.height_at(m, p.x, p.z + 0.6)).normalized()
+	return clampf((VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(nrm.dot(sun_dir), 0.0)) / flat, VEG_LIGHT.x, VEG_LIGHT.y)
 
 
 # The game draws its plant and rock sprites a little wider than their radius and taller than their picture's
@@ -1002,6 +1038,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL)
 			mi.mesh = q
 			mi.material_override = _sprite_mat(ref, sp)
+			if live and cls == 0:                   # a plant or rock placed as an object: lit like the vegetation
+				var sun_dir := sun.global_transform.basis.z.normalized()
+				var k := _veg_light(m, Vector3(x, ground, y), sun_dir, VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0))
+				mi.material_override = _sprite_lit(ref, sp, k)
 			top = q.size.y
 	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
 		var box := BoxMesh.new()
@@ -1041,6 +1081,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	return mi
 
 
+const LIMB_PULL := 0.05          # a standing suit's feet and shins drawn this much nearer the camera (_add_soldier)
+
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
 # Joints of skeletons 884 / 885: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 pelvis, 9 neck,
 # 10/11 shoulders, 12/13 elbows, 14/15 hands. Returns the suit height (0 when it has no sprites).
@@ -1059,10 +1101,16 @@ func _add_soldier(holder: Node3D, suit: int) -> float:
 		var seg := MeshInstance3D.new()
 		seg.mesh = _limb_quad(ld)
 		seg.material_override = _limb_mat(suit, sg[2], ld)
+		# drawn nearer the camera than they are (limb.gdshader pull): the feet and shins only, a sole reaching under
+		# the ground (0.25 for the whole suit: one just behind a wall showed through it)
+		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 5 else 0.0)
 		holder.add_child(seg)
 		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x)])
 	holder.set_meta("soldier", parts)
 	holder.set_meta("suit", suit)
+	holder.set_meta("leg_rest", [p[6].distance_to(p[4]), p[4].distance_to(p[2]), p[7].distance_to(p[5]),
+			p[5].distance_to(p[3])])          # thighs and shins standing (see _leg_lengths)
+	holder.set_meta("stand", p)              # and its arms (_arms_back)
 	return _pose_soldier(holder, p) + 0.1
 
 
@@ -1080,6 +1128,8 @@ func _facing(left: Vector3, right: Vector3) -> Vector3:
 # Puts a soldier's limbs on its 16 joints, (right, up, forward) from the ground under it: its pose at load, then
 # in live mode the game's own joints every frame (walking, arms, aiming). Returns the highest joint.
 func _pose_soldier(holder: Node3D, p: Array) -> float:
+	if holder.has_meta("leg_rest") and not holder.has_meta("corpse"):
+		p = _leg_lengths(p, holder.get_meta("leg_rest"))
 	var top := 0.0
 	# last guard: a bone far longer than its limb (joints the game left where it last drew the suit) is not drawn, the
 	# suit keeps its previous pose (each sprite is scaled by its bone: such a limb came out several times too big)
@@ -1110,6 +1160,344 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 		seg.extra_cull_margin = part[4] * sc
 		top = maxf(top, maxf(ga.y, gb.y))
 	return top
+
+
+# The game rewrites a suit's toes, ankles, hips, pelvis and neck every frame but its knees, shoulders, elbows and
+# hands only when it draws the suit: the player's own (never drawn, seen from inside) and the ones the bridge reads
+# between two game frames lag behind, and the walk replayed for the far suits (walk_anim.py, learnt from such poses,
+# often another type's) keeps them: thighs and shins from 0.4 to 1.5 x their length along a stride (each limb sprite,
+# stretched to its bone, grew and shrank), arms off the shoulders. Each knee is put back from the hip and the ankle, two
+# bones of the suit's standing length bent forwards, every frame (only the stretched ones, and the bones jumped from
+# one way to the other: spasms). A suit walking on its own steps lowers its pelvis to keep within LEG_REACH (_gait).
+const LEGS := [[6, 4, 2, 0], [7, 5, 3, 1]]     # hip, knee, ankle, toe (left, right)
+const LEG_REACH := 0.98
+const LEG_SOFT := 0.04
+
+
+func _leg_lengths(p: Array, rest: Array) -> Array:
+	var q := p.duplicate()
+	for s in 2:
+		var leg: Array = LEGS[s]
+		var l1: float = rest[2 * s]
+		var l2: float = rest[2 * s + 1]
+		var hip: Vector3 = q[leg[0]]
+		var d: Vector3 = (q[leg[2]] as Vector3) - hip
+		var dl := d.length()
+		if l1 <= 0.0 or l2 <= 0.0 or dl < 0.001:
+			continue
+		var dn := d / dl
+		# near a straight leg the knee's bend changes fast with the reach (a standing suit, its ankle a hair nearer or
+		# farther each frame: the knee jumped from straight to bent, it stuttered in place): over the last LEG_SOFT of
+		# the reach it straightens smoothly, never quite (the shin a hair longer to the ankle)
+		var full := l1 + l2
+		var soft := full * LEG_SOFT
+		if dl > full - soft:
+			dl = full - soft + soft * (1.0 - exp(-(dl - full + soft) / soft))
+		var a := (l1 * l1 - l2 * l2 + dl * dl) / (2.0 * dl)
+		var fw := Vector3(0, 0, 1) - dn * dn.z          # (pose axes: right, up, forward)
+		fw = fw.normalized() if fw.length() > 0.001 else Vector3(0, 0, 1)
+		q[leg[1]] = hip + dn * a + fw * sqrt(maxf(l1 * l1 - a * a, 0.0))
+	return q
+
+
+# Suits walking on their own steps. The game animates only the suits it draws up close: the far ones keep a frozen
+# pose it slides along with them (their ankles, hips and pelvis rewritten every frame, always in the same place: the
+# game shows them gliding too, unseen at its size), and the player's own (never drawn, seen from inside) only gets its
+# feet moved from one footfall to the next. Those suits (the player's; one without a pose from the game for GAIT_STALE
+# ms, the bridge leaving out the frozen ones, and for GAIT_BACK ms after; one whose arms were off their standing
+# length by more than ARM_TOL in the last STEADY_HOLD ms: a half-frozen pose) walk on their own steps instead: the
+# feet one after the other, each planted on the ground until the body has moved on, set down ahead of its hip and
+# lifted as far behind it, at the cadence of a long stride (GAIT_STRIDE: faster, longer steps, both feet off the
+# ground a moment between them, a run); when it stops, the foot left behind steps up to its place (the one ahead
+# stays within GAIT_REST of the leg), and turning on the spot, the feet follow. The pelvis as standing, lowered as
+# far as a long stride needs (at most GAIT_DROP of the leg); the knees from the hips and ankles (_leg_lengths); the
+# upper body as standing, leaning a little at speed, the shoulders turning against the hips and the arms swinging
+# against the legs. In the air (a jump) the legs hang under it. Suits the game draws keep its own pose (aiming,
+# crouching, dying), cross-faded from and to their steps (_pose_suit).
+const ARM_TOL := 0.15
+const ARM_BONES := [[9, 10], [10, 12], [12, 14], [9, 11], [11, 13], [13, 15]]
+const STEADY_HOLD := 3000
+const GAIT_STALE := 250                        # ms without a pose from the game
+const GAIT_BACK := 400                         # ms of its poses again before they are drawn
+const GAIT_STRIDE := 2.6                       # legs covered by a cycle, a step of each foot (the game's walk: 4.3,
+const GAIT_CYCLE := Vector2(0.55, 1.3)         # its feet sliding); a cycle's duration (s), the quickest, the slowest
+const GAIT_DUTY := 0.6                         # a foot planted at most this share of the cycle (walking: both down a
+const GAIT_HALF := 0.45                        # while), at most this share of the leg ahead of its hip, as far behind
+const GAIT_ADJUST := 0.35                      # a step back to its place, stopped (s)
+const GAIT_REST := 0.45                        # stopped: a foot this far ahead of its place stays (share of the leg)
+const GAIT_TURN := 0.6                         # a foot set down with the suit facing this far (radians) away steps
+const GAIT_LIFT := 0.16                        # a foot's lift mid-step, share of the leg
+const GAIT_DROP := 0.14                        # the pelvis lowered at most this share of the leg
+const GAIT_AIR := 0.3                          # its feet this share of the leg above the ground: in the air
+const GAIT_FEET := 0.06                        # a suit's feet below its entity (its height minus GAME_Z)
+const GAIT_LEAN := 0.12                        # forward lean at full speed (radians)
+const GAIT_NEAR := 12.0                        # its steps every frame nearer the camera (~28 us each), else GAIT_FAR_HZ
+const GAIT_FAR_HZ := Vector2(60.0, 30.0)       # times a second, the second one beyond GAIT_FAR
+const GAIT_FAR := 50.0
+const WALK_ARMS := 0.45                        # arm swing for the leg's (opposite side)
+const WALK_TWIST := 0.12                       # shoulders against the hips
+const WALK_EASE := 8.0                         # the upper body's swing eased (rate a second)
+const POSE_FADE := 250.0                       # ms: from the game's pose to its own steps and back
+
+
+func _arms_off(p: Array, stand: Array) -> bool:
+	for b in ARM_BONES:
+		var l0: float = (stand[b[0]] as Vector3).distance_to(stand[b[1]])
+		if l0 > 0.0 and absf((p[b[0]] as Vector3).distance_to(p[b[1]]) / l0 - 1.0) > ARM_TOL:
+			return true
+	return false
+
+
+func _gait_wanted(node: Node3D, now: int) -> bool:
+	if not node.has_meta("leg_rest") or node.has_meta("corpse"):
+		return false
+	return node.has_meta("player_body") or now - int(node.get_meta("stale_t", -100000)) < STEADY_HOLD or \
+			now - int(node.get_meta("jt", -100000)) > GAIT_STALE or now - int(node.get_meta("jt0", -100000)) < GAIT_BACK
+
+
+# every frame (after the game's state): the suits walking on their own steps take theirs
+func _gait_update(dt: float) -> void:
+	if current.is_empty() or dt <= 0.0:
+		return
+	var m: Dictionary = current["map"]
+	var now := Time.get_ticks_msec()
+	for node in live_nodes + live_extra.values():
+		if node == null or not is_instance_valid(node) or not node.visible or not node.has_meta("soldier"):
+			continue
+		if not _gait_wanted(node, now):
+			if node.has_meta("gait"):
+				node.remove_meta("gait")             # the game draws it again: its own pose (steps start afresh later)
+			continue
+		_gait_place(node, now)
+		var acc: float = float(node.get_meta("gait_dt", 0.0)) + dt
+		var far: float = node.global_position.distance_to(camera.global_position)
+		if far > GAIT_NEAR and not node.has_meta("player_body") and \
+				acc < 1.0 / (GAIT_FAR_HZ.x if far < GAIT_FAR else GAIT_FAR_HZ.y):
+			node.set_meta("gait_dt", acc)            # (a pose each time: the far ones less often)
+			continue
+		node.set_meta("gait_dt", 0.0)
+		_gait(node, m, minf(acc, 0.1))
+
+
+# a suit on its own steps: its moves from the game (~30 a second, each one a jump: its planted legs jerked) kept for
+# its speed, and the suit drawn one move late, eased from the one before (TN_SMOOTH does it for all, see _live_smooth)
+func _gait_place(node: Node3D, now: int) -> void:
+	var st: Dictionary = node.get_meta("gait", {})
+	if not st.has("arms"):
+		return
+	var hist: Array = st["hist"]
+	var p2: Vector2 = node.get_meta("pkt", Vector2(node.position.x, node.position.z))
+	var ez: float = node.get_meta("ez", node.position.y)
+	st["ez"] = ez
+	if hist.is_empty() or hist[-1][1] != p2 or hist[-1][2] != ez:
+		if not hist.is_empty() and now - int(hist[-1][0]) > 120:   # moving again: from one game move before
+			hist.assign([[now - 33, hist[-1][1], hist[-1][2]]])
+		hist.append([now, p2, ez])
+	while hist.size() > 2 and now - int(hist[1][0]) >= 150:
+		hist.pop_front()
+	if smooth or hist.size() < 2:
+		return
+	var a: Vector2 = hist[-2][1]
+	var b: Vector2 = hist[-1][1]
+	var gap := int(hist[-1][0]) - int(hist[-2][0])
+	if gap > 0 and gap < 120 and a.distance_to(b) < 1.0 and absf(float(hist[-1][2]) - float(hist[-2][2])) < 1.0:
+		var k := clampf((now - int(hist[-1][0])) / float(gap), 0.0, 1.0)
+		var d := a.lerp(b, k)
+		node.position.x = d.x
+		node.position.z = d.y
+		st["ez"] = lerpf(hist[-2][2], hist[-1][2], k)
+
+
+# a suit's pose from the game or from its own steps (_gait): from one to the other cross-faded over POSE_FADE (the
+# upper body jumped from the game's aim to standing, the feet from its stride to theirs)
+func _pose_suit(node: Node3D, q: Array, own: bool) -> void:
+	var now := Time.get_ticks_msec()
+	if bool(node.get_meta("own", own)) != own and node.has_meta("pose_last"):
+		node.set_meta("fade_from", node.get_meta("pose_last"))
+		node.set_meta("fade_t", now)
+	node.set_meta("own", own)
+	if node.has_meta("fade_t"):
+		var w := clampf((now - int(node.get_meta("fade_t"))) / POSE_FADE, 0.0, 1.0)
+		if w >= 1.0:
+			node.remove_meta("fade_t")
+			node.remove_meta("fade_from")
+		else:
+			w = w * w * (3.0 - 2.0 * w)
+			var from: Array = node.get_meta("fade_from")
+			var b := []
+			for j in q.size():
+				b.append((from[j] as Vector3).lerp(q[j], w))
+			q = b
+	node.set_meta("pose_last", q)
+	_pose_soldier(node, q)
+
+
+# where the suit's joints are drawn now (world), from its limbs
+func _joints_now(node: Node3D) -> Dictionary:
+	var j := {}
+	for part in node.get_meta("soldier"):
+		var seg: MeshInstance3D = part[0]
+		j[part[1]] = node.global_transform * seg.transform.origin
+		j[part[2]] = node.global_transform * (seg.transform.origin + seg.transform.basis.y * float(part[3]))
+	return j
+
+
+func _gait(node: Node3D, m: Dictionary, dt: float) -> void:
+	var stand: Array = node.get_meta("stand")
+	var rest: Array = node.get_meta("leg_rest")
+	var leg: float = (rest[0] + rest[1] + rest[2] + rest[3]) * 0.5
+	var ground := TNData.height_at(m, node.position.x, node.position.z)
+	# on the ground under it; above where the game has its feet (its entity minus GAIT_FEET) once they are clearly
+	# off the ground (a jump: rising with it, no jump at the start)
+	var ez: float = (node.get_meta("gait", {}) as Dictionary).get("ez", node.get_meta("ez", ground))
+	node.position.y = ground + maxf(ez - GAIT_FEET - ground - 0.04, 0.0)
+	var air := node.position.y - ground > leg * GAIT_AIR
+	var xf := node.global_transform
+	var home := []                                       # where each ankle stands (under its hip: a stride even
+	for s in 2:                                          # both ways)
+		home.append(xf * _node_axes(Vector3(stand[2 + s].x, stand[2 + s].y, stand[6 + s].z)))
+	var st: Dictionary = node.get_meta("gait", {})
+	if not st.has("arms") or (st["feet"][0] as Vector3).distance_to(home[0]) > leg * 3.0:
+		var f: Array = [home[0], home[1]]
+		if not st.has("arms"):                          # from where it is drawn now (a jump away: where it stands)
+			var now_j := _joints_now(node)
+			for s in 2:
+				if now_j.has(2 + s) and (now_j[2 + s] as Vector3).distance_to(home[s]) < leg:
+					f[s] = now_j[2 + s]
+		st = {"feet": f, "from": f.duplicate(), "k": [-1.0, -1.0], "phase": 0.25, "moving": false, "vel": Vector3.ZERO,
+				"hist": [], "dir": Vector3.ZERO, "yaw": [node.rotation.y, node.rotation.y], "arms": [0.0, 0.0]}
+		node.set_meta("gait", st)
+	# its speed over the last 150 ms of its moves (_gait_place; none for 80 ms: stopped), eased
+	var now := Time.get_ticks_msec()
+	var hist: Array = st["hist"]
+	var v2 := Vector2.ZERO
+	if hist.size() >= 2 and now - int(hist[-1][0]) < 80:
+		v2 = ((hist[-1][1] as Vector2) - (hist[0][1] as Vector2)) / maxf((int(hist[-1][0]) - int(hist[0][0])) / 1000.0, 0.001)
+	if v2.length() > 20.0:
+		v2 = Vector2.ZERO
+	st["vel"] = (st["vel"] as Vector3).lerp(Vector3(v2.x, 0.0, v2.y), 1.0 - exp(-dt * 8.0))
+	var vel: Vector3 = st["vel"]
+	var speed := vel.length()
+	var vdir := vel / speed if speed > 0.001 else Vector3.ZERO
+	var moving: bool = speed > leg * (0.08 if bool(st["moving"]) else 0.12)
+	if moving:
+		st["dir"] = vdir
+	# its cadence: a cycle (a step of each foot) covers GAIT_STRIDE legs; each foot planted GAIT_DUTY of it, or as
+	# long as its reach allows (GAIT_HALF of the leg ahead of its hip, as far behind), swinging the rest
+	var cyc := clampf(GAIT_STRIDE * leg / maxf(speed, 0.001), GAIT_CYCLE.x, GAIT_CYCLE.y)
+	var stance := minf(GAIT_DUTY * cyc, 2.0 * GAIT_HALF * leg / maxf(speed, 0.001))
+	var swing_t := cyc - stance if moving else GAIT_ADJUST
+	var half := speed * stance * 0.5                     # set down this far ahead of its hip, lifted as far behind
+	var feet: Array = st["feet"]
+	var from: Array = st["from"]
+	var yaws: Array = st["yaw"]
+	var k: Array = st["k"]                               # each foot's swing (0 to 1), -1 planted
+	var ph: float = st["phase"]                          # the cycle: the left foot sets off at 0, the right at 0.5
+	if air:
+		var was_at: Vector3 = st.get("at", xf.origin)
+		for s in 2:                                      # its legs hanging under it, a little bent (eased: with it)
+			var o: Vector3 = (feet[s] as Vector3) - was_at
+			o = o.lerp((home[s] as Vector3) + Vector3(0.0, leg * 0.12, 0.0) - xf.origin, 1.0 - exp(-dt * 20.0))
+			feet[s] = xf.origin + o
+			k[s] = -1.0
+	else:
+		var need := [false, false]
+		var behind := [0.0, 0.0]
+		for s in 2:
+			var d: Vector3 = (feet[s] as Vector3) - (home[s] as Vector3)
+			d.y = 0.0
+			behind[s] = -d.dot(vdir if moving else st["dir"])
+			need[s] = d.length() > leg * GAIT_REST or behind[s] > leg * 0.15 or \
+					absf(angle_difference(float(yaws[s]), node.rotation.y)) > GAIT_TURN
+		var first := 0 if behind[0] >= behind[1] else 1
+		var start := [false, false]
+		var down := float(k[0]) < 0.0 and float(k[1]) < 0.0
+		if moving and not bool(st["moving"]) and down:   # setting off: the foot behind first
+			ph = 0.5 * first
+			start[first] = true
+		elif moving:
+			var nph := ph + dt / cyc
+			start[0] = nph >= 1.0
+			start[1] = ph < 0.5 and nph >= 0.5
+			ph = fmod(nph, 1.0)
+		elif down and (need[0] or need[1]):              # stopped: a foot left behind (or too far ahead, or turned
+			start[first if need[0] and need[1] else (0 if need[0] else 1)] = true   # from) steps back, one at a time
+		for s in 2:
+			if start[s] and float(k[s]) < 0.0:
+				k[s] = 0.0
+				from[s] = feet[s]
+		for s in 2:
+			var f: Vector3 = feet[s]
+			if float(k[s]) < 0.0:                        # planted: where it was set down, on the ground (landing
+				var fy := TNData.height_at(m, f.x, f.z) + (stand[2 + s] as Vector3).y   # from a jump: down to it)
+				f.y = fy if f.y < fy + 0.002 else minf(lerpf(f.y, fy, 1.0 - exp(-dt * 30.0)), (home[s] as Vector3).y + leg * 0.12)
+				feet[s] = f
+				continue
+			var kk := minf(float(k[s]) + dt / swing_t, 1.0)
+			var to: Vector3 = (home[s] as Vector3) + vel * ((1.0 - kk) * swing_t) + vdir * half
+			var fr: Vector3 = from[s]
+			f = fr.lerp(to, kk * kk * (3.0 - 2.0 * kk))
+			var hop := Vector2(to.x - fr.x, to.z - fr.z).length()
+			f.y = TNData.height_at(m, f.x, f.z) + (stand[2 + s] as Vector3).y + \
+					sin(PI * kk) * leg * GAIT_LIFT * clampf(hop / (leg * 0.6), 0.3, 1.0)
+			feet[s] = f
+			k[s] = kk
+			if kk >= 1.0:
+				k[s] = -1.0                              # set down
+				yaws[s] = node.rotation.y
+	st["phase"] = ph
+	st["moving"] = moving
+	st["at"] = xf.origin
+	# the pose (right, up, forward from the ground under the suit): the feet where they are, toes with them
+	var inv := xf.affine_inverse()
+	var q: Array = stand.duplicate()
+	for s in 2:
+		var lf: Vector3 = inv * (feet[s] as Vector3)
+		var a := Vector3(lf.z, lf.y / SUIT_SQUASH, lf.x)
+		q[2 + s] = a
+		q[s] = (stand[s] as Vector3) + (a - (stand[2 + s] as Vector3))
+	# the pelvis (with the hips and the upper body) as standing, lowered as far as a long stride needs; a foot still
+	# out of reach (a stride too long for its legs) drawn at the end of its leg
+	var dy := 0.0
+	for s in 2:
+		var full: float = (rest[2 * s] + rest[2 * s + 1]) * LEG_REACH
+		var hip: Vector3 = stand[6 + s]
+		var a: Vector3 = q[2 + s]
+		var flat := Vector2(a.x - hip.x, a.z - hip.z).length()
+		dy = minf(dy, a.y + sqrt(maxf(full * full - flat * flat, 0.0)) - hip.y)
+	dy = maxf(dy, -leg * GAIT_DROP)
+	dy = lerpf(float(st.get("dy", dy)), dy, 1.0 - exp(-dt * 30.0))   # (eased: the pelvis jumped as a long stride
+	st["dy"] = dy                                        # ended)
+	for j in range(6, 16):
+		q[j] = (stand[j] as Vector3) + Vector3(0.0, dy, 0.0)
+	for s in 2:
+		var full: float = (rest[2 * s] + rest[2 * s + 1]) * LEG_REACH
+		var d: Vector3 = (q[2 + s] as Vector3) - (q[6 + s] as Vector3)
+		if d.length() > full:
+			var a: Vector3 = (q[6 + s] as Vector3) + d.normalized() * full
+			q[s] = (q[s] as Vector3) + (a - (q[2 + s] as Vector3))
+			q[2 + s] = a
+	# the upper body: leaning a little at speed, the shoulders against the hips, each arm against its leg
+	var swing := [0.0, 0.0]
+	for s in 2:
+		var d: Vector3 = (q[2 + s] as Vector3) - (q[6 + s] as Vector3)
+		swing[s] = atan2(d.z, maxf(-d.y, 0.001))
+	var arms: Array = st["arms"]                         # (eased: the legs swing quickly, the arms less)
+	for s in 2:
+		arms[s] = lerpf(float(arms[s]), swing[s], 1.0 - exp(-dt * WALK_EASE))
+	var fwd := (inv.basis * vel).x                       # (node axes: forward = +X)
+	var pel: Vector3 = q[8]
+	var upper := Basis(Vector3.UP, WALK_TWIST * (float(arms[1]) - float(arms[0]))) * \
+			Basis(Vector3.RIGHT, GAIT_LEAN * clampf(fwd / (leg * 6.0), -0.5, 1.0))
+	for j in range(9, 16):
+		q[j] = pel + upper * ((q[j] as Vector3) - pel)
+	var right: Vector3 = upper * Vector3.RIGHT
+	for s in 2:                                          # (the left arm 10, 12, 14 with the left leg, backwards)
+		var sh: Vector3 = q[10 + s]
+		var r := Basis(right, WALK_ARMS * float(arms[s]))
+		for j in [12 + s, 14 + s]:
+			q[j] = sh + r * ((q[j] as Vector3) - sh)
+	_pose_suit(node, q, true)
 
 
 # (right, up, forward) -> node axes (forward = +X, up = +Y, right = +Z)
@@ -1529,6 +1917,145 @@ void fragment() {
 	ml.add_child(mbg)
 	ml.add_child(hd_movie_box)
 	hd_movie_box.set_meta("bg", mbg)
+	_compass_setup()
+
+
+# The compass at the top is the game's own, in its screen: a new picture per game frame (~30 a second), while the view
+# follows the heading 120 times a second, so it moved by jerks. Its strip (COMPASS in the 320 x 400 screen: 256 pixels
+# = 360 degrees) is drawn again every frame over it, shifted by what the heading turned since. Where the letters are in
+# each game picture: measured on it (their pixels against the first picture's, the best match near where the heading
+# puts them); how the heading maps to that: learnt while playing (the direction when turning, the offset when still:
+# the game's own compass until then). The game's yellow brackets stay in place.
+const COMPASS := Rect2i(32, 5, 256, 17)
+const COMPASS_ROWS := [9, 10, 11, 12, 13, 14, 15, 16, 17]   # all the letters' rows (N / S and E / W look alike in the
+                                                           # middle ones: half a turn off now and then)
+var compass_rect: TextureRect
+var compass_mat: ShaderMaterial
+var compass_ref := []                          # per row: x of the letters' pixels in the first picture
+var compass_sig := ""                          # the game picture last measured
+var compass_phase := 0.0                       # where its letters are (pixels from the first picture)
+var compass_prev := []                         # [heading, phase] of the previous game picture
+var compass_votes := 0                         # the direction: + when letters and heading move together
+var compass_off := Vector2.ZERO                # the offset (an average on a circle)
+var compass_yaw := 0.0                         # the heading when it last moved more than 0.5 degree, and when
+var compass_yaw_t := 0
+var compass_rows := []                         # the letters' pixels of the last game picture read, and which one
+var compass_read := -1
+var hud_version := 0                           # game pictures received (the compass reads only a new one)
+
+
+func _compass_setup() -> void:
+	var sh := Shader.new()
+	sh.code = """shader_type canvas_item;
+uniform sampler2D hud : filter_nearest;
+uniform sampler2D pal : filter_nearest;
+uniform float shift = 0.0;
+uniform vec4 strip = vec4(32.0, 5.0, 256.0, 17.0);
+vec3 col(vec2 px) {
+	vec4 t = texture(hud, (floor(px) + 0.5) / vec2(320.0, 400.0));
+	return texture(pal, vec2((floor(t.r * 255.0 + 0.5) + 0.5) / 256.0, 0.5)).rgb;
+}
+bool yellow(vec3 c) { return c.r > 0.55 && c.g > 0.45 && c.b < 0.35; }
+void fragment() {
+	vec2 p = strip.xy + UV * strip.zw;
+	vec3 c0 = col(p);
+	vec3 c1 = col(vec2(strip.x + mod(p.x - strip.x - shift, strip.z), p.y));
+	COLOR = vec4(yellow(c0) ? c0 : (yellow(c1) ? vec3(0.0) : c1), 1.0);
+}"""
+	compass_mat = ShaderMaterial.new()
+	compass_mat.shader = sh
+	compass_mat.set_shader_parameter("hud", hud_tex)
+	compass_mat.set_shader_parameter("pal", hud_pal)
+	compass_mat.set_shader_parameter("strip", Vector4(COMPASS.position.x, COMPASS.position.y, COMPASS.size.x,
+			COMPASS.size.y))
+	var cl := CanvasLayer.new()
+	cl.layer = 2                               # over the game's screen (1), under its menus (10)
+	add_child(cl)
+	compass_rect = TextureRect.new()
+	compass_rect.texture = hud_tex
+	compass_rect.material = compass_mat
+	compass_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	compass_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	compass_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	compass_rect.anchor_left = COMPASS.position.x / 320.0
+	compass_rect.anchor_right = COMPASS.end.x / 320.0
+	compass_rect.anchor_top = COMPASS.position.y / 400.0
+	compass_rect.anchor_bottom = COMPASS.end.y / 400.0
+	compass_rect.visible = false
+	cl.add_child(compass_rect)
+
+
+func _compass_update() -> void:
+	if compass_rect == null:
+		return
+	if menu_mode:
+		compass_rect.visible = false
+		return
+	var now := Time.get_ticks_msec()
+	var yaw: float = cam_to[1]
+	if absf(angle_difference(compass_yaw, yaw)) > deg_to_rad(0.5):
+		compass_yaw = yaw
+		compass_yaw_t = now
+	var w := COMPASS.size.x
+	if compass_read != hud_version:            # the letters' pixels (light, not the brackets' yellow): read once per
+		compass_read = hud_version             # game picture (~30 a second), not every frame
+		compass_rows = []
+		for y in COMPASS_ROWS:
+			var xs := []
+			for x in w:
+				var c := hud_pal_img.get_pixel(int(round(hud_img.get_pixel(COMPASS.position.x + x, y).r * 255.0)), 0)
+				if c.get_luminance() > 0.55 and not (c.r > 0.55 and c.g > 0.45 and c.b < 0.35):
+					xs.append(x)
+			compass_rows.append(xs)
+	var rows := compass_rows
+	var n := 0
+	for r in rows:
+		n += (r as Array).size()
+	if n < 6:                                  # no compass on the game's screen
+		compass_rect.visible = false
+		return
+	var learnt := absi(compass_votes) >= 3 and compass_off.length() >= 0.5
+	var sig := str(rows)
+	if sig != compass_sig:                     # a new game picture: where its letters are
+		compass_sig = sig
+		if compass_ref.is_empty():
+			compass_ref = rows
+		var hist := PackedInt32Array()
+		hist.resize(w)
+		for k in rows.size():
+			for p in rows[k]:
+				for q in compass_ref[k]:
+					hist[posmod(p - q, w)] += 1
+		var best := 0
+		for d in w:
+			if hist[d] > hist[best]:
+				best = d
+		if learnt:                             # the best match near where the heading puts them
+			var c := posmod(int(round(signf(compass_votes) * yaw * w / TAU + compass_off.angle() / TAU * w)), w)
+			best = c
+			for o in range(-48, 49):
+				if hist[posmod(c + o, w)] > hist[best]:
+					best = posmod(c + o, w)
+		compass_phase = float(best)
+		if not compass_prev.is_empty():        # the direction: letters and heading between two game pictures
+			var dy := rad_to_deg(angle_difference(compass_prev[0], yaw))
+			var dp := wrapf(compass_phase - float(compass_prev[1]), -w / 2.0, w / 2.0)
+			if absf(dy) > 3.0 and absf(dp) > 1.0 and absf(dp) < 60.0:
+				compass_votes = clampi(compass_votes + (1 if dp * dy > 0.0 else -1), -20, 20)
+		compass_prev = [yaw, compass_phase]
+	if compass_votes != 0 and now - compass_yaw_t > 250:   # still: the game picture is up to date (and does not
+		var a := (compass_phase - signf(compass_votes) * yaw * w / TAU) / w * TAU   # change), the offset
+		compass_off = compass_off * 0.8 + Vector2(cos(a), sin(a))
+	if not learnt:
+		compass_rect.visible = false           # (the game's own compass as it is)
+		return
+	var want := signf(compass_votes) * yaw * w / TAU + compass_off.angle() / TAU * w
+	var shift := wrapf(want - compass_phase, -w / 2.0, w / 2.0)
+	if absf(shift) > 120.0:                    # (nearly half a turn off: something is wrong, the game's own)
+		compass_rect.visible = false
+		return
+	compass_mat.set_shader_parameter("shift", shift)
+	compass_rect.visible = true
 
 
 func _hud_update() -> void:
@@ -1618,6 +2145,7 @@ func _hud_update() -> void:
 				if buf.size() == 320 * 400 * 2:
 					hud_img.set_data(320, 400, false, Image.FORMAT_RG8, buf)
 					hud_tex.update(hud_img)
+					hud_version += 1
 					if OS.has_environment("TN_DEBUG") and frame % 20 == 0:
 						print("hud image ", frame, " win ", hud_win)
 				hud_parts.clear()
@@ -1630,6 +2158,7 @@ func _hud_update() -> void:
 		if raw.size() == 320 * 400 * 2:
 			hud_img.set_data(320, 400, false, Image.FORMAT_RG8, raw)
 			hud_tex.update(hud_img)
+			hud_version += 1
 
 
 # The game's 3D window (in its 320 x 400 screen, stretched over the window) with the view centre 36 % down it:
@@ -2112,8 +2641,15 @@ func _live_units(pk: PackedByteArray) -> void:
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
 			node = live_nodes[idx - live_off]
 		if node != null and node.visible and node.has_meta("soldier"):
-			_pose_soldier(node, joints[idx])
-			if not node.has_meta("corpse"):
+			var now_ms := Time.get_ticks_msec()
+			if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
+				node.set_meta("jt0", now_ms)                # its poses again after a while without (GAIT_BACK)
+			node.set_meta("jt", now_ms)
+			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand")):
+				node.set_meta("stale_t", now_ms)            # a half-frozen pose: it walks on its own steps
+			if not _gait_wanted(node, now_ms):
+				_pose_suit(node, joints[idx], false)
+			if not node.has_meta("corpse") and not node.has_meta("gait"):
 				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits
 				# ~0.06 above the game's, seen up close)
 		elif node != null and node.visible and node.has_meta("mech"):
@@ -2166,13 +2702,15 @@ func _sub_views(q: PackedByteArray) -> void:
 			sv = {"vp": vp, "cam": cam, "rect": tr, "seen": 0, "node": null}
 			sub_views[panel] = sv
 		# its frame in the cockpit (sent by the bridge: they move from one suit to another), less the name under the
-		# squadmate's picture and the button bar under the probe's (measured on two cockpits); the probe's compass
-		# labels are let through by the shader
+		# squadmate's picture and the button bar under the probe's (measured on two cockpits; the target camera has
+		# neither: cut the same, its bottom 17 rows showed the game's own picture); the probe's compass labels are let
+		# through by the shader
 		var x0 := q.decode_s16(o + 29)
 		var y0 := q.decode_s16(o + 31)
 		var x1 := q.decode_s16(o + 33)
 		var y1 := q.decode_s16(o + 35)
-		var r := Rect2(x0, y0, x1 - x0, y1 - y0 - 16) if panel == 3 else Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17)
+		var r := Rect2(x0, y0, x1 - x0, y1 - y0 - 16) if panel == 3 else (Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 1)
+				if panel == 2 else Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17))
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
 		tr.size = r.size * k
@@ -2200,12 +2738,24 @@ func _sub_views(q: PackedByteArray) -> void:
 		var zoom: float = maxf(0.2, q.decode_float(o + 25))
 		cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(SUB_FOV_PROBE if panel == 3 else SUB_FOV) / 2.0) / zoom))
 		var h := q.decode_float(o + 17)
-		cam.position = Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
+		var want_pos := Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
 		# the probe's pitch in the viewpoint (~11 deg down) is drawn much flatter by the game: a third of it puts the
 		# ridge where the game has it (measured with an undamaged suit: damage scrambles the game's own views); the
 		# squadmate's and the target camera's are drawn as given
 		var tilt := q.decode_float(o + 21) * (PROBE_TILT if panel == 3 else 1.0)
-		cam.rotation = Vector3(tilt, atan2(-cos(h), -sin(h)), 0.0)
+		var want_rot := Vector3(tilt, atan2(-cos(h), -sin(h)), 0.0)
+		# eased over a few readings: the target camera's angles change a few tenths of a degree from one to the next,
+		# and through its zoom (up to 16 x: a field of a few degrees) the picture shook; a jump (another target, a
+		# teleport) is taken at once
+		var was_pos: Vector3 = sv.get("pos", want_pos)
+		var was_rot: Vector3 = sv.get("rot", want_rot)
+		if was_pos.distance_to(want_pos) < 1.0 and absf(angle_difference(was_rot.y, want_rot.y)) < 0.35:
+			want_pos = was_pos.lerp(want_pos, SUB_EASE)
+			want_rot = Vector3(lerp_angle(was_rot.x, want_rot.x, SUB_EASE), lerp_angle(was_rot.y, want_rot.y, SUB_EASE), 0.0)
+		sv["pos"] = want_pos
+		sv["rot"] = want_rot
+		cam.position = want_pos
+		cam.rotation = want_rot
 		var node: Node3D = _live_node(idx)
 		if node != sv["node"]:
 			_sub_hide(sv["node"], false)
@@ -2378,6 +2928,13 @@ const PILE_SCALE := 0.0027                    # world units per sprite pixel (me
 func _live_debris(idx: int, e) -> void:
 	var holder: Node3D = live_piles.get(idx)
 	var game_suit := int(round(e[6]))
+	# the armour the bridge names comes and goes (the dead soldier's record found or not as the entities near the
+	# player change: the pile was rebuilt as the default suit, the player's own): a pile keeps the first one named, and
+	# one built without (guessed) takes it when it comes; a slot taken by a pile elsewhere starts again
+	if holder != null and Vector2(holder.position.x, holder.position.z).distance_to(Vector2(e[3], e[4])) < 1.5:
+		var had := int(holder.get_meta("suit_src", -1))
+		if had >= 0 or game_suit < 0:
+			game_suit = had
 	var key := "pile%d" % game_suit
 	var m: Dictionary = current["map"]
 	if holder == null or holder.get_meta("kind", "") != key:
@@ -2392,6 +2949,7 @@ func _live_debris(idx: int, e) -> void:
 				suit = d[1]
 		holder = Node3D.new()
 		holder.set_meta("kind", key)
+		holder.set_meta("suit_src", game_suit)
 		world.add_child(holder)
 		live_piles[idx] = holder
 		var g0 := TNData.height_at(m, e[3], e[4])
@@ -2432,12 +2990,18 @@ func _live_debris(idx: int, e) -> void:
 			seg.set_meta("turn", (h1 - 0.5) * 14.0)                               # radians per second, in the air
 			holder.add_child(seg)
 	# the pile follows its entity: thrown up, then at rest on the ground. In the air (seen on the running game) its
-	# pieces fly apart, higher and wider, turning, and fall back together onto the pile
+	# pieces fly apart, higher and wider, turning, and fall back together onto the pile. In the air: while its height
+	# changes (at rest the game's ground and this one can differ by a few hundredths: a pile left that much above it
+	# was taken for flying, its pieces turned for ever)
 	var gc := TNData.height_at(m, e[3], e[4])
-	var lift := maxf(0.0, e[5] - GAME_Z - gc + 0.12)
+	var t := Time.get_ticks_msec() / 1000.0
+	if absf(float(e[5]) - float(holder.get_meta("z", e[5]))) > 0.003:
+		holder.set_meta("z_t", t)
+	holder.set_meta("z", e[5])
+	var flying: bool = t - float(holder.get_meta("z_t", -10.0)) < 0.3
+	var lift := maxf(0.0, e[5] - GAME_Z - gc + 0.12) if flying else 0.0
 	holder.position = Vector3(e[3], gc + lift, e[4])
 	var k2 := clampf(lift / 0.3, 0.0, 1.0)
-	var t := Time.get_ticks_msec() / 1000.0
 	for seg in holder.get_children():
 		if not seg.has_meta("rest"):
 			continue
@@ -2602,10 +3166,12 @@ func _live_fx(idx: int, e) -> void:
 	# 5 blue dust (6/28), 6 missile (5/10), 7 red particle shot (5/6), 8 green plasma (5/22 the enemies' slow
 	# green streak ~0.35 unit long along its flight, in the planet palette's green; 5/25 its spray), 9 tracer
 	# (5/23 machine gun bullet, and 6/7 its fading streak: a thin white line ~0.25 unit long along its flight),
+	# 12 grenade (5/2, smoke or blast: thrown in an arc, 0.7-2 s and 3-8 units; was not drawn, only its smoke seen:
+	# drawn as the weapon panel shows it, _grenade_mesh, along its flight),
 	# matched on the running game
 	var kind: int = 0
 	if cls == 5:
-		kind = {4: 1, 11: 4, 10: 6, 6: 7, 22: 8, 25: 8, 23: 9}.get(typ, 0)
+		kind = {4: 1, 11: 4, 10: 6, 6: 7, 22: 8, 25: 8, 23: 9, 2: 12}.get(typ, 0)
 		if kind == 0:
 			return                                      # other shots (5/24, 5/26, 5/27 on the hover tanks, 5/29...):
 			# nothing the game draws, at most a dot (a 0.8 unit glowing ball hid the walkers in a fight)
@@ -2625,6 +3191,8 @@ func _live_fx(idx: int, e) -> void:
 			mi.mesh = ImmediateMesh.new()               # a ribbon rebuilt every frame from the gun to the bolt
 		elif dust:
 			mi.mesh = ImmediateMesh.new()               # dust: its scattered dots, rebuilt every frame
+		elif kind == 12:
+			mi.mesh = _grenade_mesh()                   # its own colours (the material below left off)
 		elif kind == 6:
 			var cn := CylinderMesh.new()                # missile: a little cone, nose ahead
 			cn.top_radius = 0.0
@@ -2635,7 +3203,7 @@ func _live_fx(idx: int, e) -> void:
 			mi.mesh = cn
 		else:
 			var sp := SphereMesh.new()
-			sp.radius = {0: 0.2, 2: 0.05, 3: 0.014, 5: 0.014, 7: 0.02, 8: 0.045, 9: 0.008, 10: 0.02}[kind]
+			sp.radius = {0: 0.2, 2: 0.05, 3: 0.014, 5: 0.014, 7: 0.02, 8: 0.045, 9: 0.008, 10: 0.02, 12: 0.05}[kind]
 			sp.height = sp.radius * {0: 4.0, 8: 8.0, 9: 32.0}.get(kind, 2.0)
 			sp.radial_segments = 4 if kind == 3 or kind == 5 else 8
 			sp.rings = 2 if kind == 3 or kind == 5 else 4
@@ -2653,17 +3221,17 @@ func _live_fx(idx: int, e) -> void:
 			var green := pal[137] if pal.size() > 137 else Color(0.1, 0.8, 0.1)
 			m.albedo_color = [Color(1.0, 0.85, 0.6), Color(1.0, 0.12, 0.08), Color(1.0, 0.75, 0.3), Color(1.0, 0.25, 0.15),
 					Color(0.15, 0.3, 1.0), Color(0.3, 0.45, 1.0), Color(1.0, 0.72, 0.15), Color(1.0, 0.2, 0.12), green,
-					Color(1.0, 0.97, 0.85), Color(0.99, 0.25, 0.25), Color(0.93, 0.6, 0.5)][kind]
-			m.emission_enabled = true
+					Color(1.0, 0.97, 0.85), Color(0.99, 0.25, 0.25), Color(0.93, 0.6, 0.5), Color(0.2, 0.22, 0.18)][kind]
+			m.emission_enabled = kind != 12                 # (the grenade: a dark casing, no glow)
 			m.emission = m.albedo_color
-			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0, 1.0, 1.0][kind]
+			m.emission_energy_multiplier = [4.0, 3.5, 2.5, 3.0, 3.0, 3.0, 2.0, 3.0, 1.3, 2.0, 1.0, 1.0, 0.0][kind]
 			if dust:                                    # dust: plain dots of the game's red / blue / salmon, no glow
 				m.emission_enabled = false
 				m.albedo_color = {3: Color(0.62, 0.0, 0.0), 5: Color(0.3, 0.42, 0.95)}.get(kind, m.albedo_color)
 				m.cull_mode = BaseMaterial3D.CULL_DISABLED  # (its dots are quads facing the camera)
 			m.disable_fog = true
 			fx_mats[kind] = m
-		mi.material_override = fx_mats[kind]
+		mi.material_override = null if kind == 12 else fx_mats[kind]
 		mi.set_meta("kind", kind)
 	# shots, dust and sparks at their true height (the camera is the player's height + the eye's, like the game's
 	# view): the units' offset (GAME_Z, their feet below their entity) put a laser's dust trail below its path, a
@@ -2722,29 +3290,9 @@ func _live_fx(idx: int, e) -> void:
 	if kind == 6:
 		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail
 	if dust:
-		# the game draws a dust particle (it does not move) as dots of a pixel scattered around it, mostly below,
-		# drawn again elsewhere when it draws a new random number (the bridge sends it in the heading): near the
-		# camera they spread over the view's lower left, far away they make a dense cloud at the impact (measured on
-		# the game's picture; dots right on the particles made a thin second laser along the shot)
-		var d := pos.distance_to(camera.position)
-		var hs := d * DUST_PX
-		var cb := camera.global_transform.basis
-		var im := mi.mesh as ImmediateMesh
-		im.clear_surfaces()
-		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, fx_mats[kind])
-		var rnd := int(e[6])
-		var tight := 0.35 if kind == 11 else 1.0        # the spark: its few pixels in the middle
-		for j in {11: SPARK_DOTS, 5: 3}.get(kind, DUST_DOTS):   # (the ion beam's blue trail: barely seen)
-			var r1 := float(((idx + 1) * 2654435761 + rnd * 40503 + j * 7919) % 100000) / 100000.0
-			var r2 := float(((idx + 3) * 1103515245 + rnd * 12345 + j * 104729) % 100000) / 100000.0
-			var r3 := float(((idx + 7) * 69069 + rnd * 2891 + j * 31337) % 100000) / 100000.0
-			# (a spread of a few pixels of the game whatever the distance: wider than tall, a little below)
-			var c := pos + (cb.x * (r1 - 0.5) * 2.0 * DUST_SPREAD + cb.y * ((r2 - 0.55) * 2.0 * DUST_DROP)) * d * (0.25 + 0.75 * r3) * tight * (3.0 if kind == 3 and j % 10 < int(DUST_HALO * 10) else 1.0)
-			var q := [c - cb.x * hs - cb.y * hs, c + cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs,
-					c - cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs, c - cb.x * hs + cb.y * hs]
-			for v in q:
-				im.surface_add_vertex(v)
-		im.surface_end()
+		if mi.get_meta("dust_pos", Vector3.INF) != pos:   # a new particle (they do not move): drawn by _dust_update
+			mi.set_meta("dust_pos", pos)
+			mi.set_meta("dust_born", Time.get_ticks_msec())
 		mi.global_transform = Transform3D.IDENTITY
 		mi.extra_cull_margin = 2.0
 	elif kind == 2 or kind == 7 or kind == 10:
@@ -2761,6 +3309,79 @@ func _live_fx(idx: int, e) -> void:
 		mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
 	mi.set_meta("prev", pos)
 	mi.visible = true
+
+
+# The grenade (5/2) as the game's weapon panel shows it: a whitish grey capsule girded with a green band (its long
+# axis Y: set along the flight like the other shots)
+var grenade_mesh: ArrayMesh
+
+
+func _grenade_mesh() -> ArrayMesh:
+	if grenade_mesh != null:
+		return grenade_mesh
+	var body := CapsuleMesh.new()
+	body.radius = 0.04
+	body.height = 0.13
+	body.radial_segments = 12
+	body.rings = 4
+	var band := TorusMesh.new()
+	band.inner_radius = 0.036
+	band.outer_radius = 0.05
+	band.rings = 16
+	band.ring_segments = 6
+	grenade_mesh = ArrayMesh.new()
+	for part in [[body, Color(0.82, 0.83, 0.8)], [band, Color(0.15, 0.62, 0.2)]]:
+		grenade_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, (part[0] as PrimitiveMesh).get_mesh_arrays())
+		var m := StandardMaterial3D.new()
+		m.albedo_color = part[1]
+		m.roughness = 0.6
+		grenade_mesh.surface_set_material(grenade_mesh.get_surface_count() - 1, m)
+	return grenade_mesh
+
+
+# Dust (6/29, 6/28) and sparks (6/8), every frame. The game draws a dust particle (it does not move) as dots of a
+# pixel scattered around it, mostly below, drawn again elsewhere when it draws a new random number: near the camera
+# they spread over the view's lower left, far away they make a dense cloud at the impact (measured on the game's
+# picture; dots right on the particles made a thin second laser along the shot). Scattered again at the game's own
+# rate (~30 a second) they moved by jerks next to the view, and kept as long as the game keeps the particle they stayed
+# on screen well after a short shot: scattered DUST_HZ times a second here, fewer and fewer over DUST_LIFE seconds.
+const DUST_HZ := 60.0
+const DUST_LIFE := 0.3
+
+
+func _dust_update() -> void:
+	var now := Time.get_ticks_msec()
+	var tick := int(now * DUST_HZ / 1000.0)
+	var cb := camera.global_transform.basis
+	for idx in live_fx:
+		var mi: MeshInstance3D = live_fx[idx]
+		if mi == null or not is_instance_valid(mi) or not mi.visible or not mi.has_meta("dust_pos"):
+			continue
+		var kind: int = mi.get_meta("kind", -1)
+		if not (kind == 3 or kind == 5 or kind == 11) or not mi.mesh is ImmediateMesh:
+			continue
+		var left := 1.0 - (now - int(mi.get_meta("dust_born"))) / 1000.0 / DUST_LIFE
+		if left <= 0.0:
+			mi.visible = false                       # (shown again by its next update: hidden again here)
+			continue
+		var pos: Vector3 = mi.get_meta("dust_pos")
+		var d := pos.distance_to(camera.position)
+		var hs := d * DUST_PX
+		var im := mi.mesh as ImmediateMesh
+		im.clear_surfaces()
+		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, fx_mats[kind])
+		var tight := 0.35 if kind == 11 else 1.0        # the spark: its few pixels in the middle
+		for j in ceili({11: SPARK_DOTS, 5: 3}.get(kind, DUST_DOTS) * left):   # (the ion beam's blue trail: barely seen)
+			var r1 := float(((idx + 1) * 2654435761 + tick * 40503 + j * 7919) % 100000) / 100000.0
+			var r2 := float(((idx + 3) * 1103515245 + tick * 12345 + j * 104729) % 100000) / 100000.0
+			var r3 := float(((idx + 7) * 69069 + tick * 2891 + j * 31337) % 100000) / 100000.0
+			# (a spread of a few pixels of the game whatever the distance: wider than tall, a little below)
+			var c := pos + (cb.x * (r1 - 0.5) * 2.0 * DUST_SPREAD + cb.y * ((r2 - 0.55) * 2.0 * DUST_DROP)) * d * (0.25 + 0.75 * r3) * tight * (3.0 if kind == 3 and j % 10 < int(DUST_HALO * 10) else 1.0)
+			var q := [c - cb.x * hs - cb.y * hs, c + cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs,
+					c - cb.x * hs - cb.y * hs, c + cb.x * hs + cb.y * hs, c - cb.x * hs + cb.y * hs]
+			for v in q:
+				im.surface_add_vertex(v)
+		im.surface_end()
 
 
 # The pulsar (5/5): five bolts in a quincunx, each trailed by a few 6/28 particles flying with it (0.03-0.12 unit
@@ -3165,7 +3786,12 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 	# units (classes 1-3) and buildings set up in play (a deployed turret): the game's own height, already real
 	# (no extra lift: a probe hovers by itself)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
-		node.position = Vector3(e[3], e[5] - GAME_Z, e[4])
+		var y: float = e[5] - GAME_Z
+		node.set_meta("ez", y)
+		node.set_meta("pkt", Vector2(e[3], e[4]))
+		if node.has_meta("gait"):
+			y = node.position.y                          # (a suit on its own steps: on the ground, _gait)
+		node.position = Vector3(e[3], y, e[4])
 	elif e[0] == 0 and not node.has_meta("mission"):
 		node.position = Vector3(e[3], e[5], e[4])        # decor made in play (a hit plant, rubble): the game's height
 		# (a rock left 0.13 above the map's ground there)
@@ -3201,6 +3827,10 @@ func _process(delta: float) -> void:
 	sky_root.position = camera.position
 	if live:
 		_live_update()
+		_dust_update()
+		_gait_update(delta)
+		if hud:
+			_compass_update()
 		sky_root.position = camera.position
 		return
 	if list.has_focus() and not look:

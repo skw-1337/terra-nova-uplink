@@ -403,6 +403,9 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 		if r.y < fr.size():
 			var img := _bitmap(fr[r.y], pal)
 			if img != null:
+				# color 0 opaque, as the game draws it on its models (a tower's dark door showed the ground behind
+				# it); only sprites see through it
+				img.convert(Image.FORMAT_RGB8)
 				img.generate_mipmaps()
 				tex = ImageTexture.create_from_image(img)
 	tex_cache[key] = tex
@@ -410,7 +413,7 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 
 
 # LG bitmap (28-byte frame header, then pixels): type 2 = raw 8-bit, type 4 = run-length (RSD).
-# Color 0 is transparent.
+# Color 0 is transparent (sprites; a model's texture is made opaque, _texture).
 static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x1c) -> Image:
 	if f.size() < data_at:
 		return null
@@ -539,8 +542,6 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 			var tex := _texture(slots.get(s, 0), pal, pal_key)
 			if tex != null:
 				mat.albedo_texture = tex
-				mat.alpha_scissor_threshold = 0.5
-				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 			else:
 				mat.albedo_color = Color(0.6, 0.6, 0.6)
 		st.set_material(mat)

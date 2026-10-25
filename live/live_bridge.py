@@ -22,18 +22,24 @@ SIG = re.compile(re.escape(bytes.fromhex('8b15')) + b'(....)' + re.escape(bytes.
                  b'(....)' + re.escape(bytes.fromhex('668b15')) + b'(....)' + re.escape(bytes.fromhex('668b401b01d066a3')) +
                  b'(....)' + re.escape(bytes.fromhex('66a1')) + b'(....)' + re.escape(bytes.fromhex('66a3')) + b'(....)', re.S)
 code = g.read(0x200000, 0x140000)
-caps = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 7)] for m in SIG.finditer(code)]
-caps = [c for c in caps if all(0x300000 <= v < 0x500000 for v in c)]   # le code reloge (pas une copie brute)
+caps = [([struct.unpack('<I', m.group(i))[0] for i in range(1, 7)], m.end()) for m in SIG.finditer(code)]
+caps = [c for c in caps if all(0x300000 <= v < 0x500000 for v in c[0])]   # le code reloge (pas une copie brute)
 assert caps, 'signature camera introuvable'
-cap = caps[0]
+cap = caps[0][0]
 A_PID, A_MASTER, A_HEADYAW, A_CAMHEAD, A_PITCH, A_CAMPITCH = cap
 print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage camera %#x' % (A_PID, A_MASTER, A_CAMHEAD, A_PITCH, A_CAMPITCH))
+# juste apres : la pente du sol que le jeu ajoute au tangage de la vue (test [drapeau] & 2, puis jnz : pas de pente ;
+# ... ; mov si, [pente]). Pas trouvee : le tangage camera tel quel
+_p = re.compile(re.escape(bytes.fromhex('f605')) + b'(....)' + re.escape(bytes.fromhex('020f85')) + b'.{4}.{0,40}?' +
+                re.escape(bytes.fromhex('668b35')) + b'(....)', re.S).match(code, caps[0][1])
+A_DRAPEAU, A_PENTE = (struct.unpack('<I', _p.group(1))[0], struct.unpack('<I', _p.group(2))[0]) if _p else (None, None)
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
 import walk_anim
 marche = walk_anim.WalkAnim()
-MARCHE_LOIN = os.environ.get('TN_FARWALK') != '0'     # (TN_FARWALK=0 : figees comme le jeu les laisse)
+MARCHE_LOIN = os.environ.get('TN_FARWALK') == '1'     # (TN_FARWALK=1 : marche apprise rejouee ; sinon pas de pose,
+                                                      # le visualiseur les fait marcher : viewer.gd _gait)
 LOURDES = {2, 5, 20, 23}                 # armures lourdes (SFC / Hegemony Heavy PBA : RESGAME 382) : plus grandes
 OS_JAMBES = ((6, 4), (4, 2), (2, 0), (7, 5), (5, 3), (3, 1))          # hanche-genou-cheville-orteil, gauche puis droite
 OS_BRAS = ((9, 10), (9, 11), (10, 12), (12, 14), (11, 13), (13, 15))  # cou-epaules, epaule-coude-main
@@ -898,6 +904,18 @@ if HUD:
 u16 = lambda a: struct.unpack('<H', g.read(a, 2))[0]
 s16 = lambda a: struct.unpack('<h', g.read(a, 2))[0]
 i32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
+
+
+def tangage():
+    # tangage de la vue principale : le jeu y copie celui de la tete, calcule la pente du sol (un appel), puis l'y
+    # ajoute. Lu entre les deux (sur une pente : une lecture sur quelques milliers), la vue sautait d'une image de la
+    # pente (2-3 deg, au repos aussi) : egal a la tete, il prend la pente que le jeu va ajouter
+    cam = s16(A_CAMPITCH)
+    if A_PENTE is not None and cam == s16(A_PITCH) and not g.read(A_DRAPEAU, 1)[0] & 2:
+        cam = ((cam + s16(A_PENTE) + 0x8000) & 0xffff) - 0x8000
+    return cam
+
+
 n = 0
 while True:
     e = A_MASTER + u16(A_PID + 2) * 0x25
@@ -905,7 +923,7 @@ while True:
     # cap de la vue principale = cap du joueur + tete, comme le jeu le calcule : la variable cap camera sert aussi aux
     # vues laterales (triple camera, cockpit) et la lire au mauvais moment faisait sauter la vue de 52 deg
     head = ((u16(e + 0x1B) + u16(A_HEADYAW)) & 0xffff) / 65536 * 2 * math.pi
-    pitch = -s16(A_CAMPITCH) / 65536 * 2 * math.pi    # le jeu : positif = vers le bas
+    pitch = -tangage() / 65536 * 2 * math.pi           # le jeu : positif = vers le bas
     # entites du jeu (table de 0x25 octets) : classes 0 a 4 (decor, unites, vehicules, sondes, batiments), 5 = tirs
     # et 6 = eclats d'impact (ephemeres : envoyes seulement actifs)
     tab = g.read(A_MASTER, 0x25 * NENT)
@@ -937,7 +955,7 @@ while True:
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
     # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds
     joints = []
-    figees = []                                   # armures que le jeu n'anime pas (loin) : marche rejouee (walk_anim)
+    figees = []                                   # armures que le jeu n'anime pas (loin) : pas de pose (voir MARCHE_LOIN)
     animees = {}
     for i in range(NENT):
         o = 0x25 * i
@@ -999,7 +1017,7 @@ while True:
     now_w = time.time()
     ou_unite = lambda i: (*(v / 65536 for v in struct.unpack_from('<ii', tab, 0x25 * i + 0x0F)),
                           struct.unpack_from('<H', tab, 0x25 * i + 0x1B)[0] / 65536 * 2 * math.pi)
-    if animees:
+    if animees and MARCHE_LOIN:
         hmax = max(max(p[1::3]) for _, p in animees.values())
         marche.learn({i: v for i, v in animees.items() if max(v[1][1::3]) > 0.8 * hmax}, ou_unite, now_w)
     for i in (figees if MARCHE_LOIN else []):

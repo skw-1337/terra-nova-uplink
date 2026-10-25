@@ -7,6 +7,7 @@ import json, math, os
 import numpy as np
 
 NB = 24                        # images par cycle
+FONDU = 0.25                   # s : passage marche <-> repos en fondu (d'un coup : la pose sautait, des spasmes)
 CACHE = os.path.join(os.environ.get('APPDATA', os.path.dirname(os.path.abspath(__file__))),
                      'Godot', 'app_userdata', 'Terra Nova Uplink', 'walk_anim.json')   # appris une fois, garde aux mises a jour
 
@@ -16,7 +17,7 @@ class WalkAnim:
         self.cycles = {}           # type -> (cycle NB x 48, longueur d'un cycle en unites)
         self.idles = {}            # type -> pose de repos
         self.track = {}            # entite animee par le jeu -> [(t, distance cumulee, avance ?, pose, (x, y))]
-        self.rep = {}              # entite rejouee -> [phase, [(t, x, y)], marche ?]
+        self.rep = {}              # entite rejouee -> [phase, [(t, x, y)], marche ?, part de la marche (fondu), t]
         try:
             c = json.load(open(CACHE))
             for k, v in c.items():
@@ -105,7 +106,7 @@ class WalkAnim:
         prend le cycle d'un autre, a sa taille a lui. (height n'est plus utilise : la hauteur lue dans les articulations
         d'une armure que le jeu ne pose pas est un reste, 10,4 avant tout zoom, 1,0 apres un dezoom, pour 0,43 : elle
         faisait des armures 24 x / 2,3 x trop grandes)"""
-        st = self.rep.setdefault(e, [0.0, [], False])
+        st = self.rep.setdefault(e, [0.0, [], False, 0.0, now])
         if st[1]:
             pt, px, py = st[1][-1]
             if now - pt > 1.0:
@@ -120,19 +121,28 @@ class WalkAnim:
             st[1].pop(0)
         span = now - st[1][0][0]
         v = math.dist(st[1][0][1:], (x, y)) / span if span > 0.05 else 0.0
-        st[2] = v > 0.5 if not st[2] else v > 0.2
+        # (seuils sous la marche du joueur : 0,2 a 1,7 / s dans les cotes ; 0,5 pour repartir le figeait sans cesse)
+        st[2] = v > 0.3 if not st[2] else v > 0.12
+        dt = min(0.2, max(0.0, now - st[4]))
+        st[4] = now
+        st[3] = min(1.0, st[3] + dt / FONDU) if st[2] else max(0.0, st[3] - dt / FONDU)
         k, scale = typ, 1.0
         if typ not in self.cycles and self.cycles:
             k = next(iter(self.cycles))
-        if st[2] and k in self.cycles:
+        walk = None
+        if st[3] > 0.0 and k in self.cycles:
             c, L = self.cycles[k]
             L *= scale
             n = len(c); f = (st[0] / L) % 1.0 * n; i = int(f) % n; a = f - int(f)
-            p = (c[i] * (1 - a) + c[(i + 1) % n] * a) * scale
-        elif typ in self.idles:
-            p = self.idles[typ]
-        elif k in self.idles:
-            p = self.idles[k] * scale
+            walk = (c[i] * (1 - a) + c[(i + 1) % n] * a) * scale
+        idle = self.idles[typ] if typ in self.idles else (self.idles[k] * scale if k in self.idles else None)
+        w = st[3] * st[3] * (3 - 2 * st[3])          # (doux aux deux bouts)
+        if walk is not None and idle is not None:
+            p = idle + (walk - idle) * w
+        elif walk is not None:
+            p = walk
+        elif idle is not None:
+            p = idle
         else:
             return None
         return np.asarray(p, '<f4').tobytes()

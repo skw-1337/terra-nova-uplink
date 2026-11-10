@@ -28,7 +28,7 @@ Même instant : le jeu d'origine, Uplink, et Uplink avec son filtre old school (
 
 Le jeu tourne toujours dans DOSBox : c'est bien le vrai jeu qui joue. Un petit pont lit son état environ 120 fois par seconde et Uplink dessine la même scène, avec le vrai cockpit du jeu par-dessus.
 
-Cliquer dans la fenêtre pour prendre la souris : elle regarde, les boutons tirent et verrouillent. `Y` ou `Pause` donne le curseur du jeu (boutons du cockpit, carte). `F12` passe au look old school. Toutes les autres touches vont au jeu. Fermer Uplink pour arrêter.
+Cliquer dans la fenêtre pour prendre la souris : elle regarde, les boutons tirent et verrouillent. `Y` ou `Pause` donne le curseur du jeu (boutons du cockpit, carte) ; la touche freelook choisie dans **Game keys** remplace `Y`. `F12` passe au look old school, `Maj+F12` affine ses pixels ; ces deux touches se changent dans le lanceur (**Keys**). Toutes les autres touches vont au jeu. Fermer Uplink pour arrêter.
 
 ## Galerie
 

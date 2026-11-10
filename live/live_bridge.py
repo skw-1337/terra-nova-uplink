@@ -4,7 +4,7 @@
 #   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance Uplink dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
-import math, os, re, select, socket, struct, sys, time, zlib
+import math, os, re, select, socket, struct, sys, threading, time, zlib
 import tnre
 
 g = tnre.Guest()
@@ -94,17 +94,34 @@ NUAGES = 0x427E6C if FR else 0x427DBC
 # vue infrarouge du jeu (touche I) : 1 = IR (0x38A3FE dans l'exe francais, retrouve sur l'image ; anglais suppose a
 # -0xB0 comme la camera principale voisine, pas verifie)
 INFRA = 0x38A3FE if FR else 0x38A34E
+# the player's waypoint (a click on the cockpit's map): x, y 16.16, x = 0: none. The game draws it in its own 3D (a
+# purple wire pyramid and its distance: drawobj.c, routine 0x29BA3C of the English exe, 0x29BA2C of the French one),
+# which the viewer does not show: it draws its own.   'WAYP' + x, y (f32), 10 times a second
+BALISE = 0x3900A0 if FR else 0x38FFF0
+# the main view's own entity (word): the player's, or his drone's while its picture is swapped with the HUD's (the
+# VIEW button of the drone's camera panel: "DRONE VIEW" in red; the panel then shows the player's own view). The
+# main camera is then the drone's: where it is, along its heading, with the pitch the game gives that view; the
+# panel's (4) is the player's own, read in the shared viewpoint like the other side views
+VUE_ENT = 0x38FC90 if FR else 0x38FBE0
 # vues annexes du HUD (camera du soldat selectionne en bas a gauche : bouton VUE ; camera de la sonde a droite) : le
 # jeu les dessine avec le point de vue partage de ses vues secondaires (0x41EB68 dans l'exe anglais, x, y, z 16.16),
 # qui ne tient leur position que le temps de leur dessin (le reste du temps : celle du joueur). Lu en rafale a chaque
 # tour ; son entite (mot a +0x5A : equipier ou sonde ; le joueur = la vue principale) dit laquelle. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
 # (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
-#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 2 cible, 3 sonde), entite (i32), x, y, z, cap, tangage, zoom (f32),
+#   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 2 cible, 3 sonde, 4 the player's own view in the drone's panel,
+#   5 to 7 the 360 view's left, back and right cameras, 8 the player's own view in the map's panel),
+#   entite (i32), x, y, z, cap, tangage, zoom (f32),
 #   cadre x0, y0, x1, y1 (i16)]
 VUEPT = 0x41EC18 if FR else 0x41EB68
 MODES = 0x38FCC2 if FR else 0x38FC12     # mode des panneaux du cockpit (octet, pas de 32) : 4 VUE, 0x15 camera de cible
 CAMS = 0x3900C0 if FR else 0x390010      # cameras des panneaux (pas de 0xBA) : zoom 16.16 en tete
 REGIONS = 0x389EA8 if FR else 0x389DF8   # table des cadres des panneaux du cockpit en cours (pointeurs ; x0, y0, x1, y1 a +8)
+# the cockpit's three panels (left, middle, right), 32 bytes apart: mode (+0x12: 8 = the HUD's own view, swapped with
+# what the panel showed; 13 to 15 = the 360 view's cameras, left, behind and right), the heading the panel adds to its
+# view (+0x28, a word). A panel in mode 8 while the main view is still the player's: the map is in the HUD (the
+# game's own picture: the HUD thread then sends the 3D window as it is, carte_hud)
+PANNEAUX = MODES - 0x12
+carte_hud = False
 
 
 def cadres():
@@ -310,6 +327,8 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 #   'P' + x, y (i16)  -> regard coupe (Y ou Pause dans le visualiseur) : curseur du jeu a cette position de son
 #        ecran 320 x 400 (boutons du HUD, carte, visee libre)
 #   'C' + bouton + appui + x, y -> clic a cette position
+#   'F' + 1 / 0 -> the viewer's mouse is free in the 3D (its cursor mode), said twice a second: see curseur_mission
+#   'R' + dx, dy (i16) -> the cursor moved by that much (game pixels) with a button held: see glisser
 #   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -7187, 6127
@@ -404,12 +423,20 @@ def handle_input():
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0)
         elif pk[:1] == b'P' and len(pk) >= 5:
             g.write(m_cur, pk[1:5]); g.write(m_warp, b'\x01')
+        elif pk[:1] == b'F' and len(pk) == 2:
+            curseur['libre'] = time.time() if pk[1] else 0.0
+        elif pk[:1] == b'R' and len(pk) >= 5:
+            dx, dy = struct.unpack('<hh', pk[1:5])
+            glisse['du'][0] += dx; glisse['du'][1] += dy
         elif pk[:4] == b'CHAT' and guest is not None:          # the host window's lobby chat
             guest.lobby.say('host', pk[4:].decode('utf-8', 'ignore'))
             guest.lobby_t = 0.0
         elif pk[:1] == b'C' and len(pk) >= 7:
             btn, down = pk[1], pk[2]
             pos = struct.unpack('<hh', pk[3:7])
+            glisse['du'][0] = glisse['du'][1] = 0     # (a hold begins or ends there: nothing left of the last one)
+            glisse['ecrit'] = None
+            if btn == 2: glisse['ancre'], glisse['tenu'] = (bytes(pk[3:7]) if down else None), None
             if btn == 1: mouse_evt(2 if down else 4, 1 if down else 0, pos)
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0, pos)
         elif pk in (b'HOST', b'HOSTV') and guest is None:   # the viewer's "Host online" button: its coop_net.gd opens the lobby
@@ -424,6 +451,53 @@ def handle_input():
     if look:                                  # le curseur du jeu reste au centre : on vise ou on regarde
         x, y = centre()
         g.write(m_cur, struct.pack('<hh', x, y)); g.write(m_warp, b'\x01')
+
+
+# The right button held with the mouse free (the viewer's 'C' down ... 'C' up). On a map the game then keeps its
+# cursor where the button went down: at each of its pictures it reads how far the mouse has gone from there, scrolls
+# the map by that much and puts the cursor back. The viewer's positions ('P') made it scroll by the whole way from
+# that point at each picture: faster and faster, and never back. The viewer now sends how much the mouse moved ('R'):
+# it is added up here and written from where the game's cursor is. A write found pulled back to where the button went
+# down: the game holds its cursor ('tenu'; the viewer is told, 'PIN', and takes the mouse); the next ones wait until
+# the last is taken. A write still there after 0.1 s: the game lets its cursor go (the 3D view), they are written at
+# once. What the screen's edge cuts off is kept for the next write (a map near the edge, a fast hand), unless nothing
+# at all could be written. Up and down, two rows at a time: the game halves that way (its maps count 200 rows) and
+# rounds down, so that one row up scrolled the map by two and one row down by none (measured: ten moves of one row
+# down, nothing; ten up, twenty rows).
+glisse = {'du': [0, 0], 'ecrit': None, 't': 0.0, 'ancre': None, 'tenu': None, 'dit': 0.0}
+
+
+def glisser(now):
+    gl, du = glisse, glisse['du']
+    pair = lambda v: int(v / 2) * 2
+    cur = None
+    if gl['ecrit'] is not None and gl['ancre'] is not None:
+        cur = g.read(m_cur, 4)
+        if cur != gl['ecrit']:
+            if cur == gl['ancre'] and not gl['tenu']:
+                gl['tenu'], gl['dit'] = True, 0.0
+                if os.environ.get('TN_DEBUG'): print('right button held: the game holds its cursor (a drag)', flush=True)
+            gl['ecrit'] = None
+        elif gl['tenu'] is None and now - gl['t'] >= 0.1:
+            gl['tenu'] = False
+            if os.environ.get('TN_DEBUG'): print('right button held: the cursor is free', flush=True)
+    if gl['tenu'] and now - gl['dit'] > 0.1:          # (said again while it lasts)
+        gl['dit'] = now
+        s.sendto(b'PIN' + struct.pack('<IH', 1, 0), ('127.0.0.1', 47823))
+    if not (du[0] or pair(du[1])): return
+    if gl['ecrit'] is not None and gl['ancre'] is not None and gl['tenu'] is not False and now - gl['t'] < 0.1: return
+    if cur is None: cur = g.read(m_cur, 4)
+    cx, cy = struct.unpack('<hh', cur)
+    w, h = struct.unpack('<hh', g.read(m_frame, 4))
+    if not (200 <= w <= 640 and 200 <= h <= 480): w, h = 320, 400
+    nx, ny = max(0, min(w - 1, cx + du[0])), cy + pair(max(0, min(h - 1, cy + du[1])) - cy)
+    if (nx, ny) == (cx, cy):
+        du[0], du[1] = 0, du[1] - pair(du[1])
+        return
+    new = struct.pack('<hh', nx, ny)
+    g.write(m_cur, new); g.write(m_warp, b'\x01')
+    glisse['ecrit'], glisse['t'] = new, now
+    du[0] = max(-64, min(64, du[0] - (nx - cx))); du[1] = max(-64, min(64, du[1] - (ny - cy)))
 
 
 hud_rate, hud_rect, hud_fixe = None, None, {}
@@ -443,7 +517,9 @@ def send_hud():
     scr = np.frombuffer(g.read(sbuf, 640 * 400), np.uint8).reshape(400, 640)[:, :320]
     alpha = np.full((400, 320), 255, np.uint8)
     fx0, fy0, fw, fh, fww, fside = d32(FX), d32(FY), d32(FWV), d32(FHV), d32(FWWV), d32(FSI)
-    if 0 < fw <= 320 and 0 < fh <= 400 and fww > 0:
+    if carte_hud and 0 < fw <= 320 and 0 < fh <= 400:
+        pass                                  # the map in the HUD: nothing of the 3D there, the game's picture whole
+    elif 0 < fw <= 320 and 0 < fh <= 400 and fww > 0:
         hd = np.frombuffer(g.read(d32(HB), fww * fh), np.uint8).reshape(fh, fww)
         if d32(COPIES) != c or d32(0x466104): return False
         cols = np.arange(fx0, fx0 + fw)
@@ -503,16 +579,19 @@ cur3d = {}
 
 def curseur_hud(scr, alpha):
     import numpy as np
+    if curseur['mission']: return                        # (emptied: the viewer shows it itself, curseur_mission)
     try:
-        ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
+        rec = g.read(m_cur - 0x18, 0x1c)
+        ptr, typ, _, w, h, row = struct.unpack_from('<IHHHHH', rec)
         if not (0x400000 <= ptr < 0x4000000 and 2 <= w <= 64 and 2 <= h <= 64 and row >= w and typ in (2, 4)): return
-        cx, cy = struct.unpack('<hh', g.read(m_cur, 4))
+        cx, cy = struct.unpack_from('<hh', rec, 0x18)
         if ptr not in cur3d:
             idx = (np.frombuffer(g.read(ptr, row * h), np.uint8).reshape(h, row)[:, :w] if typ == 2
                    else rle_decode(g.read(ptr, 4096), w, h))
             if not idx.any(): return                     # (la fleche videe des menus)
-            cur3d[ptr] = [idx, None]
-        idx, hot = cur3d[ptr]
+            cur3d[ptr] = [idx, None, 0]
+        idx, hot, essais = cur3d[ptr]
+        if idx.shape != (h, w): return                   # (its record read while the game changed it)
         m = idx != 0
         def place(hx, hy):
             x0, y0 = cx - hx, cy - hy
@@ -521,11 +600,19 @@ def curseur_hud(scr, alpha):
             return (x0, y0) if (z[m] == idx[m]).mean() > 0.9 else None
         at = place(*hot) if hot else None
         if at is None and hot is None:
-            for hy in range(h):
-                for hx in range(w):
-                    at = place(hx, hy)
-                    if at: cur3d[ptr][1] = (hx, hy); break
-                if at: break
+            # its tip: the two words before its position in its record; else looked for in the picture, a few times
+            # only (every place of it tried at each picture of the game cost a lot when it was not on screen)
+            hx, hy = struct.unpack_from('<hh', rec, 0x10)
+            if 0 <= hx < w and 0 <= hy < h:
+                at = place(hx, hy)
+                if at: cur3d[ptr][1] = (hx, hy)
+            if at is None and essais < 3:
+                cur3d[ptr][2] = essais + 1
+                for hy in range(h):
+                    for hx in range(w):
+                        at = place(hx, hy)
+                        if at: cur3d[ptr][1] = (hx, hy); break
+                    if at: break
         if at is None: return
         x0, y0 = at
         zone = alpha[y0:y0 + h, x0:x0 + w]
@@ -605,10 +692,16 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
         # au debut de certains ecrans, comme la base : leur image passait alors par le HUD, assombrie)
         fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (0, 0)   # sans --play : la 3D arretee seulement
         menu = now - last_t > 0.5 or fw >= 640
-        if mode == 0 and menu: mode = 1
+        if mode == 0 and menu:
+            mode = 1
+            with cur_lock:
+                curseur['menu'] = 1
+                if PLAY and curseur['mission']: cursor_restore()   # (the 3D's cursors, emptied while the mouse was free)
         elif mode == 1 and not menu and now - last_t < 0.1:
             mode = 0
-            if PLAY: cursor_restore()                  # la fleche du jeu, de retour pour la 3D
+            with cur_lock:
+                curseur['menu'] = 0
+                if PLAY: cursor_restore()              # la fleche du jeu, de retour pour la 3D
             menu_step.mis_t = 0.0
         if os.environ.get('TN_DEBUG') and mode != getattr(menu_step, 'dbg', None):
             menu_step.dbg = mode
@@ -680,7 +773,9 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
 #   'CUR' + n (u32) + largeur, hauteur, pointe x, y (i16) + RGBA
 CUR_FILE = os.path.join(os.environ.get('TEMP', '.'), 'tn_curseurs.bin')
 curseur = {'orig': {}, 'img': {}, 'pos': None, 'still': 0.0, 'cur_t': 0.0, 'vide': set(), 'non': set(), 'own': False,
-           'last': None}
+           'last': None, 'libre': 0.0, 'mission': False, 'menu': 0, 'remis': {}, 'last3d': None, 't3d': 0.0, 'vu3d': 0.0,
+           'c3d': {}}
+cur_lock = threading.Lock()               # the menus' thread and the main loop both empty and put back cursors
 
 
 def rle_decode(f, w, h):
@@ -786,6 +881,70 @@ def cursor_restore():
         if g.read(ptr, len(vide)) == vide:
             g.write(ptr, orig)
     curseur['vide'].clear(); curseur['non'].clear(); curseur['own'] = False
+    curseur['mission'] = False; curseur['remis'].clear()
+
+
+# The game's cursor in its 3D while the viewer's mouse is free (its cursor mode: 'F' packets). The game draws it in its
+# own picture, which the viewer gets with the cockpit: it moved as often as the game draws (20 to 40 times a second
+# on a modest PC), one game pixel at a time (5 window pixels) and late. As on the game's screens (cursor_hide) the
+# viewer then shows the cursor's picture itself, as the mouse cursor (no delay), and the game's is emptied. The game
+# keeps moving its own ('P' packets) and picks its picture by what is under it (the green sight over the 3D, the red
+# cross over the cockpit): each one is sent when the game takes it. Its tip is in its record (two words right before
+# its position). All put back as soon as the mouse looks around again (the sight at the view's centre is this
+# cursor), on a game screen, and when the bridge stops.
+#   'CUR' + 1 (u32: the 3D's cursor) + width, height, tip x, y (i16) + RGBA; width 0: none, the game draws its own
+def curseur_mission(now):
+    import numpy as np
+    st = curseur
+    with cur_lock:
+        if now - st['libre'] > 1.5 or st['menu']:
+            if st['mission']: cursor_restore()
+            return
+        st['mission'] = True
+        rec = g.read(m_cur - 0x18, 0x14)
+        ptr, typ, _, w, h, row = struct.unpack_from('<IHHHHH', rec)
+        hot = struct.unpack_from('<hh', rec, 0x10)
+        ok = (0x400000 <= ptr < 0x4000000 and typ == 2 and 4 <= w <= 64 and 4 <= h <= 64 and row >= w
+              and 0 <= hot[0] < w and 0 <= hot[1] < h and ptr not in st['non'])
+        known = st['c3d'].get(ptr) if ok else None       # (width, height, row) it was emptied with
+        if known is not None and known != (w, h, row):
+            return                                       # its record read while the game changed it: next turn
+        if ok and ptr in st['vide'] and now - st['vu3d'] > 0.5:
+            st['vu3d'] = now
+            if g.read(ptr, row * h) != st['orig'][ptr][1]:   # the game wrote it again (reloaded): emptied again below
+                st['vide'].discard(ptr)
+                st['remis'][ptr] = st['remis'].get(ptr, 0) + 1
+        if ok and ptr not in st['vide']:
+            bm = g.read(ptr, row * h)
+            if g.read(m_cur - 0x18, 0x14) != rec:
+                return                                   # (the same: the record and its picture must go together)
+            if not any(bm):
+                if known is not None and len(st['orig'][ptr][1]) == row * h:
+                    st['vide'].add(ptr)                  # ours, emptied before: taken back, to be put back later
+                else:
+                    ok = False                           # (empty, and not by this bridge: left alone)
+            elif st['remis'].get(ptr, 0) > 3:
+                ok = False; st['non'].add(ptr)           # the game keeps putting it back: it is left its own
+            else:
+                if st['orig'].get(ptr, (None,))[0] != bm:    # (kept for a bridge stopped dead: cursor_repare)
+                    with open(CUR_FILE, 'ab') as f:
+                        f.write(struct.pack('<IH', ptr, row * h) + bm + bytes(row * h))
+                st['orig'][ptr] = (bm, bytes(row * h))
+                st['c3d'][ptr] = (w, h, row)
+                st['idx_' + str(ptr)] = np.frombuffer(bm, np.uint8).reshape(h, row)[:, :w].copy()
+                g.write(ptr, bytes(row * h)); st['vide'].add(ptr)
+        if (ptr if ok else 0) == st['last3d'] and now - st['t3d'] <= 0.5:
+            return
+        st['last3d'], st['t3d'] = (ptr if ok else 0), now
+        if not ok:
+            s.sendto(b'CUR' + struct.pack('<I4h', 1, 0, 0, 0, 0), ('127.0.0.1', 47823))
+            return
+        # its colours: the game's palette of the moment (as cursor_hide)
+        idx = st['idx_' + str(ptr)]
+        pal = np.frombuffer(g.read(PAL, 768), np.uint8).reshape(256, 3)
+        r = np.zeros((h, w, 4), np.uint8)
+        r[..., :3] = pal[idx]; r[..., 3] = np.where(idx != 0, 255, 0)
+        s.sendto(b'CUR' + struct.pack('<I4h', 1, w, h, *hot) + r.tobytes(), ('127.0.0.1', 47823))
 
 
 def cursor_repare():
@@ -918,7 +1077,8 @@ def tangage():
 
 n = 0
 while True:
-    e = A_MASTER + u16(A_PID + 2) * 0x25
+    pid = u16(A_PID + 2)
+    e = A_MASTER + pid * 0x25
     x, y, z = i32(e + 0x0F) / 65536, i32(e + 0x13) / 65536, i32(e + 0x17) / 65536
     # cap de la vue principale = cap du joueur + tete, comme le jeu le calcule : la variable cap camera sert aussi aux
     # vues laterales (triple camera, cockpit) et la lire au mauvais moment faisait sauter la vue de 52 deg
@@ -950,7 +1110,17 @@ while True:
         if tab[o + 1] == 6 and tab[o + 2] == 33:     # morceau d'armure : le cap porte l'armure du soldat mort
             eh = float(armure_debris(ex / 65536, ey / 65536, vivants))
         body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], 1 if tab[o] else 0, ex / 65536, ey / 65536, ez / 65536, eh))
-    pid = u16(A_PID + 2)
+    # the main view through the player's drone (see VUE_ENT)
+    vue = u16(VUE_ENT)
+    sonde = vue != pid and 0 < vue < NENT and bool(tab[0x25 * vue]) and tab[0x25 * vue + 1] == 3
+    # the cockpit's panels: one that shows the HUD's own view (mode 8) has swapped with it what it showed, the
+    # drone's view (sonde) or the map
+    pan = g.read(PANNEAUX, 0x70)
+    pmode = [pan[0x12 + 32 * k] for k in range(3)]
+    echange = next((k for k in range(3) if pmode[k] == 8), None)
+    carte_hud = echange is not None and not sonde
+    if sonde: vues.pop(3, None)                   # (the drone's panel shows one or the other)
+    if echange is None: vues.pop(4, None)
     # animation des soldats : le jeu calcule a chaque image les 16 articulations de chaque armure affichee (fiche
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
     # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds
@@ -1060,7 +1230,14 @@ while True:
         # verrouillee ; du joueur vers la cible, zoom = distance bornee a 1-16), sinon rien (tester la position la
         # confondait avec une vue annexe quand le joueur avancait, Z ; et ecartait une sonde posee a cote de lui)
         cible = vi == pid
-        if cible and g.read(MODES, 1)[0] != 0x15: continue
+        if sonde and vi == vue: continue      # (the drone: the main view now)
+        # the player's own view, in the drone's panel while the drone has the main view: along his heading (and his
+        # head's turn); the target camera, which is his too, looks at the target
+        tete = False
+        if echange is not None and cible:
+            ecart = lambda a: abs(((struct.unpack_from('<H', vp, 0xC)[0] - a + 0x8000) & 0xffff) - 0x8000)
+            tete = min(ecart(u16(e + 0x1B)), ecart(u16(e + 0x1B) + u16(A_HEADYAW))) < 0x100
+        if cible and not tete and g.read(MODES, 1)[0] != 0x15: continue
         if cible and abs(vz - (z + d32(OEIL) / 65536 + 0.1875)) > 0.03: continue   # (une autre ecriture du joueur, a son
                                               # cap et 0,4 au-dessus de lui, se glisse entre : pas la camera de cible)
         if not 0 <= vi < NENT or not tab[0x25 * vi] or tab[0x25 * vi + 1] not in (1, 2, 3): continue
@@ -1069,31 +1246,50 @@ while True:
         cap_v = struct.unpack_from('<H', vp, 0xC)[0] / 65536 * 2 * math.pi
         tang_v = -struct.unpack_from('<h', vp, 0x16)[0] / 65536 * 2 * math.pi
         vz += EYE - (d32(OEIL) / 65536 + 0.1875)  # meme oeil que la vue principale (EYE, ajuste sur le jeu)
-        panneau = 2 if cible else (3 if tab[0x25 * vi + 1] == 3 else 1)
-        zoom = d32(CAMS + (0xBA * 2 if panneau == 3 else 0)) / 65536
+        panneau = (4 if tete else 2) if cible else (3 if tab[0x25 * vi + 1] == 3 else 1)
+        zoom = 1.0 if panneau == 4 else d32(CAMS + (0xBA * 2 if panneau == 3 else 0)) / 65536
         if not 0.2 < zoom < 20: zoom = 1.0
         # garde l'ecart a l'unite (le point de vue n'est capte qu'au hasard du dessin : relu tel quel, la vue avancait
         # par saccades) ; la position est reprise a chaque tour dans la table, le cap de l'unite + l'ecart (la cible :
         # son cap tel quel, il vise la cible et non l'avant du joueur)
         ex_, ey_, ez_ = (v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vi + 0x0F))
         ecap = struct.unpack_from('<H', tab, 0x25 * vi + 0x1B)[0] / 65536 * 2 * math.pi
-        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, vz - ez_, cap_v if cible else cap_v - ecap, tang_v, zoom)
+        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, vz - ez_, cap_v if panneau == 2 else cap_v - ecap, tang_v, zoom)
+    # each view's panel: 0 left, 1 middle, 2 right (the player's own view, 4: in the panel that swapped with the HUD)
+    ou = {1: 0, 2: 0, 3: 2, 4: 2 if echange is None else echange, 5: 0, 6: 1, 7: 2}
     sv = []
     for k, v in vues.items():
         if time.time() - v[0] > 0.4 or not tab[0x25 * v[1]]: continue
+        if pmode[ou[k]] in (13, 14, 15): continue     # (its panel is one of the 360 view's now)
         ex_, ey_, ez_ = (c / 65536 for c in struct.unpack_from('<3i', tab, 0x25 * v[1] + 0x0F))
         ecap = struct.unpack_from('<H', tab, 0x25 * v[1] + 0x1B)[0] / 65536 * 2 * math.pi
         sv.append((k, (v[0], v[1], ex_ + v[2], ey_ + v[3], ez_ + v[4], v[5] if k == 2 else ecap + v[5], v[6], v[7])))
-    cd = cadres() if sv else []
-    if cd:                                    # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
-        s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *(cd[-1] if k == 3 else cd[0]))
-                 for k, v in sv), ('127.0.0.1', 47821))
-    elif not sv:
-        s.sendto(b'SUBV' + bytes([0]), ('127.0.0.1', 47821))
+    autour = [k for k in range(3) if pmode[k] in (13, 14, 15)]
+    cd = cadres() if sv or autour else []     # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
+    cadre = lambda i: None if not cd else cd[0] if i == 0 else cd[-1] if i == 2 else (cd[1] if len(cd) >= 3 else None)
+    # the 360 view: the player's own eyes turned by each panel's heading (left, behind, right), his head with them
+    # (the game's routine 0x275260 again: the unit's heading + the panel's + the head's, and the main view's pitch;
+    # the picture is then turned over, a mirror's: the viewer does it). Not in the full view (G: no cockpit, the
+    # panels keep their mode and their frame, which then lies under the 3D window: the game draws none)
+    if autour:
+        fx0, fy0, fw, fh = struct.unpack('<4i', g.read(FX, 16))
+        for k in autour:
+            c = cadre(k)
+            if c is None or (fx0 <= (c[0] + c[2]) // 2 < fx0 + fw and fy0 <= (c[1] + c[3]) // 2 < fy0 + fh): continue
+            sv.append((5 + k, (0, pid, x, y, z + EYE, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
+    # each view in its panel's frame (the player's own view is sent as 8 when its panel is not the drone's, which has
+    # its own buttons); none: said too, the viewer takes them off
+    sv = [(8 if k == 4 and ou[4] != 2 else k, v, cadre(ou[k])) for k, v in sv]
+    sv = [(k, v, c) for k, v, c in sv if c is not None]
+    s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *c) for k, v, c in sv),
+             ('127.0.0.1', 47821))
     cam = (x, y, z + EYE, head, pitch)
+    if sonde:
+        cam = (*(v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vue + 0x0F)),
+               struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
-             struct.pack('<i', len(arts)) + b''.join(arts), ('127.0.0.1', 47821))
+             struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid), ('127.0.0.1', 47821))
     if guest: guest.step(body, joints, arts)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()
@@ -1112,10 +1308,18 @@ while True:
     if PLAY:
         handle_input()
         repeter_touches()
+        glisser(time.time())
+        try:
+            curseur_mission(time.time())
+        except Exception as ex:                # (a read of the game gone wrong: the cursor stays the game's this turn)
+            if time.time() - curseur.get('err_t', 0.0) > 5.0:
+                curseur['err_t'] = time.time()
+                print('curseur :', repr(ex), file=sys.stderr, flush=True)
     if time.time() - nuages_t > 0.1:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
         s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
+        s.sendto(b'WAYP' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8)))), ('127.0.0.1', 47821))
         if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
             wthr = meteo()
             s.sendto(wthr, ('127.0.0.1', 47821))

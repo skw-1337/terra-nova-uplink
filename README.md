@@ -28,7 +28,7 @@ Same moment: the original game, Uplink, and Uplink with its old school filter (`
 
 The game keeps running in DOSBox, so it's still the real game you play. A small bridge reads its state about 120 times a second and Uplink draws the same scene, with the game's own cockpit on top.
 
-Click in the window to take the mouse: it looks around, the buttons fire and lock. `Y` or `Pause` gives you the game's cursor (cockpit buttons, map). `F12` switches to the old school look. Every other key goes to the game. Close Uplink to stop.
+Click in the window to take the mouse: it looks around, the buttons fire and lock. `Y` or `Pause` gives you the game's cursor (cockpit buttons, map); the freelook key you set in **Game keys** replaces `Y`. `F12` switches to the old school look, `Shift+F12` makes its pixels finer; both keys can be changed in the launcher (**Keys**). Every other key goes to the game. Close Uplink to stop.
 
 ## Gallery
 

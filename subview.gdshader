@@ -12,11 +12,14 @@ uniform vec4 frame = vec4(0.0, 0.0, 320.0, 400.0);
 uniform float label_rows = 0.0;
 uniform float label_a = 47.0;
 uniform float label_b = 59.0;
-// old school (F12): the game's pixel grid of this small view (one cell per pixel of its 320 x 400 screen) and the
-// planet's palette
+// old school (F12): the game's pixel grid of this small view (one cell per pixel of its 320 x 400 screen, or the
+// finer grid the player picked, viewer.gd old_sharp: cells across and down the view) and the planet's palette
 uniform bool old = false;
+uniform vec2 grid = vec2(0.0);
 uniform sampler2D pal_tex : filter_nearest;
 uniform int first_index = 17;
+// the 360 view's panels: the camera's picture turned over, left to right (a mirror's)
+uniform bool mirror = false;
 
 float idx(vec2 p) {
 	return floor(texture(hud, p / vec2(320.0, 400.0)).r * 255.0 + 0.5);
@@ -78,17 +81,20 @@ void fragment() {
 		}
 	}
 	vec3 c;
+	vec2 uv = mirror ? vec2(1.0 - UV.x, UV.y) : UV;
 	if (old) {
 		// each cell the mean of what it covers, then the nearest colour of the planet's palette
-		vec2 cell = floor(UV * frame.zw);
+		vec2 g = grid.x > 0.0 ? grid : frame.zw;
+		vec2 cell = min(floor(uv * g), g - 1.0);
+		vec2 spread = 0.25 * smoothstep(vec2(1.0), vec2(1.5), vec2(textureSize(TEXTURE, 0)) / g);
 		c = vec3(0.0);
 		for (int k = 0; k < 4; k++) {
-			vec2 o = vec2(float(k & 1), float(k >> 1)) * 0.5 + 0.25;
-			c += texture(TEXTURE, (cell + o) / frame.zw).rgb;
+			vec2 o = 0.5 + (vec2(float(k & 1), float(k >> 1)) * 2.0 - 1.0) * spread;
+			c += texture(TEXTURE, (cell + o) / g).rgb;
 		}
 		c = nearest(c * 0.25);
 	} else {
-		c = texture(TEXTURE, UV).rgb;
+		c = texture(TEXTURE, uv).rgb;
 	}
 	if (ir) {
 		c = ramp(clamp(dot(c, vec3(0.299, 0.587, 0.114)) * 1.15, 0.0, 1.0));

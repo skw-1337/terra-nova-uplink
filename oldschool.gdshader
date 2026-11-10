@@ -1,7 +1,7 @@
 // Old school mode (live mode, F12): the game's look over the 3D view. Its pixel grid (848 x 400 over the window,
-// the game's HD screen), each pixel the mean of what it covers, and its palette (the planet's colours 17-255, those
-// its 3D view is drawn with; from 1 on planet 3, whose ground is drawn with 1-16). Drawn under the game's HUD, which
-// already has both.
+// the game's HD screen; finer if the player asks, Shift+F12: viewer.gd old_sharp), each pixel the mean of what it
+// covers, and its palette (the planet's colours 17-255, those its 3D view is drawn with; from 1 on planet 3, whose
+// ground is drawn with 1-16). Drawn under the game's HUD, which already has both.
 shader_type canvas_item;
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
@@ -28,10 +28,12 @@ const float BAYER[16] = {0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1
 void fragment() {
 	// each game pixel is the mean of the window's pixels it covers (2 x 2.4): one pixel picked in it jumped from
 	// texel to texel as the view moved, the ground shimmered
+	// (a cell no bigger than a window pixel is that pixel: nothing to average, it would only blur the finest grids)
 	vec2 cell = floor(SCREEN_UV * grid);
+	vec2 spread = 0.25 * smoothstep(vec2(1.0), vec2(1.5), 1.0 / (grid * SCREEN_PIXEL_SIZE));
 	vec3 c = vec3(0.0);
 	for (int k = 0; k < 4; k++) {
-		vec2 o = vec2(float(k & 1), float(k >> 1)) * 0.5 + 0.25;
+		vec2 o = 0.5 + (vec2(float(k & 1), float(k >> 1)) * 2.0 - 1.0) * spread;
 		c += texture(screen_tex, (cell + o) / grid).rgb;
 	}
 	c *= 0.25;

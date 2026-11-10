@@ -7,6 +7,8 @@ const TNObjects = preload("res://scripts/tn_objects.gd")
 const GROUND = preload("res://terrain.gdshader")
 const LIMB = preload("res://limb.gdshader")
 const OLDSCHOOL = preload("res://oldschool.gdshader")
+const SPRITE_SHADOW = preload("res://sprite_shadow.gdshader")
+const WAYPOINT = preload("res://waypoint.gdshader")
 const INFRARED = preload("res://infrared.gdshader")
 const SUBVIEW = preload("res://subview.gdshader")
 const SMOKE = preload("res://smoke.gdshader")
@@ -48,11 +50,17 @@ var oldschool_rect: ColorRect      # live mode, "old school": the game's pixels 
 var ir_rect: ColorRect            # live mode: the game's infrared view (its orange ramp), under the HUD
 var ir_on := false
 # The HUD's side views (live mode): the selected squadmate's camera (bottom left, button VUE) and the probe's (right),
-# drawn here by Godot over the game's own small views (panels 1 = squadmate, 2 = target camera, 3 = probe).
-const SUB_RECTS := {1: true, 2: true, 3: true}
+# drawn here by Godot over the game's own small views (panels 1 = squadmate, 2 = target camera, 3 = probe, 4 = the
+# player's own view in the probe's panel while the probe's is in the HUD, 5 to 7 = the 360 view's left, back and
+# right cameras, 8 = the player's own view in the map's panel while the map is in the HUD).
+const SUB_RECTS := {1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true}
 const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels
 const PROBE_TILT := 0.3
 const SUB_FOV := 100.0            # horizontal, degrees
+const SUB_FOV_SELF := 84.5        # the player's own view in a panel (4, 8): the game's own field (its compass
+                                  # labels there: S seen 37 deg aside at 140 of the panel's 170 half pixels)
+const SUB_FOV_AROUND := 84.5      # the 360 view's cameras (5 to 7): the player's own field too (a squadmate followed
+                                  # across each panel while the player turns on the spot: 83 to 85 degrees)
 const SUB_EASE := 0.2             # side view cameras: share of the way to the new reading (~120 a second)
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
@@ -192,6 +200,28 @@ var menu_parts := {}
 var menu_img_n := -1
 var play_cursor := Vector2i(-1, -1)
 var play_cursor_sent := Vector2i(-1, -1)
+# the game's cursor in its 3D while the mouse is free: the bridge empties the game's own and sends its picture ('CUR'
+# with its first bit set), shown here as the mouse cursor itself (_play_cursor)
+var play_cur_img: Image
+var play_cur_hot := Vector2i.ZERO
+var play_cur_n := 0               # (one more with each new picture)
+var play_cur_t := -100000         # when the bridge last sent it (msec)
+var play_cur_set := ""            # the one set as the mouse cursor now ("": not ours)
+var play_free := -1               # what the bridge was told last ('F'), and when
+var play_free_t := 0
+# The right button held, the mouse free. On a map the game then keeps its cursor where the button went down: it reads
+# how far the mouse goes from there, scrolls the map by that much and puts the cursor back. Positions sent as the
+# cursor's ('P') made the map race away: while the button is held the mouse's moves are sent as moves ('R'), and the
+# bridge says when the game holds its cursor ('PIN'). From then on, as in the game, the mouse is taken (no edge of the
+# window stops the hand), the cursor stays where the button went down (the game's picture of it, drawn here:
+# drag_cur) and the mouse comes back there when the button is let go. Anywhere else (the 3D view) the cursor goes on
+# following the mouse.
+var play_hold := false              # the right button is down, the mouse free
+var play_drag := false              # ... and the game holds its cursor
+var drag_cur: TextureRect
+var play_drag_at := Vector2i.ZERO   # where the button went down, on the game's screen
+var play_drag_win := Vector2.ZERO   # ... and in the window
+var play_drag_acc := Vector2.ZERO   # moves not sent yet (game pixels)
 const SCANCODES := {
 	KEY_ESCAPE: 0x01, KEY_1: 0x02, KEY_2: 0x03, KEY_3: 0x04, KEY_4: 0x05, KEY_5: 0x06, KEY_6: 0x07, KEY_7: 0x08,
 	KEY_8: 0x09, KEY_9: 0x0A, KEY_0: 0x0B, KEY_MINUS: 0x0C, KEY_EQUAL: 0x0D, KEY_BACKSPACE: 0x0E, KEY_TAB: 0x0F,
@@ -607,6 +637,7 @@ func _add_vegetation(m: Dictionary) -> int:
 	for key in groups:                # key = (class, type)
 		var mesh: Mesh = null
 		var mat: Material = null
+		var shadow: Material = null
 		var ref: Vector2i = objects.ref_for(key.x, key.y) if objects_ok else Vector2i.ZERO
 		if OS.has_environment("TN_DEBUG"):
 			print("vegetation %s ref %s %s x%d largeur %.3f" % [key, ref, data.type_name(key.x, key.y), groups[key].size(), objects.sprite_width(key.x, key.y)])
@@ -615,6 +646,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			if not sp.is_empty():
 				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL)
 				mat = _sprite_mat(ref, sp)
+				shadow = _sprite_shadow_mat(ref, sp)
 		elif TNObjects.is_model(ref):
 			var md: Dictionary = objects.model(ref, pal, pal_key)
 			if not md.is_empty():
@@ -650,6 +682,15 @@ func _add_vegetation(m: Dictionary) -> int:
 		mmi.add_to_group("vegetation")
 		mmi.visible = veg_on
 		world.add_child(mmi)
+		if shadow != null:                    # sprites: their shadow comes from a twin facing the light, which shares
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # the plants (one hidden: its shadow too)
+			var sh := MultiMeshInstance3D.new()
+			sh.multimesh = mm
+			sh.material_override = shadow
+			sh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+			sh.add_to_group("vegetation")
+			sh.visible = veg_on
+			world.add_child(sh)
 	return n
 
 
@@ -760,6 +801,31 @@ func _sprite_mat(key: Vector2i, sp: Dictionary) -> StandardMaterial3D:
 	sm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mats[k] = sm
 	return sm
+
+
+# A sprite's shadow: the sprite turns to face the camera and its shadow turned with it (it swung round as the player
+# looked around, and thinned to a line when he looked across the light). The sprite casts none; a twin of its quad,
+# drawn in the shadow passes only, stands facing the light (sprite_shadow.gdshader).
+func _sprite_shadow_mat(key: Vector2i, sp: Dictionary) -> ShaderMaterial:
+	var k := "shadow%s" % key
+	if not mats.has(k):
+		var sm := ShaderMaterial.new()
+		sm.shader = SPRITE_SHADOW
+		sm.set_shader_parameter("tex", sp["texture"])
+		mats[k] = sm
+	return mats[k]
+
+
+# (a sprite object's: a child, it follows it and hides with it)
+func _sprite_shadow(mi: MeshInstance3D, key: Vector2i, sp: Dictionary) -> void:
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var tw := MeshInstance3D.new()
+	tw.set_meta("shadow_twin", true)
+	tw.mesh = mi.mesh
+	tw.material_override = _sprite_shadow_mat(key, sp)
+	tw.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	tw.extra_cull_margin = (mi.mesh as QuadMesh).size.x * 0.5    # (turned towards the light: out of the quad's own box)
+	mi.add_child(tw)
 
 
 # Every model of RESTNOBJ.RES in rows on flat ground (planet 0 colors), each with its file name
@@ -1059,6 +1125,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				var sun_dir := sun.global_transform.basis.z.normalized()
 				var k := _veg_light(m, Vector3(x, ground, y), sun_dir, VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0))
 				mi.material_override = _sprite_lit(ref, sp, k)
+			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
 	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
 		var box := BoxMesh.new()
@@ -1731,6 +1798,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		yaw -= event.relative.x * 0.003
 		pitch = clampf(pitch - event.relative.y * 0.003, -1.5, 1.5)
 		camera.rotation = Vector3(pitch, yaw, 0)
+	elif event is InputEventKey and _look_keys(event):
+		pass
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_TAB:
@@ -1744,8 +1813,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_F4:
 				veg_on = not veg_on
 				get_tree().call_group("vegetation", "set_visible", veg_on)
-			KEY_F12:
-				_oldschool_toggle()
 
 
 # old school mode: the game's look over the 3D view, under its HUD (F12)
@@ -1761,6 +1828,12 @@ func _make_oldschool() -> void:
 	oldschool_rect.material = rm
 	oldschool_rect.visible = false                      # shown once the planet's palette is known
 	rl.add_child(oldschool_rect)
+	var cfg := ConfigFile.new()
+	cfg.load(CFG)
+	var k := int(cfg.get_value("look", "old_sharp", 1))
+	old_sharp = k if k in OLD_SHARP else 1
+	_oldschool_grid()
+	get_viewport().size_changed.connect(_oldschool_grid)   # (its grid is counted in the window's pixels)
 
 
 # the planet's palette for it (each new map); live: on from the start (--smooth: off), the map viewer: off (F12)
@@ -1781,6 +1854,74 @@ func _oldschool_toggle() -> void:
 	if oldschool_rect != null and oldschool_key != "":
 		oldschool_rect.visible = not oldschool_rect.visible
 		_apply_look()
+
+
+# How fine the old school's pixel grid is (Shift+F12, kept in viewer.cfg): the game's own pixels (848 x 400 over the
+# window, its HD screen), 2 or 3 times as many each way, or the window's own (0): the palette alone is then left of
+# the look. Never finer than the window. The HUD's side views follow (_sub_views).
+const OLD_GRID := Vector2(848, 400)
+const OLD_SHARP := [1, 2, 3, 0]
+var old_sharp := 1
+
+
+func _old_grid(k: int) -> Vector2:
+	var vs := get_viewport().get_visible_rect().size
+	return vs if k <= 0 else (OLD_GRID * k).min(vs)
+
+
+func _oldschool_grid() -> void:
+	if oldschool_rect != null:
+		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("grid", _old_grid(old_sharp))
+
+
+# the next one that changes something in this window (1280 x 720: twice the game's pixels is already the window's)
+func _oldschool_sharper() -> void:
+	if oldschool_rect == null or not oldschool_rect.visible:
+		return
+	var was := _old_grid(old_sharp)
+	var i := OLD_SHARP.find(old_sharp)
+	for n in OLD_SHARP.size():
+		i = (i + 1) % OLD_SHARP.size()
+		if _old_grid(OLD_SHARP[i]) != was:
+			break
+	old_sharp = OLD_SHARP[i]
+	_oldschool_grid()
+	var cfg := ConfigFile.new()
+	cfg.load(CFG)
+	cfg.set_value("look", "old_sharp", old_sharp)
+	cfg.save(CFG)
+	var g := _old_grid(old_sharp)
+	_note("Old school: %s (%d x %d)" % ["the game's pixels" if old_sharp == 1 else ("the window's pixels" if
+			g == get_viewport().get_visible_rect().size else "%d x finer" % old_sharp), g.x, g.y])
+
+
+# A line at the top of the window for a moment (a setting just changed).
+var note_label: Label
+var note_n := 0
+
+
+func _note(text: String) -> void:
+	if note_label == null:
+		var nl := CanvasLayer.new()
+		nl.layer = 20                                   # over the game's HUD
+		add_child(nl)
+		note_label = Label.new()
+		note_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
+		note_label.offset_top = 8
+		note_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		note_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		note_label.add_theme_font_size_override("font_size", 20)
+		note_label.add_theme_color_override("font_color", Color(1, 1, 0.4))
+		note_label.add_theme_color_override("font_outline_color", Color.BLACK)
+		note_label.add_theme_constant_override("outline_size", 5)
+		nl.add_child(note_label)
+	note_label.text = text
+	note_label.visible = true
+	note_n += 1
+	var mine := note_n
+	await get_tree().create_timer(2.5).timeout
+	if mine == note_n:
+		note_label.visible = false
 
 
 # The mission's sky (see TNObjects.load_sky): shader sky with the cloud texture and the haze color
@@ -2095,9 +2236,25 @@ func _hud_update() -> void:
 			if not current.is_empty() and current["entry"]["file"].get_file().to_upper() != mf:
 				_load_by_label(mf)
 			continue
+		if tag == "PIN":                                 # the game holds its cursor: a map dragged (see play_hold)
+			if frame & 1:
+				_play_hold_pin()
+			continue
 		if tag == "CUR" and pk.size() >= 15:
 			var cw := pk.decode_s16(7)
 			var ch := pk.decode_s16(9)
+			if frame & 1:                                  # the cursor of the game's 3D (_play_cursor); no size: none
+				if cw > 0 and ch > 0 and pk.size() >= 15 + cw * ch * 4:
+					var im3 := Image.create_from_data(cw, ch, false, Image.FORMAT_RGBA8, pk.slice(15, 15 + cw * ch * 4))
+					var hot3 := Vector2i(pk.decode_s16(11), pk.decode_s16(13))
+					if play_cur_img == null or im3.get_data() != play_cur_img.get_data() or hot3 != play_cur_hot:
+						play_cur_img = im3
+						play_cur_hot = hot3
+						play_cur_n += 1
+					play_cur_t = Time.get_ticks_msec()
+				else:
+					play_cur_t = -100000
+				continue
 			if cw > 0 and ch > 0 and pk.size() >= 15 + cw * ch * 4:
 				var img := Image.create_from_data(cw, ch, false, Image.FORMAT_RGBA8, pk.slice(15, 15 + cw * ch * 4))
 				var hot := Vector2i(pk.decode_s16(11), pk.decode_s16(13))
@@ -2223,6 +2380,86 @@ static func _key_map() -> Dictionary:
 	return m
 
 
+# The key that swaps look and cursor: TN+'s freelook key, which the player sets on its KEYBOARD page (the launcher's
+# Game keys). Its PC scancode comes from the launcher (TN_KEY_FREELOOK) or, with a launcher that does not send it,
+# from the TNPlus.ini of the launcher's TN+ next to this folder (tnplus\, else tnplus_coop\: key_freelook); Y when
+# neither says, or for a key this window does not know.
+var look_key := _look_key()
+
+static func _look_key() -> int:
+	var sc := OS.get_environment("TN_KEY_FREELOOK").hex_to_int()
+	if sc <= 0:
+		var comp := ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()
+		for d in ["tnplus", "tnplus_coop"]:
+			var ini := comp.path_join(d).path_join("TNPlus.ini")
+			if not FileAccess.file_exists(ini):
+				continue
+			for line in FileAccess.get_file_as_string(ini).split("\n"):
+				var kv := line.split("=")
+				if kv.size() == 2 and kv[0].strip_edges() == "key_freelook":
+					sc = kv[1].strip_edges().hex_to_int()
+			break                                    # (the first one there is the one the keys are set in)
+	for k in SCANCODES:
+		if SCANCODES[k] == sc:
+			return k
+	return KEY_Y
+
+
+# The viewer's own two keys: the old school look on / off (F12) and its pixel grid finer or coarser (Shift+F12). The
+# player picks them in the launcher (TN_KEY_OLDSCHOOL, TN_KEY_SHARP: a PC scancode in hex, after SHIFT+, CTRL+ or ALT+
+# if any, as TN+ writes its keys). The grid's not given: Shift with the look's key.
+var own_keys := _own_keys()       # [the look's, the grid's], each [physical key, modifiers (KEY_MASK_...)]
+var own_held := {}                # those that are down: their release is the viewer's too
+
+static func _own_keys() -> Array:
+	var old := _own_key(OS.get_environment("TN_KEY_OLDSCHOOL"))
+	if old.is_empty():
+		old = [KEY_F12, 0]
+	var sharp := _own_key(OS.get_environment("TN_KEY_SHARP"))
+	if sharp.is_empty():
+		sharp = [KEY_NONE, 0] if int(old[1]) & KEY_MASK_SHIFT else [old[0], int(old[1]) | KEY_MASK_SHIFT]
+	return [old, sharp]
+
+
+static func _own_key(spec: String) -> Array:
+	var parts := spec.strip_edges().to_upper().split("+", false)
+	if parts.is_empty():
+		return []
+	var mods := 0
+	for i in parts.size() - 1:
+		mods |= int({"SHIFT": KEY_MASK_SHIFT, "CTRL": KEY_MASK_CTRL, "ALT": KEY_MASK_ALT}.get(parts[i].strip_edges(), 0))
+	var sc := parts[parts.size() - 1].strip_edges().hex_to_int()
+	for k in SCANCODES:
+		if SCANCODES[k] == sc:
+			return [k, mods]
+	return []
+
+
+# old school on / off, or its grid: true if the key was one of the two (the game does not get it)
+func _look_keys(event: InputEventKey) -> bool:
+	var k := event.physical_keycode
+	if not event.pressed:
+		return own_held.erase(k)
+	var mods := (KEY_MASK_SHIFT if event.shift_pressed else 0) | (KEY_MASK_CTRL if event.ctrl_pressed else 0) | \
+			(KEY_MASK_ALT if event.alt_pressed else 0)
+	for i in 2:
+		if k == int(own_keys[i][0]) and mods == int(own_keys[i][1]):
+			own_held[k] = true
+			if not event.echo:
+				if i == 0:
+					_oldschool_toggle()
+				else:
+					_oldschool_sharper()
+			return true
+	return false
+
+
+# its name on the player's keyboard (the key at that place: Y is Z on a German one)
+func look_key_name() -> String:
+	var s := OS.get_keycode_string(DisplayServer.keyboard_get_keycode_from_physical(look_key))
+	return s if s != "" else OS.get_keycode_string(look_key)
+
+
 func _play_send(bytes: PackedByteArray) -> void:
 	play_udp.put_packet(bytes)
 
@@ -2287,6 +2524,7 @@ func _set_menu_mode(on: bool) -> void:
 		menu_rect.visible = on and menu_tex != null
 	if not play:
 		return
+	_play_hold_end()                                    # (a button held when one of the game's screens comes)
 	if on:
 		play_started = true
 		_menu_cursor_apply()
@@ -2311,6 +2549,61 @@ func _menu_cursor_apply() -> void:
 	im.resize(maxi(1, roundi(im.get_width() * k.x)), maxi(1, roundi(im.get_height() * k.y)), Image.INTERPOLATE_NEAREST)
 	var hot := (Vector2(menu_cursor_hot) * k).floor()
 	hot = hot.clamp(Vector2.ZERO, Vector2(im.get_width() - 1, im.get_height() - 1))
+	Input.set_custom_mouse_cursor(im, Input.CURSOR_ARROW, hot)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+# The mouse free in the game's 3D (the cursor mode). The bridge is told (F: at once when it changes, and twice a
+# second); it empties the game's cursor and sends its picture, which is shown here as the mouse cursor itself: it
+# follows the hand at once, where the game's own came with the cockpit's picture (as often as the game draws, one
+# game pixel at a time: jerky over the cockpit's map). Stretched like the game's screen, its tip on the pixel it
+# points at. Until the bridge has sent it, and if it stops: the game's own, the mouse hidden.
+func _play_cursor() -> void:
+	if guest_win:                                     # (a coop guest's window: no game of its own to tell)
+		return
+	var now := Time.get_ticks_msec()
+	var free := play_started and not menu_mode and (play_drag or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED)
+	if int(free) != play_free or now - play_free_t > 500:
+		play_free = int(free)
+		play_free_t = now
+		_play_send(PackedByteArray([0x46, play_free]))
+	var vs := get_viewport().get_visible_rect().size
+	var want := "%d %s %s" % [play_cur_n, vs, play_drag] if free and play_cur_img != null and now - play_cur_t < 1500 else ""
+	if want == play_cur_set:
+		if want != "" and not play_drag and Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		return
+	play_cur_set = want
+	if drag_cur != null:
+		drag_cur.visible = false
+	if want == "":
+		if menu_mode:
+			_menu_cursor_apply()                          # (a game screen: its own arrow)
+		else:
+			Input.set_custom_mouse_cursor(null)
+			if free and not play_drag:
+				Input.mouse_mode = Input.MOUSE_MODE_HIDDEN  # the game draws its own cursor
+		return
+	var k := Vector2(vs.x / 320.0, vs.y / 400.0)
+	k *= minf(1.0, 256.0 / maxf(play_cur_img.get_width() * k.x, play_cur_img.get_height() * k.y))   # (a cursor's most)
+	var im := play_cur_img.duplicate() as Image
+	im.resize(maxi(1, roundi(im.get_width() * k.x)), maxi(1, roundi(im.get_height() * k.y)), Image.INTERPOLATE_NEAREST)
+	var hot := ((Vector2(play_cur_hot) + Vector2(0.5, 0.5)) * k).floor()
+	hot = hot.clamp(Vector2.ZERO, Vector2(im.get_width() - 1, im.get_height() - 1))
+	if play_drag:                                     # held where the button went down (the mouse is taken: it has
+		if drag_cur == null:                          # no cursor of its own meanwhile)
+			var dl := CanvasLayer.new()
+			dl.layer = 20                             # over the game's HUD
+			add_child(dl)
+			drag_cur = TextureRect.new()
+			drag_cur.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			drag_cur.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+			dl.add_child(drag_cur)
+		drag_cur.texture = ImageTexture.create_from_image(im)
+		drag_cur.position = play_drag_win - hot
+		drag_cur.size = Vector2(im.get_size())
+		drag_cur.visible = true
+		return
 	Input.set_custom_mouse_cursor(im, Input.CURSOR_ARROW, hot)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
@@ -2349,10 +2642,24 @@ func _input(event: InputEvent) -> void:
 	if lobby_was_open:                                     # the mission starts: the next click takes the mouse again
 		lobby_was_open = false
 		play_started = false
-	# Two modes, swapped by Y (the freelook key) or Pause, which stay in the viewer: look (mouse captured, it turns
-	# the view, clicks at the view's centre) and cursor (the game's own cursor follows the mouse, clicks where it
-	# is: the HUD's buttons, the map, free aiming).
+	# Two modes, swapped by the freelook key (Y unless the player changed it, see look_key) or Pause, which stay in
+	# the viewer: look (mouse captured, it turns the view, clicks at the view's centre) and cursor (the game's own
+	# cursor follows the mouse, clicks where it is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if play_hold and event is InputEventMouse:           # the right button held (see play_hold): moves sent as moves
+		if event is InputEventMouseMotion:
+			play_drag_acc += event.relative * Vector2(320.0, 400.0) / get_viewport().get_visible_rect().size
+		elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
+			if not event.pressed:
+				_play_hold_end(event.position)
+		elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			var at := play_drag_at if play_drag else _play_game_pos(event.position)   # (where the game's cursor is)
+			var lb := PackedByteArray([0x43, 1, 1 if event.pressed else 0, 0, 0, 0, 0])
+			lb.encode_s16(3, at.x)
+			lb.encode_s16(5, at.y)
+			_play_send(lb)
+		get_viewport().set_input_as_handled()
+		return
 	if host_btn and host_btn.visible and event is InputEventMouse and (host_btn.get_global_rect().has_point(event.position) or
 			(versus_btn and versus_btn.get_global_rect().has_point(event.position))):
 		return                                          # the "Host online" button's, not the game's
@@ -2389,7 +2696,7 @@ func _input(event: InputEvent) -> void:
 				(Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position))) or
 				Rect2(240, 256, 44, 14).has_point(Vector2(_play_game_pos(event.position)))):
 			var on_map := Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position)))
-			for n in get_children():                     # coop guest: the cockpit's MAP / STATUS buttons, mouse free (Y)
+			for n in get_children():                     # coop guest: the cockpit's MAP / STATUS buttons, mouse free
 				if on_map and n.has_method("toggle_map"):
 					n.toggle_map()
 				elif not on_map and n.has_method("toggle_status"):
@@ -2404,6 +2711,12 @@ func _input(event: InputEvent) -> void:
 				b.encode_s16(3, gp.x)
 				b.encode_s16(5, gp.y)
 				_play_send(b)
+				if bt == 2 and event.pressed and not guest_win:     # held: its moves are sent as moves (see play_hold)
+					play_hold = true
+					play_drag = false
+					play_drag_at = gp
+					play_drag_win = event.position
+					play_drag_acc = Vector2.ZERO
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		if captured and guest_win and (free_look or Input.is_physical_key_pressed(KEY_ALT)):
@@ -2428,17 +2741,16 @@ func _input(event: InputEvent) -> void:
 					n.toggle_map()
 			get_viewport().set_input_as_handled()
 			return
-		if event.physical_keycode == KEY_F12:           # the viewer's own: old school mode on / off
-			if event.pressed and not event.echo:
-				_oldschool_toggle()
-		elif event.physical_keycode == KEY_PAUSE or event.physical_keycode == KEY_Y:
-			if event.pressed and not event.echo and play_started:
+		if event.physical_keycode == KEY_PAUSE or event.physical_keycode == look_key:
+			if event.pressed and not event.echo and play_started and not play_hold:
 				if captured:                                # cursor mode, starting on the view's centre
 					Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # the game draws its own cursor
 					var vs := get_viewport().get_visible_rect().size
 					Input.warp_mouse(Vector2(vs.x * 0.5, vs.y * (hud_win.position.y + VIEW_CENTRE * hud_win.size.y) / 400.0))
 				else:
 					Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		elif _look_keys(event):                         # the viewer's own: old school on / off, its pixel grid
+			pass
 		elif not event.echo:
 			var sc := _play_scancode(event)
 			if sc != 0:
@@ -2446,8 +2758,39 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+# the bridge: the game holds its cursor where the right button went down (a map is being dragged)
+func _play_hold_pin() -> void:
+	if play_hold and not play_drag:
+		play_drag = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+# The right button let go (or the window left, or one of the game's screens come): the button up where the game's
+# cursor is. Where the button went down if the game held it there (the mouse comes back to that place, free), else
+# where the mouse is.
+func _play_hold_end(win_pos = null) -> void:
+	if not play_hold:
+		return
+	play_hold = false
+	var at := play_drag_at
+	if not play_drag:
+		at = _play_game_pos(win_pos if win_pos != null else get_viewport().get_mouse_position())
+	var b := PackedByteArray([0x43, 2, 0, 0, 0, 0, 0])
+	b.encode_s16(3, at.x)
+	b.encode_s16(5, at.y)
+	_play_send(b)
+	play_cursor = at
+	play_drag_acc = Vector2.ZERO
+	if play_drag:
+		play_drag = false
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN      # the cursor mode again (_play_cursor shows the cursor)
+			Input.warp_mouse(play_drag_win)
+
+
 func _notification(what: int) -> void:
 	if play and what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_play_hold_end()
 		_play_release_all()
 
 
@@ -2468,6 +2811,15 @@ func _live_update() -> void:
 		c.encode_s16(3, play_cursor.y)
 		_play_send(c)
 		play_cursor_sent = play_cursor
+	if play_hold and (absf(play_drag_acc.x) >= 1.0 or absf(play_drag_acc.y) >= 1.0):
+		var mv := Vector2i(play_drag_acc)               # (whole pixels of the game's screen; the rest kept)
+		play_drag_acc -= Vector2(mv)
+		var r := PackedByteArray([0x52, 0, 0, 0, 0])
+		r.encode_s16(1, clampi(mv.x, -32000, 32000))
+		r.encode_s16(3, clampi(mv.y, -32000, 32000))
+		_play_send(r)
+	if play:
+		_play_cursor()
 	if host_btn:
 		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 		if versus_btn:
@@ -2503,6 +2855,8 @@ func _live_update() -> void:
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
+		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "WAYP":
+			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
 				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
@@ -2535,18 +2889,118 @@ func _live_update() -> void:
 		_screenshot(live_shot)
 
 
+# The player's waypoint (a click on the cockpit's map; live_bridge.py 'WAYP', x = 0: none). The game draws it in its
+# own 3D, which this view replaces: a purple wire pyramid turning on itself, its middle 1 above the ground (apex 1
+# up, three base points 0.5 down and 1 around: its drawobj.c), seen through the hills, and next to it its distance
+# in the game's metres (6 to a unit). Lines and letters keep their size on the screen whatever the distance, as the
+# game's do (a line: about a pixel of its 848 x 400 picture; waypoint.gdshader). The HUD's side views show the
+# pyramid too, without the distance (letters that size are too small there).
+const WAYPOINT_COLOUR := 0x9C                    # its colour in the game's palette
+const WAYPOINT_POINTS := [Vector3(0, 1, 0), Vector3(-1, -0.5, 0), Vector3(0.5, -0.5, 0.855), Vector3(0.5, -0.5, -0.855)]
+const WAYPOINT_TURN := 0.12                      # turns a second (the game: 1 / 256 of a turn with each picture)
+const WAYPOINT_LINE := 1.25                      # its lines' width, in rows of the game's picture
+const WAYPOINT_TEXT := 9.5                       # its letters' size, the same (capitals 7 rows high)
+var waypoint: Node3D
+var waypoint_at := Vector2.ZERO
+
+
+func _live_waypoint(at: Vector2) -> void:
+	waypoint_at = at
+	if at.x == 0.0 or current.is_empty():
+		if waypoint != null:
+			waypoint.visible = false
+		return
+	if waypoint == null:
+		waypoint = Node3D.new()
+		var wm := ShaderMaterial.new()
+		wm.shader = WAYPOINT
+		wm.render_priority = 10
+		var rod := CylinderMesh.new()               # one for all its lines: 1 long, 1 thick (the shader sizes it)
+		rod.top_radius = 1.0
+		rod.bottom_radius = 1.0
+		rod.height = 1.0
+		rod.radial_segments = 6
+		rod.rings = 0
+		var spin := Node3D.new()
+		spin.name = "spin"
+		waypoint.add_child(spin)
+		for e in [[0, 1], [0, 2], [0, 3], [1, 2], [2, 3], [3, 1]]:
+			var a: Vector3 = WAYPOINT_POINTS[e[0]]
+			var b: Vector3 = WAYPOINT_POINTS[e[1]]
+			var up := (b - a).normalized()
+			var side := up.cross(Vector3.UP if absf(up.y) < 0.9 else Vector3.RIGHT).normalized()
+			var mi := MeshInstance3D.new()
+			mi.mesh = rod
+			mi.material_override = wm
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			mi.position = (a + b) * 0.5
+			mi.basis = Basis(side, up * (b - a).length(), side.cross(up))
+			mi.extra_cull_margin = 2.0                  # (thicker than its mesh when seen from far)
+			spin.add_child(mi)
+		var l := Label3D.new()
+		l.name = "label"
+		l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		l.fixed_size = true
+		l.no_depth_test = true
+		l.shaded = false
+		l.render_priority = 11
+		l.outline_size = 5                          # (thick strokes, as the game's small letters)
+		l.font_size = 48
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		l.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		l.layers = SUB_HIDE_LAYER                   # (the main view only)
+		waypoint.add_child(l)
+		waypoint.set_meta("mat", wm)
+		add_child(waypoint)
+	var col: Color = hud_pal_img.get_pixel(WAYPOINT_COLOUR, 0) if hud_pal_img != null and hud_version > 0 else (
+			pal[WAYPOINT_COLOUR] if pal.size() > WAYPOINT_COLOUR else Color(0.47, 0.0, 0.72))
+	(waypoint.get_meta("mat") as ShaderMaterial).set_shader_parameter("colour", col)
+	(waypoint.get_node("label") as Label3D).modulate = col
+	(waypoint.get_node("label") as Label3D).outline_modulate = col
+	waypoint.position = Vector3(at.x, TNData.height_at(current["map"], at.x, at.y) + 1.0, at.y)
+	waypoint.visible = true
+	_waypoint_update(0.0)
+
+
+func _waypoint_update(delta: float) -> void:
+	if waypoint == null or not waypoint.visible:
+		return
+	var spin := waypoint.get_node("spin") as Node3D
+	spin.rotation.y = fposmod(spin.rotation.y + TAU * WAYPOINT_TURN * delta, TAU)
+	var vs := get_viewport().get_visible_rect().size
+	(waypoint.get_meta("mat") as ShaderMaterial).set_shader_parameter("width", WAYPOINT_LINE * vs.y / 400.0)
+	# the letters: what a window pixel is worth one unit away (the field of view is the game's horizontal one, zoom
+	# included)
+	var px := 2.0 * tan(deg_to_rad(camera.fov) * 0.5) / vs.x
+	var l := waypoint.get_node("label") as Label3D
+	l.pixel_size = WAYPOINT_TEXT * vs.y / 400.0 * px / l.font_size
+	# the game writes it 15 columns right of the pyramid's middle and from 3 rows above it (of its 848 x 400 picture)
+	l.offset = Vector2(15.0 * vs.x / 848.0, 3.0 * vs.y / 400.0) * px / l.pixel_size
+	l.text = "%d M" % int(6.0 * Vector2(camera.position.x - waypoint_at.x, camera.position.z - waypoint_at.y).length())
+
+
 # Game entities after the camera: count, player index, then 32 bytes each: index, class, type, active (int32),
 # x, y, z (game units), heading (radians). The mission file's entities are a run of the game's table (in the same
 # order, after the player): found once by their class / type, then moved, turned, hidden when gone. A destroyed
 # entity's slot is reused (shots, sparks), so the run is the best match, not a perfect one.
+# After them: the soldiers' joints, the articulated parts, then the entity the view is seen from: the player, or his
+# drone while he looks through it (its view swapped with the HUD's: "DRONE VIEW").
 func _live_units(pk: PackedByteArray) -> void:
 	var n := pk.decode_s32(24)
 	var player := pk.decode_s32(28)
+	var body := player                                 # whose body the view hides: the one it is seen from
+	var tail := 32 + 32 * n
+	if pk.size() >= tail + 4:
+		tail += 4 + 200 * pk.decode_s32(tail)
+		if pk.size() >= tail + 4:
+			tail += 4 + 8 * pk.decode_s32(tail)
+			if pk.size() >= tail + 4:
+				body = pk.decode_s32(tail)
 	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
 	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
 	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
-	var pn: Node3D = _live_node(player) if player >= 0 else null
-	if player != live_player or pn != live_player_node:
+	var pn: Node3D = _live_node(body) if body >= 0 else null
+	if body != live_player or pn != live_player_node:
 		var was: Node3D = live_player_node
 		if was != null and is_instance_valid(was) and was != pn:
 			was.remove_meta("player_body")
@@ -2554,7 +3008,7 @@ func _live_units(pk: PackedByteArray) -> void:
 			was.remove_meta("player_body")
 		if pn != null:
 			_sub_hide(pn, true, PLAYER_LAYER)
-		live_player = player
+		live_player = body
 		live_player_node = pn
 	var ents := {}
 	live_ents = ents
@@ -2652,7 +3106,7 @@ func _live_units(pk: PackedByteArray) -> void:
 		if not live_extra.has(idx) and e[2] != 0:
 			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0)
 			live_extra[idx].set_meta("ct", ct)
-			if idx == player:
+			if idx == body:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
 		if live_extra.has(idx):
 			_live_place(live_extra[idx], e, m)
@@ -2729,8 +3183,9 @@ func _sub_views(q: PackedByteArray) -> void:
 		var y0 := q.decode_s16(o + 31)
 		var x1 := q.decode_s16(o + 33)
 		var y1 := q.decode_s16(o + 35)
-		var r := Rect2(x0, y0, x1 - x0, y1 - y0 - 16) if panel == 3 else (Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 1)
-				if panel == 2 else Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17))
+		# (the 360 view's and the map panel's, 5 to 8: the whole frame, as the target camera's)
+		var r := Rect2(x0, y0, x1 - x0, y1 - y0 - 16) if panel in [3, 4] else (Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 1)
+				if panel != 1 else Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17))
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
 		tr.size = r.size * k
@@ -2744,19 +3199,26 @@ func _sub_views(q: PackedByteArray) -> void:
 		(tr.material as ShaderMaterial).set_shader_parameter("frame", Vector4(r.position.x, r.position.y, r.size.x, r.size.y))
 		# the game's labels over its small view: the probe's compass (lavender, dark blue outline), the target camera's
 		# name (red)
-		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel == 3 else (18.0 if panel == 2 else 0.0))
-		(tr.material as ShaderMaterial).set_shader_parameter("label_a", 47.0 if panel == 3 else 68.0)
-		(tr.material as ShaderMaterial).set_shader_parameter("label_b", 59.0 if panel == 3 else 68.0)
+		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel in [3, 4] else (18.0 if panel == 2 else 0.0))
+		(tr.material as ShaderMaterial).set_shader_parameter("label_a", 47.0 if panel in [3, 4] else 68.0)
+		(tr.material as ShaderMaterial).set_shader_parameter("label_b", 59.0 if panel in [3, 4] else 68.0)
+		# the 360 view's panels are mirrors: what is on the player's left is on the left of the one behind him, and the
+		# three read as one strip from his left shoulder round his back to his right one (the game turns each row of
+		# their picture over once drawn: its panels' flag 0x40, set with these three views only)
+		(tr.material as ShaderMaterial).set_shader_parameter("mirror", panel in [5, 6, 7])
 		var old := oldschool_rect != null and oldschool_rect.visible    # F12: the side views follow the main view
 		(tr.material as ShaderMaterial).set_shader_parameter("old", old)
 		if old:
 			(tr.material as ShaderMaterial).set_shader_parameter("pal_tex",
 					(oldschool_rect.material as ShaderMaterial).get_shader_parameter("pal_tex"))
+			(tr.material as ShaderMaterial).set_shader_parameter("grid",
+					tr.size if old_sharp <= 0 else (r.size * old_sharp).min(tr.size))   # (as the main view's, _old_grid)
 		var idx := q.decode_s32(o + 1)
 		var cam: Camera3D = sv["cam"]
 		# the panel camera's zoom (the target camera: its distance to the target, 1 to 16), as the main view's
 		var zoom: float = maxf(0.2, q.decode_float(o + 25))
-		cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(SUB_FOV_PROBE if panel == 3 else SUB_FOV) / 2.0) / zoom))
+		var field := SUB_FOV_PROBE if panel == 3 else (SUB_FOV_SELF if panel in [4, 8] else (SUB_FOV_AROUND if panel >= 5 else SUB_FOV))
+		cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(field) / 2.0) / zoom))
 		var h := q.decode_float(o + 17)
 		var want_pos := Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
 		# the probe's pitch in the viewpoint (~11 deg down) is drawn much flatter by the game: a third of it puts the
@@ -2787,7 +3249,14 @@ func _sub_views(q: PackedByteArray) -> void:
 		sv["seen"] = now
 	for panel in sub_views:
 		var sv: Dictionary = sub_views[panel]
-		var on: bool = now - int(sv["seen"]) < 500 and not menu_mode
+		# kept half a second without news (the bridge catches their viewpoint when it can); the 360 view's, which it
+		# sends every time while they are there: a tenth
+		var on: bool = now - int(sv["seen"]) < (100 if panel in [5, 6, 7] else 500) and not menu_mode
+		if on and int(sv["seen"]) != now:                # not in this packet: off at once if another one, which is, has
+			for other in sub_views:                      # its place (a panel shows one view at a time)
+				var so: Dictionary = sub_views[other]
+				if int(so["seen"]) == now and (so["rect"] as TextureRect).get_rect().intersects((sv["rect"] as TextureRect).get_rect()):
+					on = false
 		(sv["rect"] as TextureRect).visible = on
 		(sv["vp"] as SubViewport).render_target_update_mode = SubViewport.UPDATE_ALWAYS if on else SubViewport.UPDATE_DISABLED
 		if not on and sv["node"] != null:
@@ -3852,6 +4321,7 @@ func _process(delta: float) -> void:
 		_live_update()
 		_dust_update()
 		_gait_update(delta)
+		_waypoint_update(delta)
 		if hud:
 			_compass_update()
 		sky_root.position = camera.position

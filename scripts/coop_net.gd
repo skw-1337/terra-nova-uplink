@@ -504,7 +504,9 @@ func _fill_friends() -> void:
 		return
 	friends_sig = sig
 	if host_mode:
-		friends_title.text = "INVITE A FRIEND  (%d online)" % online + ("" if free else "   Y: free the mouse")
+		var vp := get_parent()                               # (the key the player gave the freelook: viewer.gd look_key)
+		var key: String = vp.look_key_name() if vp.has_method("look_key_name") else "Y"
+		friends_title.text = "INVITE A FRIEND  (%d online)" % online + ("" if free else "   %s: free the mouse" % key)
 	else:
 		friends_title.text = "FRIENDS HOSTING A GAME"
 	if friends_search:

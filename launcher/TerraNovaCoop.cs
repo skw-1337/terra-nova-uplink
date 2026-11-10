@@ -27,7 +27,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.3";
+    const string VERSION = "2.4";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
@@ -61,6 +61,8 @@ static class Uplink
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WRect r);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetKeyNameText(int lParam, StringBuilder name, int size);
     [StructLayout(LayoutKind.Sequential)] struct WRect { public int Left, Top, Right, Bottom; }
 
     static string Root, Comp, Ini, LogPath;
@@ -71,7 +73,7 @@ static class Uplink
     static Led sessionLed;
     static Led[] leds;
     static Label[] ledText;
-    static Tile playBtn, hostBtn, joinBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn, logBtn;
+    static Tile playBtn, hostBtn, joinBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn, logBtn, oldKeyBtn, sharpKeyBtn;
     static RadioButton modeCoop, modeVs;
     static ComboBox gameBox, sizeBox, missionBox;
     static TrackBar sensBar;
@@ -213,7 +215,7 @@ static class Uplink
         y += 116;
 
         // settings shared by every mode
-        Box op = new Box { Location = new Point(X, y), Size = new Size(W, 116) };
+        Box op = new Box { Location = new Point(X, y), Size = new Size(W, 150) };
         form.Controls.Add(op);
         op.Controls.Add(Caption("START AT", 12, 15));
         missionBox = Combo(new Point(96, 10), W - 210);
@@ -224,12 +226,9 @@ static class Uplink
         savesBtn.Click += delegate { Saves(); };
         op.Controls.Add(savesBtn);
         op.Controls.Add(Caption("WINDOW", 12, 49));
-        sizeBox = Combo(new Point(96, 44), W - 210);
+        sizeBox = Combo(new Point(96, 44), W - 106);
         sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" });
         op.Controls.Add(sizeBox);
-        Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 42), Size = new Size(94, 28), Small = true };
-        keysBtn.Click += delegate { GameKeys(); };
-        op.Controls.Add(keysBtn);
         op.Controls.Add(Caption("MOUSE", 12, 84));
         sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 78), Size = new Size(W - 300, 30),
             BackColor = CPanel, AutoSize = false };
@@ -239,8 +238,20 @@ static class Uplink
         op.Controls.Add(sensLabel);
         invertBox = new Tick { Text = "Invert", AutoSize = true, Location = new Point(W - 150, 82), ForeColor = CDim, BackColor = CPanel };
         op.Controls.Add(invertBox);
+        // the keys: Uplink's own two (the old school look and its pixel size: click, press the key), then the game's
+        op.Controls.Add(Caption("KEYS", 12, 118));
+        oldKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(96, 111), Size = new Size(214, 28), Small = true };
+        oldKeyBtn.Click += delegate { AskKey(false); };
+        op.Controls.Add(oldKeyBtn);
+        sharpKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(318, 111), Size = new Size(214, 28), Small = true };
+        sharpKeyBtn.Click += delegate { AskKey(true); };
+        op.Controls.Add(sharpKeyBtn);
+        Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 111), Size = new Size(94, 28), Small = true };
+        keysBtn.Click += delegate { GameKeys(); };
+        op.Controls.Add(keysBtn);
+        KeyLabels();
         LoadOptions();
-        y += 128;
+        y += 162;
 
         // what is installed: green lights
         string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus", "TN+ co-op build", "Python", "Steam (co-op only)" };
@@ -807,7 +818,8 @@ static class Uplink
                 "Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.", CGreen);
         else
             Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\"." :
-                "Uplink is open: click in its window to take the mouse, Y for the game's cursor, F12 for the old school look.", CGreen);
+                "Uplink is open: click in its window to take the mouse, " + ScanName(FreelookScan()) + " for the game's cursor, " + KeyName(OldKey()) +
+                " for the old school look" + (SharpKey() != "" ? " (" + KeyName(SharpKey()) + ": finer pixels)." : "."), CGreen);
         int n = 0;
         while (!stopping && !bridge.HasExited)
         {
@@ -930,6 +942,9 @@ static class Uplink
         env["TN_GAME_DIR"] = Game();
         env["TN_MOUSE_SENS"] = Cfg("mouse");
         env["TN_INVERT_Y"] = Cfg("invert_y");
+        env["TN_KEY_FREELOOK"] = FreelookScan().ToString("X2");
+        env["TN_KEY_OLDSCHOOL"] = OldKey();
+        env["TN_KEY_SHARP"] = SharpKey();
         env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         return env;
     }
@@ -1497,6 +1512,145 @@ static class Uplink
         foreach (KeyValuePair<int, int> kv in moved) m[kv.Key] = kv.Value;
         foreach (int d in moved.Values) if (!moved.ContainsKey(d)) m[d] = 0;   // the old key of a moved command: nothing
         return m;
+    }
+
+    // TN+'s freelook key (key_freelook, a PC scancode; Y unless changed): in Uplink it gives the game's cursor and takes
+    // the mouse back. Uplink is told which (TN_KEY_FREELOOK); the status line names it as this keyboard prints it
+    static int FreelookScan()
+    {
+        string ini = KeysIni();
+        if (File.Exists(ini))
+            foreach (string l in File.ReadAllLines(ini))
+            {
+                Match m = Regex.Match(l, @"^\s*key_freelook\s*=\s*([0-9A-Fa-f]{1,2})\s*$");
+                if (m.Success) return Convert.ToInt32(m.Groups[1].Value, 16);
+            }
+        return 0x15;
+    }
+
+    static string ScanName(int scan)
+    {
+        bool grey = (scan & 0xFF00) == 0xE000;                // (E0xx: the arrows, Insert, Home... and the pad's Enter and /)
+        uint vk = grey ? 0 : MapVirtualKey((uint)scan, 1);
+        if (vk >= 0x70 && vk <= 0x87) return "F" + (vk - 0x6F);
+        if (vk >= 0x30 && vk <= 0x5A) return ((char)vk).ToString();
+        StringBuilder sb = new StringBuilder(32);
+        return GetKeyNameText(((scan & 0xFF) << 16) | (grey ? 1 << 24 : 0), sb, 32) > 0 ? sb.ToString().ToUpperInvariant() : "key 0x" + scan.ToString("X2");
+    }
+
+    // ------------------------------------------------------------------ Uplink's own keys
+    // The old school look on / off (F12) and its pixel size (Shift+F12) are keys of Uplink's window, not of the game:
+    // TN+'s KEYBOARD page does not have them. A small keyboard has no F12: each can be put on another key, alone or
+    // with Shift, Ctrl or Alt (TerraNovaUplink.ini: key_oldschool, key_sharp = [SHIFT+][CTRL+][ALT+]scancode, as TN+
+    // writes its keys; E0xx: a key of the grey block). Uplink is told when it starts (TN_KEY_OLDSCHOOL, TN_KEY_SHARP).
+    static bool KeyOk(string k) { return Regex.IsMatch(k ?? "", @"^((SHIFT|CTRL|ALT)\+)*[0-9A-F]{1,4}$"); }
+
+    static string OldKey() { string k = Cfg("key_oldschool").ToUpperInvariant(); return KeyOk(k) ? k : "58"; }
+
+    static string SharpKey()
+    {
+        string k = Cfg("key_sharp").ToUpperInvariant();
+        if (KeyOk(k)) return k;
+        string o = OldKey();
+        return o.Contains("SHIFT+") ? "" : "SHIFT+" + o;      // not set: Shift with the look's key (as Uplink does by itself)
+    }
+
+    // "SHIFT+58" -> "Shift+F12", the key named as this keyboard prints it
+    static string KeyName(string spec)
+    {
+        if (spec == "") return "no key";
+        string[] p = spec.Split('+');
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < p.Length - 1; i++) sb.Append(p[i].Substring(0, 1) + p[i].Substring(1).ToLowerInvariant() + "+");
+        return sb + ScanName(Convert.ToInt32(p[p.Length - 1], 16));
+    }
+
+    static void KeyLabels()
+    {
+        oldKeyBtn.Text = "Old school look: " + KeyName(OldKey());
+        sharpKeyBtn.Text = "Its pixel size: " + KeyName(SharpKey());
+        oldKeyBtn.Invalidate(); sharpKeyBtn.Invalidate();
+    }
+
+    // the keys Uplink's window knows (viewer.gd, SCANCODES), less the modifiers and the three the question keeps
+    static bool KeyKnown(int scan)
+    {
+        if ((scan & 0xFF00) == 0xE000)
+            return Array.IndexOf(new[] { 0x1C, 0x35, 0x47, 0x48, 0x49, 0x4B, 0x4D, 0x4F, 0x50, 0x51, 0x52 }, scan & 0xFF) >= 0;
+        return scan >= 0x02 && scan <= 0x58 && Array.IndexOf(new[] { 0x0E, 0x1D, 0x2A, 0x36, 0x38, 0x54, 0x55 }, scan) < 0;
+    }
+
+    // the game's command on that key, if any (the player's keys, else the game's own): Uplink would keep the key
+    static string GameUses(int scan)
+    {
+        Dictionary<string, int> keys = new Dictionary<string, int>();
+        foreach (string dk in DEFAULT_KEYS) keys[dk.Split(':')[0]] = Convert.ToInt32(dk.Split(':')[1], 16);
+        string ini = KeysIni();
+        if (File.Exists(ini))
+            foreach (string l in File.ReadAllLines(ini))
+            {
+                Match m = Regex.Match(l, @"^\s*key_game_(\w+)\s*=\s*(\S+)\s*$");
+                if (!m.Success || !keys.ContainsKey(m.Groups[1].Value)) continue;
+                Match plain = Regex.Match(m.Groups[2].Value, "^[0-9A-Fa-f]{1,2}$");
+                keys[m.Groups[1].Value] = plain.Success ? Convert.ToInt32(plain.Value, 16) : -1;    // (with a modifier: not this key alone)
+            }
+        foreach (KeyValuePair<string, int> kv in keys) if (kv.Value == scan) return kv.Key;
+        return null;
+    }
+
+    static void AskKey(bool sharp)
+    {
+        string what = sharp ? "the old school look's pixel size" : "the old school look, on / off";
+        using (KeyAsk d = new KeyAsk(what, KeyName(sharp ? SharpKey() : OldKey())))
+        {
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            string spec = d.Spec;
+            string explicitSharp = KeyOk(Cfg("key_sharp").ToUpperInvariant()) ? Cfg("key_sharp").ToUpperInvariant() : "";
+            if (spec != "" && spec == (sharp ? OldKey() : explicitSharp))
+            { Status(KeyName(spec) + " is already the key of " + (sharp ? "the old school look" : "its pixel size") + ".", CAmber); return; }
+            if (spec == FreelookScan().ToString("X2") || spec == "45")
+            { Status(KeyName(spec) + " already swaps the look and the game's cursor.", CAmber); return; }
+            Set(sharp ? "key_sharp" : "key_oldschool", spec);
+            SaveCfg();
+            KeyLabels();
+            string game = spec != "" && spec.IndexOf('+') < 0 ? GameUses(Convert.ToInt32(spec, 16)) : null;
+            Status("Old school look: " + KeyName(OldKey()) + ", its pixel size: " + KeyName(SharpKey()) + " (from the next time Uplink starts)." +
+                (game != null ? " " + KeyName(spec) + " is one of the game's keys too (" + game + "): the game will not get it any more." : ""), game != null ? CAmber : CGreen);
+        }
+    }
+
+    // "Press a key": the next key pressed, with the Shift, Ctrl or Alt held (Esc: nothing changed, Del: as it came)
+    class KeyAsk : Form
+    {
+        public string Spec;
+        Label note;
+        public KeyAsk(string what, string now)
+        {
+            Text = "Uplink's keys"; ClientSize = new Size(420, 150); FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false; StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText;
+            Font = form.Font; ShowInTaskbar = false; KeyPreview = true;
+            Controls.Add(new Label { Text = "Press the key for " + what + ".", Location = new Point(16, 18), Size = new Size(388, 22),
+                Font = new Font("Segoe UI Semibold", 10.5f), ForeColor = CAmber });
+            Controls.Add(new Label { Text = "Now: " + now + ".  Alone, or with Shift, Ctrl or Alt held.", Location = new Point(16, 48), Size = new Size(388, 20) });
+            Controls.Add(new Label { Text = "Esc: change nothing.    Del: the key it came with.", Location = new Point(16, 72), Size = new Size(388, 20), ForeColor = CDim });
+            note = new Label { Location = new Point(16, 108), Size = new Size(388, 20), ForeColor = CRed };
+            Controls.Add(note);
+        }
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (msg.Msg != 0x100 && msg.Msg != 0x104) return base.ProcessCmdKey(ref msg, keyData);      // WM_KEYDOWN, WM_SYSKEYDOWN
+            Keys k = keyData & Keys.KeyCode;
+            if (k == Keys.ShiftKey || k == Keys.ControlKey || k == Keys.Menu || k == Keys.LWin || k == Keys.RWin) return true;
+            if (keyData == Keys.Escape) { DialogResult = DialogResult.Cancel; return true; }
+            if (keyData == Keys.Delete || keyData == Keys.Back) { Spec = ""; DialogResult = DialogResult.OK; return true; }
+            long lp = msg.LParam.ToInt64();
+            int scan = (int)((lp >> 16) & 0xFF) | (((lp >> 24) & 1) != 0 ? 0xE000 : 0);
+            if (!KeyKnown(scan)) { note.Text = "Uplink can't use that key: another one."; return true; }
+            Spec = ((keyData & Keys.Shift) != 0 ? "SHIFT+" : "") + ((keyData & Keys.Control) != 0 ? "CTRL+" : "") +
+                ((keyData & Keys.Alt) != 0 ? "ALT+" : "") + scan.ToString("X2");
+            DialogResult = DialogResult.OK;
+            return true;
+        }
     }
 
     static string KeysSummary()

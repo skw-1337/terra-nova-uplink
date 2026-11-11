@@ -159,9 +159,11 @@ func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
 	var images: Array[Image] = []
 	var size := Vector2i.ZERO
 	var anchor := Vector2.ZERO
+	var soft := false
 	for fr in LGRes.frames(res.data(rid)):
 		var f: PackedByteArray = fr
-		var img := _bitmap(f, pal)
+		var see_through := f.size() > 5 and f[4] == 5      # (a translucent one: smoke, the white flash)
+		var img := _soft_bitmap(f, pal) if see_through else _bitmap(f, pal)
 		if img == null:
 			continue
 		if size == Vector2i.ZERO:
@@ -169,14 +171,68 @@ func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
 			anchor = Vector2(f.decode_u16(16), f.decode_u16(18))
 		if img.get_size() != size:
 			continue
+		soft = soft or see_through
 		img.generate_mipmaps()
 		images.append(img)
 	if not images.is_empty():
 		var arr := Texture2DArray.new()
 		arr.create_from_images(images)
-		out = {"tex": arr, "frames": images.size(), "size": Vector2(size), "anchor": anchor}
+		out = {"tex": arr, "frames": images.size(), "size": Vector2(size), "anchor": anchor, "soft": soft}
 	tex_cache[key] = out
 	return out
+
+
+# A translucent bitmap (type 5, not compressed): its pixels 248 to 254 are not colours but the game's veils, each a
+# table that blends what is behind it with a grey (fitted on the tables read in the game's memory: 248 lays 16 % of
+# near white, 249 31 % of light grey ... 253 55 % of near black).
+const SOFT_VEILS := {248: Color(0.945, 0.945, 0.945, 0.16), 249: Color(0.82, 0.82, 0.82, 0.31), 250: Color(0.68, 0.68, 0.68, 0.45),
+		251: Color(0.49, 0.49, 0.49, 0.31), 252: Color(0.38, 0.38, 0.38, 0.39), 253: Color(0.08, 0.08, 0.08, 0.55),
+		254: Color(0.09, 0.09, 0.09, 0.32)}
+static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
+	if f.size() < 0x1c:
+		return null
+	var w := f.decode_u16(8)
+	var h := f.decode_u16(10)
+	var row := f.decode_u16(12)
+	if w == 0 or h == 0 or f.size() < 0x1c + row * h:
+		return null
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	for y in h:
+		for x in w:
+			var v := f[0x1c + y * row + x]
+			if SOFT_VEILS.has(v):
+				img.set_pixel(x, y, SOFT_VEILS[v])
+			elif v != 0:
+				var c: Color = pal[v]
+				img.set_pixel(x, y, Color(c.r, c.g, c.b, 0.85))
+	return img
+
+
+# The game's own table of effects (class 6: impacts, sparks, blasts, flames). RESTNOBJ 1195 holds one ref per type
+# (0: none, the type is drawn another way: beams 28, particles 29, debris 32 / 33) into the definitions of 1194,
+# 21 bytes each: +0 / +2 the bitmap's size, +4 the animation's resource (1165 to 1193), +16 its last frame, +17 a
+# frame's time in milliseconds, +20 1 = played once, 2 = looping (flames). The game draws the animation as wide as
+# its type's sprite (sprite_width: its collision record), whatever the bitmap's size, anchored on the entity.
+const FX_TYPES := 1195
+const FX_DEFS := 1194
+var fx_defs := {}       # class 6 type -> {res, frames, ms, loop, width}
+
+
+func fx_def(typ: int) -> Dictionary:
+	if fx_defs.is_empty():
+		fx_defs[-1] = {}                                    # (read once, even when the files hold none)
+		var types: Array = LGRes.frames(res.data(FX_TYPES)) if res.has(FX_TYPES) else []
+		var defs: Array = LGRes.frames(res.data(FX_DEFS)) if res.has(FX_DEFS) else []
+		for t in types.size():
+			var r: PackedByteArray = types[t]
+			if r.size() < 4 or r.decode_u16(2) != FX_DEFS or r.decode_u16(0) >= defs.size():
+				continue
+			var d: PackedByteArray = defs[r.decode_u16(0)]
+			if d.size() < 21 or not res.has(d.decode_u16(4)):
+				continue
+			fx_defs[t] = {"res": d.decode_u16(4), "frames": d[16] + 1, "ms": maxi(1, d[17]), "loop": d[20] == 2,
+					"width": sprite_width(6, t)}
+	return fx_defs.get(typ, {})
 
 
 func smoke_anim(pal: PackedColorArray, pal_key: String) -> Dictionary:

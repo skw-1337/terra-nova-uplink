@@ -230,7 +230,7 @@ func _process(delta: float) -> void:
 				var tag := pk.slice(0, 3).get_string_from_ascii()
 				if tag == "GLB" and lobby_label:
 					_lobby_seen(pk)
-				var fast := (tag == "VDL" or tag == "VDP") and pk.size() <= UNRELIABLE_MAX   # a lost delta breaks nothing
+				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS") and pk.size() <= UNRELIABLE_MAX   # a lost delta (or a moment's beams) breaks nothing
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
 					guest_ent = pk.decode_u16(8)
@@ -335,6 +335,16 @@ func _read(ch: int) -> void:
 				var ff := "FX29".to_ascii_buffer()
 				ff.append_array(data.slice(3))
 				udp_out.put_packet(ff)
+			elif tag == "BMS" and data.size() >= 5:           # the game's beams (coop_guest.py beams): as the bridge sends them
+				var bf := "BEAM".to_ascii_buffer()
+				bf.append_array(data.slice(3))
+				udp_out.put_packet(bf)
+			elif tag == "PTS" and data.size() > 3:           # the shots' dust (coop_guest.py dust)
+				var pb := data.slice(3).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
+				if pb.size() >= 2:
+					var pf := "PART".to_ascii_buffer()
+					pf.append_array(pb)
+					udp_out.put_packet(pf)
 			elif tag == "SMK" and data.size() > 3:           # smoke grenades' clouds (coop_guest.py smoke)
 				var sb := data.slice(3).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
 				if sb.size() > 0:
@@ -595,7 +605,8 @@ func owns_point(p: Vector2) -> bool:
 # out of the search or the chat (their keys are theirs while they have the focus, see wants_keys): Esc, Enter in the
 # search, or a click anywhere else gives the game its keys back (a click in the view did not: the player was stuck)
 func _input(event: InputEvent) -> void:
-	if host_mode and friends_panel and event is InputEventKey and event.physical_keycode == KEY_END:
+	if host_mode and friends_panel and event is InputEventKey and event.physical_keycode == KEY_END \
+			and not (get_parent().get("binds") is Dictionary and get_parent().binds.has("END")):   # (a second bind on End: the game's)
 		if event.pressed and not event.echo:              # End: the invite list hidden / shown (a key the game does not use)
 			_hide_friends(not friends_hidden)
 		get_viewport().set_input_as_handled()

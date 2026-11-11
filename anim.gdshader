@@ -1,15 +1,17 @@
-// An effect animation of the game (explosion, fire) played once: a sprite standing upright on the screen like the
-// game's (its pixels shown 1.2 x taller than wide, see limb.gdshader), anchored on the effect's position.
-// Mesh: quad in world units, anchor at the origin.
+// An effect animation of the game (explosion, fire) played once, or over and over (flames): a sprite standing
+// upright on the screen like the game's (its pixels shown 1.2 x taller than wide, see limb.gdshader), anchored on
+// the effect's position. Mesh: quad in world units, anchor at the origin.
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
 uniform sampler2DArray frames : source_color, filter_linear_mipmap, repeat_disable;
 uniform int frame_count = 1;
 uniform float fps = 16.0;
+uniform bool loop = false;
 uniform float pixel_aspect = 1.2;
 uniform float pull = 0.3;              // drawn a little nearer: the game paints it over the ground
 instance uniform float age = 0.0;      // seconds since it started
+instance uniform float frame = -1.0;   // the frame the game shows (none: by its age)
 
 void vertex() {
 	vec3 o = (VIEW_MATRIX * vec4(MODEL_MATRIX[3].xyz, 1.0)).xyz;
@@ -20,7 +22,10 @@ void vertex() {
 }
 
 void fragment() {
-	float f = min(floor(age * fps), float(frame_count - 1));
+	float f = loop ? mod(floor(age * fps), float(frame_count)) : min(floor(age * fps), float(frame_count - 1));
+	if (frame >= 0.0) {
+		f = min(frame, float(frame_count - 1));
+	}
 	vec4 c = texture(frames, vec3(UV, f));
 	if (c.a < 0.5) {
 		discard;

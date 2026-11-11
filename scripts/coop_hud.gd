@@ -297,7 +297,7 @@ func _update() -> void:
 
 func _cockpit(pk: PackedByteArray) -> void:
 	# the game's 3D window: the viewer frames its view on it like the host's (off-centre frustum), the crosshair
-	# at the game's view centre, 51 % down the window
+	# where that view looks, 2 rows under the window's middle (the viewer's _view_row)
 	win = Rect2(pk.decode_s16(3), pk.decode_s16(5), pk.decode_s16(7), pk.decode_s16(9))
 	var vp := get_parent()
 	if vp and "hud_win" in vp:
@@ -462,7 +462,7 @@ func _draw_panel() -> void:
 		return
 	var vp := get_parent()
 	var looking: bool = big_map or (vp != null and "look_off" in vp and vp.look_off.length() > 0.03)
-	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + 0.51 * win.size.y)
+	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + win.size.y * 0.5 + 2.0)
 	for r in ([] if looking else [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]):   # free look: no crosshair (his aim stays ahead)
 		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
 		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))

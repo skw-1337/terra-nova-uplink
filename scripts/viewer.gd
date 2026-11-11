@@ -14,6 +14,9 @@ const SUBVIEW = preload("res://subview.gdshader")
 const SMOKE = preload("res://smoke.gdshader")
 const PUFF = preload("res://puff.gdshader")
 const ANIM = preload("res://anim.gdshader")
+const ANIM_SOFT = preload("res://anim_soft.gdshader")
+const DUST = preload("res://dust.gdshader")
+const HAZE = preload("res://haze.gdshader")
 const BEAM = preload("res://beam.gdshader")
 const WATER = preload("res://water.gdshader")
 const SNOW = preload("res://snow.gdshader")
@@ -64,6 +67,7 @@ const SUB_FOV_AROUND := 84.5      # the 360 view's cameras (5 to 7): the player'
 const SUB_EASE := 0.2             # side view cameras: share of the way to the new reading (~120 a second)
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
+const FX_LAYER := 1 << 1          # shots and effects: seen by every view, left alone by the ground's burn marks (decals)
 var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
@@ -117,7 +121,7 @@ var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the ho
 var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light direction)
 # --hud: the game's own screen (cockpit, HUD) over the view, its 3D window transparent (port 47823: 'PAL' palette +
 # 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
-# off-centre like the game's, whose view centre (the crosshair) is 51 % down its 3D window
+# off-centre like the game's, whose view looks 2 rows under the middle of its 3D window (_view_row)
 const HUD_PORT := 47823
 const SUN_AZ_OFFSET := 315.0  # see _set_sky
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
@@ -148,7 +152,7 @@ const PLANET_LOOK := {
 	"SKY0S.RES": {"fog": [20.0, 220.0, 0.78], "tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
 		"sun": Color(0.82, 0.86, 0.92), "light": 0.5, "ambient": 0.36, "sat": 1.15, "contrast": 0.98},
 }
-const VIEW_CENTRE := 0.51        # the view's centre (the crosshair, screen row 144) in the 3D window, measured on lock boxes
+const VIEW_DROP := 2.0           # rows of the game's screen from the middle of its 3D window to where the view looks
 var hud := false
 var hud_udp: PacketPeerUDP
 var hud_img: Image
@@ -187,6 +191,8 @@ var versus_btn: Button           # "1v1 (versus)": the same, the guest drives a 
 # the DOSBox window and sends it (see live_bridge.py menu_loop); shown over everything, the mouse goes to the game
 var menu_mode := false
 var menu_rect: TextureRect
+var menu_bg: ColorRect            # black behind it, where it does not fill the window
+var menus43 := OS.get_environment("TN_MENUS43") == "1"   # the launcher: the game's screens come whole (see _menu_box)
 var hd_movie: VideoStreamPlayer               # a cutscene in HD (movies_hd\, made by tools/upscale_movies.py on the
 var hd_movie_box: AspectRatioContainer        # player's own files) over the game's own, while the game plays it
 var hd_movie_name := ""
@@ -209,6 +215,13 @@ var play_cur_t := -100000         # when the bridge last sent it (msec)
 var play_cur_set := ""            # the one set as the mouse cursor now ("": not ours)
 var play_free := -1               # what the bridge was told last ('F'), and when
 var play_free_t := 0
+# The crosshair of the look mode is the game's own cursor, which the bridge keeps on the view's centre (_cross_pixel:
+# row 144 of the game's screen in the cockpit view). The player can have a dot instead, or nothing (the launcher:
+# TN_CROSSHAIR = dot / none): the
+# bridge is then asked to empty the game's cursor in the look mode too (as for the free cursor), and the dot is
+# drawn here.
+var crosshair := OS.get_environment("TN_CROSSHAIR").to_lower()
+var cross_dot: TextureRect
 # The right button held, the mouse free. On a map the game then keeps its cursor where the button went down: it reads
 # how far the mouse goes from there, scrolls the map by that much and puts the cursor back. Positions sent as the
 # cursor's ('P') made the map race away: while the button is held the mouse's moves are sent as moves ('R'), and the
@@ -588,6 +601,8 @@ func _load(index: int) -> void:
 	scorch_decals.clear()                     # (their nodes went with the old world)
 	scorch_prev = PackedByteArray()
 	anims.clear()
+	anim_seen.clear()
+	anim_mats.clear()                         # (their pictures are in the mission's palette)
 	smoke_pending.clear()
 	for e in mis["entities"]:
 		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"]))
@@ -2038,6 +2053,12 @@ void fragment() {
 	var ml := CanvasLayer.new()                    # the game's screen out of its 3D: over the view and the HUD
 	ml.layer = 10
 	add_child(ml)
+	menu_bg = ColorRect.new()
+	menu_bg.color = Color.BLACK
+	menu_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_bg.visible = false
+	ml.add_child(menu_bg)
 	menu_rect = TextureRect.new()
 	menu_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	menu_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
@@ -2058,8 +2079,7 @@ void fragment() {
 	mmat.shader = msh
 	menu_rect.material = mmat
 	menu_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	menu_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-	menu_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE   # (placed by _menu_place)
 	menu_rect.visible = false
 	ml.add_child(menu_rect)
 	var mbg := ColorRect.new()
@@ -2338,15 +2358,32 @@ func _hud_update() -> void:
 			hud_version += 1
 
 
-# The game's 3D window (in its 320 x 400 screen, stretched over the window) with the view centre 36 % down it:
-# off-centre frustum, the horizontal field of view over the whole width (true 16:9: the 3D spans the screen).
+# The row of the game's 320 x 400 screen the view looks at: the middle of its 3D window + VIEW_DROP. The cockpit view
+# (window 11, 42, 298 x 199): row 143.5, the 51 % of the window once measured on lock boxes. The full view (G: 0, 16,
+# 320 x 383): 209.5; the same 51 % gave 211.3 and Uplink's picture came out 2 rows lower than the game's own there
+# (measured on the skyline of both, at three zooms). The game itself zooms about the window's middle.
+func _view_row() -> float:
+	return hud_win.position.y + hud_win.size.y * 0.5 + VIEW_DROP
+
+
+# The pixel of the game's screen its cursor is kept on in the look mode (the bridge's centre()): the middle of the 3D
+# window, 3 rows down. 160, 144 in the cockpit view; 160, 210 in the full view.
+func _cross_pixel() -> Vector2i:
+	if hud_win.size.x < 100 or hud_win.size.y < 100:
+		return Vector2i(160, 144)
+	return Vector2i(hud_win.position.x + hud_win.size.x / 2, hud_win.position.y + hud_win.size.y / 2 + 3)
+
+
+# The game's 3D window (in its 320 x 400 screen, stretched over the window) with the view's centre where the game's
+# is (_view_row): off-centre frustum, the horizontal field of view over the whole width (true 16:9: the 3D spans the
+# screen).
 func _hud_camera(fov: float) -> void:
 	if hud_win.size.y <= 0:
 		return
 	var vs := get_viewport().get_visible_rect().size
 	var near := 0.05
 	var w := 2.0 * near * tan(deg_to_rad(fov) / 2.0)
-	var yc := (hud_win.position.y + VIEW_CENTRE * hud_win.size.y) / 400.0 * vs.y
+	var yc := _view_row() / 400.0 * vs.y
 	camera.projection = Camera3D.PROJECTION_FRUSTUM
 	camera.keep_aspect = Camera3D.KEEP_WIDTH
 	camera.near = near
@@ -2435,6 +2472,135 @@ static func _own_key(spec: String) -> Array:
 	return []
 
 
+# TN+'s second binds (the launcher's Game keys: the middle and side buttons, the wheel, PgUp / PgDn, Home / End, Ins /
+# Del can press a command's key as well). TN+ only acts on them when the game's own window is in front: behind
+# Uplink's they did nothing. Uplink does it: the launcher says which input presses which key (TN_BINDS: NAME:chord,
+# the chord a PC scancode in hex after SHIFT+, CTRL+ or ALT+ if any, the player's own key for that command; or
+# NAME:FREELOOK for the look / cursor swap). A button or a key: held as long as it is; a wheel notch: a short press,
+# one at a time (as TN+ does).
+const BIND_BUTTONS := {MOUSE_BUTTON_MIDDLE: "MID", MOUSE_BUTTON_XBUTTON1: "M4", MOUSE_BUTTON_XBUTTON2: "M5",
+		MOUSE_BUTTON_WHEEL_UP: "WHEELUP", MOUSE_BUTTON_WHEEL_DOWN: "WHEELDOWN"}
+const BIND_KEYS := {KEY_PAGEUP: "PGUP", KEY_PAGEDOWN: "PGDN", KEY_HOME: "HOME", KEY_END: "END", KEY_INSERT: "INS",
+		KEY_DELETE: "DEL"}
+var binds := _binds()             # input's name -> [scancode, its modifier's scancode (0: none)]; []: the look swap
+var bind_down := {}               # those held: name -> the modifier pressed with it (0: none, or the player's own)
+var bind_taps := []               # wheel notches waiting
+var bind_tap := ""                # the one pressed now
+var bind_tap_t := 0               # when it is let go, then when the next may start (msec)
+
+static func _binds() -> Dictionary:
+	var d := {}
+	for it in OS.get_environment("TN_BINDS").split(",", false):
+		var kv := it.split(":")
+		if kv.size() != 2:
+			continue
+		var parts := kv[1].strip_edges().to_upper().split("+", false)
+		if parts.is_empty():
+			continue
+		if parts[0] == "FREELOOK":
+			d[kv[0].strip_edges().to_upper()] = []
+			continue
+		var mod := int({"SHIFT": 0x2A, "CTRL": 0x1D, "ALT": 0x38}.get(parts[0], 0)) if parts.size() > 1 else 0
+		var sc := parts[parts.size() - 1].hex_to_int()
+		if sc > 0:
+			d[kv[0].strip_edges().to_upper()] = [sc, mod]
+	return d
+
+
+# a bound input pressed or let go, in a mission: true if it has a bind. One that is held is always let go, whatever
+# is on screen by then: a game screen that came while it was down left its key down in the game (repeated into the
+# menus and the next mission, an Alt bind turning every later key into an Alt chord).
+func _bind(name: String, down: bool) -> bool:
+	if not binds.has(name) or guest_win:
+		return false
+	if not down and bind_down.has(name):
+		_bind_set(name, false)
+		return true
+	if not play_started or _on_menu():
+		return false
+	if (binds[name] as Array).is_empty():             # the look / cursor swap
+		if down:
+			_look_swap()
+	elif name.begins_with("WHEEL"):
+		if down and bind_taps.size() < 8:
+			bind_taps.append(name)
+	else:
+		_bind_set(name, down)
+	return true
+
+
+func _bind_set(name: String, down: bool) -> void:
+	if down == bind_down.has(name):
+		return
+	var b: Array = binds[name]
+	if down:
+		_key_hold(int(b[1]), name, true)              # its Alt / Ctrl / Shift first, if it has one
+		_key_hold(int(b[0]), name, true)
+		bind_down[name] = int(b[1])
+	else:
+		_key_hold(int(b[0]), name, false)
+		_key_hold(int(bind_down[name]), name, false)
+		bind_down.erase(name)
+
+
+# One of the game's own screens (menus, briefing, debriefing, options: its mouse frame is 640 wide), where the second
+# binds do nothing. A paused mission is not one: its binds stay on, like its keys (a bind on Pause must resume too).
+func _on_menu() -> bool:
+	return menu_mode and menu_frame.x >= 640
+
+
+# Who holds each of the game's keys down: the player's own finger ("") and the second binds (their input's name). A
+# key goes down in the game with its first holder and up with its last. (A bind let go used to send its key's and
+# its modifier's release whoever else held them: turning with A held, a click on a bind for Alt + A stopped the turn;
+# a bind's Alt let go under the player's own Alt turned his next order into a plain letter.)
+var key_holders := {}             # scancode -> {holder: true}
+
+func _key_hold(sc: int, who: String, down: bool) -> void:
+	if sc == 0:
+		return
+	var h: Dictionary = key_holders.get(sc, {})
+	if down:
+		if h.is_empty():
+			_play_key(sc, true)
+		h[who] = true
+		key_holders[sc] = h
+		return
+	if not h.erase(who) and not (who == "" and h.is_empty()):
+		return                                        # (not one of its holders: nothing of its to let go)
+	if h.is_empty():
+		key_holders.erase(sc)
+		_play_key(sc, false)                          # (also a key that went down before the window was in play)
+
+
+# the wheel's notches, each frame: one pressed for 50 ms, the next 30 ms after it is let go
+func _bind_taps() -> void:
+	var now := Time.get_ticks_msec()
+	if bind_tap != "":
+		if now >= bind_tap_t:
+			_bind_set(bind_tap, false)
+			bind_tap = ""
+			bind_tap_t = now + 30
+	elif not bind_taps.is_empty() and now >= bind_tap_t:
+		if not play_started or _on_menu():
+			bind_taps.clear()
+			return
+		bind_tap = bind_taps.pop_front()
+		_bind_set(bind_tap, true)
+		bind_tap_t = now + 50
+
+
+# look <-> cursor (the look key, Pause, or a bind): the cursor starts on the view's centre
+func _look_swap() -> void:
+	if not play_started or play_hold or menu_mode:      # (a game screen: the mouse is its cursor's)
+		return
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN      # the game draws its own cursor
+		var vs := get_viewport().get_visible_rect().size
+		Input.warp_mouse((Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs)   # (where the crosshair was)
+	else:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
 # old school on / off, or its grid: true if the key was one of the two (the game does not get it)
 func _look_keys(event: InputEventKey) -> bool:
 	var k := event.physical_keycode
@@ -2484,6 +2650,10 @@ func _play_key(sc: int, down: bool) -> void:
 func _play_release_all() -> void:
 	for sc in play_held.keys():
 		_play_key(sc, false)
+	key_holders.clear()
+	bind_down.clear()                                    # (their keys were among those)
+	bind_taps.clear()
+	bind_tap = ""
 	for bt in [1, 2]:                                    # a button let go elsewhere (alt-tab) would fire forever
 		_play_send(PackedByteArray([0x42, bt, 0]))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -2543,7 +2713,7 @@ func _menu_cursor_apply() -> void:
 		Input.set_custom_mouse_cursor(null)
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 		return
-	var vs := get_viewport().get_visible_rect().size
+	var vs := _menu_box().size
 	var k := Vector2(clampf(vs.x / menu_frame.x, 1.0, 4.0), clampf(vs.y / menu_frame.y, 1.0, 4.0))
 	var im := menu_cursor.duplicate() as Image
 	im.resize(maxi(1, roundi(im.get_width() * k.x)), maxi(1, roundi(im.get_height() * k.y)), Image.INTERPOLATE_NEAREST)
@@ -2563,11 +2733,15 @@ func _play_cursor() -> void:
 		return
 	var now := Time.get_ticks_msec()
 	var free := play_started and not menu_mode and (play_drag or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED)
-	if int(free) != play_free or now - play_free_t > 500:
-		play_free = int(free)
+	# (the game's cursor emptied: for the free cursor, shown here, and for a look mode without the game's crosshair)
+	var empty := free or _cross_own(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+	if int(empty) != play_free or now - play_free_t > 500:
+		play_free = int(empty)
 		play_free_t = now
 		_play_send(PackedByteArray([0x46, play_free]))
 	var vs := get_viewport().get_visible_rect().size
+	_cross_draw(_cross_own(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED) and crosshair == "dot" and not play_drag
+			and play_cur_img != null and now - play_cur_t < 1500, vs)
 	var want := "%d %s %s" % [play_cur_n, vs, play_drag] if free and play_cur_img != null and now - play_cur_t < 1500 else ""
 	if want == play_cur_set:
 		if want != "" and not play_drag and Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
@@ -2608,11 +2782,87 @@ func _play_cursor() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
-# Window position -> the game's mouse range on its own screen (menus), the picture stretched over the window.
-func _menu_game_pos(p: Vector2) -> Vector2i:
+# the look mode with the player's own choice of crosshair (a dot, or none) instead of the game's
+func _cross_own(captured: bool) -> bool:
+	return captured and play_started and not menu_mode and crosshair in ["dot", "none"]
+
+
+# The dot: on the pixel the game's cursor is kept on in the look mode (_cross_pixel: 160, 144 of its 320 x 400 screen
+# in the cockpit view, 160, 210 in the full view), in the colour of the game's crosshair, a dark rim around it. Only
+# once the bridge has the game's cursor in hand (it sends
+# its picture): until then the game's own crosshair is still there.
+func _cross_draw(on: bool, vs: Vector2) -> void:
+	if not on:
+		if cross_dot != null:
+			cross_dot.visible = false
+		return
+	var d := maxi(4, roundi(vs.y / 180.0))               # its width: 5 pixels at 960 rows, 12 at 4K
+	if cross_dot == null:
+		var cl := CanvasLayer.new()
+		cl.layer = 20                                 # over the game's HUD
+		add_child(cl)
+		cross_dot = TextureRect.new()
+		cross_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cl.add_child(cross_dot)
+	if cross_dot.get_meta("key", "") != "%d %d" % [d, play_cur_n]:
+		cross_dot.set_meta("key", "%d %d" % [d, play_cur_n])
+		var col := Color(0.25, 1.0, 0.35)
+		var best := -1.0                                  # the crosshair's brightest colour
+		for y in play_cur_img.get_height():
+			for x in play_cur_img.get_width():
+				var c := play_cur_img.get_pixel(x, y)
+				if c.a > 0.5 and c.get_luminance() > best:
+					best = c.get_luminance()
+					col = Color(c.r, c.g, c.b)
+		var n := d + 4
+		var im := Image.create(n, n, false, Image.FORMAT_RGBA8)
+		var mid := (n - 1) * 0.5
+		for y in n:
+			for x in n:
+				var r := Vector2(x - mid, y - mid).length()
+				var a := clampf(d * 0.5 + 1.5 - r, 0.0, 1.0)        # the rim, soft outside
+				var k := clampf(d * 0.5 - r + 0.5, 0.0, 1.0)        # the dot inside it
+				im.set_pixel(x, y, Color(col.r * k, col.g * k, col.b * k, a * (0.75 + 0.25 * k)))
+		cross_dot.texture = ImageTexture.create_from_image(im)
+		cross_dot.size = Vector2(n, n)
+	cross_dot.position = ((Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs - cross_dot.size * 0.5).round()
+	cross_dot.visible = true
+
+
+# Where the game's own screen is shown in the window. Its 640 x 480 screens (menus, briefings, outfitting) keep their
+# own proportions, black on the sides: stretched over a 16:9 window everything on them was a third too wide. (TN+
+# 1.2.5 narrows them itself, in the game's picture, by dropping columns of pixels: uneven letters once blown up here.
+# The launcher tells it to leave the picture whole: wide_menus = 1.) The other screens fill the window, like the
+# cockpit they come with.
+func _menu_box() -> Rect2:
 	var vs := get_viewport().get_visible_rect().size
-	return Vector2i(clampi(int(p.x / vs.x * menu_frame.x), 0, menu_frame.x - 1),
-			clampi(int(p.y / vs.y * menu_frame.y), 0, menu_frame.y - 1))
+	var px: Vector2i = menu_img.get_size() if menu_img != null else menu_frame
+	# (only when the launcher says the picture is whole, TN_MENUS43: it started the game with wide_menus = 1. A game
+	# the player started himself, or an older launcher: TN+ may have narrowed the screens already, the picture fills
+	# the window as it always did)
+	if not menus43 or px != Vector2i(640, 480) or vs.x * 3.0 <= vs.y * 4.0:
+		return Rect2(Vector2.ZERO, vs)
+	var w := roundf(vs.y * 4.0 / 3.0)
+	return Rect2(Vector2(floorf((vs.x - w) * 0.5), 0.0), Vector2(w, vs.y))
+
+
+# each frame: the picture in its box, the black behind it when it does not fill the window
+func _menu_place() -> void:
+	if menu_rect == null:
+		return
+	var box := _menu_box()
+	if menu_rect.position != box.position or menu_rect.size != box.size:
+		menu_rect.position = box.position
+		menu_rect.size = box.size
+		_menu_cursor_apply()                              # (the game's arrow is stretched like its screen)
+	menu_bg.visible = menu_rect.visible and box.size.x < get_viewport().get_visible_rect().size.x
+
+
+# Window position -> the game's mouse range on its own screen (menus), the picture in its box (_menu_box).
+func _menu_game_pos(p: Vector2) -> Vector2i:
+	var box := _menu_box()
+	return Vector2i(clampi(int((p.x - box.position.x) / box.size.x * menu_frame.x), 0, menu_frame.x - 1),
+			clampi(int((p.y - box.position.y) / box.size.y * menu_frame.y), 0, menu_frame.y - 1))
 
 
 # Window position -> the game's 320 x 400 screen (the HUD image is stretched over the whole window).
@@ -2646,6 +2896,10 @@ func _input(event: InputEvent) -> void:
 	# the viewer: look (mouse captured, it turns the view, clicks at the view's centre) and cursor (the game's own
 	# cursor follows the mouse, clicks where it is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	# a second bind's button let go: seen first, the branches below take the mouse's events for something else (the
+	# right button held, a game screen, a button of Uplink's own). (A bound key's release always reaches _bind below.)
+	if event is InputEventMouseButton and not event.pressed and BIND_BUTTONS.has(event.button_index):
+		_bind(BIND_BUTTONS[event.button_index], false)
 	if play_hold and event is InputEventMouse:           # the right button held (see play_hold): moves sent as moves
 		if event is InputEventMouseMotion:
 			play_drag_acc += event.relative * Vector2(320.0, 400.0) / get_viewport().get_visible_rect().size
@@ -2679,10 +2933,15 @@ func _input(event: InputEvent) -> void:
 			c.encode_s16(3, mp.y)
 			_play_send(c)
 		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
-			var b := PackedByteArray([0x43, 1 if event.button_index == MOUSE_BUTTON_LEFT else 2, 1 if event.pressed else 0, 0, 0, 0, 0])
-			b.encode_s16(3, mp.x)
-			b.encode_s16(5, mp.y)
-			_play_send(b)
+			# (a press in the black beside a 4:3 screen is not the game's: it was sent as a click on its first or last
+			# column; a release always goes, for a press that began on the picture)
+			if not event.pressed or _menu_box().has_point(event.position):
+				var b := PackedByteArray([0x43, 1 if event.button_index == MOUSE_BUTTON_LEFT else 2, 1 if event.pressed else 0, 0, 0, 0, 0])
+				b.encode_s16(3, mp.x)
+				b.encode_s16(5, mp.y)
+				_play_send(b)
+		elif BIND_BUTTONS.has(event.button_index):       # (a paused mission keeps its second binds: see _on_menu)
+			_bind(BIND_BUTTONS[event.button_index], event.pressed)
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton:
@@ -2717,6 +2976,8 @@ func _input(event: InputEvent) -> void:
 					play_drag_at = gp
 					play_drag_win = event.position
 					play_drag_acc = Vector2.ZERO
+		elif BIND_BUTTONS.has(event.button_index):       # the wheel, the middle and side buttons: TN+'s second binds
+			_bind(BIND_BUTTONS[event.button_index], event.pressed)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		if captured and guest_win and (free_look or Input.is_physical_key_pressed(KEY_ALT)):
@@ -2741,20 +3002,23 @@ func _input(event: InputEvent) -> void:
 					n.toggle_map()
 			get_viewport().set_input_as_handled()
 			return
-		if event.physical_keycode == KEY_PAUSE or event.physical_keycode == look_key:
-			if event.pressed and not event.echo and play_started and not play_hold:
-				if captured:                                # cursor mode, starting on the view's centre
-					Input.mouse_mode = Input.MOUSE_MODE_HIDDEN   # the game draws its own cursor
-					var vs := get_viewport().get_visible_rect().size
-					Input.warp_mouse(Vector2(vs.x * 0.5, vs.y * (hud_win.position.y + VIEW_CENTRE * hud_win.size.y) / 400.0))
-				else:
-					Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		# (not on a game screen: the swap took the mouse there, which then stayed hidden; and the key is the game's
+		# there, a letter to type in a save's name)
+		if (event.physical_keycode == KEY_PAUSE or event.physical_keycode == look_key) and not menu_mode:
+			if event.pressed and not event.echo:
+				_look_swap()
 		elif _look_keys(event):                         # the viewer's own: old school on / off, its pixel grid
 			pass
 		elif not event.echo:
 			var sc := _play_scancode(event)
 			if sc != 0:
-				_play_key(sc, event.pressed)
+				_key_hold(sc, "", event.pressed)
+				# both Shift keys down, one let go: Windows only tells of the last one let go. The other stayed down
+				# in the game for good (the bridge holds a Shift until told: the Bound went on with nothing held)
+				if not event.pressed and (sc == 0x2A or sc == 0x36) and (key_holders.get(0x2A + 0x36 - sc, {}) as Dictionary).has(""):
+					_key_hold(0x2A + 0x36 - sc, "", false)
+			if BIND_KEYS.has(event.physical_keycode):    # (a second bind on it: its command's key as well)
+				_bind(BIND_KEYS[event.physical_keycode], event.pressed)
 		get_viewport().set_input_as_handled()
 
 
@@ -2820,12 +3084,14 @@ func _live_update() -> void:
 		_play_send(r)
 	if play:
 		_play_cursor()
+		_bind_taps()
 	if host_btn:
 		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 		if versus_btn:
 			versus_btn.visible = host_btn.visible
 	if hud:
 		_hud_update()
+	_menu_place()                                     # (after the screen's own news: its black sides come and go with it)
 	_puffs_update()
 	_anims_update()
 	if fps_label != null:
@@ -2851,6 +3117,21 @@ func _live_update() -> void:
 			fx29.clear()                                    # the 6/29 that are not a shot's dust (live_bridge.py)
 			for k in q.decode_u16(4):
 				fx29[q.decode_s32(6 + 5 * k)] = q[10 + 5 * k]
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "BOLT" and q.size() == 6 + 25 * mini(q.decode_u16(4), 2000):
+			_live_bolts(q)                                  # the SIR's lightning (live_bridge.py eclairs)
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "ANIM" and q.size() == 6 + 5 * q.decode_u16(4):
+			anim_frames.clear()                             # the animated effects' frames in the game (live_bridge.py animations)
+			for k in q.decode_u16(4):
+				anim_frames[q.decode_s32(6 + 5 * k)] = q[10 + 5 * k]
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "PART" and q.size() == 6 + 14 * q.decode_u16(4):
+			_live_parts(q)                                  # the shots' dust, particle by particle (live_bridge.py poussieres)
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "BEAM" and q.size() == 6 + 29 * q.decode_u16(4):
+			beams.clear()                                   # the game's beams, their two ends (live_bridge.py rayons)
+			beam_mode = true
+			for k in q.decode_u16(4):
+				var o := 6 + 29 * k
+				beams[q.decode_s32(o)] = [Vector3(q.decode_float(o + 4), q.decode_float(o + 12), q.decode_float(o + 8)),
+						Vector3(q.decode_float(o + 16), q.decode_float(o + 24), q.decode_float(o + 20)), q[o + 28]]
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SMKC" and _smoke_packet_ok(q):
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
@@ -3564,6 +3845,17 @@ func _scorch_texture() -> ImageTexture:
 	return scorch_tex
 
 
+var scorch_game := {}             # the game's burn pictures: "palette/k" -> texture (null: not in the files)
+
+
+func _scorch_game(k: int) -> Texture2D:
+	var key := "%s/%d" % [pal_key, k]
+	if not scorch_game.has(key):
+		var sp: Dictionary = objects.sprite(Vector2i(1164, 1 + k), pal, pal_key) if objects_ok else {}
+		scorch_game[key] = sp.get("texture")
+	return scorch_game[key]
+
+
 func _live_scorch(pk: PackedByteArray) -> void:
 	if current.is_empty() or pk == scorch_prev:
 		return
@@ -3583,11 +3875,20 @@ func _live_scorch(pk: PackedByteArray) -> void:
 		var x := float(v % 513)
 		var y := float(v / 513)
 		var dc := Decal.new()
-		dc.texture_albedo = _scorch_texture()
-		dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH)
-		dc.modulate = SCORCH_TINT
-		dc.position = Vector3(x, TNData.height_at(m, x, y) + 0.3, y)
-		dc.rotation.y = float((v * 2654435761) % 6283) / 1000.0
+		# the game stamps one of its four burn pictures (RESTNOBJ 1164, pictures 1 to 4) over the whole ground square
+		# of the burnt point (its routine 0x2AC650): black and brown, ragged, one unit wide. Before: a round grey
+		# stain of Uplink's own, 1.6 wide, centred on the point
+		var burn: Texture2D = _scorch_game(v % 4)
+		if burn != null:
+			dc.texture_albedo = burn
+			dc.size = Vector3(1.0, 1.2, 1.0)
+			dc.position = Vector3(x + 0.5, TNData.height_at(m, x + 0.5, y + 0.5) + 0.3, y + 0.5)
+		else:
+			dc.texture_albedo = _scorch_texture()
+			dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH)
+			dc.modulate = SCORCH_TINT
+			dc.position = Vector3(x, TNData.height_at(m, x, y) + 0.3, y)
+			dc.rotation.y = float((v * 2654435761) % 6283) / 1000.0
 		dc.cull_mask = 1
 		world.add_child(dc)
 		scorch_decals[v] = dc
@@ -3626,33 +3927,28 @@ func _live_fx(idx: int, e) -> void:
 		return
 	if cls == 6 and typ == 29 and _live_puff(idx, pos0, e):
 		return                                          # at the player's feet: his jetpack's smoke
+	if cls == 6 and typ == 29 and part_mode:
+		return                                          # a shot's dust: its own particles (_live_parts)
 	if cls == 6 and typ == 33:
 		_live_debris(idx, e)
 		return
+	if cls == 6 and typ == 31 and bolt_mode:
+		return                                          # the SIR's lightning: its own lines (_live_bolts)
+	if cls == 5 and typ != 10 and beam_mode:
+		if SHOT_BALLS.has(typ):
+			_live_ball(idx, e)                          # the game's one sprite for these shots
+		return                                          # (the others: only what they leave behind them)
 	if cls == 5 and typ == 5:
 		_live_pulsar(idx, e)
 		return
+	if cls == 6 and typ == 28 and beam_mode:
+		if beams.has(idx):
+			_live_beam(idx, beams[idx])                 # the game's own line, from its two ends
+		return
 	if cls == 6 and typ == 28 and pulsar_dust.has(idx):
 		return                                          # a pulsar bolt's trail: drawn with its bolt
-	if cls == 6 and FX_ANIMS.has(typ):
-		var now := Time.get_ticks_msec()
-		if typ == 20:                                   # a blast's billows: the game scatters its 6/20 (up to 8 at
-			if now - int(anim_seen.get(idx, -100000)) > 400:   # one spot) around it, each its own fireball
-				var rng := RandomNumberGenerator.new()
-				rng.seed = idx * 7919 + now
-				_spawn_anim(pos0 + Vector3(rng.randf_range(-1.2, 1.2), rng.randf_range(0.0, 0.3), rng.randf_range(-1.2, 1.2)), FX_ANIMS[typ])
-			anim_seen[idx] = now
-			return
-		if now - int(anim_seen.get(idx, -100000)) > 400 and not _anim_near(pos0, now):
-			_spawn_anim(pos0, FX_ANIMS[typ])            # plays once, longer than the entity lives
-			if typ == 23:
-				smoke_pending.append([pos0, now])        # a tree's black smoke, unless it was a soldier (see below)
-		anim_seen[idx] = now
-		return
-	if cls == 6 and typ == 25:
-		if puff_seen.get(idx, -10) != live_seen - 1:
-			_spawn_puff(pos0, 3.5)                        # explosion (missile impact): a big grey puff
-		puff_seen[idx] = live_seen
+	if cls == 6 and _fx_anim(typ):
+		_live_anim(idx, typ, Vector3(e[3], e[5], e[4]))
 		return
 	# kinds: 0 other shot, 1 red beam (laser 5/4), 2 orange spark, 3 red dust (6/29), 4 blue beam (5/11),
 	# 5 blue dust (6/28), 6 missile (5/10), 7 red particle shot (5/6), 8 green plasma (5/22 the enemies' slow
@@ -3667,6 +3963,8 @@ func _live_fx(idx: int, e) -> void:
 		if kind == 0:
 			return                                      # other shots (5/24, 5/26, 5/27 on the hover tanks, 5/29...):
 			# nothing the game draws, at most a dot (a 0.8 unit glowing ball hid the walkers in a fight)
+		if beam_mode and (kind == 1 or kind == 4):
+			return                                      # its beam is the game's own line (6/28, _live_beam)
 	else:
 		kind = {29: 3, 28: 5, 7: 9, 5: 10, 8: 11}.get(typ, 2)
 	var beam := kind == 1 or kind == 4
@@ -3686,13 +3984,20 @@ func _live_fx(idx: int, e) -> void:
 		elif kind == 12:
 			mi.mesh = _grenade_mesh()                   # its own colours (the material below left off)
 		elif kind == 6:
-			var cn := CylinderMesh.new()                # missile: a little cone, nose ahead
-			cn.top_radius = 0.0
-			cn.bottom_radius = 0.045
-			cn.height = 0.32
-			cn.radial_segments = 6
-			cn.rings = 1
-			mi.mesh = cn
+			# the missile: the game's own model (RESTNOBJ 1343 item 1, a dart 0.12 long and 0.014 thick; the only
+			# shot it draws as a model: its routine 0x29ACA8). Before: a cone 0.32 long and 0.09 thick
+			var md: Dictionary = objects.model(Vector2i(1343, 1), pal, pal_key) if objects_ok else {}
+			mi.set_meta("model", not md.is_empty())
+			if not md.is_empty():
+				mi.mesh = md["mesh"]
+			else:
+				var cn := CylinderMesh.new()            # (no such model in the files: a little cone, nose ahead)
+				cn.top_radius = 0.0
+				cn.bottom_radius = 0.007
+				cn.height = 0.12
+				cn.radial_segments = 6
+				cn.rings = 1
+				mi.mesh = cn
 		else:
 			var sp := SphereMesh.new()
 			sp.radius = {0: 0.2, 2: 0.05, 3: 0.014, 5: 0.014, 7: 0.02, 8: 0.045, 9: 0.008, 10: 0.02, 12: 0.05}[kind]
@@ -3723,7 +4028,7 @@ func _live_fx(idx: int, e) -> void:
 				m.cull_mode = BaseMaterial3D.CULL_DISABLED  # (its dots are quads facing the camera)
 			m.disable_fog = true
 			fx_mats[kind] = m
-		mi.material_override = null if kind == 12 else fx_mats[kind]
+		mi.material_override = null if kind == 12 or (kind == 6 and mi.get_meta("model", false)) else fx_mats[kind]
 		mi.set_meta("kind", kind)
 	# shots, dust and sparks at their true height (the camera is the player's height + the eye's, like the game's
 	# view): the units' offset (GAME_Z, their feet below their entity) put a laser's dust trail below its path, a
@@ -3776,11 +4081,11 @@ func _live_fx(idx: int, e) -> void:
 		mi.extra_cull_margin = 4.0
 		mi.visible = true
 		return
-	if pos.distance_to(camera.position) < (0.3 if dust else 1.5):   # at the gun: inside the cockpit
+	if pos.distance_to(camera.position) < (0.3 if dust else 0.05 if kind == 6 and part_mode else 1.5):   # at the gun: inside the cockpit
 		mi.visible = false
 		return
-	if kind == 6:
-		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail
+	if kind == 6 and not part_mode:
+		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail (the game's own: _live_parts)
 	if dust:
 		if mi.get_meta("dust_pos", Vector3.INF) != pos:   # a new particle (they do not move): drawn by _dust_update
 			mi.set_meta("dust_pos", pos)
@@ -3798,7 +4103,10 @@ func _live_fx(idx: int, e) -> void:
 		if dir == Vector3.ZERO:
 			dir = -camera.global_transform.basis.z
 		mi.look_at_from_position(pos, pos + dir, Vector3.UP if absf(dir.y) < 0.99 else Vector3.FORWARD)
-		mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
+		if kind == 6 and mi.get_meta("model", false):
+			mi.rotate_object_local(Vector3.UP, PI / 2)  # (a model's nose is its +x)
+		else:
+			mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
 	mi.set_meta("prev", pos)
 	mi.visible = true
 
@@ -3876,6 +4184,275 @@ func _dust_update() -> void:
 		im.surface_end()
 
 
+# A shot in flight (class 5). The game has one sprite for all of them (RESTNOBJ 1164 picture 0: a grey ball with four
+# yellow studs, 10 x 9 pixels, 0x1555 wide in its 16.16 units: 0.05 unit on its screen, a dot beyond a few units) and
+# a model for the missile alone (its routine 0x29ACA8). Seen on the game, picture by picture: the ball is there for
+# what is thrown or launched (grenades, shells: the weapons of its table that leave no trail, byte +2 = 0), not for
+# the bolts of the weapons with a trail (laser, pulsars, particle beams, railguns, thermal disruptors, ion rifle),
+# which show only by what they leave behind them: beams (_live_beam), dust (_live_parts). Before: shapes of Uplink's
+# own (a capsule with a green band for a grenade, a red ball, a green streak, a white tracer, bars for the pulsar),
+# fitted on pictures of the game when its beams were not read.
+const SHOT_BALLS := [2, 3, 8, 13, 14, 17, 21, 28, 29, 30, 31, 32, 33]   # the weapons without a trail (10: the missile's model)
+const SHOT_BALL_W := 0.05                        # 0x1555 / 65536 x the sprites' scale (1.2) / 2
+var ball_mesh: QuadMesh
+var ball_mat: StandardMaterial3D
+var ball_key := ""
+
+
+func _live_ball(idx: int, e) -> void:
+	if ball_mesh == null or ball_key != pal_key:
+		var sp: Dictionary = objects.sprite(Vector2i(1164, 0), pal, pal_key) if objects_ok else {}
+		if sp.is_empty():
+			return
+		ball_key = pal_key
+		ball_mesh = QuadMesh.new()
+		ball_mesh.size = Vector2(SHOT_BALL_W, SHOT_BALL_W * sp["aspect"] * 1.2)   # (the game's pixels: 1.2 x taller than wide)
+		ball_mat = StandardMaterial3D.new()
+		ball_mat.albedo_texture = sp["texture"]
+		ball_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		ball_mat.alpha_scissor_threshold = 0.5
+		ball_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		ball_mat.billboard_keep_scale = true
+		ball_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		ball_mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		ball_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		ball_mat.disable_fog = true
+	var mi: MeshInstance3D = live_fx.get(idx)
+	if mi == null or mi.get_meta("kind", -1) != 14:
+		if mi != null:
+			mi.queue_free()
+		mi = MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.layers = FX_LAYER
+		mi.set_meta("kind", 14)
+		world.add_child(mi)
+		live_fx[idx] = mi
+	mi.mesh = ball_mesh
+	mi.material_override = ball_mat
+	var pos := Vector3(e[3], e[5], e[4])
+	mi.transform = Transform3D(Basis.IDENTITY, pos)
+	mi.visible = pos.distance_to(camera.position) > 0.05    # (the game draws it from the gun on: huge for a picture)
+
+
+# What a shot leaves behind it (class 6 type 29: a particle system of the game's engine): the game's own particles,
+# where the game has them ('PART', live_bridge.py poussieres), drawn as the game plots each kind. Kind 7, a shot's
+# dust (8 to 32 particles a system, 0.4 s): dots that keep their size on the screen, in the colour the game gives
+# them (the dark reds of a laser, the dark blues of an ion rifle). Kinds 10 and 8, the thin smoke of a railgun and
+# the puffs of a shell or a missile: flat see-through discs through one of the game's veils, which grow as they come
+# near (dust.gdshader). Kind 11, a thermal disruptor's haze: discs that warp what is behind them (haze.gdshader).
+# Before: for each system red dots scattered at random around its entity whatever the weapon (_dust_update), and
+# a shell's smoke taken for a smoke grenade's screen.
+const PART_MAX := 1024                           # the game's engine holds no more particles
+# a particle's kind -> its disc's width in world units (the game: a disc 40 pixels of its 848 wide at one unit for
+# a shell's smoke, 4 for a railgun's, and 413 pixels to the radian; 0: a dot whatever the distance)
+const PART_WIDTH := {7: 0.0, 8: 0.097, 10: 0.0097}
+const HAZE_WIDTH := 0.24                         # a thermal disruptor's haze (100 pixels at one unit)
+# how much of its veil a kind lays: a railgun's 64 particles a system pile up into a white bar at the veil's own
+# strength, where the game shows a faint pale streak (seen side by side)
+const PART_THIN := {10: 0.25}
+# the game's translucency tables (its "colours" 248 to 254): the grey each one lays over the picture, and how much
+# (fitted on the tables themselves, read in the game's memory: 248 a thin white veil ... 253 nearly black)
+const PART_TINT := {248: Color(0.945, 0.945, 0.945, 0.16), 249: Color(0.82, 0.82, 0.82, 0.31), 250: Color(0.68, 0.68, 0.68, 0.45),
+		251: Color(0.49, 0.49, 0.49, 0.31), 252: Color(0.38, 0.38, 0.38, 0.39), 253: Color(0.08, 0.08, 0.08, 0.55),
+		254: Color(0.09, 0.09, 0.09, 0.32)}
+var part_mode := false                          # the bridge sends the particles (an older one: the dots, as before)
+var part_node: MultiMeshInstance3D = null       # dots and see-through discs
+var haze_node: MultiMeshInstance3D = null       # the thermal disruptor's
+var part_px := 0.0019                           # a dot's half size per unit of distance (the lab can tune it)
+
+
+func _part_cloud(shader: Shader) -> MultiMeshInstance3D:
+	var node := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = QuadMesh.new()
+	mm.instance_count = PART_MAX
+	mm.visible_instance_count = 0
+	node.multimesh = mm
+	var sm := ShaderMaterial.new()
+	sm.shader = shader
+	node.material_override = sm
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	node.layers = FX_LAYER
+	node.custom_aabb = AABB(Vector3(-1e5, -1e5, -1e5), Vector3(2e5, 2e5, 2e5))   # (particles anywhere on the map)
+	add_child(node)
+	return node
+
+
+func _live_parts(q: PackedByteArray) -> void:
+	part_mode = true
+	var n := mini(q.decode_u16(4), PART_MAX)
+	if part_node == null:
+		if n == 0:
+			return
+		part_node = _part_cloud(DUST)
+		haze_node = _part_cloud(HAZE)
+	(part_node.material_override as ShaderMaterial).set_shader_parameter("px", part_px)
+	var buf := PackedFloat32Array()
+	buf.resize(PART_MAX * 16)                        # per particle: a transform (12: its width, its place), a colour (4)
+	var hbuf := PackedFloat32Array()
+	hbuf.resize(PART_MAX * 16)
+	var cols := {}
+	var np := 0
+	var nh := 0
+	for k in n:
+		var o := 6 + 14 * k
+		var kind := q[o + 13]
+		var haze := kind == 11
+		var b := (nh if haze else np) * 16
+		var w: float = HAZE_WIDTH if haze else maxf(PART_WIDTH.get(kind, 0.0), 0.00001)
+		var into := hbuf if haze else buf
+		into[b] = w
+		into[b + 5] = w
+		into[b + 10] = w
+		into[b + 3] = q.decode_float(o)
+		into[b + 7] = q.decode_float(o + 8)          # (the game's z is up)
+		into[b + 11] = q.decode_float(o + 4)
+		if haze:
+			nh += 1
+			continue
+		np += 1
+		var ci := q[o + 12] + (0 if kind == 7 else 1000 * kind)
+		if not cols.has(ci):
+			var c: Color = _game_colour(ci) if kind == 7 else PART_TINT.get(q[o + 12], Color(0.6, 0.6, 0.6, 0.3))
+			cols[ci] = Color(c.srgb_to_linear(), c.a * float(PART_THIN.get(kind, 1.0)))
+		var cc: Color = cols[ci]
+		buf[b + 12] = cc.r
+		buf[b + 13] = cc.g
+		buf[b + 14] = cc.b
+		buf[b + 15] = cc.a
+	part_node.multimesh.buffer = buf
+	part_node.multimesh.visible_instance_count = np
+	part_node.visible = np > 0
+	haze_node.multimesh.buffer = hbuf
+	haze_node.multimesh.visible_instance_count = nh
+	haze_node.visible = nh > 0
+
+
+# The SIR's lightning (class 6 type 31): the game's own forked lines from the gun ('BOLT', live_bridge.py eclairs:
+# each stretch between two of its nodes and its colour, pale lilac fading to dark blue), each a line one pixel of
+# the game's picture wide whatever the distance. Before: an orange ball at each of the six effects.
+var bolt_mode := false                          # the bridge sends the lightning (an older one: nothing changes)
+var bolt_node: MeshInstance3D = null
+var bolt_mat: StandardMaterial3D
+var bolt_px := 1.0                              # its lines' width, in pixels of the game's picture
+
+
+func _live_bolts(q: PackedByteArray) -> void:
+	bolt_mode = true
+	var n := mini(q.decode_u16(4), 2000)
+	if bolt_node == null:
+		if n == 0:
+			return
+		bolt_node = MeshInstance3D.new()
+		bolt_node.mesh = ImmediateMesh.new()
+		bolt_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		bolt_node.layers = FX_LAYER
+		bolt_node.extra_cull_margin = 16384.0
+		bolt_mat = StandardMaterial3D.new()
+		bolt_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		bolt_mat.vertex_color_use_as_albedo = true
+		bolt_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		bolt_mat.disable_fog = true
+		add_child(bolt_node)
+	var im := bolt_node.mesh as ImmediateMesh
+	im.clear_surfaces()
+	bolt_node.visible = n > 0
+	if n == 0:
+		return
+	var cam := camera.global_transform
+	var px := tan(deg_to_rad(camera.fov) * 0.5) / 848.0 * bolt_px     # half a pixel of the game's picture, one unit away
+	var cols := {}
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, bolt_mat)
+	for k in n:
+		var o := 6 + 25 * k
+		var p0 := Vector3(q.decode_float(o), q.decode_float(o + 8), q.decode_float(o + 4))
+		var p1 := Vector3(q.decode_float(o + 12), q.decode_float(o + 20), q.decode_float(o + 16))
+		var across := (p1 - p0).cross(cam.origin - (p0 + p1) * 0.5)
+		if across.length() < 1e-9:
+			continue
+		across = across.normalized()
+		var a0: Vector3 = across * p0.distance_to(cam.origin) * px
+		var a1: Vector3 = across * p1.distance_to(cam.origin) * px
+		var ci := q[o + 24]
+		if not cols.has(ci):
+			cols[ci] = _game_colour(ci)
+		im.surface_set_color(cols[ci])
+		for v in [p0 - a0, p0 + a0, p1 + a1, p0 - a0, p1 + a1, p1 - a1]:
+			im.surface_add_vertex(v)
+	im.surface_end()
+
+
+# A beam of the game (class 6 type 28: the laser's flash from the gun to its bolt, the ion rifle's, each bar of a
+# pulsar's bolt): the game draws a line between the entity and a second point kept in its record, 0x200 wide in its
+# 16.16 units, its core (0xC0) in a colour of its palette and the rest six colours further (colour 0x28: 0x20 inside
+# 0x25, 0x50 inside 0xC0). On its screen the line is as wide as a sprite of that size (the same scale: 1.2), so it
+# tapers with the distance: ~4 pixels of its 848 at a bolt one unit away, ~30 at the gun beside the eye. Here: a
+# ribbon facing the camera between the two points the bridge reads ('BEAM', live_bridge.py rayons), in the game's
+# own colours. Before: Uplink's own red and blue beams fitted on pictures, and dots for the rest.
+const BEAM_W := 0.0078125                        # 0x200 / 65536
+var beam_scale := 1.2                           # (the lab: the beams' width against the game's line)
+var beam_min_px := 1.0                          # a beam's least width, in pixels of the game's picture
+var beams := {}                                 # 6/28 entity -> [from, to, colour]
+var beam_mode := false                          # the bridge sends the beams (an older one: Uplink's own, as before)
+var beam_mats := {}
+
+
+func _game_colour(i: int) -> Color:
+	if hud_pal_img != null and hud_version > 0:
+		return hud_pal_img.get_pixel(i & 0xFF, 0)
+	return pal[i & 0xFF] if pal.size() > (i & 0xFF) else Color(1.0, 0.0, 0.0)
+
+
+func _live_beam(idx: int, b: Array) -> void:
+	var mi: MeshInstance3D = live_fx.get(idx)
+	if mi == null or mi.get_meta("kind", -1) != 13:
+		if mi != null:
+			mi.queue_free()
+		mi = MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.mesh = ImmediateMesh.new()
+		mi.layers = FX_LAYER
+		mi.set_meta("kind", 13)
+		world.add_child(mi)
+		live_fx[idx] = mi
+	var col: int = b[2]
+	if not beam_mats.has(col):
+		var bm := ShaderMaterial.new()
+		bm.shader = BEAM
+		bm.set_shader_parameter("core_frac", 0x50 / float(0xC0) if col == 0x28 else 0xC0 / float(0x200))
+		beam_mats[col] = bm
+	var mat: ShaderMaterial = beam_mats[col]
+	mat.set_shader_parameter("core", _game_colour(0x20 if col == 0x28 else col))
+	mat.set_shader_parameter("edge", _game_colour(0x25 if col == 0x28 else col + 6))
+	var hw := BEAM_W * (0xC0 / float(0x200) if col == 0x28 else 1.0) * beam_scale * 0.5
+	var p0: Vector3 = b[0]
+	var p1: Vector3 = b[1]
+	var cam := camera.global_transform
+	var seg := p1 - p0
+	var across := seg.cross(cam.origin - (p0 + p1) * 0.5)
+	if seg.length() < 0.001 or across.length() < 1e-9:  # no length (or seen end on): a dot of its width
+		across = cam.basis.x
+		p0 -= cam.basis.y * hw
+		p1 = p0 + cam.basis.y * hw * 2.0
+	across = across.normalized()
+	# never thinner than a pixel of the game's picture (848 across its view): far away its line keeps that width
+	var px := tan(deg_to_rad(camera.fov) * 0.5) / 848.0 * beam_min_px
+	var a0: Vector3 = across * maxf(hw, p0.distance_to(cam.origin) * px)
+	var a1: Vector3 = across * maxf(hw, p1.distance_to(cam.origin) * px)
+	var im := mi.mesh as ImmediateMesh
+	im.clear_surfaces()
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, mat)
+	for c in [[p0 - a0, 0.0], [p0 + a0, 1.0], [p1 + a1, 1.0], [p0 - a0, 0.0], [p1 + a1, 1.0], [p1 - a1, 0.0]]:
+		im.surface_set_uv(Vector2(0.5, c[1]))
+		im.surface_add_vertex(c[0])
+	im.surface_end()
+	mi.global_transform = Transform3D.IDENTITY
+	mi.extra_cull_margin = 4.0
+	mi.visible = true
+
+
 # The pulsar (5/5): five bolts in a quincunx, each trailed by a few 6/28 particles flying with it (0.03-0.12 unit
 # behind). The game draws the bolt and each of its particles as a small bar lying flat on the screen, a light red
 # core (252,64,64) in a dark red outline (123,1,1), ~0.022 x 0.012 unit: each bolt makes a short chain of bars
@@ -3893,7 +4470,7 @@ func _pulsar_trails(ents: Dictionary) -> void:
 		var e = ents[idx]
 		if e[0] == 5 and e[1] == 5 and e[2] != 0:
 			pulsar_parts[idx] = [Vector3(e[3], e[5], e[4])]
-	if pulsar_parts.is_empty():
+	if pulsar_parts.is_empty() or beam_mode:            # (its 6/28 are the game's own lines then: _live_beam)
 		return
 	for idx in ents:
 		var e = ents[idx]
@@ -3955,31 +4532,58 @@ func _live_pulsar(idx: int, e) -> void:
 const PUFF_LIFE := 1.2
 var puff_seen := {}
 
-# Effects the game draws as an animation (class 6 type -> RESTNOBJ resource, world units per pixel, frames per
-# second), matched on the running game: 23 = a tree blown up (a fireball as big as the tree, turning to brown
-# smoke, ~0.9 s); 20 = the orange-brown billows of a grenade or missile blast (several at one spot, about a walker's
-# body wide), with the grey puff of 6/25.
-# 19 = a big red burst (a walker or a vehicle hit hard; ~0.5 unit wide at its height), 10 = the red spray of an impact
-# on a unit (its dots spreading ~0.35 unit), sizes read on the running game.
-const FX_ANIMS := {23: [1193, 0.012, 16.0], 20: [1177, 0.006, 12.0], 19: [1176, 0.003, 14.0], 10: [1168, 0.0017, 14.0]}
-var anims := []                  # [node, start msec, duration]
+# Effects the game draws as an animation (class 6: impacts, sparks, splashes, blasts, flames): its own table, read
+# in the player's files (tn_objects.gd, fx_def): for each type its animation, drawn as wide as the type's sprite
+# whatever the bitmap's size and anchored on the entity, a frame's time, played once or looping. The game keeps the
+# entity as long as its animation plays: here each new entity starts the animation, which plays on its own (a
+# looping one lives and moves with its entity). 23 is also a tree blown up: its black smoke comes with it.
+# (Before: four types fitted by eye, two of them on another type's animation and two half their size, the 24
+# others a small orange ball.)
+const FX_GAP_MS := 150           # an entity not seen for that long, then seen again in its slot: a new effect
+var fx_scale := 1.2              # the sprites' scale against the table's size (SPRITE_SCALE: the same routine draws them)
+var anims := []                  # [node, start msec, duration in s (0: looping), its entity]
 var smoke_pending := []          # blasts (6/23) waiting to know whether a suit burst there: [position, msec]
-var anim_seen := {}
-var anim_mats := {}
+var anim_seen := {}              # entity -> [msec last seen, type, position, its looping node or null]
+var anim_mats := {}              # type -> [material, mesh, duration]
+var anim_frames := {}            # entity -> the frame the game shows of its animation ('ANIM'; none: Uplink's own clock)
 
 
-func _spawn_anim(pos: Vector3, fx: Array) -> void:
-	var rid: int = fx[0]
-	var ad: Dictionary = objects.anim(rid, pal, pal_key) if objects_ok else {}
+func _fx_anim(typ: int) -> bool:
+	return objects_ok and not objects.fx_def(typ).is_empty()
+
+
+func _live_anim(idx: int, typ: int, pos: Vector3) -> void:
+	var now := Time.get_ticks_msec()
+	var seen = anim_seen.get(idx)
+	var fresh: bool = seen == null or seen[1] != typ or now - int(seen[0]) > FX_GAP_MS or (seen[2] as Vector3).distance_to(pos) > 0.5
+	var node: MeshInstance3D = null if fresh or seen == null else seen[3]
+	if fresh:
+		node = _spawn_anim(pos, typ, idx)
+		if typ == 23 and not smoke_pending.any(func(s): return (s[0] as Vector3).distance_to(pos) < 0.5):
+			smoke_pending.append([Vector3(pos.x, pos.y - GAME_Z, pos.z), now])   # a tree's black smoke, unless it was a soldier (see below)
+	elif node != null and is_instance_valid(node):
+		node.position = pos                             # (it moves with its entity: a blast's fireballs, flames)
+	anim_seen[idx] = [now, typ, pos, node]
+
+
+# Starts the animation of an effect; returns its node (it follows its entity: a blast's fireballs fly apart).
+func _spawn_anim(pos: Vector3, typ: int, idx := -1) -> MeshInstance3D:
+	var fd: Dictionary = objects.fx_def(typ) if objects_ok else {}
+	if fd.is_empty():
+		return null
+	var ad: Dictionary = objects.anim(fd["res"], pal, pal_key)
 	if ad.is_empty():
-		return
-	var sc: float = fx[1]
-	if not anim_mats.has(rid):
+		return null
+	if not anim_mats.has(typ):
 		var am := ShaderMaterial.new()
-		am.shader = ANIM
+		am.shader = ANIM_SOFT if ad.get("soft", false) else ANIM
+		var frames: int = mini(ad["frames"], fd["frames"])
+		var fps: float = 1000.0 / fd["ms"]
 		am.set_shader_parameter("frames", ad["tex"])
-		am.set_shader_parameter("frame_count", ad["frames"])
-		am.set_shader_parameter("fps", fx[2])
+		am.set_shader_parameter("frame_count", frames)
+		am.set_shader_parameter("fps", fps)
+		am.set_shader_parameter("loop", fd["loop"])
+		var sc: float = fd["width"] * fx_scale / ad["size"].x     # world units per pixel of its bitmap
 		var w: float = ad["size"].x * sc
 		var h: float = ad["size"].y * sc
 		var a: Vector2 = ad["anchor"] * sc
@@ -3988,23 +4592,17 @@ func _spawn_anim(pos: Vector3, fx: Array) -> void:
 		for c in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 0), Vector2(1, 1), Vector2(0, 1)]:
 			st.set_uv(c)
 			st.add_vertex(Vector3(c.x * w - a.x, a.y - c.y * h, 0.0))
-		anim_mats[rid] = [am, st.commit(), float(ad["frames"]) / fx[2]]
+		anim_mats[typ] = [am, st.commit(), 0.0 if fd["loop"] else frames / fps]
 	var mi := MeshInstance3D.new()
-	mi.mesh = anim_mats[rid][1]
-	mi.material_override = anim_mats[rid][0]
+	mi.mesh = anim_mats[typ][1]
+	mi.material_override = anim_mats[typ][0]
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.layers = FX_LAYER                             # (a burn mark under it darkened it)
 	mi.extra_cull_margin = 2.0
 	mi.position = pos
 	world.add_child(mi)
-	anims.append([mi, Time.get_ticks_msec(), anim_mats[rid][2]])
-
-
-# The game makes two effects of a blown-up tree at the same spot, drawn as one fireball: one animation per spot.
-func _anim_near(pos: Vector3, now: int) -> bool:
-	for an in anims:
-		if now - int(an[1]) < 1000 and (an[0] as Node3D).position.distance_to(pos) < 1.0:
-			return true
-	return false
+	anims.append([mi, Time.get_ticks_msec(), anim_mats[typ][2], idx])
+	return mi
 
 
 # The black smoke a blown-up tree sends up as its fireball dies (the game's own is a swarm of class 6 particles,
@@ -4037,11 +4635,18 @@ func _anims_update() -> void:
 	for k in range(anims.size() - 1, -1, -1):
 		var age := (now - int(anims[k][1])) / 1000.0
 		var mi: MeshInstance3D = anims[k][0]
-		if age >= float(anims[k][2]):
+		var looping := float(anims[k][2]) <= 0.0
+		var framed: bool = int(anims[k][3]) >= 0 and anim_frames.has(anims[k][3])   # the game says which frame
+		var done := age >= float(anims[k][2]) and not looping and not framed
+		if int(anims[k][3]) >= 0:                       # it lives as long as the game keeps its entity (a looping
+			var seen = anim_seen.get(anims[k][3])       # one: only that long; a fireball that lands goes out)
+			done = done or seen == null or seen[3] != mi or now - int(seen[0]) > FX_GAP_MS
+		if done:
 			mi.queue_free()
 			anims.remove_at(k)
 		else:
 			mi.set_instance_shader_parameter("age", age)
+			mi.set_instance_shader_parameter("frame", float(anim_frames[anims[k][3]]) if framed else -1.0)
 var fps_label: Label
 var dead_suits := []       # [position, suit] of the soldiers killed: their pieces of armour around
 var puff_units := []      # positions of the units this update (jetpacks)

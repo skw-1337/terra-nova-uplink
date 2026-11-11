@@ -36,6 +36,86 @@ A_DRAPEAU, A_PENTE = (struct.unpack('<I', _p.group(1))[0], struct.unpack('<I', _
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
+# The game's keyboard library: the pointer to its structure is read by its handler ("mov bx, 0x188 / mov ds, bx /
+# mov ebx, [ptr]": EN 0x45D62C, FR 0x45D6DC). In the structure: the state of each key, a byte at +0x410 + scancode
+# (bit 0 = down). TN+'s key translation follows Shift, Ctrl and Alt on its own: its word PM (bit 0 left Shift, bit 1
+# right Shift). Its data are there once it is installed (STATE = 2, SITE = the place in the game's keyboard handler
+# that calls its routine MAP_FN); in a game it has not prepared, the same addresses are the game's memory pool.
+_kb = re.search(re.escape(bytes.fromhex('66bb8801668edb8b1d')) + b'(....)', code, re.S)
+KB_PTR = struct.unpack('<I', _kb.group(1))[0] if _kb else (0x45D6DC if FR else 0x45D62C)
+KB_TNP_STATE, KB_TNP_PM, KB_TNP_MAP_FN = 0x469A14, 0x469A20, 0x46AA92
+KB_TNP_ACT = 0x469A30                     # its translated keys that are down: 128 words (bit 15 down, bit 11 Shift hidden)
+# The run (TN_RUN = 1, the launcher's SHIFT choice; off: the game's own Bound). Terra Nova has no run: Shift with a
+# move key is its Bound, a leap that way once four footsteps have gone by since the last one. The bridge then (1)
+# keeps the Bound from starting: the end of its cooldown, which the game compares its clock with, is kept far in the
+# future; (2) while a Shift is down for the game (its key state bytes: Uplink's Shift, or the key TN+ translates to
+# it), multiplies the speed factor of the suit the controls drive by RUN_F. That factor is the dword the control
+# routine multiplies the forward and strafe controls by (90.0 for the player's suit; the game's own "fast" switch
+# sets the same dword to 200): heat, slopes and collisions go on limiting the suit as they do. 1.45: the pace the
+# Bound gives on flat ground (measured 2.38 units a second, the Bound 2.44, walking 1.59; the game sets the dword once,
+# from the suit's type). Never while one of the game's screens is up: a mission saved from the options would keep
+# the raised value. Found in the control routine ("mov eax,
+# [player]; sar eax, 16; imul eax, 0x582; mov edx, 0x20000; mov edi, 0x78; mov eax, [eax + factors]") and in the
+# Bound's test ("mov eax, [clock]; cmp eax, [cooldown end]; jbe ...; cmp dword [footsteps], 4").
+RUN = os.environ.get('TN_RUN', '') not in ('', '0')
+RUN_F = 1.45
+def _run_adr(pat):
+    """the addresses a code pattern holds, from the match where they are the game's data (its memory also has a copy
+    of the code not relocated yet)"""
+    for m in re.finditer(pat, code, re.S):
+        v = [struct.unpack('<I', b)[0] for b in m.groups()]
+        if all(0x300000 <= a < 0x500000 for a in v): return v
+    return None
+
+
+_rv = _run_adr(re.escape(bytes.fromhex('a1')) + b'(....)' + re.escape(bytes.fromhex('c1f81069c082050000ba00000200bf780000008b80')) + b'(....)')
+_rb = _run_adr(re.escape(bytes.fromhex('a1')) + b'(....)' + re.escape(bytes.fromhex('3b05')) + b'(....)' + re.escape(bytes.fromhex('0f86')) + b'....' +
+               re.escape(bytes.fromhex('833d')) + b'(....)' + re.escape(bytes.fromhex('04')))
+A_RUN_WHO = _rv[0] + 2 if _rv else (0x441402 if FR else 0x441352)        # the driven suit's number (a word)
+A_RUN_F = _rv[1] if _rv else (0x3A577E if FR else 0x3A56CE)             # its speed factor: + number * 0x582
+A_RUN_BOUND = _rb[1] if _rb else (0x44140D if FR else 0x44135D)         # the end of the Bound's cooldown
+course = {'adr': 0, 'base': 0, 'ecrit': None}
+
+
+def courir():
+    """each turn of the main loop, in a mission: the Bound kept off, the speed factor raised while Shift is down"""
+    try:
+        kb = struct.unpack('<I', g.read(KB_PTR, 4))[0]
+        if not 0 < kb < 0x400000: return
+        adr = A_RUN_F + struct.unpack('<H', g.read(A_RUN_WHO, 2))[0] * 0x582
+        if course['adr'] != adr: courir_fin(); course['adr'] = adr        # (another suit driven: the first one's own pace back)
+        cur = struct.unpack('<i', g.read(adr, 4))[0]
+        if not 0x10000 <= cur <= 0x2000000: return                        # (not a suit's factor: nothing is touched)
+        if g.read(A_RUN_BOUND, 4) != b'\xff\xff\xff\x7f': g.write(A_RUN_BOUND, b'\xff\xff\xff\x7f')
+        st = g.read(kb + 0x410 + 0x2A, 0x0D)                              # the two Shift keys' states (0x2A, 0x36)
+        tenu = bool((st[0] | st[0x0C]) & 1) and not curseur['menu']
+        if cur != course['ecrit']: course['base'] = cur                   # the game's own value (the first time, or changed by it)
+        want = int(course['base'] * RUN_F) if tenu else course['base']
+        if cur != want: g.write(adr, struct.pack('<i', want))
+        course['ecrit'] = want if tenu else None
+    except BaseException:
+        pass
+
+
+def courir_fin():
+    """the suit's own speed factor back if it is still this bridge's, the Bound free again"""
+    try:
+        if course['adr'] and course['ecrit'] is not None and struct.unpack('<i', g.read(course['adr'], 4))[0] == course['ecrit']:
+            g.write(course['adr'], struct.pack('<i', course['base']))
+        course['ecrit'] = None
+        if g.read(A_RUN_BOUND, 4) == b'\xff\xff\xff\x7f': g.write(A_RUN_BOUND, bytes(4))
+    except BaseException:
+        pass
+
+
+def tnp_touches():
+    try:
+        st, site = struct.unpack('<II', g.read(KB_TNP_STATE, 8))
+        if st != 2 or not 0x200000 < site < 0x340000: return False
+        c = g.read(site, 5)
+        return c[0] == 0xE8 and (site + 5 + struct.unpack('<i', c[1:5])[0]) & 0xffffffff == KB_TNP_MAP_FN
+    except BaseException:
+        return False
 import walk_anim
 marche = walk_anim.WalkAnim()
 MARCHE_LOIN = os.environ.get('TN_FARWALK') == '1'     # (TN_FARWALK=1 : marche apprise rejouee ; sinon pas de pose,
@@ -210,6 +290,21 @@ def meteo():
     return b'WTHR' + struct.pack('<BB4bHI', genre, w[9], *struct.unpack_from('<4b', w, 0xA), n, aire)
 
 
+# A system of kind 8 (smoke) is a smoke grenade's cloud or a blown-up tree's (~190 particles at first, for 17 s), or
+# one puff of the trail a shell or a missile leaves (16 particles, one second, eight of them along its flight from
+# the gun on). The small ones were sent as clouds: the viewer made a thick screen of each, kept for 40 s, right in
+# front of the player's eyes (an M-B Cannon's shot: the whole view grey). Told apart once, when first seen.
+PETITES = {}
+
+
+def petite(i, nf, n):
+    k = PETITES.get((i, nf))
+    if k is None:
+        if len(PETITES) > 600: PETITES.clear()
+        k = PETITES[(i, nf)] = n <= 48
+    return k
+
+
 def fumees(tab):
     """Les nuages des grenades fumigenes en cours : 'SMKC' + nombre (u8), puis par nuage : entite (i32), centre x, y, z
     (3 f32), nombre de particules (u16), puis par particule x, y, z du monde (3 f32), taille (u8), vie (u8)."""
@@ -246,6 +341,8 @@ def fumees(tab):
         a0, a1 = struct.unpack('<2I', g.read(rg + 4 * si, 8))
         if not 0 <= a0 <= a1 <= a0 + 1024:
             continue
+        if petite(i, nf, a1 - a0):         # a shell's or a missile's trail (16 particles, a second): not a screen of
+            continue                       # smoke; drawn particle by particle ('PART', poussieres)
         lacet = struct.unpack('<3H', g.read(an + 8 * si, 6))[2] / 65536 * 2 * math.pi
         c, sn = math.cos(lacet), math.sin(lacet)
         raw = g.read(pt + 12 * a0, 12 * (a1 - a0))
@@ -286,6 +383,167 @@ def sortes_29(tab):
         if k != 7: out.append((i, k))
     for cle in [c for c in FX_SORTES if c not in vus]: del FX_SORTES[cle]
     return tuple(out)
+
+
+# Beams (class 6 type 28: a laser's, an ion rifle's, each bar of a pulsar's bolt...). The game draws one as a line
+# from the entity to a second point kept in its record (FUM_REC + n * 0x2C: +0xC x, y, z 16.16; +0x18 its colour in
+# the game's palette): a core in that colour (width 0xC0) inside a wider line six colours further (width 0x200);
+# colour 0x28: a core 0x20 (width 0x50) inside 0x25 (width 0xC0). Its routine: 0x29DE8C of the English exe, the line
+# itself 0x29D2B0. Uplink drew them from the entity alone (dots, or its own beam from the gun to the bolt).
+#   'BEAM' + number (u16) + per beam: entity (i32), from x, y, z, to x, y, z (6 f32), colour (u8)
+def rayons(tab):
+    if not FUM: return []
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 6 or tab[o + 2] != 28: continue
+        # the game moves the entity and writes its second point anew with each of its pictures (four lines end to
+        # end over what the bolt flew in that picture): both ends read together, and again if the entity moved
+        # meanwhile; else a line ran from one picture's start to the next one's end (a long streak from the gun)
+        for _ in range(3):
+            e1 = g.read(A_MASTER + o, 0x25)
+            r = g.read(FUM['REC'] + struct.unpack_from('<H', e1, 3)[0] * 0x2C + 0xC, 0xD)
+            if g.read(A_MASTER + o, 0x25) == e1: break
+        else:
+            continue
+        if not e1[0] or e1[1] != 6 or e1[2] != 28 or not r or len(r) < 0xD: continue
+        x0, y0, z0 = (v / 65536 for v in struct.unpack_from('<3i', e1, 0xF))
+        x1, y1, z1 = (v / 65536 for v in struct.unpack_from('<3i', r, 0))
+        if not (0 < x1 < 600 and 0 < y1 < 600 and abs(x1 - x0) < 200 and abs(y1 - y0) < 200): continue
+        out.append(struct.pack('<i6fB', i, x0, y0, z0, x1, y1, z1, r[0xC]))
+    return out
+
+
+beam_prev, beam_t = False, 0.0
+
+
+# Dust (class 6 type 29 whose particle system is of kind 7: what a laser, an ion rifle, a pulsar... leaves along its
+# shot and at its impact, 8 to 32 particles for ~0.4 s). The game plots each particle as one pixel of its picture
+# (its routine 0x2A59DC, kind 7) in a colour of its palette that moves as the particle ages: byte +9 of the particle
+# + (the signed byte +0xB x its life at +0xA) >> 8 (an ion rifle: 61 - 100 x life / 256, the dark blues 56 to 61;
+# red for a laser). The particle: x, y, z (int16 / 2048), three signed speeds, colour, life, step. Uplink drew red dots scattered at
+# random around the entity, whatever the weapon. The engine keeps at most 0x40 systems and 0x400 particles: its
+# tables are read whole, five reads whatever their number.
+# The other trails are particles too, plotted by the same routine as discs that grow as they come near, through one of
+# the game's translucency tables (byte +9: 248 a thin white veil ... 253 nearly black): kind 10 a railgun's thin
+# smoke (64 particles, table 249), kind 8 the smoke of a shell or a missile (16 particles, table 250; see petite),
+# kind 11 a thermal disruptor's haze (8 particles, which warp what is behind them). They were not drawn (10, 11) or
+# drawn as a smoke screen (8).
+#   'PART' + number (u16) + per particle: world x, y, z (3 f32), colour (u8), kind (u8), 60 times a second
+def poussieres(tab):
+    if not FUM: return []
+    quels = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if tab[o] and tab[o + 1] == 6 and tab[o + 2] == 29:
+            cle = (i, struct.unpack_from('<H', tab, o + 3)[0])
+            if FX_SORTES.get(cle) in (7, 8, 10, 11): quels.append(cle)   # (its kind: sortes_29, just before)
+    if not quels: return []
+    hd, ds, rg, pt, an = (struct.unpack('<I', g.read(FUM[k], 4))[0] for k in ('HANDLES', 'DESCS', 'RANGES', 'PARTS', 'ANGLES'))
+    t_hd, t_ds, t_rg, t_an = g.read(hd, 0x40 * 4), g.read(ds, 0x40 * 16), g.read(rg, 0x41 * 4), g.read(an, 0x40 * 8)
+    t_pt = g.read(pt, 0x400 * 12)
+    out = []
+    for i, nf in quels:
+        h = struct.unpack('<i', g.read(FUM['REC'] + nf * 0x2C + 0xA, 4))[0]
+        if not 0 <= h < 0x40: continue
+        si = struct.unpack_from('<i', t_hd, 4 * h)[0]
+        sorte = t_ds[16 * si + 0xE]
+        if not 0 <= si < 0x40 or sorte not in (7, 8, 10, 11): continue
+        a0, a1 = struct.unpack_from('<2I', t_rg, 4 * si)
+        if not 0 <= a0 <= a1 <= 0x400: continue
+        if sorte == 8 and not petite(i, nf, a1 - a0): continue   # (a cloud: fumees)
+        cx, cy, cz = (v / 65536 for v in struct.unpack_from('<3i', t_ds, 16 * si))
+        lacet = struct.unpack_from('<H', t_an, 8 * si + 4)[0] / 65536 * 2 * math.pi
+        c, sn = math.cos(lacet), math.sin(lacet)
+        for k in range(12 * a0, 12 * a1, 12):
+            px, py, pz = struct.unpack_from('<3h', t_pt, k)
+            col = t_pt[k + 9]
+            if sorte == 7:
+                pas = t_pt[k + 11] - 256 if t_pt[k + 11] > 127 else t_pt[k + 11]
+                col = (col + (pas * t_pt[k + 10] >> 8)) & 0xFF
+            out.append(struct.pack('<3fBB', cx + (c * px + sn * py) / 2048, cy + (-sn * px + c * py) / 2048, cz + pz / 2048, col, sorte))
+    return out
+
+
+part_prev, part_t, part_sent = False, 0.0, 0.0
+
+
+# The animated effects (class 6 but the beams, the particles and the debris: sparks, blasts, fireballs, flames): the
+# game keeps for each one a descriptor (pointer at +6 of its record) whose picture in turn is at +0x2F (resource <<
+# 16 | frame). Uplink played each animation on its own clock from the moment it first saw the entity: ahead of the
+# game whenever the game's own time ran slower (a heavy fight, a pause).
+#   'ANIM' + number (u16) + per effect: entity (i32), frame (u8), with each update while there are some
+ANIM_DESC = {}                            # (entity, record) -> its descriptor
+
+
+def animations(tab):
+    if not FUM: return []
+    out, vus = [], set()
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 6 or tab[o + 2] in (0, 28, 29, 31, 32, 33): continue
+        cle = (i, struct.unpack_from('<H', tab, o + 3)[0])
+        vus.add(cle)
+        d = ANIM_DESC.get(cle)
+        if d is None:
+            d = struct.unpack('<I', g.read(FUM['REC'] + cle[1] * 0x2C + 6, 4))[0]
+            if not 0x100000 <= d < 0x4000000: continue      # (not set up yet: seen again at the next update)
+            ANIM_DESC[cle] = d
+        v = g.read(d + 0x2F, 4)
+        if v and len(v) == 4: out.append(struct.pack('<iB', i, v[0]))
+    for cle in [c for c in ANIM_DESC if c not in vus]: del ANIM_DESC[cle]
+    return out
+
+
+anim_prev = False
+
+
+# The SIR's lightning (class 6 type 31, six of them for a shot, alive for a few pictures): no projectile, forked
+# lines from the gun. The game keeps each one as chains of nodes (its routine 0x2B372C of the English exe, the walk
+# 0x2B36A4): HEADS[+0xA of the effect's record] = its first chain; a chain (8 bytes): +2 first node, +4 last node,
+# +6 next chain, +7 0 for the trunk, else a branch; a node (16 bytes): x, y, z (16.16), +0xC the next node. Each
+# stretch between two nodes is a line one pixel wide, in a colour that fades with the effect's age (+0xE of its
+# record): 0xF + a table's byte at 32 - 8 x age, one table for the trunk (it flickers), one for the branches (pale
+# lilac to dark blue: the game's colours 45 to 59). Uplink drew an orange ball at each effect.
+#   'BOLT' + number (u16) + per line: from x, y, z, to x, y, z (6 f32), colour (u8), while there are some
+_m = re.search(rb'\x89\x14\x24\x0f\xb6\xb8(....)\x85\xff\x74.\x8a\x04\xfd(....)\x88\x44\x24\x04.{0,80}?\x81\xc2(....)\x05....\xff\x14\x24', code, re.S)
+ECL = dict(zip(('HEADS', 'DRAPEAU', 'NOEUDS'), (struct.unpack('<I', v)[0] for v in _m.groups()))) if _m else {}
+if not ECL: print('eclairs : signature introuvable (le SIR ne sera pas dessine)')
+ECL_TRONC = bytes.fromhex('2c2b27272a2a2a2a282625262829' '2a2a282624242628282624212324' '22201e1e1e')
+ECL_BRANCHE = bytes.fromhex('2c2c2c2c2c2c2c2b2b2b2b2b2a2a' '2a2a2a2929292928282827272625' '2423232323')
+bolt_prev = False
+
+
+def eclairs(tab):
+    if not ECL or not FUM: return []
+    quels = [i for i in range(NENT) if tab[0x25 * i] and tab[0x25 * i + 1] == 6 and tab[0x25 * i + 2] == 31]
+    if not quels: return []
+    chaines = g.read(ECL['DRAPEAU'] - 7, 8 * 256)
+    noeuds = g.read(ECL['NOEUDS'], 16 * 520)
+    heads = g.read(ECL['HEADS'], 64)
+    out = []
+    for i in quels:
+        nf = struct.unpack_from('<H', tab, 0x25 * i + 3)[0]
+        num, age = struct.unpack('<ii', g.read(FUM['REC'] + nf * 0x2C + 0xA, 8))
+        if not 0 < num < 64: continue
+        v = ((age << 13) + 0x80000000 & 0xffffffff) - 0x80000000          # as the game: 32 - 8 x age, never below 0
+        k = max(0, min(32, 0x20 - int(v / 1024))) if age else 0x20
+        c, tours = heads[num], 0
+        while c and tours < 32:
+            ch = chaines[8 * c:8 * c + 8]
+            n, fin = struct.unpack_from('<2H', ch, 2)
+            col = (ECL_TRONC[k] if ch[7] == 0 else ECL_BRANCHE[k]) + 0xF
+            avant = None
+            for _ in range(64):
+                if n >= 520: break
+                pt = tuple(q / 65536 for q in struct.unpack_from('<3i', noeuds, 16 * n))
+                if avant is not None and all(0 < q < 600 for q in pt[:2] + avant[:2]):
+                    out.append(struct.pack('<6fB', *avant, *pt, col))
+                avant = pt
+                if n == fin: break
+                n = struct.unpack_from('<H', noeuds, 16 * n + 0xC)[0]
+            c, tours = ch[6], tours + 1
+    return out
 
 
 def armure_debris(x, y, vivants):
@@ -351,9 +609,20 @@ if PLAY:
     print('jouer : fenetre DOSBox %#x, file souris %#x, curseur %#x, cadre %#x' % (win, m_fil, m_cur, m_frame))
 
 
+# Where the game's cursor is kept in the look mode: the crosshair, where the shots go. The middle of the game's 3D
+# window, 3 rows down: 160, 144 in the cockpit view (window 11, 42, 298 x 199), as always; 160, 210 in the full view
+# (G: window 0, 16, 320 x 383), where it stayed at 160, 144, far above the middle of the picture. (Measured: the game
+# zooms about the middle of its window, and Uplink's picture lines up with the game's when its camera looks 2 rows
+# under that middle: the cursor's pixel is the one under it.) Without TN+'s HD picture (no window to read): 36 % down
+# the screen, the cockpit view's.
 def centre():
     w, h = struct.unpack('<hh', g.read(m_frame, 4))
-    return (w // 2, int(round(h * 0.36))) if 200 <= w <= 640 and 200 <= h <= 480 else (160, 72)
+    if not (200 <= w <= 640 and 200 <= h <= 480): return (160, 72)
+    if (w, h) == (320, 400):
+        fx0, fy0, fw, fh = struct.unpack('<4i', g.read(FX, 16))
+        if fx0 >= 0 and fy0 >= 0 and fw >= 100 and fh >= 100 and fx0 + fw <= 320 and fy0 + fh <= 400:
+            return (fx0 + fw // 2, fy0 + fh // 2 + 3)
+    return (w // 2, int(round(h * 0.36)))
 
 
 def mouse_evt(ev, bt, pos=None):
@@ -380,8 +649,64 @@ def repeter_touches():
             post_key(sc, True, True)
 
 
+# Shift held (ticket #10). A Shift posted to DOSBox does not stay down: its SDL lets go of a Shift it does not find
+# down on the real keyboard (a check it makes for a Windows oddity with the two Shift keys), and with the repeats
+# above the game saw Shift pressed and released 30 times a second. Shift with a move key is the game's Bound (its key
+# card: "SHIFT + any motion key"): a leap that way once four footsteps have gone by since the last one, 2.3 units a
+# second against 1.6 walking. With Shift flickering the leaps came late, at odd moments. The game reads its own
+# state of the key for it (KB_PTR): the bridge holds that byte itself while Uplink's Shift is down (written again
+# four times a second: the game empties its keys now and then), and tells TN+'s key translation, so that the
+# player's own chords with Shift still work. DOSBox gets no Shift any more.
+maj = {}                                      # Uplink's Shift keys that are down: scancode -> when last written
+
+
+def maj_tenir(sc, down, octet=True):
+    try:
+        kb = struct.unpack('<I', g.read(KB_PTR, 4))[0]
+        if not 0 < kb < 0x400000: return
+        if octet:
+            v = g.read(kb + 0x410 + sc, 1)[0]
+            if bool(v & 1) != down: g.write(kb + 0x410 + sc, bytes([v | 1 if down else v & 0xFE]))
+        if tnp_touches():
+            bit = 1 if sc == 0x2A else 2
+            pm = g.read(KB_TNP_PM, 1)[0]
+            if bool(pm & bit) != down: g.write(KB_TNP_PM, bytes([pm | bit if down else pm & ~bit & 0xFF]))
+    except BaseException:
+        pass
+
+
+def maj_cache():
+    """TN+'s key translation is hiding Shift from the game for a key that is down: a command the player put on a Shift
+    chord, translated to its own plain key (Shift + S for Forward gives the game W alone). The game's Shift byte is
+    then left as the translation put it (TN+ presses Shift again itself when that key is let go)."""
+    try:
+        if not tnp_touches(): return False
+        act = g.read(KB_TNP_ACT, 256)
+        return any(act[i] & 0x88 == 0x88 for i in range(1, 256, 2))
+    except BaseException:
+        return False
+
+
+def maj_garder(now):
+    for sc, t in maj.items():
+        if now - t > 0.25:
+            maj[sc] = now
+            maj_tenir(sc, True, octet=not maj_cache())
+
+
+def maj_lacher():
+    for sc in list(maj):
+        maj.pop(sc)
+        maj_tenir(sc, False)
+
+
 def post_key(sc, down, rep=False):
     global alt
+    if sc in (0x2A, 0x36):                    # Shift: held in the game itself, not through DOSBox
+        if down: maj[sc] = time.time()
+        else: maj.pop(sc, None)
+        maj_tenir(sc, bool(down))
+        return
     if not rep:
         if down: tenues.setdefault(sc, [time.time(), 0.0])
         else: tenues.pop(sc, None)
@@ -423,6 +748,7 @@ def handle_input():
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0)
         elif pk[:1] == b'P' and len(pk) >= 5:
             g.write(m_cur, pk[1:5]); g.write(m_warp, b'\x01')
+            with trace_lock: trace.append((time.time(), bytes(pk[1:5])))
         elif pk[:1] == b'F' and len(pk) == 2:
             curseur['libre'] = time.time() if pk[1] else 0.0
         elif pk[:1] == b'R' and len(pk) >= 5:
@@ -707,7 +1033,8 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
             menu_step.dbg = mode
             print('menus : mode %d (3D arretee %.1f s, cadre %d x %d)' % (mode, now - last_t, fw, fh), file=sys.stderr, flush=True)
         if now - mod_t > 0.2:
-            tx.sendto(b'MOD' + struct.pack('<IBhhB', n, mode, fw, fh, 1 if (PLAY and curseur['own']) else 0),
+            menu_step.own_dit = bool(PLAY and curseur['own'])
+            tx.sendto(b'MOD' + struct.pack('<IBhhB', n, mode, fw, fh, 1 if menu_step.own_dit else 0),
                       ('127.0.0.1', 47823)); n += 1; mod_t = now
         # cinematique en cours : le nom du dernier fichier ouvert par DOS (zone de DOS, vers 0x2B4E) est son .SMK
         # pendant qu'elle joue ; le visualiseur passe alors sa version HD (movies_hd\, faite chez le joueur) s'il l'a
@@ -737,6 +1064,12 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
         ech = im[((np.arange(th) + 0.5) * H / th).astype(int)][:, ((np.arange(tw) + 0.5) * W / tw).astype(int)]
         if PLAY and (tw, th) == (fw, fh):
             cursor_hide(ech, tx, now)
+            if curseur['own'] != getattr(menu_step, 'own_dit', None):
+                # whose arrow it is, said at once when it changes (with the 'MOD' above it came up to 0.2 s later:
+                # the game's arrow just emptied and the viewer's not shown yet, no arrow at all meanwhile)
+                menu_step.own_dit = curseur['own']
+                tx.sendto(b'MOD' + struct.pack('<IBhhB', n, mode, fw, fh, 1 if curseur['own'] else 0), ('127.0.0.1', 47823))
+                n += 1
         x0, y0, x1, y1 = 0, 0, tw, th                     # tout l'ecran
         if prev is not None and prev.shape == ech.shape and now - sent_t < 1.0:
             ch = (ech != prev).any(2)
@@ -776,6 +1109,8 @@ curseur = {'orig': {}, 'img': {}, 'pos': None, 'still': 0.0, 'cur_t': 0.0, 'vide
            'last': None, 'libre': 0.0, 'mission': False, 'menu': 0, 'remis': {}, 'last3d': None, 't3d': 0.0, 'vu3d': 0.0,
            'c3d': {}}
 cur_lock = threading.Lock()               # the menus' thread and the main loop both empty and put back cursors
+import collections
+trace, trace_lock = collections.deque(maxlen=64), threading.Lock()   # the cursor's last places ('P'): (when, x y)
 
 
 def rle_decode(f, w, h):
@@ -811,9 +1146,14 @@ def cursor_hide(ech, tx, now):
     import numpy as np
     st = curseur
     st['own'] = False
-    ptr, typ, _, w, h, row = struct.unpack('<IHHHHH', g.read(m_cur - 0x18, 14))
+    rec = g.read(m_cur - 0x18, 0x14)
+    ptr, typ, _, w, h, row = struct.unpack_from('<IHHHHH', rec)
     if not (0x400000 <= ptr < 0x4000000 and 4 <= w <= 64 and 4 <= h <= 64 and row >= w and typ in (2, 4))             or ptr in st['non']:
         return
+    if ptr in st['orig'] and ptr not in st['vide'] and st.get('dim_' + str(ptr), (typ, w, h, row)) != (typ, w, h, row):
+        # another picture at an address already seen here (another size or kind): what was known of it is forgotten
+        # (not one this bridge has emptied: its copy is needed to put it back)
+        st['orig'].pop(ptr); st['img'].pop(ptr, None)
     if ptr in st['orig']:
         orig, vide = st['orig'][ptr]
         cur = g.read(ptr, len(vide))
@@ -828,7 +1168,8 @@ def cursor_hide(ech, tx, now):
         vide = bytes(row * h) if brute else rle_vide(w * h)
         orig = g.read(ptr, len(vide))
         idx = np.frombuffer(bm, np.uint8).reshape(h, row)[:, :w] if brute else rle_decode(g.read(ptr, 4096), w, h)
-        st['orig'][ptr] = (orig, vide); st['idx_' + str(ptr)] = idx
+        if not idx.any(): return                         # (no pixel yet: the game is still loading it; read again next time)
+        st['orig'][ptr] = (orig, vide); st['idx_' + str(ptr)] = idx; st['dim_' + str(ptr)] = (typ, w, h, row)
         with open(CUR_FILE, 'ab') as f:
             f.write(struct.pack('<IH', ptr, len(vide)) + orig + vide)
     orig, vide = st['orig'][ptr]
@@ -837,26 +1178,54 @@ def cursor_hide(ech, tx, now):
     idx = st['idx_' + str(ptr)]
     pal = np.frombuffer(g.read(PAL, 768), np.uint8).reshape(256, 3)
     if ptr not in st['img']:
-        if ptr in st['vide'] or now - st['still'] < 0.25: return    # la fleche visible et immobile : on la releve
-        if pal[idx[idx != 0]].max() < 40: return     # ecran en fondu (palette au noir) : pointe pas lisible
-        cx, cy = struct.unpack('<hh', pos)
+        if ptr in st['vide']: return
+        m = idx != 0
+        if not m.any(): return                       # (no pixel yet: a picture the game is still loading)
+        hx, hy = struct.unpack_from('<hh', rec, 0x10)
+        # The same arrow as one already taken: taken at once. Each of the game's screens loads its arrow again,
+        # elsewhere and in its own palette's colours (the main menu's: 16, 87, 114; the Load Game screen's: 252 to
+        # 254): the same shape, the same tip. Waiting to see it in the photograph took half a second through the fade
+        # between two screens, the player back on the game's own late arrow meanwhile.
+        if st.setdefault('connu', {}).get((w, h, m.tobytes())) == (hx, hy):
+            st['img'][ptr] = (hx, hy)
+    if ptr not in st['img']:
+        if pal[idx[m]].max() < 40: return            # ecran en fondu (palette au noir) : fleche pas reconnaissable
         H, W = ech.shape[:2]
-        best = None
-        for hy in range(0, 8):
-            for hx in range(0, 8):
-                x0, y0 = cx - hx, cy - hy
+        vue = None
+        # Its tip: in its record (the two words before its position, as for the 3D's cursors). The arrow is taken
+        # once it is seen in the photograph, in its own colours, at one of the cursor's last places: the picture is
+        # ~60 ms late and the mouse may be moving. (The tip used to be read off the photograph, the mouse still for a
+        # quarter of a second: a player who kept moving had the game's late arrow for as long, at each new screen.)
+        hx, hy = struct.unpack_from('<hh', rec, 0x10)
+        if 0 <= hx < w and 0 <= hy < h:
+            cols = pal[idx[m]].astype(int)
+            with trace_lock: lieux = [p for t, p in trace if now - t < 0.4]
+            for p in dict.fromkeys([pos] + lieux[::-1]):
+                x0, y0 = struct.unpack('<hh', p)
+                x0, y0 = x0 - hx, y0 - hy
                 if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H: continue
-                zone = ech[y0:y0 + h, x0:x0 + w]
-                sc = 0
-                for v in np.unique(idx[idx != 0]):
-                    cols = zone[idx == v].reshape(-1, 3)
-                    u, c = np.unique(cols, axis=0, return_counts=True)
-                    sc += c.max()
-                if best is None or sc > best[0]: best = (sc, hx, hy)
-        if best is None or best[0] < 0.9 * (idx != 0).sum(): return
-        _, hx, hy = best
-        zone = ech[cy - hy:cy - hy + h, cx - hx:cx - hx + w]
+                if (np.abs(ech[y0:y0 + h, x0:x0 + w][m].astype(int) - cols).max(1) <= 16).mean() > 0.9:
+                    vue = (hx, hy); break
+        if vue is None:                              # (not seen that way: read off the photograph, the mouse still)
+            if now - st['still'] < 0.25: return
+            cx, cy = struct.unpack('<hh', pos)
+            best = None
+            for hy in range(0, 8):
+                for hx in range(0, 8):
+                    x0, y0 = cx - hx, cy - hy
+                    if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H: continue
+                    zone = ech[y0:y0 + h, x0:x0 + w]
+                    sc = 0
+                    for v in np.unique(idx[m]):
+                        cols = zone[idx == v].reshape(-1, 3)
+                        u, c = np.unique(cols, axis=0, return_counts=True)
+                        sc += c.max()
+                    if best is None or sc > best[0]: best = (sc, hx, hy)
+            if best is None or best[0] < 0.9 * m.sum(): return
+            vue = best[1:]
+        hx, hy = vue
         st['img'][ptr] = (hx, hy)
+        st.setdefault('connu', {})[(w, h, m.tobytes())] = (hx, hy)
         print('menus : curseur releve (%d x %d, pointe %d, %d)' % (w, h, hx, hy), file=sys.stderr, flush=True)
         if os.environ.get('TN_DEBUG'):
             from PIL import Image
@@ -869,7 +1238,7 @@ def cursor_hide(ech, tx, now):
     # du releve : une fleche relevee pendant un fondu restait noire)
     r = np.zeros((h, w, 4), np.uint8)
     r[..., :3] = pal[idx]; r[..., 3] = np.where(idx != 0, 255, 0)
-    if now - st['cur_t'] > 1.0 or st['last'] != (ptr, r.tobytes()):
+    if now - st['cur_t'] > 0.25 or st['last'] != (ptr, r.tobytes()):   # (often: a viewer that starts has none yet)
         st['cur_t'], st['last'] = now, (ptr, r.tobytes())
         hot = st['img'][ptr]
         tx.sendto(b'CUR' + struct.pack('<I4h', 0, r.shape[1], r.shape[0], *hot) + r.tobytes(), ('127.0.0.1', 47823))
@@ -1052,6 +1421,9 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
                              versus='--versus' in sys.argv)     # 1v1 (Terra Nova Coop's mode)
     guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
 atexit.register(cursor_restore)
+atexit.register(maj_lacher)               # (a Shift still down when the bridge stops: the player would bound on)
+atexit.register(courir_fin)               # (the run: the suit's own pace and the Bound back)
+if not RUN: courir_fin()                  # (a bridge with the run on, stopped dead, left the Bound off: free again)
 atexit.register(lambda: guest and guest.tag.restore())   # coop: the pilot's own name back in the game
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi
     atexit.register(lambda: viewer.poll() is None and viewer.terminate())
@@ -1063,6 +1435,27 @@ if HUD:
 u16 = lambda a: struct.unpack('<H', g.read(a, 2))[0]
 s16 = lambda a: struct.unpack('<h', g.read(a, 2))[0]
 i32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
+
+
+# The eye's height above the player's entity. The game's main view stands 0.05 above the neck of the player's suit
+# (joint 9 of its record, which the game keeps up to date even for the suit it is seen from): 0.32 for the suit the
+# first measure was made with, 0.397 for a heavy one (measured: the shared viewpoint 0x41EB68 while the main view is
+# drawn). With 0.32 for every suit, what is near the eyes stood too high from a heavy suit: a grenade leaving the
+# gun, a beam's start. --eye N: that height for every suit, as before.
+EYE_AUTO = '--eye' not in sys.argv
+oeil_vu = [EYE]
+
+
+def oeil(e, z):
+    if not EYE_AUTO: return EYE
+    try:
+        nf = u16(e + 3)
+        cou = i32(SOLDATS + nf * 0x582 + 0x1AF + 9 * 12 + 8) / 65536
+        h = cou - z + 0.05
+        if 0.15 < h < 0.9 and nf <= 200: oeil_vu[0] = h      # (else: the last good one, a record being rewritten)
+    except BaseException:
+        pass
+    return oeil_vu[0]
 
 
 def tangage():
@@ -1080,6 +1473,7 @@ while True:
     pid = u16(A_PID + 2)
     e = A_MASTER + pid * 0x25
     x, y, z = i32(e + 0x0F) / 65536, i32(e + 0x13) / 65536, i32(e + 0x17) / 65536
+    eye = oeil(e, z)
     # cap de la vue principale = cap du joueur + tete, comme le jeu le calcule : la variable cap camera sert aussi aux
     # vues laterales (triple camera, cockpit) et la lire au mauvais moment faisait sauter la vue de 52 deg
     head = ((u16(e + 0x1B) + u16(A_HEADYAW)) & 0xffff) / 65536 * 2 * math.pi
@@ -1093,6 +1487,33 @@ while True:
         s.sendto(pk, ('127.0.0.1', 47821))
         if guest: guest.fx29(pk)               # (la fenetre de l'invite aussi)
         fx_prev = fx
+    bm = rayons(tab)                          # the beams' two ends, before the entities; an empty packet at their end,
+    if bm or beam_prev or time.time() - beam_t > 1.0:   # and every second (the viewer then knows the bridge sends them)
+        beam_t = time.time()
+        pk = b'BEAM' + struct.pack('<H', len(bm)) + b''.join(bm)
+        s.sendto(pk, ('127.0.0.1', 47821))
+        if guest: guest.beams(pk)              # (the coop guest's window too)
+    beam_prev = bool(bm)
+    ec = eclairs(tab)                         # the SIR's lightning, and an empty packet at its end
+    if ec or bolt_prev:
+        pk = b'BOLT' + struct.pack('<H', len(ec)) + b''.join(ec[:2000])
+        s.sendto(pk, ('127.0.0.1', 47821))
+        if guest and not guest.remote: guest.s.sendto(pk, ('127.0.0.1', coop_guest.LIVE_PORT))
+    bolt_prev = bool(ec)
+    an = animations(tab)                      # the animated effects' frames, before the entities
+    if an or anim_prev:
+        pk = b'ANIM' + struct.pack('<H', len(an)) + b''.join(an)
+        s.sendto(pk, ('127.0.0.1', 47821))
+        if guest and not guest.remote: guest.s.sendto(pk, ('127.0.0.1', coop_guest.LIVE_PORT))   # (the guest's window on this PC)
+    anim_prev = bool(an)
+    if FUM and time.time() - part_t > 0.016:  # the shots' dust: 60 times a second, an empty packet at its end and every second
+        pts = poussieres(tab)
+        if pts or part_prev or time.time() - part_sent > 1.0:
+            part_sent = time.time()
+            pk = b'PART' + struct.pack('<H', len(pts)) + b''.join(pts)
+            s.sendto(pk, ('127.0.0.1', 47821))
+            if guest: guest.dust(pk)           # (the coop guest's window too)
+        part_prev, part_t = bool(pts), time.time()
     body = []
     if time.time() - corps_t > 0.5:
         corps_t = time.time()
@@ -1276,14 +1697,14 @@ while True:
         for k in autour:
             c = cadre(k)
             if c is None or (fx0 <= (c[0] + c[2]) // 2 < fx0 + fw and fy0 <= (c[1] + c[3]) // 2 < fy0 + fh): continue
-            sv.append((5 + k, (0, pid, x, y, z + EYE, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
+            sv.append((5 + k, (0, pid, x, y, z + eye, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
     # each view in its panel's frame (the player's own view is sent as 8 when its panel is not the drone's, which has
     # its own buttons); none: said too, the viewer takes them off
     sv = [(8 if k == 4 and ou[4] != 2 else k, v, cadre(ou[k])) for k, v in sv]
     sv = [(k, v, c) for k, v, c in sv if c is not None]
     s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *c) for k, v, c in sv),
              ('127.0.0.1', 47821))
-    cam = (x, y, z + EYE, head, pitch)
+    cam = (x, y, z + eye, head, pitch)
     if sonde:
         cam = (*(v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vue + 0x0F)),
                struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)
@@ -1309,6 +1730,12 @@ while True:
         handle_input()
         repeter_touches()
         glisser(time.time())
+        maj_garder(time.time())
+        if RUN and x + y > 0:                     # (in a mission: the player has a place)
+            # not with a co-op guest: the game's second control pass takes the host's speed factor for the guest's suit,
+            # which then ran whenever the host held Shift; the game's own Bound is left to both
+            if guest is None: courir()
+            else: courir_fin()
         try:
             curseur_mission(time.time())
         except Exception as ex:                # (a read of the game gone wrong: the cursor stays the game's this turn)

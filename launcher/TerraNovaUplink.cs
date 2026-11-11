@@ -27,7 +27,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.4";
+    const string VERSION = "2.5";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
@@ -43,6 +43,7 @@ static class Uplink
     const string GAME_SUB = "Terra Nova Strike Force Centauri";
     const long EN_EXE = 1856641;      // __FF.EXE v1.09 English (Steam, GOG); the French one is 1856813
     static readonly string[] SIZES = { "1280x720", "1696x960", "1920x1080", "native" };
+    static readonly string[] CROSSHAIRS = { "", "dot", "none" };          // the look mode's: the game's, a dot, nothing
     // campaign order (mission 1..37) -> MISSn.RES (as Uplink's tn_data.gd)
     static readonly int[] CAMPAIGN = { 37, 38, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 10, 11, 12, 13, 34, 29, 15, 17, 16, 36,
         14, 20, 39, 21, 35, 22, 23, 19, 24, 27, 25, 26, 30, 31 };
@@ -75,7 +76,7 @@ static class Uplink
     static Label[] ledText;
     static Tile playBtn, hostBtn, joinBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn, logBtn, oldKeyBtn, sharpKeyBtn;
     static RadioButton modeCoop, modeVs;
-    static ComboBox gameBox, sizeBox, missionBox;
+    static ComboBox gameBox, sizeBox, missionBox, crossBox, runBox;
     static TrackBar sensBar;
     static CheckBox invertBox, padBox;
     static ProgressBar bar;
@@ -111,6 +112,8 @@ static class Uplink
         { Set("game_dir", args[3]); Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1, args[1] == "--makesave" ? COOP_SAVE : PLAY_SAVE) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
+        if (args.Length > 1 && args[1] == "--binds")       // checks: TN+'s second binds, as Uplink is told them
+        { Console.WriteLine(Binds()); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
         { foreach (string d in Installs()) Console.WriteLine(Edition(d) + (IsEnglish(d) ? " EN  " : "     ") + d); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
@@ -215,7 +218,7 @@ static class Uplink
         y += 116;
 
         // settings shared by every mode
-        Box op = new Box { Location = new Point(X, y), Size = new Size(W, 150) };
+        Box op = new Box { Location = new Point(X, y), Size = new Size(W, 184) };
         form.Controls.Add(op);
         op.Controls.Add(Caption("START AT", 12, 15));
         missionBox = Combo(new Point(96, 10), W - 210);
@@ -230,14 +233,18 @@ static class Uplink
         sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" });
         op.Controls.Add(sizeBox);
         op.Controls.Add(Caption("MOUSE", 12, 84));
-        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 78), Size = new Size(W - 300, 30),
+        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 78), Size = new Size(W - 442, 30),
             BackColor = CPanel, AutoSize = false };
         sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
         op.Controls.Add(sensBar);
-        sensLabel = new Label { ForeColor = CText, BackColor = CPanel, AutoSize = true, Location = new Point(W - 204, 84) };
+        sensLabel = new Label { ForeColor = CText, BackColor = CPanel, AutoSize = true, Location = new Point(W - 346, 84) };
         op.Controls.Add(sensLabel);
-        invertBox = new Tick { Text = "Invert", AutoSize = true, Location = new Point(W - 150, 82), ForeColor = CDim, BackColor = CPanel };
+        invertBox = new Tick { Text = "Invert", AutoSize = true, Location = new Point(W - 298, 82), ForeColor = CDim, BackColor = CPanel };
         op.Controls.Add(invertBox);
+        op.Controls.Add(Caption("CROSSHAIR", W - 222, 84));      // (the look mode's: the game's own, a dot, or none)
+        crossBox = Combo(new Point(W - 140, 79), 130);
+        crossBox.Items.AddRange(new object[] { "The game's", "A dot", "None" });
+        op.Controls.Add(crossBox);
         // the keys: Uplink's own two (the old school look and its pixel size: click, press the key), then the game's
         op.Controls.Add(Caption("KEYS", 12, 118));
         oldKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(96, 111), Size = new Size(214, 28), Small = true };
@@ -249,9 +256,15 @@ static class Uplink
         Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 111), Size = new Size(94, 28), Small = true };
         keysBtn.Click += delegate { GameKeys(); };
         op.Controls.Add(keysBtn);
+        // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
+        // leap at the same pace (Uplink's bridge: TN_RUN)
+        op.Controls.Add(Caption("SHIFT", 12, 152));
+        runBox = Combo(new Point(96, 147), W - 106);
+        runBox.Items.AddRange(new object[] { "Bound: the game's own, a leap every four strides", "Run: no leap, about the same pace" });
+        op.Controls.Add(runBox);
         KeyLabels();
         LoadOptions();
-        y += 162;
+        y += 196;
 
         // what is installed: green lights
         string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus", "TN+ co-op build", "Python", "Steam (co-op only)" };
@@ -525,6 +538,8 @@ static class Uplink
             Math.Max(2, Math.Min(30, (int)Math.Round(sens * 10))) : 10;
         sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture);
         invertBox.Checked = Cfg("invert_y") == "1";
+        crossBox.SelectedIndex = Math.Max(0, Array.IndexOf(CROSSHAIRS, Cfg("crosshair")));
+        runBox.SelectedIndex = Cfg("shift_run") == "1" ? 1 : 0;
         padBox.Checked = Cfg("gamepad") != "0";
         int mi;
         string start = Cfg("start_at") != "" ? Cfg("start_at") : Cfg("lab_mission");   // (1.x: the lab's selector)
@@ -538,6 +553,8 @@ static class Uplink
         Set("window", SIZES[Math.Max(0, sizeBox.SelectedIndex)]);
         Set("mouse", (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture));
         Set("invert_y", invertBox.Checked ? "1" : "0");
+        Set("crosshair", CROSSHAIRS[Math.Max(0, crossBox.SelectedIndex)]);
+        Set("shift_run", runBox.SelectedIndex == 1 ? "1" : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
         Set("start_at", Math.Max(0, missionBox.SelectedIndex).ToString());
         SaveCfg();
@@ -773,6 +790,7 @@ static class Uplink
         bool running;
         if (!Preflight(host, out running) || (host && !SteamUp())) return;
         string dir = host ? TnpCoopDir : TnpDir, exe = host ? TnpCoopExe : TnpExe;
+        wholeMenus = !running || (ownGame && WholeMenusIni(dir));   // (see Env)
         string load = null;
         int pick;
         if (int.TryParse(Cfg("start_at"), out pick) && pick > 0)
@@ -935,9 +953,29 @@ static class Uplink
         if (!stopping) Status("Uplink was closed.", CText);
     }
 
+    // The game's menus come whole in its picture when this launcher started the game (wide_menus = 1 in its TNPlus.ini,
+    // also for a game it started earlier and finds still running): Uplink then keeps their 4:3 itself. A game the
+    // player started himself keeps his TN+'s own way (1.2.5 narrows the menus in the picture by default): Uplink shows
+    // that picture over its whole window, as it always did.
+    static bool wholeMenus = false, ownGame = false;
+
+    static bool WholeMenusIni(string dir)
+    {
+        try
+        {
+            string ini = Path.Combine(dir, "TNPlus.ini");
+            if (!File.Exists(ini)) return false;
+            foreach (string l in File.ReadAllLines(ini))
+                if (Regex.IsMatch(l, @"^\s*wide_menus\s*=\s*1\s*$")) return true;
+        }
+        catch (Exception) { }
+        return false;
+    }
+
     static Dictionary<string, string> Env()
     {
         Dictionary<string, string> env = new Dictionary<string, string>();
+        env["TN_MENUS43"] = wholeMenus ? "1" : "0";
         env["GODOT"] = GodotExe;
         env["TN_GAME_DIR"] = Game();
         env["TN_MOUSE_SENS"] = Cfg("mouse");
@@ -945,6 +983,9 @@ static class Uplink
         env["TN_KEY_FREELOOK"] = FreelookScan().ToString("X2");
         env["TN_KEY_OLDSCHOOL"] = OldKey();
         env["TN_KEY_SHARP"] = SharpKey();
+        env["TN_BINDS"] = Binds();
+        env["TN_CROSSHAIR"] = Cfg("crosshair");
+        env["TN_RUN"] = Cfg("shift_run") == "1" ? "1" : "0";
         env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         return env;
     }
@@ -983,6 +1024,8 @@ static class Uplink
             Thread.Sleep(1000);
         }
         List<Proc> games = ps.FindAll(p => p.Name == "dosbox-staging.exe");
+        ownGame = games.Exists(p => p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                    p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
         if (host)
         {   // a game started without the co-op build has no co-op code: it must be started again from here
             bool ok = games.Exists(p => p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
@@ -1406,11 +1449,13 @@ static class Uplink
         // moves the player on the ground it draws, and with its own detail that ground is not kept up to date while he
         // looks up (jets into a slope pushed him down and back; SHARPER alone fixes it, tested 21/10/2026). Objects: TN+'s
         // MAX (the game locks only what it draws: at its own distance far targets could not be locked; the far suits it
-        // then draws enlarged are left out by the bridge, Uplink walks them at their own size)
+        // then draws enlarged are left out by the bridge, Uplink walks them at their own size). Menus: TN+ 1.2.5 narrows
+        // the 640 x 480 screens in the game's picture to keep their proportions in true 16:9 (columns of pixels dropped);
+        // Uplink shows that picture itself and keeps their proportions on its own, from the whole picture: wide_menus = 1
         Dictionary<string, string> want = new Dictionary<string, string> {
             { "display", "HD" }, { "widescreen", "2" }, { "update_check", "0" }, { "game_dir", game },
             { "terrain_detail", "SHARPER" }, { "object_distance", "MAX" }, { "view_distance", "NORMAL" },
-            { "small_views", "0" }, { "edge_objects", "0" }, { "field_of_view", "GAME" } };
+            { "small_views", "0" }, { "edge_objects", "0" }, { "field_of_view", "GAME" }, { "wide_menus", "1" } };
         List<string> lines = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)) : new List<string> { "; Terra Nova Plus settings (written by Terra Nova Uplink)" };
         foreach (KeyValuePair<string, string> kv in want)
         {
@@ -1483,11 +1528,53 @@ static class Uplink
 
     // TN+'s commands that have a key of their own by default (id, scancode): the guest's keys are turned by Uplink
     static readonly string[] DEFAULT_KEYS = {
-        "fwd:11", "back:2D", "turnl:1E", "turnr:20", "stop:1F", "sidel:2C", "sider:2E", "jump:39", "crouch:29",
+        "fwd:11", "back:2D", "turnl:1E", "turnr:20", "stop:1F", "sidel:2C", "sider:2E", "jump:39", "crouch:29", "bound:2A",
         "lookup:13", "lookdn:2F", "lookl:10", "lookr:12", "centre:21", "v360:30", "full:22", "ir:17", "zoomin:0D",
         "zoomout:0C", "mfd:0F", "w1:02", "w2:03", "w3:04", "w4:05", "asf:06", "tnext:14", "tprev:15",
         "sq1:3B", "sq2:3C", "sq3:3D", "sqall:3E", "drop:1C", "recentre:31", "maphud:32", "mapout:33", "mapin:34",
         "squadinfo:43", "sensor:44", "wrange:57", "minfo:58" };
+
+    // TN+'s other commands (TNPlusKeys.cs), which come with a modifier or have no key to turn for a guest: with
+    // DEFAULT_KEYS, every command a second bind can press
+    static readonly string[] CHORD_KEYS = {
+        "o_attack:ALT+1E", "o_cover:ALT+2E", "o_caution:ALT+20", "o_form:ALT+21", "o_hold:ALT+23", "o_follow:ALT+32",
+        "o_nav:ALT+31", "o_pickup:ALT+19", "o_retreat:ALT+13", "o_status:ALT+1F", "o_target:ALT+14",
+        "d_up:CTRL+C9", "d_down:CTRL+D1", "d_recall:CTRL+C7", "pause:19", "objectives:42", "help:35", "exit:ALT+2D" };
+
+    // TN+'s second binds (its KEYBOARD page: the middle and side buttons, the wheel, PgUp / PgDn, Home / End, Ins /
+    // Del can press a command's key as well: mouse_<command> = MID, M4, M5, WHEELUP, WHEELDOWN, PGUP...). TN+ only
+    // acts on them when the game's own window is in front: behind Uplink's they did nothing (ticket #7). Uplink does
+    // it instead, told here which input presses which key (TN_BINDS: NAME:[SHIFT+|CTRL+|ALT+]scancode, the command's
+    // key being the player's own, or NAME:FREELOOK for the look / cursor swap).
+    static string Binds()
+    {
+        string ini = KeysIni();
+        if (!File.Exists(ini)) return "";
+        Dictionary<string, string> chord = new Dictionary<string, string>();
+        foreach (string dk in DEFAULT_KEYS) chord[dk.Split(':')[0]] = dk.Split(':')[1];
+        foreach (string dk in CHORD_KEYS) chord[dk.Split(':')[0]] = dk.Split(':')[1];
+        List<string[]> mouse = new List<string[]>();
+        foreach (string l in File.ReadAllLines(ini))
+        {
+            Match k = Regex.Match(l, @"^\s*key_game_(\w+)\s*=\s*((?:(?:SHIFT|CTRL|ALT)\+)?[0-9A-Fa-f]{1,2})\s*$", RegexOptions.IgnoreCase);
+            if (k.Success && chord.ContainsKey(k.Groups[1].Value)) chord[k.Groups[1].Value] = k.Groups[2].Value.ToUpperInvariant();
+            Match m = Regex.Match(l, @"^\s*mouse_(\w+)\s*=\s*(\w+)\s*$");
+            if (m.Success) mouse.Add(new[] { m.Groups[1].Value, m.Groups[2].Value.ToUpperInvariant() });
+        }
+        List<string> b = new List<string>();
+        foreach (string[] m in mouse)
+        {
+            string c;
+            if (m[0] == "freelook") b.Add(m[1] + ":FREELOOK");
+            else if (chord.TryGetValue(m[0], out c))
+            {
+                int plus = c.LastIndexOf('+');                    // (TN+ writes the grey block's keys 0x80 + code: E0xx here)
+                int sc = Convert.ToInt32(c.Substring(plus + 1), 16);
+                b.Add(m[1] + ":" + c.Substring(0, plus + 1) + (sc >= 0x80 ? "E0" + (sc & 0x7F).ToString("X2") : sc.ToString("X2")));
+            }
+        }
+        return string.Join(",", b.ToArray());
+    }
 
     static string KeysIni()
     {
@@ -1510,7 +1597,8 @@ static class Uplink
             if (mm.Success && def.TryGetValue(mm.Groups[1].Value, out d)) moved[Convert.ToInt32(mm.Groups[2].Value, 16)] = d;
         }
         foreach (KeyValuePair<int, int> kv in moved) m[kv.Key] = kv.Value;
-        foreach (int d in moved.Values) if (!moved.ContainsKey(d)) m[d] = 0;   // the old key of a moved command: nothing
+        foreach (int d in moved.Values) if (!moved.ContainsKey(d) && d != 0x2A) m[d] = 0;   // the old key of a moved command: nothing
+                                                                              // (Shift, the bound's: still Shift, as in TN+)
         return m;
     }
 
@@ -1595,6 +1683,17 @@ static class Uplink
                 keys[m.Groups[1].Value] = plain.Success ? Convert.ToInt32(plain.Value, 16) : -1;    // (with a modifier: not this key alone)
             }
         foreach (KeyValuePair<string, int> kv in keys) if (kv.Value == scan) return kv.Key;
+        // TN+'s second binds on keys (mouse_<command> = PGUP...): Uplink presses the command's key for them
+        Dictionary<string, int> grey = new Dictionary<string, int> {
+            { "PGUP", 0xE049 }, { "PGDN", 0xE051 }, { "HOME", 0xE047 }, { "END", 0xE04F }, { "INS", 0xE052 }, { "DEL", 0xE053 } };
+        if (File.Exists(ini))
+            foreach (string l in File.ReadAllLines(ini))
+            {
+                Match m = Regex.Match(l, @"^\s*mouse_(\w+)\s*=\s*(\w+)\s*$");
+                int sc;
+                if (m.Success && grey.TryGetValue(m.Groups[2].Value.ToUpperInvariant(), out sc) && sc == scan)
+                    return m.Groups[1].Value + "'s second bind";
+            }
         return null;
     }
 

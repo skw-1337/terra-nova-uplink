@@ -27,7 +27,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.5";
+    const string VERSION = "2.6";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
@@ -1771,8 +1771,8 @@ static class Uplink
             Repo(UPLINK_REPO, UPLINK_BRANCH, UplinkDir);
             if (up != null) Set("uplink_sha", up);
             SaveCfg();
-            SelfUpdate();
         }
+        SelfUpdate();
         if (!File.Exists(GodotExe))
         {
             Status("Downloading Godot " + GODOT_VER + " (about 90 MB, once)...", CAmber);
@@ -1833,14 +1833,17 @@ static class Uplink
     }
 
     // a newer launcher in Uplink's files (launcher\TerraNovaUplink.cs, its VERSION): built next to this one, swapped in
-    // by a small batch file once this one has closed, then started again
+    // by a small batch file once this one has closed, then started again. Looked at on every install pass (a player who
+    // said no is asked again the next time the launcher is opened), once per run
+    static bool selfAsked;
     static void SelfUpdate()
     {
         string src = Path.Combine(UplinkDir, "launcher", "TerraNovaUplink.cs");
-        if (!File.Exists(src) || form == null) return;
+        if (selfAsked || !File.Exists(src) || form == null) return;
         Match m = Regex.Match(File.ReadAllText(src), "const string VERSION = \"([0-9.]+)\"");
         Version now, theirs;
         if (!m.Success || !Version.TryParse(VERSION, out now) || !Version.TryParse(m.Groups[1].Value, out theirs) || theirs <= now) return;
+        selfAsked = true;
         Status("Building the new launcher " + theirs + "...", CAmber);
         string dir = Path.GetDirectoryName(src), outExe = Path.Combine(Root, "Terra Nova Uplink.new.exe");
         Process p = Run(Csc(), "/nologo /optimize /target:winexe /win32manifest:app.manifest /win32icon:icon.ico /r:System.Windows.Forms.dll " +

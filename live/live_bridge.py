@@ -75,10 +75,26 @@ A_RUN_WHO = _rv[0] + 2 if _rv else (0x441402 if FR else 0x441352)        # the d
 A_RUN_F = _rv[1] if _rv else (0x3A577E if FR else 0x3A56CE)             # its speed factor: + number * 0x582
 A_RUN_BOUND = _rb[1] if _rb else (0x44140D if FR else 0x44135D)         # the end of the Bound's cooldown
 course = {'adr': 0, 'base': 0, 'ecrit': None}
+A_RUN_TNP = 0x469A08                      # TN+ doing the run itself (its "Run on Shift"): 0x5255 and a count that moves
+tnp_run = {'v': 0, 't': 0.0}
+
+
+def tnp_court():
+    """TN+ has the run in hand: its mark is there and its count moved in the last second (a TN+ stopped dead leaves a
+    mark that no longer moves)"""
+    try:
+        v = struct.unpack('<I', g.read(A_RUN_TNP, 4))[0]
+    except BaseException:
+        return False
+    if v >> 16 != 0x5255: return False
+    now = time.time()
+    if v != tnp_run['v']: tnp_run['v'] = v; tnp_run['t'] = now
+    return now - tnp_run['t'] < 1.0
 
 
 def courir():
     """each turn of the main loop, in a mission: the Bound kept off, the speed factor raised while Shift is down"""
+    if tnp_court(): course['ecrit'] = None; return                        # (TN+ does it: nothing of it is touched)
     try:
         kb = struct.unpack('<I', g.read(KB_PTR, 4))[0]
         if not 0 < kb < 0x400000: return
@@ -99,6 +115,7 @@ def courir():
 
 def courir_fin():
     """the suit's own speed factor back if it is still this bridge's, the Bound free again"""
+    if tnp_court(): course['ecrit'] = None; return
     try:
         if course['adr'] and course['ecrit'] is not None and struct.unpack('<i', g.read(course['adr'], 4))[0] == course['ecrit']:
             g.write(course['adr'], struct.pack('<i', course['base']))

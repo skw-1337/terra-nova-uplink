@@ -2172,6 +2172,11 @@ func _compass_update() -> void:
 	if menu_mode:
 		compass_rect.visible = false
 		return
+	# the strip is the cockpit view's place for it. In the full view (G) the game's bars are there and its compass
+	# lower, over the 3D: the strip redrew the bars, shifted as the view turned (#11). The game's own compass then
+	if hud_win.size.y > 0 and hud_win.intersects(COMPASS):
+		compass_rect.visible = false
+		return
 	var now := Time.get_ticks_msec()
 	var yaw: float = cam_to[1]
 	if absf(angle_difference(compass_yaw, yaw)) > deg_to_rad(0.5):

@@ -844,12 +844,13 @@ def glisser(now):
 
 
 hud_rate, hud_rect, hud_fixe = None, None, {}
+hud_mobile = None                         # the HUD's pixels of the last picture that are not the frame's
 hud_last = None
 
 
 def send_hud():
     import numpy as np
-    global hud_n, hud_copies, hud_rate, hud_rect
+    global hud_n, hud_copies, hud_rate, hud_rect, hud_mobile
     sbuf = d32(SB)
     if sbuf <= 0: return False
     # l'ecran du jeu et l'image HD doivent etre de la MEME image : juste apres un affichage (compteur qui avance),
@@ -888,6 +889,7 @@ def send_hud():
         # images et qui a differe de la 3D pendant ce temps fait partie du cadre (ou d'un element fixe du HUD) : opaque.
         if hud_rect != (fx0, fy0, fw, fh):
             hud_rect, hud_rate = (fx0, fy0, fw, fh), np.full((fh, fw), 0.6, np.float32)
+            hud_mobile = np.zeros((fh, fw), bool)
             hud_fixe.update(val=win.copy(), n=np.zeros((fh, fw), np.int32), diff=np.zeros((fh, fw), bool))
         bouge = win != hud_fixe['val']
         hud_fixe['val'] = win.copy()
@@ -898,8 +900,31 @@ def send_hud():
         # d'ecart (la vue qui bouge vite : saut, pente), pas un element du HUD ; opaque, il montrait l'image du jeu a
         # travers celle d'Uplink. Transparent pour cette image ; un vrai element du HUD s'affiche a la suivante
         eclair = ~same & (hud_rate > 0.9)
+        # ...but a HUD element arriving there (a compass letter while the view turns in the full view) was held back one
+        # picture too, and lost its leading side (#11). Shown at once when it is next to a HUD element that already
+        # moves (opaque in the last picture, not the frame; sideways: 12 pixels, a row above and below) and its colour
+        # is not one the 3D shows right around it (read an instant apart, the view moved a little). Anywhere else as
+        # before: the game's snow flakes are such pixels too. (Too many at a time: a whole picture read apart.)
+        ys, xs = np.nonzero(eclair)
+        if 0 < len(ys) <= 4000:
+            sat = np.zeros((fh + 1, fw + 1), np.int32); sat[1:, 1:] = hud_mobile.cumsum(0).cumsum(1)
+            y0, y1, x0, x1 = np.clip(ys - 1, 0, fh), np.clip(ys + 2, 0, fh), np.clip(xs - 12, 0, fw), np.clip(xs + 13, 0, fw)
+            pres = (sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]) == 0      # (no moving element near: as before)
+            v = win[ys, xs]; ic = np.clip(idx, 0, fww - 1)
+            for dy in range(-3, 4):
+                yy = np.clip(ys + dy, 0, fh - 1)
+                for dx in range(-3, 4):
+                    xx = np.clip(xs + dx, 0, fw - 1)
+                    pres |= ok[xx] & (hd[yy, ic[xx]] == v)
+            eclair[ys[~pres], xs[~pres]] = False
         hud_rate = hud_rate * 0.7 + same * 0.3
-        alpha[fy0:fy0 + fh, fx0:fx0 + fw][((same & (hud_rate > 0.6)) | eclair) & ~cadre] = 0
+        # a pixel the game has just redrawn, now equal to its 3D: a HUD element moved off it (a compass letter while the
+        # view turns in the full view, the lock box, the cursor). Clear at once: waiting for three pictures as for the
+        # frame (whose pixels do not change) left a block of the game's own picture trailing behind each letter (#11)
+        hud_rate[same & bouge] = np.maximum(hud_rate[same & bouge], 0.9)
+        clair = ((same & (hud_rate > 0.6)) | eclair) & ~cadre
+        alpha[fy0:fy0 + fh, fx0:fx0 + fw][clair] = 0
+        hud_mobile = ~clair & ~cadre
     else:
         fx0 = fy0 = fw = fh = 0
     global hud_last                           # coop: the guest's cockpit is made from ours (coop_guest.py)
@@ -908,8 +933,12 @@ def send_hud():
         curseur_hud(scr, alpha)
     hud_n += 1
     s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + g.read(PAL, 768), ('127.0.0.1', 47823))
-    rg = np.dstack([scr, alpha]).tobytes()
+    # what is clear goes without its colour (the viewer never shows it): in the full view (G) the screen is all 3D, and
+    # with its colours the packet went over what one packet holds (66 to 80 KB) as soon as the picture was busy (the
+    # player in the air): not sent, the HUD stayed as it was until he landed. 6 KB without them
+    rg = np.dstack([np.where(alpha == 0, np.uint8(0), scr), alpha]).tobytes()
     z = zlib.compress(rg, 1)                  # cockpit et fenetre transparente : ~10x plus petit, un seul paquet
+    if len(z) > 65000: z = zlib.compress(rg, 6)   # (rare: packed harder, a few milliseconds)
     if len(z) > 65000: return True            # (Windows ne garde que 64 Ko en attente sur la socket)
     s.sendto(b'HUZ' + struct.pack('<I', hud_n) + z, ('127.0.0.1', 47823))
     return True

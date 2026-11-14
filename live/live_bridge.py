@@ -58,6 +58,8 @@ KB_TNP_ACT = 0x469A30                     # its translated keys that are down: 1
 # [player]; sar eax, 16; imul eax, 0x582; mov edx, 0x20000; mov edi, 0x78; mov eax, [eax + factors]") and in the
 # Bound's test ("mov eax, [clock]; cmp eax, [cooldown end]; jbe ...; cmp dword [footsteps], 4").
 RUN = os.environ.get('TN_RUN', '') not in ('', '0')
+SKIP_INTRO = os.environ.get('TN_SKIP_INTRO') == '1'      # the launcher's "Skip the intro videos" (see menu_step)
+T_START = time.time()
 RUN_F = 1.45
 def _run_adr(pat):
     """the addresses a code pattern holds, from the match where they are the game's data (its memory also has a copy
@@ -159,6 +161,19 @@ if '--launch' in sys.argv:
     vpath = os.environ.get('TN_VIEWER', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # le depot
     print('mission', mission, '-> Uplink', res)
     pos = ['--position', os.environ['TN_POS']] if 'TN_POS' in os.environ else []   # tests : fenetre hors ecran
+    # a size as large as the screen (1920 x 1080 chosen on a 1920 x 1080 screen): as a window, Windows keeps its
+    # taskbar over it and the bottom of the picture is cut. Fullscreen then, as the "Fullscreen" choice
+    if res != 'native' and 'TN_POS' not in os.environ:
+        try:
+            import ctypes
+            try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except OSError: pass
+            lw, lh = (int(v) for v in res.lower().split('x'))
+            if lw >= ctypes.windll.user32.GetSystemMetrics(0) and lh >= ctypes.windll.user32.GetSystemMetrics(1):
+                print('Uplink: %s does not fit the screen as a window, fullscreen' % res, flush=True)
+                res = 'native'
+        except Exception:
+            pass
     taille = ['--', '--live', '--native'] if res == 'native' else ['--resolution', res] + pos + ['--', '--live']   # native : plein ecran
     viewer = subprocess.Popen([godot, '--path', vpath] + taille + (['--mission', mission] if mission else []) + (['--hud'] if HUD else []) + (['--play'] if PLAY else []) +
                               (['--coop-host'] if '--guest-remote' in sys.argv else []))
@@ -432,6 +447,29 @@ def rayons(tab):
 
 
 beam_prev, beam_t = False, 0.0
+
+
+# The pieces a blown-up building throws (class 6 type 32). The game draws each as a slab seen from both sides (its
+# routine 0x29B730): a rectangle in one of its textures (index in its table at +0x26 of the effect's record; under 0:
+# no texture, its colour 0x25), its half sizes two numbers from 0 to 7 thirty-seconds of a unit taken from the
+# entity's address (0: a piece that does not show), turned by the entity's three angles (+0x1B, +0x1D, +0x1F).
+#   'DEBR' + number (u16), then per piece: entity (i32), texture (i32), half width, half length (float), the three
+#   angles (u16)
+def debris(tab):
+    if not FUM: return []
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 6 or tab[o + 2] != 32: continue
+        ptr = A_MASTER + o
+        a, b = (((ptr >> 4) + 4) & 7) / 32.0, (((ptr >> 7) + 4) & 7) / 32.0
+        r = g.read(FUM['REC'] + struct.unpack_from('<H', tab, o + 3)[0] * 0x2C + 0x26, 4)
+        if not r or len(r) < 4: continue
+        out.append(struct.pack('<ii2f3H', i, struct.unpack('<i', r)[0], a, b, *struct.unpack_from('<3H', tab, o + 0x1B)))
+    return out
+
+
+debris_prev = False
 
 
 # Dust (class 6 type 29 whose particle system is of kind 7: what a laser, an ion rifle, a pulsar... leaves along its
@@ -1093,6 +1131,20 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
                 if os.environ.get('TN_DEBUG') and nom != getattr(menu_step, 'mov_dbg', None):
                     menu_step.mov_dbg = nom; print('cinematique : %r' % nom, file=sys.stderr, flush=True)
                 tx.sendto(b'MOV' + struct.pack('<I', n) + nom.encode(), ('127.0.0.1', 47823))
+            # The intro skipped (TN_SKIP_INTRO): Esc once on the Looking Glass logo (LGA) and once on the opening film
+            # (OPENERA), at the game's start only. Never after the main menu has come: its own animation is a video too
+            # (HISPLASA) and Esc there closes the game; and "Play Intro" is the player's wish. Once a video: a key that
+            # is lost only lets it play.
+            if SKIP_INTRO and PLAY and not getattr(menu_step, 'intro_over', False):
+                if nom not in ('', 'LGA', 'OPENERA') or mode == 0 or now - T_START > 180.0:
+                    menu_step.intro_over = True
+                elif nom:
+                    vues = menu_step.__dict__.setdefault('intro_vues', {})
+                    vues.setdefault(nom, now)
+                    if vues[nom] and now - vues[nom] > 0.6:
+                        vues[nom] = 0
+                        post_key(0x01, True); time.sleep(0.06); post_key(0x01, False)
+                        print('intro: %s skipped' % nom, flush=True)
         if mode == 0:
             # la mission en cours, redite chaque seconde (le visualiseur ne recharge que si elle change) : un seul
             # envoi au retour dans la 3D pouvait se perdre, ou lire le nom de la mission d'avant
@@ -1458,6 +1510,51 @@ def devant():
     if t_fg: u.AttachThreadInput(t_moi, t_fg, False)
 
 
+# Uplink's window over the taskbar while it fills its screen and is in front (see above: devant). Windows does not
+# always take Godot's fullscreen window for a fullscreen application, and the taskbar ("always on top") stayed over
+# the bottom of the picture. In front: above the "always on top" windows; another window in front: ordinary again.
+def barre_loop():
+    import ctypes, ctypes.wintypes as wt
+    u = ctypes.windll.user32
+    u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    u.MonitorFromWindow.restype = ctypes.c_void_p
+    u.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+    class MI(ctypes.Structure):
+        _fields_ = [('cbSize', wt.DWORD), ('rcMonitor', wt.RECT), ('rcWork', wt.RECT), ('dwFlags', wt.DWORD)]
+    hw = None
+    while True:
+        time.sleep(0.25)
+        try:
+            if viewer is None or viewer.poll() is not None: return
+            if hw is None or not u.IsWindowVisible(hw):
+                trouve = []
+
+                @ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_void_p, ctypes.c_void_p)
+                def cb(h, _):
+                    q = wt.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(q))
+                    if q.value == viewer.pid and u.IsWindowVisible(h): trouve.append(h)
+                    return True
+                u.EnumWindows(cb, 0)
+                hw = trouve[0] if trouve else None
+                if hw is None: continue
+            r = wt.RECT(); u.GetWindowRect(hw, ctypes.byref(r))
+            mi = MI(); mi.cbSize = ctypes.sizeof(MI)
+            if not u.GetMonitorInfoW(u.MonitorFromWindow(hw, 2), ctypes.byref(mi)): continue
+            m = mi.rcMonitor
+            plein = r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom
+            dessus = bool(u.GetWindowLongW(hw, -20) & 8)                  # WS_EX_TOPMOST
+            veut = plein and u.GetForegroundWindow() == hw
+            if veut != dessus:                                           # (no move, no size, never activated)
+                u.SetWindowPos(hw, ctypes.c_void_p(-1 if veut else -2), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            pass
+
+
+if viewer is not None and 'TN_POS' not in os.environ:      # (not the tests' windows, kept off screen)
+    threading.Thread(target=barre_loop, daemon=True).start()
 import atexit
 guest = None
 if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop build): a teammate played by a second player
@@ -1514,8 +1611,22 @@ def tangage():
     return cam
 
 
+# The game left by its Exit: DOS is back (the edition's own text menu, "Press a number key", behind Uplink). Seen by
+# the BIOS video mode (0x449 of DOS's memory): text (3) for a good second after a graphics mode was seen (at the very
+# start the game's loader is still in text mode). The bridge stops then, and the launcher closes the game's window.
+fin_t, fin_graph, fin_texte = 0.0, False, 0.0
 n = 0
 while True:
+    if time.time() - fin_t > 0.25:
+        fin_t = time.time()
+        md = g.read(0x449, 1)
+        if md and md[0] != 3:
+            fin_graph, fin_texte = True, 0.0
+        elif md and fin_graph:
+            fin_texte = fin_texte or fin_t
+            if fin_t - fin_texte > 1.2:
+                print('the game has ended (back to DOS): closing', flush=True)
+                sys.exit(0)
     pid = u16(A_PID + 2)
     e = A_MASTER + pid * 0x25
     x, y, z = i32(e + 0x0F) / 65536, i32(e + 0x13) / 65536, i32(e + 0x17) / 65536
@@ -1546,6 +1657,12 @@ while True:
         s.sendto(pk, ('127.0.0.1', 47821))
         if guest and not guest.remote: guest.s.sendto(pk, ('127.0.0.1', coop_guest.LIVE_PORT))
     bolt_prev = bool(ec)
+    db = debris(tab)                          # a blown-up building's pieces, and an empty packet at their end
+    if db or debris_prev:
+        pk = b'DEBR' + struct.pack('<H', len(db)) + b''.join(db)
+        s.sendto(pk, ('127.0.0.1', 47821))
+        if guest and not guest.remote: guest.s.sendto(pk, ('127.0.0.1', coop_guest.LIVE_PORT))
+    debris_prev = bool(db)
     an = animations(tab)                      # the animated effects' frames, before the entities
     if an or anim_prev:
         pk = b'ANIM' + struct.pack('<H', len(an)) + b''.join(an)

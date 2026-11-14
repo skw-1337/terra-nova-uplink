@@ -1,0 +1,35 @@
+TERRA NOVA UPLINK - WHAT'S NEW
+
+2.7
+- New launcher: Play, Co-op, Maps, In game and Settings each have their page.
+- In game: the frame counter is now off unless you switch it on, and you can
+  cap the pictures per second (60, 120, 144, 240 or your own number).
+- In game: old school look on or off at start, Run instead of Bound, inverted
+  mouse and the crosshair are all in one place.
+- A destroyed building throws pieces of wall, as in the game, instead of
+  yellow dots.
+- The view fades to the game's screens and back (end of a mission, Options)
+  instead of cutting.
+- Fullscreen: the Windows taskbar no longer covers the bottom of the picture,
+  also when the size you picked is the size of your screen.
+- NVIDIA's overlay is sharp again instead of pixelated.
+- Skip the intro videos: a switch on the In game page (off unless you want it).
+- Screenshot: Ctrl+F12 saves the picture in Pictures\Terra Nova Uplink.
+- Ctrl+Shift+F12 shows or hides the frame counter while you play.
+- A new installation starts in Fullscreen.
+- Leaving the game by its Exit closes everything, instead of ending on the
+  edition's DOS menu ("Press a number key").
+- Help: What's new (this page), the log, Report a bug, Discord.
+
+2.6
+- The launcher offers its own update again each time you open it.
+- Full view (G): the status bars stay in place when you turn with the mouse,
+  the HUD keeps following while you are in the air, and the compass letters
+  no longer drag a block behind them.
+
+2.5
+- Mouse wheel, side buttons and PgUp-type keys work as second binds.
+- Crosshair of your choice in look mode: the game's, a dot, or none.
+- Shift + move is the game's Bound again; Run without the leap as an option.
+- Weapons redrawn from the game's own effects.
+- Menus keep their 4:3 shape with sharp pixels.

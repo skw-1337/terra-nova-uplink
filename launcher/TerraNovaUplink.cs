@@ -27,7 +27,7 @@ using Microsoft.Win32;
 static class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.6";
+    const string VERSION = "2.7";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
@@ -59,6 +59,7 @@ static class Uplink
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string ids);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WRect r);
@@ -70,7 +71,7 @@ static class Uplink
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
     static Form form;
     static Font FHead, FBody, FSmall, FIcon;
-    static Label statusLabel, verLabel, sessionLabel, sensLabel;
+    static Label statusLabel, verLabel, sessionLabel, sensLabel, newsLink;
     static Led sessionLed;
     static Led[] leds;
     static Label[] ledText;
@@ -147,6 +148,28 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ window
+    static Panel[] pages;
+    static Tile[] navs;
+    static Tile helpBtn;
+    static Tick fpsBox, oldBox, runTick, introBox;
+    static Label fpsKeyLabel, shotKeyLabel;
+    static ComboBox capBox;
+    static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Settings" };
+    static readonly string[] PAGE_ICONS = { "", "", "", "", "" };
+    const int SB = 150, PW = 520, PH = 300;        // the side bar's width, a page's inner width and height
+
+    static void ShowPage(int k)
+    {
+        for (int i = 0; i < pages.Length; i++)
+        {
+            pages[i].Visible = i == k;
+            navs[i].Fill = navs[i].Line = i == k ? Color.FromArgb(18, 51, 43) : CPanel;
+            navs[i].Ink = i == k ? Color.FromArgb(93, 202, 165) : CDim;
+            navs[i].Invalidate();
+        }
+        Set("page", k.ToString());
+    }
+
     static void Build()
     {
         FHead = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 13f, FontStyle.Regular);
@@ -163,23 +186,30 @@ static class Uplink
         form.ForeColor = CText;
         form.Font = FBody;
         try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        int W = 652, X = 20, y = 16;
+        int W = PW, X = 20;
 
-        // title: TERRA NOVA · UPLINK, an amber line under it
-        Label t1 = new Label { Text = "TERRA NOVA", Font = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 22f, FontStyle.Regular),
-            ForeColor = CAmber, AutoSize = true, Location = new Point(X - 2, y) };
-        form.Controls.Add(t1);
-        Label t2 = new Label { Text = "·  UPLINK", Font = t1.Font, ForeColor = CText, AutoSize = true, Location = new Point(t1.Right + 4, y) };
-        form.Controls.Add(t2);
-        form.Controls.Add(new Panel { BackColor = CAmber, Location = new Point(X, y + 44), Size = new Size(130, 2) });
-        toolsBtn = new Tile("Tools", "\uE90F", CButton, CButtonLine, CText) { Location = new Point(X + W - 96, y + 6), Size = new Size(96, 32), Small = true };
-        toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height)); };
-        form.Controls.Add(toolsBtn);
-        y += 60;
+        // the side bar: the title, then one entry per page
+        side = new Panel { Location = new Point(0, 0), Size = new Size(SB, PH + 106), BackColor = CPanel };
+        form.Controls.Add(side);
+        side.Controls.Add(new Label { Text = "TERRA NOVA", Font = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 14f, FontStyle.Regular),
+            ForeColor = CAmber, BackColor = CPanel, AutoSize = true, Location = new Point(12, 14) });
+        side.Controls.Add(new Label { Text = "Uplink " + VERSION, Font = FSmall, ForeColor = CDim, BackColor = CPanel, AutoSize = true, Location = new Point(14, 40) });
+        side.Controls.Add(new Panel { BackColor = CAmber, Location = new Point(14, 62), Size = new Size(60, 2) });
+        pages = new Panel[PAGES.Length]; navs = new Tile[PAGES.Length];
+        for (int i = 0; i < PAGES.Length; i++)
+        {
+            int k = i;
+            navs[i] = new Tile(PAGES[i], PAGE_ICONS[i], CPanel, CPanel, CDim) { Location = new Point(8, 80 + i * 38), Size = new Size(SB - 16, 32), Small = true };
+            navs[i].Click += delegate { ShowPage(k); };
+            side.Controls.Add(navs[i]);
+            pages[i] = new Panel { Location = new Point(SB, 0), Size = new Size(W + 2 * X, PH), BackColor = CBack, Visible = false };
+            form.Controls.Add(pages[i]);
+        }
 
-        // the game: every Terra Nova found on the PC (GOG, Steam, other drives, the ones added with Browse), one picked
-        Box gp = new Box { Location = new Point(X, y), Size = new Size(W, 40) };
-        form.Controls.Add(gp);
+        // ---- Play: the game (every Terra Nova found on the PC, one picked), the one big button, where to start
+        Panel pg = pages[0];
+        Box gp = new Box { Location = new Point(X, 16), Size = new Size(W, 40) };
+        pg.Controls.Add(gp);
         gameBox = Combo(new Point(10, 8), W - 116);
         gameBox.DrawMode = DrawMode.OwnerDrawFixed;
         gameBox.ItemHeight = 18;
@@ -192,136 +222,242 @@ static class Uplink
         gameBtn.Click += delegate { PickGame(); };
         gp.Controls.Add(gameBtn);
         FillGames();
-        y += 52;
-
-        // the four actions: PLAY | HOST A GAME, JOIN A FRIEND (+ co-op options) | MAP VIEWER
-        int third = (W - 20) / 4;
-        playBtn = new Tile("PLAY", "\uE768", COrange, Color.FromArgb(236, 146, 44), Color.FromArgb(30, 14, 0)) { Location = new Point(X, y), Size = new Size(third, 104) };
+        playBtn = new Tile("PLAY", "", COrange, Color.FromArgb(236, 146, 44), Color.FromArgb(30, 14, 0)) { Location = new Point(X, 68), Size = new Size(W, 92) };
         playBtn.Click += delegate { Start(Mode.Play); };
-        form.Controls.Add(playBtn);
-        Box cp = new Box { Location = new Point(X + third + 10, y), Size = new Size(2 * third, 104) };
-        form.Controls.Add(cp);
-        int half = (2 * third - 24) / 2;
-        hostBtn = new Tile("HOST A GAME", "\uE716", CButton, CTeal, CText) { Location = new Point(8, 8), Size = new Size(half, 62), IconColor = Color.FromArgb(93, 202, 165) };
-        hostBtn.Click += delegate { Start(Mode.Host); };
-        cp.Controls.Add(hostBtn);
-        joinBtn = new Tile("JOIN A FRIEND", "\uE8FA", CButton, CTeal, CText) { Location = new Point(16 + half, 8), Size = new Size(half, 62), IconColor = Color.FromArgb(93, 202, 165) };
-        joinBtn.Click += delegate { Start(Mode.Join); };
-        cp.Controls.Add(joinBtn);
-        modeCoop = new Dot { Text = "Squad", AutoSize = true, Location = new Point(40, 78), ForeColor = CDim, BackColor = CPanel };
-        modeVs = new Dot { Text = "1v1", AutoSize = true, Location = new Point(118, 78), ForeColor = CDim, BackColor = CPanel };
-        padBox = new Tick { Text = "Gamepad (guest)", AutoSize = true, Location = new Point(180, 78), ForeColor = CDim, BackColor = CPanel };
-        cp.Controls.Add(modeCoop); cp.Controls.Add(modeVs); cp.Controls.Add(padBox);
-        mapBtn = new Tile("MAP VIEWER", "\uE707", CBlue, Color.FromArgb(47, 92, 196), Color.FromArgb(230, 238, 252)) { Location = new Point(X + 3 * third + 20, y), Size = new Size(W - 3 * third - 20, 104) };
-        mapBtn.Click += delegate { Start(Mode.Maps); };
-        form.Controls.Add(mapBtn);
-        y += 116;
-
-        // settings shared by every mode
-        Box op = new Box { Location = new Point(X, y), Size = new Size(W, 184) };
-        form.Controls.Add(op);
-        op.Controls.Add(Caption("START AT", 12, 15));
+        pg.Controls.Add(playBtn);
+        Box sp = new Box { Location = new Point(X, 172), Size = new Size(W, 44) };
+        pg.Controls.Add(sp);
+        sp.Controls.Add(Caption("START AT", 12, 15));
         missionBox = Combo(new Point(96, 10), W - 210);
         missionBox.MaxDropDownItems = 20;
-        op.Controls.Add(missionBox);
+        sp.Controls.Add(missionBox);
         FillMissions();
         Tile savesBtn = new Tile("Saves", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 8), Size = new Size(94, 28), Small = true };
         savesBtn.Click += delegate { Saves(); };
-        op.Controls.Add(savesBtn);
-        op.Controls.Add(Caption("WINDOW", 12, 49));
-        sizeBox = Combo(new Point(96, 44), W - 106);
-        sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" });
-        op.Controls.Add(sizeBox);
-        op.Controls.Add(Caption("MOUSE", 12, 84));
-        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 78), Size = new Size(W - 442, 30),
-            BackColor = CPanel, AutoSize = false };
-        sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
-        op.Controls.Add(sensBar);
-        sensLabel = new Label { ForeColor = CText, BackColor = CPanel, AutoSize = true, Location = new Point(W - 346, 84) };
-        op.Controls.Add(sensLabel);
-        invertBox = new Tick { Text = "Invert", AutoSize = true, Location = new Point(W - 298, 82), ForeColor = CDim, BackColor = CPanel };
-        op.Controls.Add(invertBox);
-        op.Controls.Add(Caption("CROSSHAIR", W - 222, 84));      // (the look mode's: the game's own, a dot, or none)
-        crossBox = Combo(new Point(W - 140, 79), 130);
+        sp.Controls.Add(savesBtn);
+
+        // ---- Co-op: host or join, the mode, the guest's gamepad; the session's line while one runs
+        pg = pages[1];
+        Box cp = new Box { Location = new Point(X, 16), Size = new Size(W, 118) };
+        pg.Controls.Add(cp);
+        int half = (W - 24) / 2;
+        hostBtn = new Tile("HOST A GAME", "", CButton, CTeal, CText) { Location = new Point(8, 8), Size = new Size(half, 72), IconColor = Color.FromArgb(93, 202, 165) };
+        hostBtn.Click += delegate { Start(Mode.Host); };
+        cp.Controls.Add(hostBtn);
+        joinBtn = new Tile("JOIN A FRIEND", "", CButton, CTeal, CText) { Location = new Point(16 + half, 8), Size = new Size(half, 72), IconColor = Color.FromArgb(93, 202, 165) };
+        joinBtn.Click += delegate { Start(Mode.Join); };
+        cp.Controls.Add(joinBtn);
+        modeCoop = new Dot { Text = "Squad", AutoSize = true, Location = new Point(14, 90), ForeColor = CDim, BackColor = CPanel };
+        modeVs = new Dot { Text = "1v1", AutoSize = true, Location = new Point(92, 90), ForeColor = CDim, BackColor = CPanel };
+        padBox = new Tick { Text = "Gamepad (guest)", AutoSize = true, Location = new Point(160, 90), ForeColor = CDim, BackColor = CPanel };
+        cp.Controls.Add(modeCoop); cp.Controls.Add(modeVs); cp.Controls.Add(padBox);
+        sessionRow = new Box { Location = new Point(X, 146), Size = new Size(W, 34), Visible = false };
+        pg.Controls.Add(sessionRow);
+        sessionLed = new Led { Location = new Point(12, 12), Size = new Size(10, 10), On = CDim };
+        sessionRow.Controls.Add(sessionLed);
+        sessionLabel = new Label { Location = new Point(30, 8), Size = new Size(W - 40, 20), ForeColor = CText, BackColor = CPanel, Text = "No session." };
+        sessionRow.Controls.Add(sessionLabel);
+
+        // ---- Maps
+        pg = pages[2];
+        mapBtn = new Tile("MAP VIEWER", "", CBlue, Color.FromArgb(47, 92, 196), Color.FromArgb(230, 238, 252)) { Location = new Point(X, 16), Size = new Size(W, 92) };
+        mapBtn.Click += delegate { Start(Mode.Maps); };
+        pg.Controls.Add(mapBtn);
+        pg.Controls.Add(new Label { Text = "Every map of the game in 3D, without starting the game.", AutoSize = true, Location = new Point(X + 2, 118), ForeColor = CDim, Font = FSmall });
+
+        // ---- In game: what shows and how it plays in a mission, one switch a line
+        pg = pages[3];
+        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 254) };
+        pg.Controls.Add(ig);
+        int ry = 10, RH = 34;
+        fpsBox = new Tick { Text = "Frame counter (top right)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(fpsBox);
+        fpsKeyLabel = new Label { AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
+        ig.Controls.Add(fpsKeyLabel); ry += RH;
+        ig.Controls.Add(Caption("FRAME LIMIT", 12, ry + 6));
+        capBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Location = new Point(120, ry + 1), Size = new Size(130, 24), BackColor = CButton, ForeColor = CText, FlatStyle = FlatStyle.Flat };
+        capBox.Items.AddRange(new object[] { "Unlimited", "60", "120", "144", "240" });
+        ig.Controls.Add(capBox);
+        ig.Controls.Add(new Label { Text = "pictures a second (or type your own)", AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall });
+        ry += RH;
+        ig.Controls.Add(Caption("CROSSHAIR", 12, ry + 6));       // (the look mode's: the game's own, a dot, or none)
+        crossBox = Combo(new Point(120, ry + 1), 130);
         crossBox.Items.AddRange(new object[] { "The game's", "A dot", "None" });
-        op.Controls.Add(crossBox);
-        // the keys: Uplink's own two (the old school look and its pixel size: click, press the key), then the game's
-        op.Controls.Add(Caption("KEYS", 12, 118));
-        oldKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(96, 111), Size = new Size(214, 28), Small = true };
+        ig.Controls.Add(crossBox); ry += RH;
+        oldBox = new Tick { Text = "Old school look at start", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(oldBox);
+        shotKeyLabel = new Label { AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
+        ig.Controls.Add(shotKeyLabel); ry += RH;
+        // Uplink's own two keys (the old school look and its pixel size: click, press the key)
+        ig.Controls.Add(Caption("ITS KEYS", 30, ry + 6));          // (the old school look's, right under its switch)
+        oldKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(120, ry), Size = new Size(190, 28), Small = true };
         oldKeyBtn.Click += delegate { AskKey(false); };
-        op.Controls.Add(oldKeyBtn);
-        sharpKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(318, 111), Size = new Size(214, 28), Small = true };
+        ig.Controls.Add(oldKeyBtn);
+        sharpKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(318, ry), Size = new Size(190, 28), Small = true };
         sharpKeyBtn.Click += delegate { AskKey(true); };
-        op.Controls.Add(sharpKeyBtn);
-        Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 111), Size = new Size(94, 28), Small = true };
-        keysBtn.Click += delegate { GameKeys(); };
-        op.Controls.Add(keysBtn);
+        ig.Controls.Add(sharpKeyBtn); ry += RH;
         // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
         // leap at the same pace (Uplink's bridge: TN_RUN)
-        op.Controls.Add(Caption("SHIFT", 12, 152));
-        runBox = Combo(new Point(96, 147), W - 106);
-        runBox.Items.AddRange(new object[] { "Bound: the game's own, a leap every four strides", "Run: no leap, about the same pace" });
-        op.Controls.Add(runBox);
+        runTick = new Tick { Text = "Run instead of Bound (Shift + move, no leap)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(runTick); ry += RH;
+        invertBox = new Tick { Text = "Invert mouse (up / down)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(invertBox);
+        // the Looking Glass logo and the opening film skipped at the game's start (the bridge presses Esc on them, once each)
+        introBox = new Tick { Text = "Skip the intro videos", AutoSize = true, Location = new Point(270, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(introBox);
+        runBox = new ComboBox();                                 // (kept for the code that reads it: the switch drives it)
+        runBox.Items.AddRange(new object[] { "Bound", "Run" });
+        runTick.CheckedChanged += delegate { runBox.SelectedIndex = runTick.Checked ? 1 : 0; };
+
+        // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed
+        pg = pages[4];
+        Box st = new Box { Location = new Point(X, 16), Size = new Size(W, 116) };
+        pg.Controls.Add(st);
+        st.Controls.Add(Caption("WINDOW", 12, 15));
+        sizeBox = Combo(new Point(96, 10), W - 106);
+        sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" });
+        st.Controls.Add(sizeBox);
+        st.Controls.Add(Caption("MOUSE", 12, 50));
+        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 44), Size = new Size(W - 170, 30),
+            BackColor = CPanel, AutoSize = false };
+        sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
+        st.Controls.Add(sensBar);
+        sensLabel = new Label { ForeColor = CText, BackColor = CPanel, AutoSize = true, Location = new Point(W - 70, 50) };
+        st.Controls.Add(sensLabel);
+        Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(96, 78), Size = new Size(120, 28), Small = true };
+        keysBtn.Click += delegate { GameKeys(); };
+        st.Controls.Add(keysBtn);
+        toolsBtn = new Tile("Tools", "", CButton, CButtonLine, CText) { Location = new Point(224, 78), Size = new Size(110, 28), Small = true };
+        toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height)); };
+        st.Controls.Add(toolsBtn);
         KeyLabels();
         LoadOptions();
-        y += 196;
-
         // what is installed: green lights
         string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus", "TN+ co-op build", "Python", "Steam (co-op only)" };
         leds = new Led[names.Length]; ledText = new Label[names.Length];
         for (int i = 0; i < names.Length; i++)
         {
-            int cx = X + 2 + (i % 3) * (W / 3), cy = y + (i / 3) * 22;
+            int cx = X + 2 + (i % 3) * (W / 3), cy = 148 + (i / 3) * 22;
             leds[i] = new Led { Location = new Point(cx, cy + 5), Size = new Size(9, 9) };
             ledText[i] = new Label { AutoSize = true, Location = new Point(cx + 14, cy), ForeColor = CDim, Font = FSmall, Tag = names[i], Text = names[i] };
-            form.Controls.Add(leds[i]); form.Controls.Add(ledText[i]);
+            pg.Controls.Add(leds[i]); pg.Controls.Add(ledText[i]);
         }
-        y += 50;
 
-        // the session (co-op): what Uplink says (lobby open, friend connected, ping...), shown while one runs
-        sessionRow = new Box { Location = new Point(X, y), Size = new Size(W, 34), Visible = false };
-        form.Controls.Add(sessionRow);
-        sessionLed = new Led { Location = new Point(12, 12), Size = new Size(10, 10), On = CDim };
-        sessionRow.Controls.Add(sessionLed);
-        sessionLabel = new Label { Location = new Point(30, 8), Size = new Size(W - 40, 20), ForeColor = CText, BackColor = CPanel, Text = "No session." };
-        sessionRow.Controls.Add(sessionLabel);
-        sessionTop = y;
-
-        // below it (moved down while the session row shows): the status, the footer, the log
-        lower = new Panel { Location = new Point(0, y), Size = new Size(W + 2 * X, 106), BackColor = CBack };
+        // under the pages, always there: the status, the footer (update state | Help, Stop), the log
+        lower = new Panel { Location = new Point(SB, PH), Size = new Size(W + 2 * X, 106), BackColor = CBack };
         form.Controls.Add(lower);
         statusLabel = new Label { Location = new Point(X, 0), Size = new Size(W, 40), ForeColor = CAmber, Font = new Font("Segoe UI Semibold", 10f) };
         lower.Controls.Add(statusLabel);
         bar = new ProgressBar { Location = new Point(X, 42), Size = new Size(W, 4), Style = ProgressBarStyle.Continuous, Visible = false };
         lower.Controls.Add(bar);
-        // footer: update state, Discord | Log, Report a bug, Stop
         lower.Controls.Add(new Panel { BackColor = CLine, Location = new Point(X, 52), Size = new Size(W, 1) });
         verLabel = new Label { AutoSize = true, Location = new Point(X, 68), ForeColor = CDim, Font = FSmall };
         lower.Controls.Add(verLabel);
-        LinkLabel dc = new LinkLabel { Text = "Discord", AutoSize = true, Location = new Point(X + 250, 68), Font = FSmall,
-            LinkColor = CAmber, ActiveLinkColor = Color.White, VisitedLinkColor = CAmber };
-        dc.LinkClicked += delegate { try { Process.Start(DISCORD); } catch { } };
-        lower.Controls.Add(dc);
-        logBtn = new Tile("Log", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 308, 62), Size = new Size(70, 30), Small = true };
-        logBtn.Click += delegate { logBox.Visible = !logBox.Visible; Fit(); if (logBox.Visible) { logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); } };
-        lower.Controls.Add(logBtn);
-        reportBtn = new Tile("Report a bug", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 230, 62), Size = new Size(124, 30), Small = true };
-        reportBtn.Click += delegate { Report(); };
-        lower.Controls.Add(reportBtn);
+        // What's new, right beside the update state (in the Help menu only, nobody saw it)
+        newsLink = new Label { Text = "What's new", AutoSize = true, Location = new Point(X + 14, 68), ForeColor = CAmber,
+            Font = new Font(FSmall, FontStyle.Underline), Cursor = Cursors.Hand };
+        newsLink.Click += delegate { WhatsNew(); };
+        lower.Controls.Add(newsLink);
+        verLabel.SizeChanged += delegate { newsLink.Left = verLabel.Right + 14; };
+        helpBtn = new Tile("Help", "", CButton, CButtonLine, CText) { Location = new Point(X + W - 196, 62), Size = new Size(92, 30), Small = true };
+        helpBtn.Click += delegate { HelpMenu().Show(helpBtn, new Point(0, -helpBtn.Height * 4 - 8)); };
+        lower.Controls.Add(helpBtn);
+        logBtn = new Tile("Log", null, CButton, CButtonLine, CText);      // (not shown: in Help)
+        reportBtn = new Tile("Report a bug", null, CButton, CButtonLine, CText);
         stopBtn = new Tile("Stop", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 96, 62), Size = new Size(96, 30), Small = true };
         stopBtn.Click += delegate { new Thread(StopAll) { IsBackground = true }.Start(); };
         lower.Controls.Add(stopBtn);
         logBox = new TextBox { Location = new Point(X, 106), Size = new Size(W, 140), Multiline = true, ReadOnly = true, Visible = false,
             ScrollBars = ScrollBars.Vertical, BackColor = CPanel, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
         lower.Controls.Add(logBox);
+        int pg0;
+        ShowPage(int.TryParse(Cfg("page"), out pg0) && pg0 >= 0 && pg0 < PAGES.Length ? pg0 : 0);
         Fit();
+        // a new Uplink since the last look at What's new: said once, on the status line
+        if (Cfg("uplink_sha") != "" && Cfg("news_seen") != Cfg("uplink_sha") && File.Exists(NewsFile))
+        {
+            statusLabel.Text = "Updated: see What's new, below."; statusLabel.ForeColor = CGreen;
+        }
+    }
+
+    static Panel side;
+    static string NewsFile { get { return Path.Combine(UplinkDir, "WHATSNEW.txt"); } }
+
+    static void ToggleLog()
+    {
+        logBox.Visible = !logBox.Visible; Fit();
+        if (logBox.Visible) { logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); }
+    }
+
+    static ContextMenuStrip HelpMenu()
+    {
+        ContextMenuStrip m = new ContextMenuStrip();
+        m.Items.Add("What's new", null, delegate { WhatsNew(); });
+        m.Items.Add(logBox.Visible ? "Hide the log" : "Show the log", null, delegate { ToggleLog(); });
+        m.Items.Add("Report a bug (makes a zip with the logs)", null, delegate { Report(); });
+        m.Items.Add("Discord", null, delegate { try { Process.Start(DISCORD); } catch { } });
+        return m;
+    }
+
+    // what changed, version by version (WHATSNEW.txt of the installed Uplink: a version number alone on its line, then
+    // its "- " lines, continued on lines that start with spaces): can be read again at any time
+    static void WhatsNew()
+    {
+        string text = "";
+        try { if (File.Exists(NewsFile)) text = File.ReadAllText(NewsFile).Replace("\r\n", "\n"); } catch { }
+        Form f = new Form { Text = "What's new", StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(600, 470), BackColor = CBack,
+            FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false };
+        try { f.Icon = form.Icon; } catch { }
+        Font head = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 18f, FontStyle.Regular);
+        f.Controls.Add(new Label { Text = "WHAT'S NEW", Font = head, ForeColor = CAmber, AutoSize = true, Location = new Point(22, 16) });
+        f.Controls.Add(new Panel { BackColor = CAmber, Location = new Point(24, 54), Size = new Size(90, 2) });
+        Box box = new Box { Location = new Point(20, 70), Size = new Size(560, 334) };
+        f.Controls.Add(box);
+        RichTextBox rt = new RichTextBox { ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = CPanel, ForeColor = CText, DetectUrls = false,
+            Location = new Point(16, 12), Size = new Size(536, 310), ScrollBars = RichTextBoxScrollBars.Vertical, TabStop = false, Cursor = Cursors.Default };
+        box.Controls.Add(rt);
+        try { SetWindowTheme(rt.Handle, "DarkMode_Explorer", null); } catch { }   // (its scrollbar: dark, not Windows' white one)
+        Font fVer = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 13f, FontStyle.Regular), fItem = new Font("Segoe UI", 10f);
+        List<string> items = new List<string>();
+        Action flush = delegate {
+            foreach (string it in items)
+            {
+                rt.SelectionFont = fItem; rt.SelectionColor = CText; rt.SelectionIndent = 8; rt.SelectionHangingIndent = 16;
+                rt.AppendText("\u2022  " + it + "\n");
+            }
+            items.Clear();
+        };
+        bool any = false;
+        foreach (string raw in text.Split('\n'))
+        {
+            string l = raw.TrimEnd();
+            if (l.StartsWith("- ")) items.Add(l.Substring(2).Trim());
+            else if (l.StartsWith(" ") && items.Count > 0) items[items.Count - 1] += " " + l.Trim();
+            else if (Regex.IsMatch(l, "^[0-9]+([.][0-9]+)+$"))
+            {
+                flush();
+                rt.SelectionIndent = 0; rt.SelectionHangingIndent = 0;
+                if (any) { rt.SelectionFont = new Font("Segoe UI", 5f); rt.AppendText("\n"); }
+                rt.SelectionFont = fVer; rt.SelectionColor = CAmber; rt.AppendText("Version " + l + "\n");
+                any = true;
+            }
+        }
+        flush();
+        if (!any) { rt.SelectionFont = fItem; rt.SelectionColor = CDim; rt.AppendText("Nothing to show yet: start once so that Uplink is downloaded."); }
+        rt.SelectionStart = 0; rt.SelectionLength = 0;
+        Tile ok = new Tile("Close", null, CButton, CButtonLine, CText) { Location = new Point(600 - 20 - 110, 420), Size = new Size(110, 32), Small = true };
+        ok.Click += delegate { f.Close(); };
+        f.Controls.Add(ok);
+        f.Shown += delegate { rt.SelectionStart = 0; rt.ScrollToCaret(); ok.Focus(); };
+        Set("news_seen", Cfg("uplink_sha")); SaveCfg();
+        f.ShowDialog(form);
     }
 
     static void Fit()
     {
-        lower.Top = sessionTop + (sessionRow.Visible ? 42 : 0);
         lower.Height = 106 + (logBox.Visible ? 152 : 0);
-        form.ClientSize = new Size(lower.Width, lower.Bottom);
+        form.ClientSize = new Size(SB + lower.Width, PH + lower.Height);
+        side.Height = form.ClientSize.Height;
     }
 
     static Font Pick(string[] families, float size, FontStyle style)
@@ -532,7 +668,7 @@ static class Uplink
     {
         (Cfg("mode") == "versus" ? modeVs : modeCoop).Checked = true;
         int s = Array.IndexOf(SIZES, Cfg("window"));
-        sizeBox.SelectedIndex = s >= 0 ? s : 1;
+        sizeBox.SelectedIndex = s >= 0 ? s : 3;                  // (nothing chosen yet, a new installation: Fullscreen)
         double sens;
         sensBar.Value = double.TryParse(Cfg("mouse"), NumberStyles.Float, CultureInfo.InvariantCulture, out sens) ?
             Math.Max(2, Math.Min(30, (int)Math.Round(sens * 10))) : 10;
@@ -540,6 +676,12 @@ static class Uplink
         invertBox.Checked = Cfg("invert_y") == "1";
         crossBox.SelectedIndex = Math.Max(0, Array.IndexOf(CROSSHAIRS, Cfg("crosshair")));
         runBox.SelectedIndex = Cfg("shift_run") == "1" ? 1 : 0;
+        runTick.Checked = runBox.SelectedIndex == 1;
+        fpsBox.Checked = Cfg("fps_counter") == "1";              // (off unless asked for: ticket #13)
+        introBox.Checked = Cfg("skip_intro") == "1";
+        oldBox.Checked = Cfg("old_school") != "0";
+        int cap;
+        capBox.Text = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap.ToString() : "Unlimited";
         padBox.Checked = Cfg("gamepad") != "0";
         int mi;
         string start = Cfg("start_at") != "" ? Cfg("start_at") : Cfg("lab_mission");   // (1.x: the lab's selector)
@@ -555,6 +697,11 @@ static class Uplink
         Set("invert_y", invertBox.Checked ? "1" : "0");
         Set("crosshair", CROSSHAIRS[Math.Max(0, crossBox.SelectedIndex)]);
         Set("shift_run", runBox.SelectedIndex == 1 ? "1" : "0");
+        Set("fps_counter", fpsBox.Checked ? "1" : "0");
+        Set("skip_intro", introBox.Checked ? "1" : "0");
+        Set("old_school", oldBox.Checked ? "1" : "0");
+        int cap;
+        Set("fps_cap", int.TryParse(capBox.Text.Trim(), out cap) && cap > 0 ? Math.Max(20, Math.Min(1000, cap)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
         Set("start_at", Math.Max(0, missionBox.SelectedIndex).ToString());
         SaveCfg();
@@ -809,7 +956,10 @@ static class Uplink
             // over Uplink at each video mode change): on the menus the bridge reads the game's screen from this window
             string conf = Path.Combine(dir, host ? "coop_host.conf" : "uplink_live.conf");
             File.WriteAllLines(conf, new[] { "# Terra Nova Uplink: the game in a window behind Uplink's (Uplink draws it)",
-                "[sdl]", "fullscreen = false", "windowresolution = " + (Cfg("window") == "native" || Cfg("window") == "" ? "1696x960" : Cfg("window")) });
+                // (drawn by software: with Direct3D or OpenGL NVIDIA's overlay hooked this hidden window, and its notification
+                // came out in the picture Uplink copies, pixelated. The output is named too: TN+'s own conf says opengl when
+                // its scaling is "sharp", and the texture renderer is then ignored)
+                "[sdl]", "fullscreen = false", "output = texturenb", "texture_renderer = software", "windowresolution = " + (Cfg("window") == "native" || Cfg("window") == "" ? "1696x960" : Cfg("window")) });
             tnp = Run(exe, "--launch --conf \"" + conf + "\"", dir, null, false);
         }
         else Log("the game is already running: Uplink attaches to it (it needs TN+ Display HD 848x480)");
@@ -846,7 +996,7 @@ static class Uplink
         }
         if (!stopping)
         {
-            Status(tnp != null && CloseOurGame() ? "Uplink was closed: the game too." :
+            Status(tnp != null && CloseOurGame() ? "Closed." :
                 Process.GetProcessesByName("dosbox-staging").Length == 0 ? "The game was closed." :
                 "Uplink was closed. Click " + (host ? "HOST A GAME" : "PLAY") + " to open it again.", CText);
             Session("No session.", CDim);
@@ -983,9 +1133,15 @@ static class Uplink
         env["TN_KEY_FREELOOK"] = FreelookScan().ToString("X2");
         env["TN_KEY_OLDSCHOOL"] = OldKey();
         env["TN_KEY_SHARP"] = SharpKey();
+        env["TN_KEY_SHOT"] = ShotKey();
+        env["TN_KEY_FPS"] = FpsKey();
+        env["TN_SKIP_INTRO"] = Cfg("skip_intro") == "1" ? "1" : "0";
         env["TN_BINDS"] = Binds();
         env["TN_CROSSHAIR"] = Cfg("crosshair");
         env["TN_RUN"] = Cfg("shift_run") == "1" ? "1" : "0";
+        env["TN_FPS"] = Cfg("fps_counter") == "1" ? "1" : "0";
+        env["TN_FPS_CAP"] = Cfg("fps_cap") == "" ? "0" : Cfg("fps_cap");
+        env["TN_OLDSCHOOL"] = Cfg("old_school") == "0" ? "0" : "1";
         env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         return env;
     }
@@ -1643,6 +1799,22 @@ static class Uplink
         return o.Contains("SHIFT+") ? "" : "SHIFT+" + o;      // not set: Shift with the look's key (as Uplink does by itself)
     }
 
+    // Two more keys of Uplink's window: a screenshot (Ctrl with the look's key) and the frame counter on / off
+    // (Ctrl+Shift with it); none when the look's own key already has a modifier (key_shot, key_fps in the ini: another)
+    static string ShotKey()
+    {
+        string k = Cfg("key_shot").ToUpperInvariant();
+        if (KeyOk(k)) return k;
+        return OldKey().Contains("+") ? "" : "CTRL+" + OldKey();
+    }
+
+    static string FpsKey()
+    {
+        string k = Cfg("key_fps").ToUpperInvariant();
+        if (KeyOk(k)) return k;
+        return OldKey().Contains("+") ? "" : "CTRL+SHIFT+" + OldKey();
+    }
+
     // "SHIFT+58" -> "Shift+F12", the key named as this keyboard prints it
     static string KeyName(string spec)
     {
@@ -1655,9 +1827,11 @@ static class Uplink
 
     static void KeyLabels()
     {
-        oldKeyBtn.Text = "Old school look: " + KeyName(OldKey());
-        sharpKeyBtn.Text = "Its pixel size: " + KeyName(SharpKey());
+        oldKeyBtn.Text = "On / off in game: " + KeyName(OldKey());
+        sharpKeyBtn.Text = "Bigger / finer pixels: " + KeyName(SharpKey());
         oldKeyBtn.Invalidate(); sharpKeyBtn.Invalidate();
+        fpsKeyLabel.Text = FpsKey() != "" ? "in game: " + KeyName(FpsKey()) : "";
+        shotKeyLabel.Text = ShotKey() != "" ? "Screenshot: " + KeyName(ShotKey()) + "  (saved in Pictures)" : "";
     }
 
     // the keys Uplink's window knows (viewer.gd, SCANCODES), less the modifiers and the three the question keeps
@@ -1828,7 +2002,7 @@ static class Uplink
             if (up == null) { verLabel.Text = "●  Couldn't check for updates (offline?)"; verLabel.ForeColor = CDim; }
             else if (Cfg("uplink_sha") == "") { verLabel.Text = "●  Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.ForeColor = CAmber; }
             else if (up == Cfg("uplink_sha")) { verLabel.Text = "●  Up to date"; verLabel.ForeColor = CGreen; }
-            else { verLabel.Text = "●  Update available: installed when you start"; verLabel.ForeColor = CAmber; }
+            else { verLabel.Text = "●  Update available at the next start"; verLabel.ForeColor = CAmber; }
         });
     }
 

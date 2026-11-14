@@ -285,6 +285,12 @@ func _ready() -> void:
 		fps_label.add_theme_color_override("font_outline_color", Color.BLACK)
 		fps_label.add_theme_constant_override("outline_size", 4)
 		fl.add_child(fps_label)
+		# the launcher's "In game" switches: the counter is off unless asked for (ticket #13), and a cap on the pictures
+		# a second (the view ran as fast as the card goes: 240 a second for nothing on a fast one)
+		fps_label.visible = OS.get_environment("TN_FPS") == "1"
+		var cap := int(OS.get_environment("TN_FPS_CAP"))
+		if cap > 0:
+			Engine.max_fps = clampi(cap, 20, 1000)
 		_make_oldschool()
 		var il := CanvasLayer.new()                     # the game's infrared view, under the old school mode and the HUD
 		il.layer = -2
@@ -1860,7 +1866,7 @@ func _oldschool_palette() -> void:
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 		if oldschool_key == "":
-			oldschool_rect.visible = live and not ("--smooth" in OS.get_cmdline_user_args())
+			oldschool_rect.visible = live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0"
 			_apply_look()
 		oldschool_key = pal_key
 
@@ -2066,6 +2072,7 @@ void fragment() {
 	# window pixel ("sharp bilinear"), so that uneven scales do not give uneven pixels
 	var msh := Shader.new()
 	msh.code = """shader_type canvas_item;
+uniform float fade = 1.0;
 void fragment() {
 	vec2 src = vec2(textureSize(TEXTURE, 0));
 	vec2 t = UV * src;
@@ -2074,6 +2081,7 @@ void fragment() {
 	vec2 r = max(0.5 - 0.5 / sc, vec2(0.0));
 	vec2 f = (c - clamp(c, -r, r)) * sc + 0.5;
 	COLOR = texture(TEXTURE, (floor(t) + f) / src);
+	COLOR.a *= fade;
 }"""
 	var mmat := ShaderMaterial.new()
 	mmat.shader = msh
@@ -2326,7 +2334,7 @@ func _hud_update() -> void:
 							menu_rect.texture = menu_tex
 						else:
 							menu_tex.update(menu_img)
-						menu_rect.visible = menu_mode
+						menu_fresh = true                               # (shown by _menu_fade)
 				menu_parts.clear()
 			continue
 		if tag == "PAL" and pk.size() >= 15 + 768:
@@ -2450,7 +2458,9 @@ static func _look_key() -> int:
 # The viewer's own two keys: the old school look on / off (F12) and its pixel grid finer or coarser (Shift+F12). The
 # player picks them in the launcher (TN_KEY_OLDSCHOOL, TN_KEY_SHARP: a PC scancode in hex, after SHIFT+, CTRL+ or ALT+
 # if any, as TN+ writes its keys). The grid's not given: Shift with the look's key.
-var own_keys := _own_keys()       # [the look's, the grid's], each [physical key, modifiers (KEY_MASK_...)]
+# Two more of its own: a screenshot (TN_KEY_SHOT; not given: Ctrl with the look's key) and the frame counter on / off
+# (TN_KEY_FPS; not given: Ctrl+Shift with it).
+var own_keys := _own_keys()       # [the look's, the grid's, the screenshot's, the counter's], each [physical key, modifiers (KEY_MASK_...)]
 var own_held := {}                # those that are down: their release is the viewer's too
 
 static func _own_keys() -> Array:
@@ -2460,7 +2470,13 @@ static func _own_keys() -> Array:
 	var sharp := _own_key(OS.get_environment("TN_KEY_SHARP"))
 	if sharp.is_empty():
 		sharp = [KEY_NONE, 0] if int(old[1]) & KEY_MASK_SHIFT else [old[0], int(old[1]) | KEY_MASK_SHIFT]
-	return [old, sharp]
+	var shot := _own_key(OS.get_environment("TN_KEY_SHOT"))
+	if shot.is_empty():
+		shot = [KEY_NONE, 0] if int(old[1]) != 0 else [old[0], KEY_MASK_CTRL]
+	var fps := _own_key(OS.get_environment("TN_KEY_FPS"))
+	if fps.is_empty():
+		fps = [KEY_NONE, 0] if int(old[1]) != 0 else [old[0], KEY_MASK_CTRL | KEY_MASK_SHIFT]
+	return [old, sharp, shot, fps]
 
 
 static func _own_key(spec: String) -> Array:
@@ -2613,16 +2629,38 @@ func _look_keys(event: InputEventKey) -> bool:
 		return own_held.erase(k)
 	var mods := (KEY_MASK_SHIFT if event.shift_pressed else 0) | (KEY_MASK_CTRL if event.ctrl_pressed else 0) | \
 			(KEY_MASK_ALT if event.alt_pressed else 0)
-	for i in 2:
+	for i in own_keys.size():
 		if k == int(own_keys[i][0]) and mods == int(own_keys[i][1]):
 			own_held[k] = true
 			if not event.echo:
-				if i == 0:
-					_oldschool_toggle()
-				else:
-					_oldschool_sharper()
+				match i:
+					0: _oldschool_toggle()
+					1: _oldschool_sharper()
+					2: _shot_key()
+					3: _fps_toggle()
 			return true
 	return false
+
+
+# The window's picture as it is (the view, the HUD, a game screen) saved as a PNG: in the player's Pictures folder,
+# "Terra Nova Uplink" (TN_SHOT_DIR: another folder, the tests'). Its name is the date and the time.
+func _shot_key() -> void:
+	var dir := OS.get_environment("TN_SHOT_DIR")
+	if dir == "":
+		dir = OS.get_system_dir(OS.SYSTEM_DIR_PICTURES).path_join("Terra Nova Uplink")
+	DirAccess.make_dir_recursive_absolute(dir)
+	var t := Time.get_datetime_dict_from_system()
+	var path := dir.path_join("uplink_%04d-%02d-%02d_%02d-%02d-%02d.png" % [t.year, t.month, t.day, t.hour, t.minute, t.second])
+	var img := get_viewport().get_texture().get_image()
+	if img != null and img.save_png(path) == OK:
+		_note("Screenshot saved: " + path)
+	else:
+		_note("The screenshot could not be saved in " + dir)
+
+
+func _fps_toggle() -> void:
+	if fps_label != null:
+		fps_label.visible = not fps_label.visible
 
 
 # its name on the player's keyboard (the key at that place: Y is Z on a German one)
@@ -2695,8 +2733,9 @@ func _set_menu_mode(on: bool) -> void:
 	if OS.has_environment("TN_DEBUG"):
 		print("menus : mode ", on, " (image ", menu_tex != null, ")")
 	menu_mode = on
-	if menu_rect != null:
-		menu_rect.visible = on and menu_tex != null
+	if on:
+		menu_fresh = false                              # its picture: one taken from now on (the last one is an old screen)
+		menu_mode_t = Time.get_ticks_msec()
 	if not play:
 		return
 	_play_hold_end()                                    # (a button held when one of the game's screens comes)
@@ -2852,15 +2891,46 @@ func _menu_box() -> Rect2:
 
 
 # each frame: the picture in its box, the black behind it when it does not fill the window
+# The game's screen fades in over the view and out to it (0.35 s) instead of cutting: a mission that ends and its
+# debriefing, a mission that starts. In: once a picture taken after the change has come (or 0.6 s later: the game's
+# screen may be the same as before, and nothing new is sent then).
+const MENU_FADE_S := 0.3
+var menu_fade := 0.0
+var menu_veil := 0.0                             # the black between the two (menu_bg, which is also the screen's black sides)
+var menu_fresh := false
+var menu_mode_t := 0
+
+
+func _menu_fade() -> void:
+	if menu_rect == null:
+		return
+	var want := 0.0
+	if menu_mode and menu_tex != null and (menu_fresh or Time.get_ticks_msec() - menu_mode_t > 600):
+		want = 1.0
+	var step := get_process_delta_time() / MENU_FADE_S
+	if menu_mode:
+		menu_veil = move_toward(menu_veil, 1.0, step)        # to black first, then the screen out of it
+		if menu_veil >= 1.0:
+			menu_fade = move_toward(menu_fade, want, step)
+	else:
+		menu_fade = move_toward(menu_fade, 0.0, step)        # the screen to black first, then the view out of it
+		if menu_fade <= 0.0:
+			menu_veil = move_toward(menu_veil, 0.0, step)
+	menu_rect.visible = menu_fade > 0.0
+	(menu_rect.material as ShaderMaterial).set_shader_parameter("fade", menu_fade)   # (its shader writes COLOR: no modulate)
+	menu_bg.visible = menu_veil > 0.0
+	menu_bg.modulate.a = menu_veil
+
+
 func _menu_place() -> void:
 	if menu_rect == null:
 		return
+	_menu_fade()
 	var box := _menu_box()
 	if menu_rect.position != box.position or menu_rect.size != box.size:
 		menu_rect.position = box.position
 		menu_rect.size = box.size
 		_menu_cursor_apply()                              # (the game's arrow is stretched like its screen)
-	menu_bg.visible = menu_rect.visible and box.size.x < get_viewport().get_visible_rect().size.x
 
 
 # Window position -> the game's mouse range on its own screen (menus), the picture in its box (_menu_box).
@@ -3130,6 +3200,12 @@ func _live_update() -> void:
 				anim_frames[q.decode_s32(6 + 5 * k)] = q[10 + 5 * k]
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "PART" and q.size() == 6 + 14 * q.decode_u16(4):
 			_live_parts(q)                                  # the shots' dust, particle by particle (live_bridge.py poussieres)
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "DEBR" and q.size() == 6 + 22 * q.decode_u16(4):
+			shards.clear()                                  # a blown-up building's pieces (live_bridge.py debris)
+			for k in q.decode_u16(4):
+				var o := 6 + 22 * k
+				shards[q.decode_s32(o)] = [q.decode_s32(o + 4), q.decode_float(o + 8), q.decode_float(o + 12),
+						q.decode_u16(o + 16), q.decode_u16(o + 18), q.decode_u16(o + 20)]
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "BEAM" and q.size() == 6 + 29 * q.decode_u16(4):
 			beams.clear()                                   # the game's beams, their two ends (live_bridge.py rayons)
 			beam_mode = true
@@ -3937,6 +4013,12 @@ func _live_fx(idx: int, e) -> void:
 	if cls == 6 and typ == 33:
 		_live_debris(idx, e)
 		return
+	if cls == 6 and typ == 32:
+		if shards.has(idx):
+			_live_shard(idx, e, shards[idx])            # a piece of a blown-up building
+		elif live_fx.has(idx):
+			live_fx[idx].visible = false
+		return                                          # (never the default orange ball: the yellow circles of #12)
 	if cls == 6 and typ == 31 and bolt_mode:
 		return                                          # the SIR's lightning: its own lines (_live_bolts)
 	if cls == 5 and typ != 10 and beam_mode:
@@ -4400,6 +4482,85 @@ const BEAM_W := 0.0078125                        # 0x200 / 65536
 var beam_scale := 1.2                           # (the lab: the beams' width against the game's line)
 var beam_min_px := 1.0                          # a beam's least width, in pixels of the game's picture
 var beams := {}                                 # 6/28 entity -> [from, to, colour]
+
+
+# A piece of a blown-up building (class 6 type 32, live_bridge.py debris). The game draws a small slab seen from both
+# sides: a rectangle of one of its textures (the more of it the bigger the piece: an eighth of the picture per
+# thirty-second of a unit), or its dark grey 0x25 when it has none, lying in the piece's own ground plane and turned
+# by its three angles as it tumbles. Before: the default of an effect Uplink did not know, an orange ball (the yellow
+# circles of ticket #12).
+var shards := {}                                # 6/32 entity -> [texture, half width, half length, heading, pitch, bank]
+var shard_mesh: QuadMesh
+var shard_mats := {}
+
+
+func _shard_mat(tex_index: int, ka: int, kb: int) -> StandardMaterial3D:
+	var key := "%d/%d/%d/%s" % [tex_index, ka, kb, pal_key]
+	if shard_mats.has(key):
+		return shard_mats[key]
+	var m := StandardMaterial3D.new()
+	m.roughness = 1.0
+	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
+	var tex: Texture2D = null
+	if objects_ok and tex_index >= 0:
+		# a piece of a tree or a bush has the plant's own picture, cut out (its colour 0 shows through); a piece of
+		# a building one of the models' textures, whole
+		var ref: Vector2i = objects.tex_ref.get(tex_index, Vector2i.ZERO)
+		if TNObjects.is_sprite(ref):
+			var sp: Dictionary = objects.sprite(ref, pal, pal_key)
+			if not sp.is_empty():
+				tex = sp["texture"]
+				m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+				m.alpha_scissor_threshold = 0.5
+		else:
+			tex = objects._texture(tex_index, pal, pal_key)
+	if tex != null:
+		m.albedo_texture = tex
+		m.uv1_scale = Vector3(ka / 8.0, kb / 8.0, 1.0)
+	else:
+		m.albedo_color = pal[0x25] if pal.size() > 0x25 else Color(0.25, 0.25, 0.25)
+	shard_mats[key] = m
+	return m
+
+
+func _live_shard(idx: int, e, d: Array) -> void:
+	var a: float = d[1]
+	var b: float = d[2]
+	var mi: MeshInstance3D = live_fx.get(idx)
+	if a <= 0.0 or b <= 0.0:                         # (a piece with no size: the game draws nothing either)
+		if mi != null:
+			mi.visible = false
+		return
+	if shard_mesh == null:
+		shard_mesh = QuadMesh.new()
+		shard_mesh.size = Vector2(1.0, 1.0)
+	if mi == null or mi.get_meta("kind", -1) != 32:
+		if mi != null:
+			mi.queue_free()
+		mi = MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.set_meta("kind", 32)
+		mi.mesh = shard_mesh
+		world.add_child(mi)
+		live_fx[idx] = mi
+	mi.material_override = _shard_mat(int(d[0]), int(round(a * 32.0)), int(round(b * 32.0)))
+	# the game's axes: x, y on the ground, z up; the slab in its own x, y plane, turned by its heading (about z), its
+	# pitch (about its x) and its bank (about its y). Uplink's: x, up, y
+	var h := TAU * float(d[3]) / 65536.0
+	var p := TAU * float(d[4]) / 65536.0
+	var k := TAU * float(d[5]) / 65536.0
+	var gx := Vector3(cos(h), sin(h), 0.0)
+	var gy := Vector3(-sin(h), cos(h), 0.0)
+	var gz := Vector3(0.0, 0.0, 1.0)
+	var gy2 := gy * cos(p) + gz * sin(p)
+	var gz2 := gz * cos(p) - gy * sin(p)
+	var gx2 := gx * cos(k) - gz2 * sin(k)
+	var gz3 := gz2 * cos(k) + gx * sin(k)
+	mi.transform = Transform3D(Basis(Vector3(gx2.x, gx2.z, gx2.y) * (2.0 * a), Vector3(gy2.x, gy2.z, gy2.y) * (2.0 * b),
+			Vector3(gz3.x, gz3.z, gz3.y)), Vector3(e[3], e[5], e[4]))
+	mi.visible = true
 var beam_mode := false                          # the bridge sends the beams (an older one: Uplink's own, as before)
 var beam_mats := {}
 

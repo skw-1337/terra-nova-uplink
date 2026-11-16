@@ -1499,6 +1499,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.add_to_group("lamps")
 			if cls == 2 or (cls == 4 and sub == MINE_TYPE):
 				mi.set_meta("half", md["half_len"])      # (its pitch on the ground: _ground_pitch)
+			if cls == 3 and sub >= SHIP_FIRST and sub <= SHIP_LAST:
+				mi.set_meta("foot", _foot_of(md["mesh"]))   # (kept out of the slopes: _ship_lift)
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():

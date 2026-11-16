@@ -85,13 +85,18 @@ HEADYAW, HEADPITCH, SLOPE, SLOPE_OFF = 0x441355, 0x441357, 0x35AEB4, 0x35F544   
 # The guest's cockpit (coop_hud.gd) is the host's game screen (320 x 400, palette indices + alpha, see live_bridge.py
 # send_hud) with what is the host's own emptied: his panels' contents, compass, bars, rear view, and anything drawn in
 # the 3D window away from its frame (crosshair, target box). 'GCK' + palette + zlib(index, alpha), every 10 s.
-CLEAR = [((30, 276, 108, 376), 60, 255),     # COMM panel (the guest's window draws the host's name and avatar)
-         ((211, 276, 292, 376), 60, 255),    # WEAPON panel (his weapon)
-         ((118, 260, 202, 368), 0, 255),     # map (his own, from above)
-         ((30, 0, 290, 21), 0, 255),         # compass strip (his heading)
-         ((72, 25, 162, 34), 0x28, 255),     # armour bar (his armour)
-         ((162, 22, 262, 36), 0x28, 255),    # the other bar
-         ((146, 222, 175, 252), 0, 255)]     # rear view
+# The boxes are the game's own (measured on its screen: portraits at 18, 277 + 28 k, the weapon picture at 217, 264),
+# so that nothing of the host's shows around what the guest's window draws there.
+CLEAR = [((17, 277, 99, 380), 60, 255),      # COMM panel, ENTIRE SQUAD box included (the guest's squad)
+         ((217, 266, 298, 368), 60, 255),    # WEAPON panel, its title included (his weapon)
+         ((118, 264, 204, 372), 0, 255),     # map (his own, from above)
+         ((33, 6, 289, 22), 0, 255),         # compass strip (his heading)
+         ((146, 226, 172, 252), 0, 255)]     # rear view
+# the two top bars: only their leds are put out (colour 0, as the game's own unlit ones), their frame stays; the
+# guest's window lights them again in the game's cells. Rows 30-33; left bar x 73-148 (separators every 5 from 75),
+# right bar (energy) x 165-247 (separators every 4 from 168)
+BAR_ROWS = (30, 34)
+BAR_LEDS = [x for x in range(73, 149) if (x - 75) % 5] + [x for x in range(165, 248) if (x - 165) % 4 != 3]
 
 
 _LOG = None
@@ -635,6 +640,7 @@ class Guest:
         for (x0, y0, x1, y1), c, a in CLEAR:
             scr[y0:y1, x0:x1] = c
             alpha[y0:y1, x0:x1] = a
+        scr[BAR_ROWS[0]:BAR_ROWS[1], BAR_LEDS] = 0
         pk = b'GCK' + struct.pack('<4h', fx0, fy0, fw, fh) + pal + zlib.compress(np.dstack([scr, alpha]).tobytes(), 6)
         if len(pk) < 60000:
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))

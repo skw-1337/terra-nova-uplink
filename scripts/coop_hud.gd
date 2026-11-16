@@ -14,6 +14,16 @@ const TNObjects = preload("res://scripts/tn_objects.gd")
 # drawn from the guest's own game files in the game's palette (the cockpit packet's)
 const WEAPON_PIC := [515, 516, 518, 507, 513, 508, 509, 511, 514, 510, 512, 519, 515, 517, 517, 520, 521, 522]
 
+# the top bars' led cells in the game's screen: [x0, x1 (excluded), palette index lit], rows 30-33 (measured on the
+# game's own bars, full); the left one 73-148, the right one (energy) 165-246, both lit pixel by pixel
+const LEFT_LEDS := [[73, 75, 0x46], [76, 80, 0x46], [81, 85, 0x46], [86, 90, 0x46], [91, 95, 0x45], [96, 100, 0x45],
+	[101, 105, 0x45], [106, 110, 0x45], [111, 115, 0x45], [116, 120, 0x44], [121, 125, 0x44], [126, 130, 0x43],
+	[131, 135, 0x42], [136, 140, 0x41], [141, 145, 0x41], [146, 149, 0x40]]
+const RIGHT_LEDS := [[165, 168, 0x83], [169, 172, 0x83], [173, 176, 0x84], [177, 180, 0x84], [181, 184, 0x85],
+	[185, 188, 0x85], [189, 192, 0x86], [193, 196, 0x86], [197, 200, 0x87], [201, 204, 0x87], [205, 208, 0x88],
+	[209, 212, 0x88], [213, 216, 0x88], [217, 220, 0x89], [221, 224, 0x89], [225, 228, 0x89], [229, 232, 0x8A],
+	[233, 236, 0x8A], [237, 240, 0x8A], [241, 244, 0x8B], [245, 247, 0x8B]]
+
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
 const WEAPONS := ["", "Flare Launcher", "Smoke Grenade", "Grenade Launcher", "Laser", "Multipulsar", "Particle Beam",
@@ -467,58 +477,54 @@ func _draw_panel() -> void:
 	for r in ([] if looking else [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]):   # free look: no crosshair (his aim stays ahead)
 		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
 		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))
-	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (x 160)
+	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21)
 	var bearing := fposmod(360.0 - heading / 65536.0 * 360.0, 360.0)
 	var amber := Color(1.0, 0.8, 0.25)
 	for k in 8:
 		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0
-		var x := 160.0 + d * 64.0 / 90.0
-		if x < 36.0 or x > 284.0:
+		var x := 161.0 + d * 64.0 / 90.0
+		if x < 38.0 or x > 284.0:
 			continue
 		if k % 2 == 0:
-			_text(["N", "E", "S", "W"][k / 2], x, 3.0, 12.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
+			_text(["N", "E", "S", "W"][k / 2], x, 8.0, 10.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
 		else:
-			panel.draw_rect(_grect(x - 0.5, 8.0, x + 0.5, 14.0), Color(0.6, 0.6, 0.8))
-	panel.draw_rect(_grect(159.0, 1.0, 161.0, 3.0), amber)
-	panel.draw_rect(_grect(159.0, 16.0, 161.0, 18.0), amber)
-	# armour: the left bar, red leds from its inner end
+			panel.draw_rect(_grect(x - 0.5, 11.0, x + 0.5, 16.0), Color(0.6, 0.6, 0.8))
+	panel.draw_rect(_grect(160.0, 6.0, 162.0, 8.0), amber)
+	panel.draw_rect(_grect(160.0, 20.0, 162.0, 22.0), amber)
+	# the top bars, lit in the game's own led cells and colours (its palette; the cockpit packet has them put out):
+	# armour on the left from its inner end, energy on the right from its inner end (the game's "E")
 	var f := clampf(float(armour) / float(armour_max), 0.0, 1.0)
-	for i in int(round(f * 22.0)):
-		var x1 := 161.0 - i * 4.0
-		panel.draw_rect(_grect(x1 - 3.0, 26.0, x1, 33.0), Color(0.9, 0.2, 0.15) if f > 0.25 else Color(1.0, 0.5, 0.1))
-	# energy: the right bar, green leds from its inner end (the game's "E")
-	for i in int(round(energy / 100.0 * 22.0)):
-		var x0 := 163.0 + i * 4.0
-		panel.draw_rect(_grect(x0, 26.0, x0 + 3.0, 33.0), Color(0.25, 0.9, 0.3) if energy > 25 else Color(1.0, 0.75, 0.2))
-	# COMM: his squad as the game lists it: the host (Steam avatar and name), then his other teammates (their
-	# portraits and names from his game files), each with an armour bar
+	_draw_leds(LEFT_LEDS, f, true)
+	_draw_leds(RIGHT_LEDS, energy / 100.0, false)
+	# COMM: his squad as the game lists it, in the game's rows: the host (Steam avatar, else his pilot's portrait),
+	# then his other teammates (their portraits and names from his game files), each with an armour bar
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
 	for i in rows.size():
-		var y0 := 273.0 + 30.0 * i
+		var y0 := 277.0 + 28.0 * i
 		var who: Array = rows[i]
-		var pic: Texture2D = mate_face if i == 0 else _face(who[2])
+		var pic: Texture2D = mate_face if i == 0 and mate_face else _face(who[2])
 		if pic:
-			panel.draw_texture_rect(pic, _grect(29.0, y0, 50.0, y0 + 27.0), false)
+			panel.draw_texture_rect(pic, _grect(18.0, y0, 39.0, y0 + 27.0), false)
 		else:
-			panel.draw_rect(_grect(29.0, y0, 50.0, y0 + 27.0), Color(0.05, 0.05, 0.1))
+			panel.draw_rect(_grect(18.0, y0, 39.0, y0 + 27.0), Color(0.05, 0.05, 0.1))
 		var nm: String = mate_name if i == 0 else _pilot_name(who[2], who[0])
-		_text(nm.to_upper(), 54.0, y0 + 1.0, 11.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
+		_text(nm.to_upper(), 42.0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
 		var a: float = who[1] / 100.0
-		panel.draw_rect(_grect(54.0, y0 + 17.0, 104.0, y0 + 21.0), Color(0.1, 0.1, 0.15))
-		panel.draw_rect(_grect(54.0, y0 + 17.0, 54.0 + 50.0 * a, y0 + 21.0),
+		panel.draw_rect(_grect(42.0, y0 + 17.0, 96.0, y0 + 21.0), Color(0.1, 0.1, 0.15))
+		panel.draw_rect(_grect(42.0, y0 + 17.0, 42.0 + 54.0 * a, y0 + 21.0),
 			Color(0.3, 0.9, 0.3) if a > 0.5 else (Color(1.0, 0.7, 0.2) if a > 0.25 else Color(1.0, 0.25, 0.2)))
-	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 31.0, 366.0, 8.0, Color(0.6, 0.65, 0.8))
+	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 58.0, 366.0, 8.0, Color(0.6, 0.65, 0.8), true)
 	if status_page:
 		_draw_status()
-	# WEAPON: his selected weapon, its picture under the texts as in the game
+	# WEAPON: his selected weapon, its picture under the texts where the game puts it
 	var wpic := null if status_page else _weapon_pic(weapon_type)
 	if wpic:
-		panel.draw_texture_rect(wpic, _grect(211.0, 276.0, 211.0 + wpic.get_width(), 276.0 + wpic.get_height()), false)
+		panel.draw_texture_rect(wpic, _grect(217.0, 264.0, 217.0 + wpic.get_width(), 264.0 + wpic.get_height()), false)
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
 	if not status_page:
-		_text(wn.to_upper(), 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)
-		_text("%d%%" % int(round(f * 100.0)), 214.0, 338.0, 12.0, Color(0.95, 0.95, 1.0))
-		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 214.0, 355.0, 12.0,
+		_text(wn.to_upper(), 257.0, 267.0, 10.0, Color(0.95, 0.95, 1.0), true)
+		_text("%d%%" % int(round(f * 100.0)), 219.0, 335.0, 10.0, Color(0.95, 0.95, 1.0))
+		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0, 353.0, 10.0,
 			Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
 	_draw_map_units()
 	# map: the guest in the middle, pointing up
@@ -530,7 +536,22 @@ func _draw_panel() -> void:
 		c + Vector2(-u * 0.6, u * 0.6)]), Color(1, 1, 1))
 
 
-# the lock: green corners around his target, where his camera sees it
+# one top bar: the share f of its pixels lit from its inner end (right end of the left bar, left end of the right one)
+func _draw_leds(cells: Array, f: float, from_right: bool) -> void:
+	if hud_pal.is_empty():
+		return
+	var lo: int = cells[0][0]
+	var hi: int = cells[cells.size() - 1][1]
+	var n := int(round(clampf(f, 0.0, 1.0) * (hi - lo)))
+	var a := hi - n if from_right else lo
+	var b := hi if from_right else lo + n
+	for c in cells:
+		var x0: int = maxi(c[0], a)
+		var x1: int = mini(c[1], b)
+		if x1 > x0:
+			panel.draw_rect(_grect(x0, 30.0, x1, 34.0), hud_pal[c[2]])
+
+
 # the host's name over his suit (and how far he is)
 func _draw_mate() -> void:
 	var cam := get_viewport().get_camera_3d()
@@ -561,6 +582,7 @@ func _drawn(idx: int) -> Node3D:
 	return n if n != null and is_instance_valid(n) and n.visible else null
 
 
+# the lock: green corners around his target, where his camera sees it
 func _draw_lock() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if lock == 0 or cam == null:
@@ -585,16 +607,16 @@ func toggle_status() -> void:
 
 # STATUS page (the WEAPON panel's other tab): his 4 weapon slots, the selected one lit, jump and lock
 func _draw_status() -> void:
-	_text("STATUS", 251.0, 278.0, 12.0, Color(0.95, 0.95, 1.0), true)
+	_text("STATUS", 257.0, 267.0, 10.0, Color(0.95, 0.95, 1.0), true)
 	for k in 4:
 		var t: int = slot_types[k]
 		var nm: String = WEAPONS[t] if t < WEAPONS.size() and t > 0 else "-"
 		var sel := k == weapon_slot
-		_text("%d %s" % [k + 1, nm.to_upper()], 215.0, 296.0 + 13.0 * k, 10.0,
+		_text("%d %s" % [k + 1, nm.to_upper()], 219.0, 284.0 + 13.0 * k, 10.0,
 			Color(0.4, 1.0, 0.45) if sel else Color(0.75, 0.78, 0.9))
-	_text("JUMP %s" % ("READY" if jump_ready else "..."), 215.0, 350.0, 10.0,
+	_text("JUMP %s" % ("READY" if jump_ready else "..."), 219.0, 337.0, 10.0,
 		Color(0.4, 1.0, 0.45) if jump_ready else Color(1.0, 0.7, 0.25))
-	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 215.0, 363.0, 10.0,
+	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 219.0, 351.0, 10.0,
 		Color(0.4, 1.0, 0.45) if lock else Color(0.75, 0.78, 0.9))
 
 
@@ -605,7 +627,7 @@ func toggle_map() -> void:
 func _map_box() -> Rect2:
 	if big_map and win.size.y > 0:
 		return _grect(win.position.x + 12.0, win.position.y + 8.0, win.end.x - 12.0, win.end.y - 8.0)
-	return _grect(118.0, 260.0, 202.0, 368.0)
+	return _grect(118.0, 264.0, 204.0, 372.0)
 
 
 func _rear_follow() -> void:
@@ -613,8 +635,8 @@ func _rear_follow() -> void:
 	rear_rect.visible = cockpit.visible and state == 0 and cam != null
 	if not rear_rect.visible:
 		return
-	rear_rect.position = _g(147.0, 223.0)
-	rear_rect.size = _g(175.0, 252.0) - _g(147.0, 223.0)
+	rear_rect.position = _g(146.0, 226.0)
+	rear_rect.size = _g(172.0, 252.0) - _g(146.0, 226.0)
 	var back := cam.global_transform
 	back.basis = back.basis.rotated(Vector3.UP, PI)
 	rear_cam.global_transform = back

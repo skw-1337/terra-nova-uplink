@@ -3228,7 +3228,9 @@ func _live_update() -> void:
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
-		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "WAYP":
+		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
+			if q.size() == 16:                              # (an older bridge: no angle word)
+				_waypoint_word(q.decode_u32(12) & 0xFFFF)
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
@@ -3270,7 +3272,14 @@ func _live_update() -> void:
 # pyramid too, without the distance (letters that size are too small there).
 const WAYPOINT_COLOUR := 0x9C                    # its colour in the game's palette
 const WAYPOINT_POINTS := [Vector3(0, 1, 0), Vector3(-1, -0.5, 0), Vector3(0.5, -0.5, 0.855), Vector3(0.5, -0.5, -0.855)]
-const WAYPOINT_TURN := 0.12                      # turns a second (the game: 1 / 256 of a turn with each picture)
+# its turn: the game's own angle word (sent by the bridge), heading as the units' (-word turns about up; these points
+# stand 90 degrees off the game's model axes), followed between packets at its last rate. Without it (an older
+# bridge): about the game's rate, 1/256 of a turn with each 3D view it draws (~64 a second; twice that with a camera
+# panel open), the same way
+const WAYPOINT_TURN := 0.25                      # turns a second (an approximation: see above)
+var wp_word := -1.0                              # its last angle word (-1: none came), the time it came, its rate
+var wp_t := 0.0
+var wp_rate := 0.0
 const WAYPOINT_LINE := 1.25                      # its lines' width, in rows of the game's picture
 const WAYPOINT_TEXT := 9.5                       # its letters' size, the same (capitals 7 rows high)
 var waypoint: Node3D
@@ -3335,11 +3344,26 @@ func _live_waypoint(at: Vector2) -> void:
 	_waypoint_update(0.0)
 
 
+func _waypoint_word(w: int) -> void:
+	var now := Time.get_ticks_usec() / 1e6
+	var dt := now - wp_t
+	if wp_word < 0.0 or dt > 0.5:
+		wp_rate = 0.0                                   # (the first, or after a gap: no rate from stale data)
+	elif dt > 0.0:
+		wp_rate = fposmod(float(w) - wp_word, 65536.0) / dt
+	wp_word = float(w)
+	wp_t = now
+
+
 func _waypoint_update(delta: float) -> void:
 	if waypoint == null or not waypoint.visible:
 		return
 	var spin := waypoint.get_node("spin") as Node3D
-	spin.rotation.y = fposmod(spin.rotation.y + TAU * WAYPOINT_TURN * delta, TAU)
+	if wp_word >= 0.0:
+		var wd := wp_word + wp_rate * minf(Time.get_ticks_usec() / 1e6 - wp_t, 0.25)
+		spin.rotation.y = fposmod(-wd / 65536.0 * TAU - PI / 2.0, TAU)
+	else:
+		spin.rotation.y = fposmod(spin.rotation.y - TAU * WAYPOINT_TURN * delta, TAU)
 	var vs := get_viewport().get_visible_rect().size
 	(waypoint.get_meta("mat") as ShaderMaterial).set_shader_parameter("width", WAYPOINT_LINE * vs.y / 400.0)
 	# the letters: what a window pixel is worth one unit away (the field of view is the game's horizontal one, zoom

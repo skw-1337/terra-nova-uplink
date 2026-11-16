@@ -250,8 +250,16 @@ NUAGES = 0x427E6C if FR else 0x427DBC
 VISION = 0x35AE00 if FR else 0x35ADE0
 # the player's waypoint (a click on the cockpit's map): x, y 16.16, x = 0: none. The game draws it in its own 3D (a
 # purple wire pyramid and its distance: drawobj.c, routine 0x29BA3C of the English exe, 0x29BA2C of the French one),
-# which the viewer does not show: it draws its own.   'WAYP' + x, y (f32), 10 times a second
+# which the viewer does not show: it draws its own, turned by the game's own angle word: the routine draws the
+# pyramid at that heading, then adds 1/256 of a turn (each 3D view it draws: "mov dh, [a + 1] / ... / mov ax, [a] /
+# inc dh"; never reset, it keeps its phase from one waypoint to the next).
+#   'WAYP' + x, y (f32) + the angle word (u32, 0..65535), 10 times a second
 BALISE = 0x3900A0 if FR else 0x38FFF0
+_s = [(struct.unpack('<I', m.group(1))[0], struct.unpack('<I', m.group(2))[0]) for m in re.finditer(
+    re.escape(bytes.fromhex('8a35')) + b'(....)' + re.escape(bytes.fromhex('886424228854240166a1')) + b'(....)' +
+    re.escape(bytes.fromhex('fec6')), code, re.S)]
+_s = [b for a, b in _s if a == b + 1 and 0x300000 <= b < 0x500000]
+BALISE_ANGLE = _s[0] if len(_s) == 1 else (0x41E2D8 if FR else 0x41E228)
 # the main view's own entity (word): the player's, or his drone's while its picture is swapped with the HUD's (the
 # VIEW button of the drone's camera panel: "DRONE VIEW" in red; the panel then shows the player's own view). The
 # main camera is then the drone's: where it is, along its heading, with the pitch the game gives that view; the
@@ -2010,7 +2018,8 @@ while True:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
         s.sendto(b'IRVW' + bytes([1 if g.read(VISION, 1)[0] in (1, 2) else 0]), ('127.0.0.1', 47821))
-        s.sendto(b'WAYP' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8)))), ('127.0.0.1', 47821))
+        s.sendto(b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
+                                        struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0]), ('127.0.0.1', 47821))
         if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
             wthr = meteo()
             s.sendto(wthr, ('127.0.0.1', 47821))

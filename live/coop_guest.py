@@ -40,6 +40,10 @@ F8 = 0x42                     # next teammate
 DROPSHIP = 0x1C               # Enter: the game's "Call dropship" key, posted to the host's game (the mission's end)
 WEAPON_KEYS = {0x02: 0, 0x03: 1, 0x04: 2, 0x05: 3}   # 1-4: weapon slot (suit record +0xCE, the fire uses it)
 SEL, SLOTS, SLOT_N = 0xCE, 0x45, 0xF                # selected slot, 4 weapon slots (+0 type: weapon names 1-17)
+# a weapon key as the game's cockpit handles it (0x2760d1, then 0x28ab1c): slot +0xA = its ready time (game clock
+# 0x446AE8), suit byte +7, per weapon type t (0x24 bytes at 0x395100): 0x395111 its two-slot flag, 0x395124 its switch delay
+SLOT_READY, SUIT_B7, CLOCK = 0x0A, 0x07, 0x446AE8
+W_TWO, W_DELAY, W_N = 0x395111, 0x395124, 0x24
 HUD_PORT = 47832              # the guest window's coop_hud.gd: 'GHD' state, armour, max, entity (online: via 47841)
 PBA, PBA_N, ENERGY = 0x3A5608, 0x582, 0x88   # English exe: suit records, the energy word (shots draw from it)
 # the suit's power plant, 16.16 dwords: +0x86 the energy (+0x88 is its integer word), +0x8A its maximum (a hit on the
@@ -352,6 +356,27 @@ class Guest:
             self.g.write(G_JV, struct.pack('<3i', int(vx * 65536), int(vy * 65536), int(vz * 65536)))
             self.g.write(G_JUMP, b'\x01')
 
+    def select_weapon(self, k):
+        """weapon key k (slot 0-3) for his suit as the game does it for the player's (0x2760d1, 0x28ab1c): an odd
+        slot gives the one before when byte +7 is 0 or that one holds a two-slot weapon; the same slot or an empty
+        one: nothing; else the new slot's ready time goes up to now + the weapon's switch delay (never down), then
+        the slot is selected (in that order: the cave may fire between the two writes). The game's sound and panel
+        redraw are the host's cockpit: left out"""
+        g, R = self.g, self.suit(self.gid)
+        r = g.read(R, SEL + 1)
+        typ = lambda j: r[SLOTS + SLOT_N * j]
+        s = k
+        if k & 1 and (r[SUIT_B7] == 0 or g.read(W_TWO + W_N * typ(k - 1), 1)[0]):
+            s = k - 1
+        t = typ(s)
+        if s == r[SEL] or t == 0:
+            return
+        ready = (struct.unpack('<I', g.read(CLOCK, 4))[0] + self.u16(W_DELAY + W_N * t)) & 0xFFFFFFFF
+        a = R + SLOTS + SLOT_N * s + SLOT_READY
+        if ready > struct.unpack('<I', g.read(a, 4))[0]:
+            g.write(a, struct.pack('<I', ready))
+        g.write(R + SEL, bytes([s]))
+
     def call_dropship(self):
         """the guest's "Call dropship": Enter in the host's game, as if the host pressed it; once in 5 s, said in the chat"""
         if not self.post_key or time.time() - self.drop_t < 5.0:
@@ -663,7 +688,7 @@ class Guest:
                 if sc == F8 and down and active:
                     self.next = True
                 if sc in WEAPON_KEYS and down and active and self.gid:
-                    self.g.write(self.suit(self.gid) + SEL, bytes([WEAPON_KEYS[sc]]))
+                    self.select_weapon(WEAPON_KEYS[sc])
                 if sc == DROPSHIP and down and active:
                     self.call_dropship()
                 if sc in SHIFT:

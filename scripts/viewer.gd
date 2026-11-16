@@ -4190,6 +4190,11 @@ func _live_fx(idx: int, e) -> void:
 		mi.extra_cull_margin = 2.0
 	elif kind == 2 or kind == 7 or kind == 10:
 		mi.transform = Transform3D(Basis.IDENTITY, pos)
+	elif kind == 6:
+		# the missile as the game draws it (0x29b3ac): its heading (+0x1B, set once at launch along its horizontal
+		# velocity), level for its whole flight (+0x1D stays 0, no roll), from its first frame on
+		var yawed := Basis(Vector3.UP, -float(e[6]))
+		mi.transform = Transform3D(yawed if mi.get_meta("model", false) else yawed * Basis(Vector3(0, 0, 1), -PI / 2), pos)
 	else:                                           # other shots: a bolt along its flight
 		var dir := Vector3.ZERO
 		if not fresh:
@@ -4199,10 +4204,7 @@ func _live_fx(idx: int, e) -> void:
 		if dir == Vector3.ZERO:
 			dir = -camera.global_transform.basis.z
 		mi.look_at_from_position(pos, pos + dir, Vector3.UP if absf(dir.y) < 0.99 else Vector3.FORWARD)
-		if kind == 6 and mi.get_meta("model", false):
-			mi.rotate_object_local(Vector3.UP, PI / 2)  # (a model's nose is its +x)
-		else:
-			mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
+		mi.rotate_object_local(Vector3.RIGHT, PI / 2)   # long axis along the flight
 	mi.set_meta("prev", pos)
 	mi.visible = true
 

@@ -648,6 +648,15 @@ func _load(index: int) -> void:
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	map_dif = m.get("dif", DEFAULT_DIF)
 	map_amb = m.get("amb", DEFAULT_AMB)
+	# live: the models shaded as the game does (model.gdshader): the planet's light table, the map's light (res 82)
+	objects.game_shade = {}
+	if live and objects_ok and pl.get("shade_idx") != null and pal.size() >= 256:
+		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
+		for i in 256:
+			pimg.set_pixel(i, 0, pal[i])
+		objects.game_shade = {"shade_idx": pl["shade_idx"], "pal_tex": ImageTexture.create_from_image(pimg)}
+	RenderingServer.global_shader_parameter_set("tn_model_light", Vector4(sun_to.x, sun_to.y, sun_to.z, 1.0))
+	RenderingServer.global_shader_parameter_set("tn_model_shade", Vector4(map_amb, map_dif, 0.0, 0.0))
 	if live:
 		planet_look(m["planet"], mis.get("sky", ""))
 	else:                                     # the map's own sun and ambient (res 82), against the pair the look was

@@ -30,6 +30,10 @@ var refs := {}          # class -> Array of Vector2i(resource, frame) (intact ve
 var refs2 := {}         # class -> Array of the second refs (classes 0 and 4; (0, 0): none)
 var props := {}         # class -> Array of property frames (one per type)
 var model_cache := {}
+# live: the models shaded as the game does (model.gdshader): {"shade_idx": RESPLNT 53 as a 256 x 16 R8 texture,
+# "pal_tex": the palette, 256 x 1} of the current planet ({}: Godot's own lighting, the map viewer)
+var game_shade := {}
+const MODEL_SHADER := preload("res://model.gdshader")
 var tex_cache := {}
 # How far below its entity the game draws a unit's model (0x2d45cc of the English exe, added to z by 0x29b3ac when
 # the unit has a physics body): a s32 of its class's RESSIM.RES table divided by 6 (16.16). Classes 1-3 only.
@@ -543,7 +547,7 @@ func model_name(ref: Vector2i) -> String:
 # lamp: LAMP_NONE (not a lamp object: run-time colours lit as the lamp's), LAMP_OFF (type 57 before the alarm) or
 # LAMP_ON (full-bright, run-time colours = palette 0x4B), see lamp_state.
 func model(ref: Vector2i, pal: PackedColorArray, pal_key: String, params := PackedByteArray(), lamp := LAMP_NONE) -> Dictionary:
-	var key := "%d/%d/%s/%s/%d" % [ref.x, ref.y, pal_key, params.hex_encode(), lamp]
+	var key := "%d/%d/%s/%s/%d/%s" % [ref.x, ref.y, pal_key, params.hex_encode(), lamp, "g" if not game_shade.is_empty() else ""]
 	if model_cache.has(key):
 		return model_cache[key]
 	var out := {}
@@ -632,6 +636,25 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 				img.convert(Image.FORMAT_RGB8)
 				img.generate_mipmaps()
 				tex = ImageTexture.create_from_image(img)
+	tex_cache[key] = tex
+	return tex
+
+
+# A model texture's palette indices as an R8 texture (model.gdshader), or null.
+func _texture_idx(global_index: int) -> Texture2D:
+	var key := "i%d" % global_index
+	if tex_cache.has(key):
+		return tex_cache[key]
+	var tex: Texture2D = null
+	var r: Vector2i = tex_ref.get(global_index, Vector2i.ZERO)
+	if r.x != 0:
+		var fr := LGRes.frames(res.data(r.x))
+		if r.y < fr.size():
+			var f: PackedByteArray = fr[r.y]
+			var idx := _bitmap_idx(f)
+			if not idx.is_empty():
+				tex = ImageTexture.create_from_image(Image.create_from_data(f.decode_u16(8), f.decode_u16(10), false,
+						Image.FORMAT_R8, idx))
 	tex_cache[key] = tex
 	return tex
 
@@ -746,6 +769,8 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 			groups[s] = []
 		groups[s].append(p)
 	var top := 0.0
+	# the game's shading (live), not on the lamps (full-bright or off: their own colours)
+	var gs := not game_shade.is_empty() and lamp == LAMP_NONE
 	for s in groups:
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -757,6 +782,8 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 			if s < 0:
 				var ci: int = p[3]
 				col = pal[ci & 0xFF] if ci >= 0 else (Color.BLACK if lamp == LAMP_OFF else pal[LAMP_COLOR])
+				if gs:                                   # (model.gdshader: the palette index)
+					col = Color((ci & 0xFF) / 255.0, 0.0, 0.0) if ci >= 0 else Color(0.0, 0.0, 0.0)
 			for k in range(1, v.size() - 1):
 				for j in [0, k, k + 1]:
 					if s >= 0:
@@ -768,6 +795,18 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 					var q: Vector3 = v[j]
 					top = maxf(top, -q.y)
 					st.add_vertex(Vector3(q.z, -q.y, q.x))
+		if gs:
+			var sm := ShaderMaterial.new()
+			sm.shader = MODEL_SHADER
+			sm.set_shader_parameter("shade_idx", game_shade["shade_idx"])
+			sm.set_shader_parameter("pal_tex", game_shade["pal_tex"])
+			var it: Texture2D = _texture_idx(slots.get(s, 0)) if s >= 0 else null
+			sm.set_shader_parameter("textured", it != null)
+			if it != null:
+				sm.set_shader_parameter("idx_tex", it)
+			st.set_material(sm)
+			st.commit(mesh)
+			continue
 		var mat := StandardMaterial3D.new()
 		mat.roughness = 1.0
 		mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED

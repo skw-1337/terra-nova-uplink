@@ -3807,8 +3807,8 @@ func env_nofog() -> Environment:
 # A burst suit (6/33): one entity, drawn by the game as a pile of the suit's armour pieces (its limb sprites: torso,
 # thighs, shins, arms, feet) lying flat every which way around it, ~0.6 unit across (seen on the running game).
 # The entity is thrown up when the soldier dies and bounces to rest (its height: the whole pile follows it). Where
-# each piece lies is not decoded: spread from the entity's number. The suit is the one of the soldier killed there
-# (the bridge puts it in the heading; else the nearest death seen here).
+# each piece lies is not decoded: spread from the entity's number. The suit is the game's own, from its burst record
+# (the bridge puts it in the heading; -1, not known: the nearest death seen here).
 const PILE_RADIUS := 0.3                      # (measured: a compact pile, ~0.5 unit across)
 const PILE_SHADE := 0.8                       # lighter than the standing suits (their light grey, on the game)
 const PILE_SCALE := 0.0027                    # world units per sprite pixel (measured: smaller than standing suits')

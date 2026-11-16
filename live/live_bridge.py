@@ -298,10 +298,6 @@ def cadres():
 OEIL = 0x38FBCC if FR else 0x38FB1C    # hauteur de l'oeil ajoutee par le jeu (16.16)
 vues = {}                                 # panneau -> (temps, entite, x, y, z, cap)
 nuages_t = 0.0
-# soldats morts : leur corps eclate en morceaux d'armure (entites 6/33) ; une table par numero de soldat n garde leur
-# position apres la mort (0x38337F + n * 0x14E dans l'exe francais), la fiche soldat leur armure (+0xDE)
-CORPS = 0x38337F if FR else 0x3832CF
-corps_t, corps = 0.0, []
 # grenade fumigene : a l'impact le jeu cree une entite 6/29 (la meme que la poussiere d'un tir laser) qui ne bouge pas
 # et vit ~17 s ; le nuage est un systeme de particules du moteur (dessin : routine 0x29DF38 puis 0x2A56A8 de l'exe
 # anglais). Fiche n = mot a +3 de l'entree : FUM_REC + n * 0x2C, poignee (int32) a +0xA (-1 : aucune). Variables du
@@ -325,6 +321,20 @@ for _nom, _sig in (('REC', rb'\x8b\x50\x01\xc1\xfa\x10\x8d\x04\x95\x00\x00\x00\x
 if len(FUM) != 6:
     print('fumee : signatures introuvables (nuages non envoyes)', FUM)
     FUM = {}
+# A dead soldier's suit bursts into armour pieces (a 6/33 pile entity). The game keeps each burst in one of 12 slots
+# (in use: a byte each, set by the allocator 0x2823dc); slot k's record, BURST + k * 0x3A9, holds the suit (+0, dword)
+# and the pile entity (+0x3A7, word); the pile's effect record (FUM REC + n * 0x2C) holds k at +0xA (its draw:
+# 0x29ca48). EN 0x39250C / 0x392500, FR 0x3925BC / 0x3925B0, by signature
+PILES = {}
+for _nom, _sig in (('BURST', rb'\x8b\x4c\xa8\x0a\x88\x14\x24\x69\xd1\xa9\x03\x00\x00\x66\xa1....\x66\x8b\x0d....\x81\xc2(....)'),
+                   ('FLAGS', rb'\x8a\x15(....)\x31\xc0\x84\xd2\x74.\x40\x83\xf8\x0c')):
+    _m = [struct.unpack('<I', m.group(1))[0] for m in re.finditer(_sig, code, re.S)]
+    _m = [a for a in _m if 0x300000 <= a < 0x500000]
+    if len(_m) == 1:
+        PILES[_nom] = _m[0]
+if len(PILES) != 2 or 'REC' not in FUM:
+    print('armures : signatures introuvables (morceaux sans armure)', PILES)
+    PILES = {}
 fumee_t, fumee_prev, fx_prev = 0.0, False, ()
 # un arbre qui saute (et une armure qui eclate) : boule de feu 6/23, puis le meme nuage qu'une grenade fumigene (meme
 # systeme, ~190 particules, 1 a 15 s) au meme endroit. Uplink dessine deja la fumee d'un arbre (sa colonne noire) :
@@ -651,15 +661,25 @@ def eclairs(tab):
     return out
 
 
-def armure_debris(x, y, vivants):
-    best, arm = 3.0, -1
-    for n, cx, cy in corps:
-        if n in vivants: continue
-        d = math.hypot(cx - x, cy - y)
-        if d < best:
-            best, arm = d, n
-    if arm < 0: return -1
-    return struct.unpack('<I', g.read(SOLDATS + arm * 0x582 + 0xDE, 4))[0]
+def armures_piles():
+    # the bursts in use: pile entity -> (slot, suit 0-10)
+    if not PILES: return {}
+    out = {}
+    fl = g.read(PILES['FLAGS'], 12)
+    for k in range(12):
+        if not fl[k]: continue
+        r = PILES['BURST'] + k * 0x3A9
+        suit, ent = struct.unpack('<I', g.read(r, 4))[0], struct.unpack('<H', g.read(r + 0x3A7, 2))[0]
+        if suit <= 10: out[ent] = (k, suit)
+    return out
+
+
+def armure_pile(i, nf, piles):
+    # a pile's suit: its burst's, when its effect record points at that slot and the slot names it (a slot taken again
+    # after 12 bursts drops its old pile a little later); -1: not known (the viewer guesses)
+    p = piles.get(i)
+    if p is None: return -1
+    return p[1] if struct.unpack('<i', g.read(FUM['REC'] + nf * 0x2C + 0xA, 4))[0] == p[0] else -1
 d32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
 hud_t = 0.0
 
@@ -1768,11 +1788,7 @@ while True:
             if guest: guest.dust(pk)           # (the coop guest's window too)
         part_prev, part_t = bool(pts), time.time()
     body = []
-    if time.time() - corps_t > 0.5:
-        corps_t = time.time()
-        raw = g.read(CORPS, 200 * 0x14E)
-        corps = [(n, *(v / 65536 for v in struct.unpack_from('<ii', raw, n * 0x14E))) for n in range(200)]
-    vivants = {struct.unpack_from('<H', tab, 0x25 * i + 3)[0] for i in range(NENT) if tab[0x25 * i] and tab[0x25 * i + 1] == 1}
+    piles = None
     for i in range(NENT):
         o = 0x25 * i
         if tab[o + 1] > 6 or (tab[o + 1] >= 5 and tab[o] == 0): continue
@@ -1782,7 +1798,8 @@ while True:
         if tab[o + 1] == 6 and tab[o + 2] in (28, 29):   # poussiere : le cap porte le champ que le jeu retire au
             eh = float(struct.unpack_from('<H', tab, o + 7)[0])   # hasard (il disperse ses points autour d'elle)
         if tab[o + 1] == 6 and tab[o + 2] == 33:     # morceau d'armure : le cap porte l'armure du soldat mort
-            eh = float(armure_debris(ex / 65536, ey / 65536, vivants))
+            if piles is None: piles = armures_piles()
+            eh = float(armure_pile(i, struct.unpack_from('<H', tab, o + 3)[0], piles))
         body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], 1 if tab[o] else 0, ex / 65536, ey / 65536, ez / 65536, eh))
     # the main view through the player's drone (see VUE_ENT)
     vue = u16(VUE_ENT)

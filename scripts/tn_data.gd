@@ -252,13 +252,21 @@ func load_map(path: String, mission_file: String) -> Dictionary:
 		veg_sets.append(items)
 	var veg_map: PackedByteArray = r.data(83)
 	# resource 82: direction of the light (u16 azimuth, u16 elevation, 1/65536 turn), where the
-	# engine also draws the sky's moon
+	# engine also draws the sky's moon; then its diffuse (+4) and ambient (+8) shares, 16.16, the ambient cut to
+	# 1 - diffuse when both make more than 1 (routine 0x29E5FC)
 	var light := Vector2(0.0, TAU / 8.0)
+	var dif := 0.7
+	var amb := 0.3
 	var r82: PackedByteArray = r.data(82)
 	if r82.size() >= 4:
 		light = Vector2(r82.decode_u16(0) / 65536.0 * TAU, r82.decode_s16(2) / 65536.0 * TAU)
+	if r82.size() >= 12:
+		dif = r82.decode_s32(4) / 65536.0
+		amb = r82.decode_s32(8) / 65536.0
+		if amb + dif > 1.0:
+			amb = 1.0 - dif
 	return {"planet": planet, "planet_data": pl, "detail": detail, "outer": outer,
-			"veg_map": veg_map, "veg_sets": veg_sets, "info": info, "light": light}
+			"veg_map": veg_map, "veg_sets": veg_sets, "info": info, "light": light, "light_dif": dif, "light_amb": amb}
 
 
 # Grid: heights, tile index per vertex (byte & 0x3F), fallback vertex colors, and the tile map
@@ -608,6 +616,9 @@ func _read_planet(path: String) -> Dictionary:
 			own[t] = m
 	out["ok"] = true
 	out["palette"] = full_palette(pal)
+	# resource 53: the planet's 16 shade rows (256 palette indices each; file row 0 ~ as they are, row 15 the darkest),
+	# the game's light table at 0x41C228 in reverse (its row k = file row 15 - k, from row 15 on file row 0)
+	out["shade_rows"] = r.data(53) if r.has(53) else PackedByteArray()
 	# share of the tiles' pixels in colours 1-16: planet 3's ground is drawn with them (a pale teal to dark green
 	# ramp, its shading), so its 3D view uses them too (old school: their palette from 1, not 17)
 	out["base_share"] = float(base_n) / maxf(1.0, count * 4096.0)

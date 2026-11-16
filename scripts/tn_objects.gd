@@ -148,6 +148,39 @@ func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dicti
 	return out
 
 
+# How often each palette index shows on the suits' limb sprites (all suits, parts and views; colour 0 left out):
+# the weights of the shade rows' colour gains (viewer.gd _limb_light).
+var limb_hist_cache := PackedFloat32Array()
+
+
+func limb_histogram() -> PackedFloat32Array:
+	if not limb_hist_cache.is_empty():
+		return limb_hist_cache
+	var hist := PackedFloat32Array()
+	hist.resize(256)
+	var suits := {}
+	for su in SUIT_OF_TYPE:
+		if su != MECH_SUIT:
+			suits[su] = true
+	for suit in suits:
+		for part in 7:
+			if not res.has(800 + 7 * suit + part):
+				continue
+			var fr := LGRes.frames(res.data(800 + 7 * suit + part))
+			if fr.is_empty() or fr[0].size() <= 13:
+				continue
+			var f: PackedByteArray = fr[0]
+			for v in f[0]:
+				var o := f.decode_u32(13 + 4 * v)
+				if o + 0x1c > f.size() or not (f[o + 4] == 2 or f[o + 4] == 4):
+					break
+				for c in _bitmap_idx(f.slice(o), 0x20):
+					hist[c] += 1.0
+	hist[0] = 0.0
+	limb_hist_cache = hist
+	return hist
+
+
 # ------------------------------------------------------------------ effects
 # Translucent animations (bitmap type 5): 248 = thin smoke, 249 = dense smoke, both drawn by the
 # game through its translucency tables. 1186 = rising smoke column (13 frames), used for the
@@ -487,14 +520,32 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 # LG bitmap (28-byte frame header, then pixels): type 2 = raw 8-bit, type 4 = run-length (RSD).
 # Color 0 is transparent (sprites; a model's texture is made opaque, _texture).
 static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x1c) -> Image:
-	if f.size() < data_at:
+	var idx := _bitmap_idx(f, data_at)
+	if idx.is_empty():
 		return null
+	var w := f.decode_u16(8)
+	var h := f.decode_u16(10)
+	var rgba := PackedByteArray()
+	rgba.resize(w * h * 4)
+	for p in w * h:
+		var c: Color = pal[idx[p]]
+		rgba[4 * p] = int(c.r8)
+		rgba[4 * p + 1] = int(c.g8)
+		rgba[4 * p + 2] = int(c.b8)
+		rgba[4 * p + 3] = 0 if idx[p] == 0 else 255
+	return Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+
+
+# The bitmap's palette indices, w * h (empty: not a bitmap).
+static func _bitmap_idx(f: PackedByteArray, data_at: int = 0x1c) -> PackedByteArray:
+	if f.size() < data_at:
+		return PackedByteArray()
 	var typ := f[4]
 	var w := f.decode_u16(8)
 	var h := f.decode_u16(10)
 	var row := f.decode_u16(12)
 	if w == 0 or h == 0:
-		return null
+		return PackedByteArray()
 	var idx := PackedByteArray()
 	idx.resize(w * h)
 	if typ == 2:
@@ -547,15 +598,7 @@ static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x
 						if o + k < n:
 							idx[o + k] = v3
 					o += cnt3
-	var rgba := PackedByteArray()
-	rgba.resize(w * h * 4)
-	for p in w * h:
-		var c: Color = pal[idx[p]]
-		rgba[4 * p] = int(c.r8)
-		rgba[4 * p + 1] = int(c.g8)
-		rgba[4 * p + 2] = int(c.b8)
-		rgba[4 * p + 3] = 0 if idx[p] == 0 else 255
-	return Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+	return idx
 
 
 func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params := PackedByteArray(), lamp := LAMP_NONE) -> Dictionary:

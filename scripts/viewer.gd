@@ -126,7 +126,6 @@ var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light 
 const HUD_PORT := 47823
 const SUN_AZ_OFFSET := 315.0  # see _set_sky
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
-const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
 const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
 const LIVE_FOG_BEGIN := 35.0    # live mode: a light depth fog from here to there (game units): the far hills fade
@@ -595,6 +594,7 @@ func _load(index: int) -> void:
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
+	_limb_light(m)
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	if live:
 		planet_look(m["planet"], mis.get("sky", ""))
@@ -1753,9 +1753,59 @@ func _limb_mat(suit: int, part: int, ld: Dictionary, shade := -1.0) -> ShaderMat
 	sm.shader = LIMB
 	sm.set_shader_parameter("views", ld["tex"])
 	sm.set_shader_parameter("view_count", ld["views"])
-	sm.set_shader_parameter("shade", shade if shade >= 0.0 else (LIVE_SUIT_SHADE if live else 1.0))
+	sm.set_shader_parameter("shade", shade if shade >= 0.0 else 1.0)
+	if shade < 0.0:                                 # a standing suit: lit like the game's (_limb_light)
+		sm.set_meta("lit", true)
+		_limb_light_set(sm)
 	mats[k] = sm
 	return sm
+
+
+# The game's light on the standing suits (limb.gdshader lit), for the map: its light direction without the sky's
+# azimuth offset (the game's own model light vector, 0x36244F), ambient (amb + 1) / 2 and diffuse from resource 82,
+# and the planet's shade rows (resource 53) as colour gains, weighted by how often each colour shows on the limbs
+# (linear light: the textures are). The infrared view: unlit (the game swaps its palette remap, no light per limb).
+var limb_light := {}
+
+
+func _limb_light(m: Dictionary) -> void:
+	var light: Vector2 = m.get("light", Vector2(0.0, TAU / 8.0))
+	var dir := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
+	var rows := PackedVector3Array()
+	rows.resize(16)
+	rows.fill(Vector3.ONE)
+	var sr: PackedByteArray = (m.get("planet_data", {}) as Dictionary).get("shade_rows", PackedByteArray())
+	if sr.size() >= 16 * 256 and objects_ok:
+		var hist := objects.limb_histogram()
+		var lin := PackedVector3Array()
+		lin.resize(256)
+		for i in 256:
+			var c := (pal[i] as Color).srgb_to_linear()
+			lin[i] = Vector3(c.r, c.g, c.b)
+		var base := Vector3.ZERO
+		for i in 256:
+			base += lin[i] * hist[i]
+		for r in 15:
+			var fo := 256 * (15 - r)                 # the game's row r = file row 15 - r
+			var acc := Vector3.ZERO
+			for i in 256:
+				acc += lin[sr[fo + i]] * hist[i]
+			rows[r] = Vector3(acc.x / maxf(base.x, 1e-6), acc.y / maxf(base.y, 1e-6), acc.z / maxf(base.z, 1e-6))
+	limb_light = {"dir": dir, "amb": (float(m.get("light_amb", 0.3)) + 1.0) * 0.5, "dif": float(m.get("light_dif", 0.7)),
+			"rows": rows}
+	for k in mats:
+		if mats[k] is ShaderMaterial and (mats[k] as ShaderMaterial).has_meta("lit"):
+			_limb_light_set(mats[k])
+
+
+func _limb_light_set(sm: ShaderMaterial) -> void:
+	if limb_light.is_empty():
+		return
+	sm.set_shader_parameter("lit", not ir_on)
+	sm.set_shader_parameter("light_dir", limb_light["dir"])
+	sm.set_shader_parameter("light_amb", limb_light["amb"])
+	sm.set_shader_parameter("light_dif", limb_light["dif"])
+	sm.set_shader_parameter("light_rows", limb_light["rows"])
 
 
 func _add_zone(m: Dictionary, z: Dictionary) -> void:
@@ -3189,7 +3239,11 @@ func _live_update() -> void:
 		elif q.size() >= 8 and q.slice(0, 4).get_string_from_ascii() == "SCOR":
 			_live_scorch(q.slice(4))
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
-			ir_on = q[4] == 1                               # the game's infrared view (key I)
+			if ir_on != (q[4] == 1):
+				ir_on = q[4] == 1                           # the game's infrared view (key I)
+				for k in mats:                              # (the suits: unlit in it, _limb_light)
+					if mats[k] is ShaderMaterial and (mats[k] as ShaderMaterial).has_meta("lit"):
+						_limb_light_set(mats[k])
 			var old := oldschool_rect != null and oldschool_rect.visible
 			if ir_rect != null:
 				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)

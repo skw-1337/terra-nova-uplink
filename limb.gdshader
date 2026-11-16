@@ -11,7 +11,15 @@ uniform int view_count = 16;      // 16 views all around, or 9 from back to fron
 uniform float widen = 1.0;        // sprite width factor
 uniform float squash = 1.0;       // sprite height factor
 uniform float pixel_aspect = 1.2; // the game's pixels on the screen: 320 x 400 (848 x 400 wide) shown 4:3 / 16:9
-uniform float shade = 1.0;        // live mode: the game draws its suits much darker than the raw sprites
+uniform float shade = 1.0;        // a flat factor (the pieces of a burst suit; the standing suits are lit, below)
+// the game's light on a standing suit (0x29E564 then the limb drawer 0x2F6C50): each limb gets one shade from its
+// normal = from the bone towards the camera, I = amb + dif * max(0, N.L) (capped at 1.5), then row floor(16 I) of the
+// planet's shade table (viewer.gd _limb_light: the row's colour gains, rows >= 15 as they are)
+uniform bool lit = false;
+uniform vec3 light_dir = vec3(0.0, 1.0, 0.0);   // towards the light (the map's, without the sky's azimuth offset)
+uniform float light_amb = 1.0;                  // (map ambient + 1) / 2
+uniform float light_dif = 0.0;                  // map diffuse
+uniform vec3 light_rows[16];
 uniform float pull = 0.25;        // drawn this much nearer the camera: the game paints its suits over the ground,
                                   // a foot reaching just under it is not cut off (a standing suit: its feet and
                                   // shins only, viewer.gd LIMB_PULL; the pieces of a burst suit lying around: all)
@@ -23,6 +31,7 @@ instance uniform float mirror = 0.0; // 1: segment flag bit 0, a left limb drawn
 
 varying flat int layer;
 varying flat float flip;
+varying flat vec3 factor;
 
 void vertex() {
 	vec3 origin = MODEL_MATRIX[3].xyz;
@@ -39,6 +48,13 @@ void vertex() {
 	vec3 to_cam = CAMERA_POSITION_WORLD - origin;
 	vec3 c = to_cam - ax * dot(to_cam, ax);
 	float ang = atan(dot(c, side), dot(c, front));      // > 0 = camera on the limb's right
+	factor = vec3(shade);
+	if (lit) {
+		vec3 n = length(c) < 1e-5 ? vec3(0.0, 0.0, 1.0) : normalize(c);
+		float li = min(light_amb + light_dif * max(0.0, dot(n, light_dir)), 1.5);
+		int row = clamp(int(floor(16.0 * li)), 0, 15);
+		factor = row >= 15 ? vec3(1.0) : light_rows[row];
+	}
 	if (mirror > 0.5) {
 		ang = -ang;
 	}
@@ -87,5 +103,5 @@ void fragment() {
 	if (col.a < 0.5) {
 		discard;
 	}
-	ALBEDO = col.rgb * shade;
+	ALBEDO = col.rgb * factor;
 }

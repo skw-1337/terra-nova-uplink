@@ -599,10 +599,16 @@ func _load(index: int) -> void:
 	water_mats.clear()
 	var det_mat: Material = mats["terrain"]
 	var out_mat: Material = mats["terrain"]
+	snow_pl = pl                          # (the game's snow on its tiles: _live_tiles)
+	snow_tex = null
+	snow_raw.clear()
+	snow_mats.clear()
 	if pl["ok"]:                          # real ground textures (else: average colors)
 		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0)
+		snow_mats.append(det_mat)
 		if not m["outer"].is_empty():
 			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0)
+			snow_mats.append(out_mat)
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
@@ -3635,6 +3641,8 @@ func _live_update() -> void:
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
+		elif q.size() > 6 and q.slice(0, 4).get_string_from_ascii() == "TEXL":
+			_live_tiles(q)                                  # the ground tiles as the game holds them (its snow)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
 			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
@@ -5390,6 +5398,62 @@ const WEATHER_FALL := 0.45                     # the game's fall step (1/16 px p
 var weather_scale := 0.8                       # flakes per volume against the game's (they are bigger and softer)
 var weather_node: MultiMeshInstance3D = null
 var weather_key := ""
+
+
+# Snow settling on the ground (live). While it snows (weather kind 1: MISS17 and MISS30, the ice planet), the game
+# whitens its ground tiles themselves: every 45-70 ticks of its clock (0x2B0358), on each of the 64 tiles, one texel
+# at random takes a snow colour, palette 29-32 (and, 1 time in 16, one of the 16 x 16 copy too). Nothing undoes it:
+# the longer the mission, the whiter its ground (a quarter of the texels, then two thirds, in the test game). Its far
+# ground (the column rings, 0x2AC2B7) is drawn with the 16 x 16 copies, snowed at the same rate a texel: the mips of
+# the same tiles here. The bridge sends the tiles from the game's memory ('TEXL': first tile, count, then the tiles'
+# palette indices, deflated); the ground (detail and outer maps) is drawn with them. Up to the first snow nothing
+# changes.
+var snow_pl := {}                               # the map's planet (tn_data _read_planet)
+var snow_mats := []                             # the ground's materials (detail and outer maps)
+var snow_tex: Texture2DArray = null             # its tiles as the game holds them (null: the planet's own)
+var snow_raw := {}                              # tile -> the palette indices last laid on snow_tex
+
+
+func _live_tiles(q: PackedByteArray) -> void:
+	var first := q[4]
+	var count := q[5]
+	if snow_mats.is_empty() or not snow_pl.get("ok", false) or not snow_pl.has("raw") or count == 0:
+		return
+	var px := q.slice(6).decompress(count * 4096, FileAccess.COMPRESSION_DEFLATE)
+	if px.size() != count * 4096:
+		return
+	var raw: PackedByteArray = snow_pl["raw"]
+	var tex: Texture2DArray = snow_pl["textures"]
+	var fp: PackedColorArray = snow_pl["palette"]
+	var n: int = tex.get_layers()
+	for k in count:
+		var t := first + k
+		if t >= n:
+			break
+		var p := px.slice(k * 4096, k * 4096 + 4096)
+		var prev: PackedByteArray = snow_raw.get(t, raw.slice(t * 4096, t * 4096 + 4096))
+		if p == prev:
+			continue
+		if snow_tex == null:                         # the first change: a copy of the planet's tiles (shared by its maps)
+			var imgs: Array[Image] = []
+			for i in n:
+				imgs.append(tex.get_layer_data(i))
+			snow_tex = Texture2DArray.new()
+			snow_tex.create_from_images(imgs)
+			for sm in snow_mats:
+				for u in ["tiles", "tiles_soft", "tiles_wrap"]:
+					(sm as ShaderMaterial).set_shader_parameter(u, snow_tex)
+		var rgb := PackedByteArray()
+		rgb.resize(4096 * 3)
+		for i in 4096:
+			var c: Color = fp[p[i]]
+			rgb[3 * i] = c.r8
+			rgb[3 * i + 1] = c.g8
+			rgb[3 * i + 2] = c.b8
+		var img := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, rgb)
+		img.generate_mipmaps()
+		snow_tex.update_layer(img, t)
+		snow_raw[t] = p
 
 
 func _live_weather(q: PackedByteArray) -> void:

@@ -372,6 +372,37 @@ for _nom, _sig in (('ETAT VUES', rb'\x83\xec\x0c\x89\xd3\x8b\x15(....)\x83\x7a\x
 if len(METEO) != 4:
     print('meteo : signatures introuvables (neige non envoyee)', METEO)
     METEO = {}
+# The ground tiles as the game holds them: while it snows (kind 1) its routine 0x2B0358 lays snow texels (palette
+# 29-32) on them, one a tile every 45-70 ticks (and on their 16 x 16 copies, which its far ground is drawn with, at the
+# same rate a texel). TUILES: its 64 pointers to them (EN 0x41DC40, FR 0x41DCF0: the cell drawer's "mov eax, [eax*4 +
+# tuiles]"). Sent as 'TEXL' (first tile, count, the tiles' 4096 palette indices each, deflated), two tiles every
+# tenth of a second, a pair only when it changed (or every 10 s): the viewer lays them on its ground.
+_m = [struct.unpack('<I', m.group(1))[0] for m in re.finditer(
+    rb'\xa8\x40\x74\x0a\x83\xe0\x3f\xe8....\xeb\x07\x8b\x04\x85(....)', code, re.S)]
+TUILES = _m[0] if _m and all(a == _m[0] for a in _m) and 0x300000 <= _m[0] < 0x500000 else None
+if TUILES is None:
+    print('tuiles du sol : signature introuvable (neige au sol non envoyee)')
+tuiles_t, tuiles_k, tuiles_prev = 0.0, 0, {}
+
+
+def tuiles_sol():
+    """Next two ground tiles as a 'TEXL' packet (None: nothing new to send)."""
+    global tuiles_k
+    ptrs = struct.unpack('<64I', g.read(TUILES, 256))
+    first = tuiles_k
+    tuiles_k = (tuiles_k + 2) % 64
+    now = time.time()
+    if not all(0x300000 <= ptrs[t] < 0x4000000 for t in (first, first + 1)):
+        return None
+    px = [g.read(ptrs[t], 4096) for t in (first, first + 1)]
+    old = [tuiles_prev.get(t) for t in (first, first + 1)]
+    if all(o is not None and o[0] == p and now - o[1] <= 10.0 for o, p in zip(old, px)):
+        return None
+    for t, p in zip((first, first + 1), px):
+        tuiles_prev[t] = (p, now)
+    return b'TEXL' + struct.pack('<BB', first, 2) + zlib.compress(px[0] + px[1], 6)
+
+
 # The mission's alarm byte (EN 0x371174): set once when an enemy is alerted, cleared at each mission start. The lamps
 # of type 57 light up with it (routine 0x29B4D0). Found by its setter (cmp [a],1 / je / mov [a],1 / call ...) and its
 # getter (mov al,[a] / ret) right after; sent after the view's body (0 when not found)
@@ -2168,6 +2199,16 @@ while True:
             wthr = meteo()
             s.sendto(wthr, ('127.0.0.1', 47821))
             if guest: guest.weather(wthr)     # (la fenetre de l'invite aussi)
+        if TUILES and x + y > 0:              # the ground tiles (the snow settling on them)
+            try:
+                texl = tuiles_sol()
+                if texl:
+                    s.sendto(texl, ('127.0.0.1', 47821))
+                    if guest and not guest.remote: guest.s.sendto(texl, ('127.0.0.1', coop_guest.LIVE_PORT))   # (the guest's window on this PC)
+            except Exception as ex:
+                if time.time() - tuiles_t > 5.0:
+                    tuiles_t = time.time()
+                    print('tuiles :', repr(ex), file=sys.stderr, flush=True)
     if time.time() - brule_t > 0.5:           # sommets brules : lus 2 fois par seconde, envoyes s'ils changent (et toutes les 2 s)
         brule_t = time.time()
         carte = None

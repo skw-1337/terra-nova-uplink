@@ -749,6 +749,7 @@ func _read_planet(path: String) -> Dictionary:
 	out["count"] = count
 	out["tile_color"] = tile_color
 	out["textures"] = arr
+	out["raw"] = raw                            # the tiles' palette indices (live: the game's snow is laid on them)
 	out["mat"] = mat
 	out["pair"] = pair
 	out["prof"] = prof

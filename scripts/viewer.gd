@@ -1581,6 +1581,11 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 		var a := (l1 * l1 - l2 * l2 + dl * dl) / (2.0 * dl)
 		var fw := Vector3(0, 0, 1) - dn * dn.z          # (pose axes: right, up, forward)
 		fw = fw.normalized() if fw.length() > 0.001 else Vector3(0, 0, 1)
+		# towards the game's own knee when it is clearly bent and not backwards (a stride, a crouch turned aside)
+		var gk: Vector3 = (q[leg[1]] as Vector3) - hip
+		var gp := gk - dn * gk.dot(dn)
+		if gp.length() > 0.25 * l1 and gp.normalized().dot(fw) > 0.0:
+			fw = gp.normalized()
 		q[leg[1]] = hip + dn * a + fw * sqrt(maxf(l1 * l1 - a * a, 0.0))
 	return q
 
@@ -1600,6 +1605,7 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 # against the legs. In the air (a jump) the legs hang under it. Suits the game draws keep its own pose (aiming,
 # crouching, dying), cross-faded from and to their steps (_pose_suit).
 const ARM_TOL := 0.15
+const ARM_TOL_NECK := 0.5
 const ARM_BONES := [[9, 10], [10, 12], [12, 14], [9, 11], [11, 13], [13, 15]]
 const STEADY_HOLD := 3000
 const GAIT_STALE := 250                        # ms without a pose from the game
@@ -1630,20 +1636,25 @@ func _arms_off(p: Array, stand: Array, rest: Array = []) -> bool:
 	for i in ARM_BONES.size():
 		var b: Array = ARM_BONES[i]
 		var l0: float = rest[i] if i < rest.size() else (stand[b[0]] as Vector3).distance_to(stand[b[1]])
-		if l0 > 0.0 and absf((p[b[0]] as Vector3).distance_to(p[b[1]]) / l0 - 1.0) > ARM_TOL:
+		# the neck to a shoulder is no bone in the game: drawn, it varies by up to a quarter (the shoulders turning,
+		# one side shorter than the other); within ARM_TOL it tripped on most suits the game poses, which then walked
+		# on their own steps, legs straight, instead of crouching and striding as drawn
+		var tol := ARM_TOL_NECK if b[0] == 9 else ARM_TOL
+		if l0 > 0.0 and absf((p[b[0]] as Vector3).distance_to(p[b[1]]) / l0 - 1.0) > tol:
 			return true
 	return false
 
 
 # A soldier's own bone lengths, read by the bridge in its game record (thigh, shin, upper arm, forearm, torso, reach):
-# its legs at rest stand 0.9 x thigh + shin (= reach, as the game's hip to ankle shows), its arms and the neck to
-# shoulders as the game has them (_arms_off); its feet stay at their file length.
+# the knees are put back with the thigh and shin as they are (the game draws its suits with exactly these bones; its
+# hip to ankle, 0.9 x their sum standing, bends the knees: with bones of 0.9 x a crouching suit's legs came out
+# straight), its arms and the neck to shoulders as the game has them (_arms_off); its feet stay at their file length.
 func _live_size(node: Node3D, sz: Array) -> void:
 	node.set_meta("size", sz)
 	if node.has_meta("corpse") or not node.has_meta("stand"):
 		return
-	var th: float = LEG_STAND * float(sz[0])
-	var sh: float = LEG_STAND * float(sz[1])
+	var th: float = float(sz[0])                 # (the bones the game draws its suits with: standing, its hip to ankle is
+	var sh: float = float(sz[1])                 # LEG_STAND x their sum, the knees a little bent)
 	node.set_meta("leg_rest", [th, sh, th, sh])
 	var stand: Array = node.get_meta("stand")
 	var k_torso: float = float(sz[4]) / maxf((stand[8] as Vector3).distance_to(stand[9]), 0.001)

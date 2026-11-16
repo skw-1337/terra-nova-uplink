@@ -616,6 +616,7 @@ func _load(index: int) -> void:
 	live_off = -1
 	live_alarm = false                        # (cleared by the game at each mission start)
 	live_sizes.clear()
+	live_drawn = PackedByteArray()            # (the last mission's DRAW bits)
 	mission_tag = String(entry["file"]).get_file().to_upper()
 	live_extra.clear()
 	live_fx.clear()

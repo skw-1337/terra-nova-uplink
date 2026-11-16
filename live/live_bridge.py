@@ -359,7 +359,8 @@ def portee(tab, cx, cy, k, table):
         dx = (((x - cx + 0x80000000) & 0xFFFFFFFF) - 0x80000000) >> 16    # (int32 difference, floored)
         dy = (((y - cy + 0x80000000) & 0xFFFFFFFF) - 0x80000000) >> 16
         d = max(abs(dx), abs(dy))
-        v = table[c * 128 + t] if c < 9 and t < 128 and len(table) >= 9 * 128 else 127
+        if len(table) < 9 * 128: v = 1 << 20              # (no table: drawn whatever the distance)
+        else: v = table[c * 128 + t] if c < 9 and t < 128 else 127
         if k == 0 or d * k <= 4 * v:
             bits[i >> 3] |= 1 << (i & 7)
     return bytes(bits)
@@ -1798,6 +1799,7 @@ while True:
     if PORTEES:                               # what the game draws, every frame (its table re-read every 2 s)
         if time.time() - portees_t > 2.0:
             portees_t, portees_tab = time.time(), g.read(PORTEES, 9 * 128)
+            if not any(portees_tab): portees_tab = b''   # (not loaded yet: all drawn, not none, see portee)
         ou = vue if sonde else pid
         if 0 <= ou < NENT:
             k = (u16(A_ZOOM + 0x18) + 0x100) >> 11 if A_ZOOM else 4

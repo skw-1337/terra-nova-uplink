@@ -687,7 +687,7 @@ func _add_vegetation(m: Dictionary) -> int:
 		if TNObjects.is_sprite(ref):
 			var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 			if not sp.is_empty():
-				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL)
+				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL, sprite_hd)
 				mat = _sprite_mat(ref, sp)
 				shadow = _sprite_shadow_mat(ref, sp)
 		elif TNObjects.is_model(ref):
@@ -816,12 +816,13 @@ func _ground_look(base_light: float, base_ambient: float) -> void:
 		sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
 
 
-# The game draws its plant and rock sprites a little wider than their radius and taller than their picture's
-# proportions: a decor rock seen at 1.5 and 5 units, 1.2 x and 1.5 x; trees and bushes side by side with the game
-# (21/10/2026, MISS37, same moment and view): fir 1.5 x wider and 1.8-1.9 x taller, bush 1.2 x and 1.7 x (drawn at
-# 1 x and 1 x before, units looked oversized next to them)
-const SPRITE_SCALE := 1.2
-const SPRITE_TALL := 1.5
+# The game projects its world with 1.1 x the focal it draws its sprites with (camera matrix 0x29EB64 against the view's
+# focal 0x29EA84): a sprite looks like an object 1 / 1.1 as wide as its width (twice its radius, sprite_width), with
+# its bitmap's proportions. (The 21/10/2026 eye fit, 1.2 x radius by 1.5 x taller, matched Terra Nova Plus's HD720
+# view, whose focal across is too short: TN_SPRITES_HD720=1 brings that look back, 0.70 x as wide.)
+const SPRITE_SCALE := 1.0 / 1.1
+const SPRITE_TALL := 1.0
+var sprite_hd := 0.70 if OS.get_environment("TN_SPRITES_HD720") == "1" else 1.0
 
 
 # Simple stand-in shapes, standing on their base, when the game data has no sprite / model.
@@ -859,10 +860,11 @@ func _placeholder(shape: String) -> Mesh:
 	return out
 
 
-# Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground.
-func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0) -> QuadMesh:
+# Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground. narrow: its width
+# alone (TN_SPRITES_HD720)
+func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0, narrow: float = 1.0) -> QuadMesh:
 	var q := QuadMesh.new()
-	q.size = Vector2(width, width * sp["aspect"] * tall)
+	q.size = Vector2(width * narrow, width * sp["aspect"] * tall)
 	q.center_offset = Vector3(0, q.size.y * 0.5, 0)
 	return q
 
@@ -1286,7 +1288,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
-			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL)
+			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL, sprite_hd)
 			mi.mesh = q
 			mi.material_override = _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
@@ -4857,7 +4859,7 @@ var puff_seen := {}
 # (Before: four types fitted by eye, two of them on another type's animation and two half their size, the 24
 # others a small orange ball.)
 const FX_GAP_MS := 150           # an entity not seen for that long, then seen again in its slot: a new effect
-var fx_scale := 1.2              # the sprites' scale against the table's size (SPRITE_SCALE: the same routine draws them)
+var fx_scale := 1.0 / 1.1        # the effects' scale against their width (SPRITE_SCALE: the same routine draws them)
 var anims := []                  # [node, start msec, duration in s (0: looping), its entity]
 var smoke_pending := []          # blasts (6/23) waiting to know whether a suit burst there: [position, msec]
 var anim_seen := {}              # entity -> [msec last seen, type, position, its looping node or null]

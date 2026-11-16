@@ -1763,23 +1763,42 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 
 
 # Biped mech (skeleton 886): legs and body are small 3D models (RESTNOBJ 877-883, "pbmb00-06"),
-# each hanging from its first joint with its y axis along the segment. Rest pose in world units.
-# Joints: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 body bottom, 9 body top.
+# each hanging from its first joint with its y axis along the segment. Joints: 0/1 toes, 2/3 ankles, 4/5 knees,
+# 6/7 hips, 8 body bottom, 9 body top.
+# Standing pose as the game builds it (0x281918, 0x281CBC) from the parts' heights h (header max y - min y), in 16.16:
+# shin = h(878) x 0.8, thigh = h(879) x 0.8, body = h(880) x 0.8, hips h(881) x 0.983 apart, ankle h(877) x 0.327 high,
+# toes 0x2E00 ahead of the ankle, hips (thigh + shin + ankle) x 0.8 high. The game keeps no knee at rest: put back by
+# the two bones, bent backwards as all its walking frames show them (bird legs).
 func _add_mech(holder: Node3D) -> float:
 	var segs: Array = objects.skeleton(TNObjects.MECH_SUIT)
 	var p: Array[Vector3] = []                     # (right, up, forward)
 	p.resize(16)
-	var ankle := 0.1
-	var knee_y := ankle + 0.39
-	var hip_y := knee_y + 0.28
+	var h := func(part: int, fallback: int) -> int:
+		var e: int = objects.mech_yext(part)
+		return e if e > 0 else fallback
+	var shin_i: int = (h.call(1, 0x7D2A) * 0xCCCC) >> 16
+	var thigh_i: int = (h.call(2, 0x601A) * 0xCCCC) >> 16
+	var body_i: int = (h.call(3, 0x68A4) * 0xCCCC) >> 16
+	var hipw_i: int = (h.call(4, 0x6723) * 0xFB9F) >> 16
+	var ankle_i: int = (h.call(0, 0x6723) * 0x539C) >> 16
+	var hip_i: int = ((thigh_i + shin_i + ankle_i) * 0xCCCC) >> 16
+	var shin := shin_i / 65536.0
+	var thigh := thigh_i / 65536.0
+	var ankle := ankle_i / 65536.0
+	var hip_y := hip_i / 65536.0
+	var half := hipw_i / 131072.0
+	var toe := 0x2E00 / 65536.0
+	var d := hip_y - ankle                         # the knee: two bones from hip to ankle, behind their line
+	var a := (d * d + thigh * thigh - shin * shin) / (2.0 * d)
+	var back := sqrt(maxf(thigh * thigh - a * a, 0.0))
 	for i in 2:
 		var side := -1.0 if i == 0 else 1.0
-		p[i] = Vector3(side * 0.3, 0.0, 0.24)
-		p[2 + i] = Vector3(side * 0.3, ankle, 0.0)
-		p[4 + i] = Vector3(side * 0.3, knee_y, 0.04)
-		p[6 + i] = Vector3(side * 0.3, hip_y, 0.0)
-	p[9] = Vector3(0.0, hip_y + 0.3, 0.0)
-	p[8] = Vector3(0.0, hip_y - 0.08, 0.0)
+		p[i] = Vector3(side * half, 0.0, toe)
+		p[2 + i] = Vector3(side * half, ankle, 0.0)
+		p[4 + i] = Vector3(side * half, hip_y - a, -back)
+		p[6 + i] = Vector3(side * half, hip_y, 0.0)
+	p[8] = Vector3(0.0, hip_y, 0.0)
+	p[9] = Vector3(0.0, hip_y + body_i / 65536.0, 0.0)
 	var parts := []
 	for sg in segs:
 		var md: Dictionary = objects.model(Vector2i(877 + sg[2], 0), pal, pal_key)

@@ -101,6 +101,16 @@ func skeleton(suit: int) -> Array:
 	return out
 
 
+# A mech part's height in its model header (16.16, max y - min y; frame 0 of RESTNOBJ 877 + part), -1 if missing:
+# the game sizes the mech's skeleton from them (0x281918).
+func mech_yext(part: int) -> int:
+	var fr := LGRes.frames(res.data(MECH_PARTS.x + part))
+	if fr.is_empty() or (fr[0] as PackedByteArray).size() < 0x20:
+		return -1
+	var f: PackedByteArray = fr[0]
+	return f.decode_s32(0x0C) - f.decode_s32(0x18)
+
+
 # One limb: its views in a texture array, every view placed so that joint a sits at the same
 # spot (x centered, y = "a1"), plus the pixel length between the two joints. {} for 3D parts.
 func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dictionary:

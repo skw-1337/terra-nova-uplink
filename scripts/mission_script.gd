@@ -28,6 +28,7 @@ extends RefCounted
 
 const Babl := preload("res://scripts/babl.gd")
 const LGRes := preload("res://scripts/lgres.gd")
+const ResFile := preload("res://scripts/res_file.gd")
 
 const FILE := "RESBABL2.RES"
 const RES_DO3D := 1005
@@ -86,34 +87,66 @@ const EVENTS := {96: "a group has finished its move", 97: "a group starts", 99: 
 	108: "a labelled unit dies", 109: "a group is wiped out", 110: "a group enters or leaves a zone"}
 
 var path := ""
+var data_dir := ""
 var error := ""
-var res = null                     # the file (lgres.gd)
+var raw := {}                      # the file as stored (res_file.gd)
 var modules := {}                  # resource id -> {"name", "frames"}
+var changed := {}                  # resource id -> true: modules that differ from the file read
+var legal := {}                    # edit id -> edit, of every mission (made when first asked)
 var table := {}                    # mission -> {"main": [res, f], "debrief": [res, f], "director": [res, f]}
 var obj_texts := PackedStringArray()
 var mission_names := PackedStringArray()
 
 
-# data_dir: the game's TNOVA\DATA (or a copy of it). null when RESBABL2.RES is not there or not readable.
-static func open(data_dir: String, babl_file: String = ""):
+# dir: the game's TNOVA\DATA (or a copy of it). original = true reads the game's own scripts even when a changed
+# RESBABL2.RES was installed (its kept original). null when the file is not there or not readable.
+static func open(dir: String, original: bool = false):
 	var ms = load("res://scripts/mission_script.gd").new()
-	ms.path = babl_file if babl_file != "" else data_dir.path_join(FILE)
-	ms.res = LGRes.open(ms.path)
-	if ms.res == null:
+	ms.data_dir = dir
+	ms.path = dir.path_join(FILE)
+	if original:
+		ms.path = ResFile.original_path(ms.path)
+	ms.raw = ResFile.read(ms.path)
+	if ms.raw.is_empty():
 		return null
-	for rid in ms.res.resources:
-		if ms.res.resources[rid]["type"] == 12:
-			var m: Dictionary = Babl.split(ms.res.data(rid))
+	for e in ms.raw["entries"]:
+		if e["type"] == 12 and not (e["flags"] & 1):
+			var m: Dictionary = Babl.split(e["raw"])
 			if not m.is_empty():
-				ms.modules[rid] = m
+				ms.modules[e["id"]] = m
 	ms._read_table()
-	var g = LGRes.open(data_dir.path_join("RESGAME.RES"))
-	if g != null:
-		ms.obj_texts = g.strings(RES_OBJ_TEXT)
-	var m2 = LGRes.open(data_dir.path_join("RESMISS.RES"))
-	if m2 != null:
-		ms.mission_names = m2.strings(RES_NAMES)
+	ms._read_texts(original)
 	return ms
+
+
+func _read_texts(original: bool) -> void:
+	var pg := data_dir.path_join("RESGAME.RES")
+	var pm := data_dir.path_join("RESMISS.RES")
+	var g = LGRes.open(ResFile.original_path(pg) if original else pg)
+	if g != null:
+		obj_texts = g.strings(RES_OBJ_TEXT)
+	var m2 = LGRes.open(ResFile.original_path(pm) if original else pm)
+	if m2 != null:
+		mission_names = m2.strings(RES_NAMES)
+
+
+# the same scripts in memory, to change without touching this one
+func copy():
+	var ms = load("res://scripts/mission_script.gd").new()
+	ms.path = path
+	ms.data_dir = data_dir
+	ms.raw = raw
+	for rid in modules:
+		ms.modules[rid] = {"name": modules[rid]["name"], "frames": modules[rid]["frames"].duplicate(true)}
+	ms.changed = changed.duplicate()
+	ms.table = table.duplicate(true)
+	ms.obj_texts = obj_texts
+	ms.mission_names = mission_names
+	return ms
+
+
+func module_bytes(rid: int) -> PackedByteArray:
+	return Babl.join(modules[rid]["frames"]) if modules.has(rid) else PackedByteArray()
 
 
 func missions() -> Array:
@@ -361,6 +394,8 @@ func summary(mission: int) -> Dictionary:
 					_typed_ref(out, nd, when)
 				if nd["k"] != "nat":
 					continue
+				if nd["i"] == N_OBJ_COMPLETE and _generic_complete(nd, guards[si]):
+					continue
 				_native(out, nd, when, role, rid, f, base, active, conds, custom, lock)
 			# the conditions themselves: what the script waits for
 			if s["k"] == "ifnot" or s["k"] == "msgtype":
@@ -459,6 +494,33 @@ static func _typed_ref(out: Dictionary, nd: Dictionary, when: Dictionary) -> voi
 		_use(out, "labels", b, "a distance to them is measured %s" % when["text"])
 	elif int(a) == 0x30000:
 		_use(out, "zones", b, "a distance to it is measured %s" % when["text"])
+
+
+# ObjComplete(k) under nothing but the game's own checks of objective k (ObjAliveOK(k), ObjKillOK(k), its "in
+# use" flag): what missgen.4 / missgen.5 do, written out; not custom logic
+static func _generic_complete(nd: Dictionary, guards: Array) -> bool:
+	if nd["args"].size() != 1 or guards.is_empty():
+		return false
+	var k = const_of(nd["args"][0])
+	if k == null:
+		return false
+	var asked := false
+	for g in guards:
+		if g["type"] >= 0:
+			return false
+		var terms := []
+		_flatten_and(g["e"], terms)
+		for t in terms:
+			if not (t is Dictionary):
+				return false
+			if t["k"] == "cv" and t["o"] == CV_OBJ_ON + int(k) - 1:
+				continue
+			if t["k"] == "nat" and (t["i"] == N_KILL_OK or t["i"] == N_ALIVE_OK) and t["args"].size() == 1 \
+					and const_of(t["args"][0]) == k:
+				asked = true
+				continue
+			return false
+	return asked
 
 
 # the ID lock pattern (missions 1 and 8): LockedTarget() & 255 compared with a label, missgen.9(ms) holding the
@@ -692,3 +754,140 @@ func _watch(out: Dictionary, guards: Array, s: Dictionary, role: String) -> void
 		_:
 			if w["event"] >= 0 and w["group"] >= 0:
 				_use(out, "groups", w["group"], "the script reacts to its event %d" % w["event"])
+
+
+# ---- changes in place: one number of a script replaced by another of the same size
+# A change, as kept in a creation: {"res", "frame", "off", "n", "sum", "old", "new"}: resource id of the module,
+# function, offset of the number in the function, its size in bytes, checksum of the game's own function (source
+# line numbers aside, so the same in every language of the game), the game's value, the new one. No game data.
+
+# the checksum of a function, source lines aside
+static func frame_sum(code: PackedByteArray) -> String:
+	var c := code.duplicate()
+	var ins = Babl.walk(code)
+	if ins != null:
+		for i in ins:
+			if i[1] == Babl.OP_LINE:
+				c[i[0] + 1] = 0
+				c[i[0] + 2] = 0
+	var h := HashingContext.new()
+	h.start(HashingContext.HASH_SHA256)
+	if not c.is_empty():
+		h.update(c)
+	return h.finish().hex_encode().substr(0, 16)
+
+
+# every number that may be changed, of every mission: edit id -> edit (as summary()["edits"])
+func legal_edits() -> Dictionary:
+	if legal.is_empty():
+		for n in missions():
+			var s: Dictionary = summary(n)
+			for id in s["edits"]:
+				if legal.has(id):                   # (a function shared by several missions: the widest range)
+					legal[id]["min"] = mini(legal[id]["min"], s["edits"][id]["min"])
+					legal[id]["max"] = maxi(legal[id]["max"], s["edits"][id]["max"])
+				else:
+					legal[id] = s["edits"][id].duplicate()
+	return legal
+
+
+# the change that gives an edit of summary()["edits"] a new value; {"error": why not} when it may not.
+# To call on the game's own scripts (open(dir, true)).
+func change(edit: Dictionary, value: int) -> Dictionary:
+	if value < int(edit["min"]) or value > int(edit["max"]):
+		return {"error": "%s: %d is outside %d..%d" % [edit["what"], value, edit["min"], edit["max"]]}
+	var rid: int = edit["res"]
+	var f: int = edit["frame"]
+	if not modules.has(rid) or f < 1 or f >= modules[rid]["frames"].size():
+		return {"error": "the script function of this number is not there"}
+	return {"res": rid, "frame": f, "off": edit["off"], "n": edit["n"],
+		"sum": frame_sum(modules[rid]["frames"][f]), "old": edit["v"], "new": value}
+
+
+static func _is_int(v) -> bool:
+	return (v is int or v is float) and float(v) == floorf(float(v)) and absf(float(v)) < 4294967296.0
+
+
+# "" when a change (from a file or a pasted code: nothing in it is trusted) fits the game's own scripts
+func check_change(c) -> String:
+	if not (c is Dictionary):
+		return "a script change is not well formed"
+	for key in ["res", "frame", "off", "n", "new"]:
+		if not c.has(key) or not _is_int(c[key]):
+			return "a script change is not well formed (%s)" % key
+	var rid := int(c["res"])
+	var f := int(c["frame"])
+	var off := int(c["off"])
+	var n := int(c["n"])
+	var v := int(c["new"])
+	if not modules.has(rid) or f < 1 or f >= modules[rid]["frames"].size():
+		return "a script change is for a function the game does not have (%d.%d)" % [rid, f]
+	var code: PackedByteArray = modules[rid]["frames"][f]
+	if str(c.get("sum", "")) != frame_sum(code):
+		return "%s.%d is not the function this change was made for (another version of the game?)" % [
+			module_name(rid), f]
+	var id := "%d.%d.%d" % [rid, f, off]
+	var all := legal_edits()
+	if not all.has(id) or int(all[id]["n"]) != n:
+		return "a script change touches something that may not be changed (%s)" % id
+	var e: Dictionary = all[id]
+	if c.has("old") and (not _is_int(c["old"]) or int(c["old"]) != int(e["v"])):
+		return "%s: the game's value is %d, not %s" % [e["what"], e["v"], str(c["old"])]
+	if v < int(e["min"]) or v > int(e["max"]):
+		return "%s: %d is outside %d..%d" % [e["what"], v, e["min"], e["max"]]
+	return ""
+
+
+# the game's scripts with the changes applied, in memory: {"error": "", "ms": the changed copy}. To call on the
+# game's own scripts (open(dir, true)); this object is left as it is.
+func patched(changes: Array) -> Dictionary:
+	var ms = copy()
+	var seen := {}
+	for c in changes:
+		var e := check_change(c)
+		if e != "":
+			return {"error": e, "ms": null}
+		var rid := int(c["res"])
+		var f := int(c["frame"])
+		var off := int(c["off"])
+		var id := "%d.%d.%d" % [rid, f, off]
+		if seen.has(id):
+			return {"error": "two script changes for the same number (%s)" % id, "ms": null}
+		seen[id] = true
+		var code: PackedByteArray = ms.modules[rid]["frames"][f]
+		match int(c["n"]):
+			1:
+				code.encode_s8(off, int(c["new"]))
+			2:
+				code.encode_s16(off, int(c["new"]))
+			_:
+				code.encode_s32(off, int(c["new"]))
+		ms.modules[rid]["frames"][f] = code
+		ms.changed[rid] = true
+	return {"error": "", "ms": ms}
+
+
+# the whole RESBABL2.RES with this object's changed modules (and other resources given new contents: debriefing
+# string tables), checked by reading it back: {"error": "", "bytes": the file}
+func file_bytes(extra: Dictionary = {}) -> Dictionary:
+	var f := {"header": raw["header"], "entries": raw["entries"].duplicate(true)}
+	for rid in changed:
+		if not ResFile.put(f, rid, module_bytes(rid)):
+			return {"error": "module %d could not be replaced" % rid, "bytes": PackedByteArray()}
+	for rid in extra:
+		if not ResFile.put(f, rid, extra[rid]):
+			return {"error": "resource %d could not be replaced" % rid, "bytes": PackedByteArray()}
+	var bytes := ResFile.build(f)
+	var back := ResFile.parse(bytes)
+	if back.is_empty() or back["entries"].size() != raw["entries"].size():
+		return {"error": "the new script file does not read back", "bytes": PackedByteArray()}
+	for e in back["entries"]:
+		if e["type"] != 12:
+			continue
+		var m: Dictionary = Babl.split(e["raw"])
+		if m.is_empty() or e["raw"].size() > 0xFFFF:
+			return {"error": "module %d does not read back" % e["id"], "bytes": PackedByteArray()}
+		for k in range(1, m["frames"].size()):
+			if Babl.walk(m["frames"][k]) == null:
+				return {"error": "function %d.%d does not read back" % [e["id"], k], "bytes": PackedByteArray()}
+	return {"error": "", "bytes": bytes}

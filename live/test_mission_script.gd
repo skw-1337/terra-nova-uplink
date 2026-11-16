@@ -1,13 +1,17 @@
-# Test of the mission scripts' reader (scripts/babl.gd, scripts/mission_script.gd).
+# Test of the mission scripts' reader and writer (scripts/babl.gd, mission_script.gd, mission_build.gd, res_file.gd).
 # Without the game: code built with babl.gd's Asm reads back as the statements it was built from, a module taken
-# apart and put back is the same, shift() moves the branch targets.
+# apart and put back is the same, shift() moves the branch targets, an LG Res file is written back as read.
 # With the game (TN_GAME_DIR, or one of tn_data.gd's usual places): every script module of RESBABL2.RES is read
-# without an unknown opcode, every mission has its summary, and missions 37 and 8 say what the game does.
+# without an unknown opcode, every mission has its summary, and missions 37 and 8 say what the game does; then, on
+# a COPY of the three data files in the test's own folder (never in the game's): numbers changed in place, scripts
+# rebuilt from blocks, the game's file kept and put back.
 #   godot --headless --path . --script res://live/test_mission_script.gd [-- dump N]
 extends SceneTree
 
 const Babl := preload("res://scripts/babl.gd")
 const MissionScript := preload("res://scripts/mission_script.gd")
+const MissionBuild := preload("res://scripts/mission_build.gd")
+const ResFile := preload("res://scripts/res_file.gd")
 const TNData := preload("res://scripts/tn_data.gd")
 
 var fails := 0
@@ -28,6 +32,7 @@ func _initialize() -> void:
 		print("(no game found: the checks on the game's own scripts are skipped)")
 	else:
 		_game(root.path_join("TNOVA/DATA"))
+		_write(root.path_join("TNOVA/DATA"))
 	print("%d checks, %d failed" % [checks, fails])
 	quit(1 if fails else 0)
 
@@ -92,6 +97,19 @@ func _synthetic() -> void:
 	_check(moved and st2[1]["at"] == before, "every branch target moved by 5")
 	_check(Babl.walk(PackedByteArray([0x01, 0x02, 0x47])) == null, "an unknown opcode is refused")
 	_check(Babl.walk(PackedByteArray([0x03, 0x02])) == null, "an instruction cut short is refused")
+	# an LG Res file: built, read, changed, built again
+	var rf := ResFile.empty()
+	ResFile.add(rf, 170, 0, 0, "map5.res".to_ascii_buffer())
+	ResFile.add(rf, 173, 0, 2, ResFile.compound([PackedByteArray([1, 2, 3]), PackedByteArray()]))
+	ResFile.add(rf, 900, 1, 2, ResFile.strings(["Tu\u00E9s", "plain"]))
+	var bytes := ResFile.build(rf)
+	var rb := ResFile.parse(bytes)
+	_check(rb.get("entries", []).size() == 3 and ResFile.data(rb, 170) == "map5.res".to_ascii_buffer()
+		and ResFile.items(ResFile.data(rb, 173)).size() == 2, "an LG Res file reads back as built")
+	_check(ResFile.build(rb) == bytes, "and is written back byte for byte")
+	var st850: Array = ResFile.items(ResFile.data(rb, 900))
+	_check(st850[0] == PackedByteArray([0x54, 0x75, 0x82, 0x73, 0]), "texts are stored in the game's code page")
+	_check(ResFile.parse(bytes.slice(0, bytes.size() - 4)).is_empty(), "a file cut short is refused")
 
 
 func _game(data_dir: String) -> void:
@@ -177,3 +195,155 @@ func _dump(ms, n: int) -> void:
 		for note in s["notes"]:
 			print("  note: %s" % note)
 		print("  edits: %d" % s["edits"].size())
+
+
+# ---- writing, on a copy
+func _write(game_data: String) -> void:
+	var dir := OS.get_user_data_dir().path_join("test_mission_script")
+	_check(not dir.contains("Program Files") and not dir.contains("steamapps"), "the test writes in its own folder (%s)" % dir)
+	if dir.contains("Program Files") or dir.contains("steamapps"):
+		return
+	DirAccess.make_dir_recursive_absolute(dir)
+	for f in DirAccess.get_files_at(dir):
+		DirAccess.remove_absolute(dir.path_join(f))
+	for f in ["RESBABL2.RES", "RESGAME.RES", "RESMISS.RES"]:
+		DirAccess.copy_absolute(game_data.path_join(f), dir.path_join(f))
+	var game_file := FileAccess.get_file_as_bytes(game_data.path_join("RESBABL2.RES"))
+	var mo = MissionScript.open(dir, true)
+	_check(mo != null, "the copy opens")
+	if mo == null:
+		return
+	# the file rebuilt with nothing changed is the game's
+	var same: Dictionary = mo.file_bytes()
+	_check(same["error"] == "" and same["bytes"] == game_file, "RESBABL2.RES is written back byte for byte")
+	# --- numbers changed in place: mission 37, objective 3 = 80 % of label 3, group 2 patrols 4-5-7
+	var s37: Dictionary = mo.summary(37)
+	var cond: Dictionary = s37["objectives"][2]["conditions"][0]
+	var order2 := {}
+	for od in s37["orders"]:
+		if od["group"] == 2 and od["order"] == "patrol":
+			order2 = od
+	var changes := [mo.change(s37["edits"][cond["edit"]["pct"]], 80), mo.change(s37["edits"][cond["edit"]["label"]], 3),
+		mo.change(s37["edits"][order2["edit"]["zone3"]], 7)]
+	_check(not changes[0].has("error") and changes[0]["old"] == 100 and changes[0]["sum"].length() == 16,
+		"a change is made: %s" % JSON.stringify(changes[0]))
+	_check(mo.change(s37["edits"][cond["edit"]["pct"]], 101).has("error"), "101 % is refused")
+	var err := MissionBuild.install(dir, {"patch": changes})
+	_check(err == "", "the changes are installed %s" % err)
+	_check(FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES.uplink-original")) == game_file,
+		"the game's file is kept beside it")
+	var now = MissionScript.open(dir)
+	var n37: Dictionary = now.summary(37)
+	var c2: Dictionary = n37["objectives"][2]["conditions"][0]
+	_check(c2["pct"] == 80 and c2["label"] == 3 and _patrol(n37, 2) == [4, 5, 7] and _patrol(n37, 1) == [1, 2, 3],
+		"the installed script says: %s; group 2 patrols %s" % [n37["objectives"][2]["what"], str(_patrol(n37, 2))])
+	var diff := 0
+	var gf := ResFile.parse(game_file)
+	for e in now.raw["entries"]:
+		if e["raw"] != ResFile.data(gf, e["id"]):
+			diff += 1
+	_check(diff == 1, "one resource of the file differs (%d)" % diff)
+	# what a pasted code must not do
+	var bad: Dictionary = changes[0].duplicate()
+	bad["sum"] = "0000000000000000"
+	_check(mo.check_change(bad) != "", "a change for another version of the function is refused")
+	bad = changes[0].duplicate()
+	bad["off"] = int(bad["off"]) + 1
+	_check(mo.check_change(bad) != "", "a change beside a number is refused")
+	bad = changes[0].duplicate()
+	bad["new"] = 1000
+	_check(mo.check_change(bad) != "", "a value that does not fit is refused")
+	bad = changes[0].duplicate()
+	bad["old"] = 99
+	_check(mo.check_change(bad) != "", "a change whose old value is not the game's is refused")
+	_check(MissionBuild.install(dir, {"patch": [changes[0], changes[0]]}) != "", "the same number twice is refused")
+	# a second install starts from the game's file again, not from the changed one
+	err = MissionBuild.install(dir, {"patch": [changes[0]]})
+	var again = MissionScript.open(dir)
+	_check(err == "" and again.summary(37)["objectives"][2]["conditions"][0]["label"] == 2,
+		"a new install starts from the game's own file")
+	err = MissionBuild.install(dir, {})
+	_check(err == "" and FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES")) == game_file,
+		"an empty script part puts the game's file back")
+	# --- a function replaced by a longer one: the functions after it keep their meaning
+	var cp = mo.copy()
+	var frames: Array = cp.modules[1071]["frames"]
+	var before2 = Babl.lift(frames[2], Babl.base_of(frames, 2))
+	var before3 = Babl.lift(frames[3], Babl.base_of(frames, 3))
+	var longer: PackedByteArray = frames[1].duplicate()
+	longer.append_array(PackedByteArray([0x7F, 0, 0, 0x7F, 0, 0, 0x7F, 0, 0]))
+	_check(MissionBuild._replace(frames, 1, longer), "a function is replaced by a longer one")
+	var after2 = Babl.lift(frames[2], Babl.base_of(frames, 2))
+	var after3 = Babl.lift(frames[3], Babl.base_of(frames, 3))
+	var moved: bool = after2.size() == before2.size() and after3.size() == before3.size()
+	for pair in [[before2, after2], [before3, after3]]:
+		for i in pair[0].size():
+			moved = moved and pair[1][i]["at"] == pair[0][i]["at"] + 9 and pair[1][i]["k"] == pair[0][i]["k"]
+			if pair[0][i].has("to"):
+				moved = moved and pair[1][i]["to"] == pair[0][i]["to"] + 9
+	_check(moved, "the functions after it and their branch targets moved with it")
+	# --- scripts built from blocks: the empty slot 18, and mission 37 rebuilt
+	var before := {}
+	for n in mo.missions():
+		before[n] = JSON.stringify(mo.summary(n))
+	var spec18 := {"mission": 18,
+		"objectives": [[{"kind": "idlock", "label": 4, "ms": 3000}], [{"kind": "kill", "label": 2, "pct": 50}],
+			[{"kind": "kill", "label": 2, "pct": 100}, {"kind": "alive", "label": 3, "pct": 100}]],
+		"orders": [{"group": 1, "order": "patrol", "zones": [1, 2, 3]}, {"group": 2, "order": "move", "zone": 4},
+			{"group": 3, "order": "hold_zone", "zone": 5}, {"group": 4, "order": "attack_group", "target": 1, "on": 1},
+			{"group": 5, "order": "follow", "label": 3}, {"group": 6, "order": "attack_label", "label": 3},
+			{"group": 6, "order": "link", "target": 1}],
+		"end": {"objective": 3, "seconds": 8},
+		"debrief": ["Locked.", "Half of them.", "All of them, and the truck lives.", "Nothing done."]}
+	var spec37 := {"mission": 37, "objectives": [null, null, [{"kind": "kill", "label": 2, "pct": 60}]],
+		"orders": [{"group": 1, "order": "patrol", "zones": [3, 2, 1]}]}
+	var made := MissionBuild.make(dir, {"build": [spec18, spec37]})
+	_check(made["error"] == "", "two scripts are built %s" % made["error"])
+	if made["error"] != "":
+		return
+	var b = made["ms"]
+	var b18: Dictionary = b.summary(18)
+	var kinds := []
+	for o in b18["objectives"]:
+		kinds.append(o["kind"])
+	_check(b18["ok"] and kinds == ["idlock", "kill", "combined"], "18 reads back: %s" % str(kinds))
+	_check(b18["objectives"][0]["conditions"][0]["label"] == 4 and b18["objectives"][0]["conditions"][0]["ms"] == 3000
+		and b18["objectives"][1]["conditions"][0]["pct"] == 50 and b18["objectives"][2]["conditions"].size() == 2,
+		"18: %s / %s / %s" % [b18["objectives"][0]["what"], b18["objectives"][1]["what"], b18["objectives"][2]["what"]])
+	var got := []
+	for od in b18["orders"]:
+		got.append("%d %s %s %d on %d" % [od["group"], od["order"], str(od["zones"]), od["target"], od["when"]["group"]])
+	_check(got == ["1 patrol [1, 2, 3] -1 on 1", "4 attack_group [] 1 on 1", "2 move [4] -1 on 2",
+		"3 hold_zone [5] -1 on 3", "5 follow [] 3 on 5", "6 attack_label [] 3 on 6", "6 link [] 1 on 6"],
+		"18: its orders read back (%s)" % str(got))
+	_check(b18["debrief"] == 3 and b.table[18]["debrief"] == [1029, 3], "18 has a debriefing function now")
+	var b37: Dictionary = b.summary(37)
+	_check(b37["objectives"][2]["kind"] == "kill" and b37["objectives"][2]["conditions"][0]["pct"] == 60
+		and _patrol(b37, 1) == [3, 2, 1] and _patrol(b37, 2) == [], "37 rebuilt: %s" % b37["objectives"][2]["what"])
+	var others := 0
+	for n in mo.missions():
+		if n != 18 and n != 37 and JSON.stringify(b.summary(n)) != before[n]:
+			others += 1
+			print("     mission %d changed" % n)
+	_check(others == 0, "no other mission's script changed")
+	err = MissionBuild.install(dir, {"build": [spec18, spec37]})
+	var inst = MissionScript.open(dir)
+	_check(err == "" and inst != null and JSON.stringify(inst.summary(18)["objectives"]) == JSON.stringify(b18["objectives"]),
+		"the built scripts are installed and read back from the file %s" % err)
+	var texts: Array = ResFile.items(ResFile.data(inst.raw, 1030))
+	_check(texts.size() == 4 and texts[3].get_string_from_ascii() == "Nothing done.", "18's debriefing texts are in the file")
+	# what a spec must not do
+	var bad_spec: Dictionary = spec18.duplicate(true)
+	bad_spec["mission"] = 41
+	_check(MissionBuild.make(dir, {"build": [bad_spec]})["error"] != "", "a mission sharing its script is refused")
+	bad_spec = spec18.duplicate(true)
+	bad_spec["orders"][0]["group"] = 32
+	_check(MissionBuild.make(dir, {"build": [bad_spec]})["error"] != "", "group 32 is refused")
+	bad_spec = spec18.duplicate(true)
+	bad_spec["objectives"][1].append({"kind": "idlock", "label": 1, "ms": 1000})
+	_check(MissionBuild.make(dir, {"build": [bad_spec]})["error"] != "", "an ID lock joined with a kill is refused")
+	_check(MissionBuild.make(dir, {"build": [spec37], "patch": [changes[0]]})["error"] != "",
+		"a script both rebuilt and changed in place is refused")
+	err = MissionBuild.install(dir, {})
+	_check(err == "" and FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES")) == game_file,
+		"the game's file is put back")

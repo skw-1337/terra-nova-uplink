@@ -1,7 +1,7 @@
 # Pont vers Terra Nova Uplink (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
 # (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
 # Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
-#   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
+#   python live_bridge.py [--fov N] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance Uplink dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, threading, time, zlib

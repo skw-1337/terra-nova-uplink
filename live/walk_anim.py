@@ -103,7 +103,7 @@ class WalkAnim:
 
     def pose(self, e, typ, x, y, cap, now, height=0.0):
         """pose rejouee pour l'entite e (octets, 48 floats), ou None si rien d'appris. Un type pas encore vu de pres
-        prend le cycle d'un autre, a sa taille a lui. (height n'est plus utilise : la hauteur lue dans les articulations
+        prend le cycle d'un autre, tel quel (echelle 1). (height n'est plus utilise : la hauteur lue dans les articulations
         d'une armure que le jeu ne pose pas est un reste, 10,4 avant tout zoom, 1,0 apres un dezoom, pour 0,43 : elle
         faisait des armures 24 x / 2,3 x trop grandes)"""
         st = self.rep.setdefault(e, [0.0, [], False, 0.0, now])

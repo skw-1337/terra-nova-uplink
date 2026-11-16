@@ -4,7 +4,7 @@
 # A model is a program for the Looking Glass 3D interpreter (the same family as System Shock's):
 # header (name, bounding box, counts, texture list), then bytecode that defines points, relative
 # points, BSP nodes, articulated sub-objects and polygons (flat, textured or wireframe).
-# Opcode sizes were read from the game's own interpreter (jump table at 0x36069c in __FF.EXE).
+# Opcode sizes were read from the game's own interpreter (jump table at 0x3605F4 in the English exe, 0x36069C French).
 extends RefCounted
 
 const LGRes = preload("res://scripts/lgres.gd")
@@ -75,7 +75,7 @@ func sprite_width(cls: int, sub: int) -> float:
 # 4 forearm, 5 torso, 6 other forearm); a part holds 16 views of the limb seen from all around
 # (torso: 9, back to front) and every view marks where the two joints are. Skeletons: 884 (most
 # suits), 885 (clones, pirates), 886 (biped mech, whose parts are 3D models).
-# Soldier type -> suit: table at 0x395CA5 in __FF.EXE (one byte every 70).
+# Soldier type -> suit: table at 0x395BF5 English exe / 0x395CA5 French (one byte every 70).
 const SUIT_OF_TYPE := [0, 1, 2, 4, 3, 5, 6, 7, 8, 11, 9, 10, 5, 1, 0, 1, 2, 9]
 const MECH_SUIT := 11
 const MECH_PARTS := Vector2i(877, 883)     # its legs and body: 3D models

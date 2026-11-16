@@ -1921,7 +1921,8 @@ while True:
         for a in SOL_PTRS:
             pc = struct.unpack('<I', g.read(a, 4))[0]
             if 0x400000 <= pc < 0x4000000 and 0 <= x < 512 and 0 <= y < 512:
-                h = struct.unpack('<h', g.read(pc + 3 * (int(y) * 513 + int(x)) + 1, 2))[0] / 384
+                # hauteur sur 12 bits (bits 15:4, 1/24 d'unite) : le jeu retire le quart de tour et l'ombre (sar 4)
+                h = (struct.unpack('<h', g.read(pc + 3 * (int(y) * 513 + int(x)) + 1, 2))[0] >> 4) / 24
                 if abs(h - z) < 1.5:
                     carte = pc
                     break

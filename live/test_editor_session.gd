@@ -265,13 +265,39 @@ func _run() -> void:
 	await _frames(2)
 	_check(ed.props.visible and ed.props.rec == ed.recs[a], "the panel follows its unit")
 	await _tap(KEY_P)
+	if ed.props.visible:                             # (another unit under the free pointer: P showed that one; P again)
+		await _tap(KEY_P)
 	_check(not ed.props.visible and viewer.look, "P closes it, the mouse looks around again")
 
+	# the unit's menu (cursor mode, right click) opens them too
+	ed._open_unit_menu({"kind": "unit", "uid": ed.uids[a]}, Vector2(1, 1))
+	var has_props := false
+	for k in ed.unit_menu.item_count:
+		has_props = has_props or ed.unit_menu.get_item_text(k) == "Properties"
+	ed.unit_menu.hide()
+	ed._on_unit_menu(6)
+	await _frames(2)
+	_check(has_props and ed.props.visible and ed.props_uid == ed.uids[a], "the unit's menu has Properties, which opens the panel")
+	await _tap(KEY_ESCAPE)
+	_check(not ed.props.visible and ed.active, "Esc closes the panel first, the build mode stays")
+	# the game's tables: what is counted
+	var ai := 4
+	for r in ed.recs:
+		ai += 1 if r[0] in [1, 2, 3] or (r[0] == 4 and (r[7] != 0 or r[30] != 0 or r[31] != 0)) else 0
+	var later: PackedByteArray = ed.lg.data(181)
+	for k in 32:
+		ai += (later.decode_u32(0) >> k) & 1
+	_check(ed._ai_count() == ai and ed._no_room(ed.recs[a]) == "", "%d of the game's 60 AI records used (squad and later arrivals counted): room for more" % ai)
+	_check(ed._script_use(a, false).begins_with("Label 7"), "a labelled unit: what the script may do with it is said (%s)" % ed._script_use(a, false))
+
 	# the remover takes the mission's own units too; undo puts one back where it was
-	var victim := -1
-	for i in n0:
-		if ed.recs[i][0] == 1 and ed.recs[i][26] == 0:
-			victim = i
+	var victim := 0                                 # (a soldier with no label if there is one, else a soldier)
+	for want_label0 in [true, false]:
+		for i in n0:
+			if ed.recs[i][0] == 1 and (ed.recs[i][26] == 0 or not want_label0):
+				victim = i
+				break
+		if ed.recs[victim][0] == 1:
 			break
 	var vuid: int = ed.uids[victim]
 	var vrec: PackedByteArray = ed.recs[victim].duplicate()

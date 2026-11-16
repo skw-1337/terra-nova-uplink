@@ -1665,6 +1665,8 @@ func _script_use(i: int, removing: bool) -> String:
 		out.append(t)
 	elif removing and g != 0 and same_group == 0:
 		out.append("It was the last unit of group %d: the group is gone" % g)
+	elif not removing and g != 0 and not refs.is_empty() and r[0] != 0:
+		out.append("The mission's script gives no order to group %d by its number: its units are left to themselves" % g)
 	return ".  ".join(out)
 
 

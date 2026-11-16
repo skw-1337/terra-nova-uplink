@@ -220,8 +220,13 @@ func load_mission(path: String) -> Dictionary:
 				"z": f.decode_s32(16) / 65536.0,     # height above the ground (only the Nid d'aigle bridge)
 				"heading": f.decode_u16(20) / 65536.0 * TAU})
 	var sky := LGRes.text(r.data(178).slice(0, 16)) if r.has(178) else ""
+	# the haze radius (0x2AC848): s16 at +0x10 (the whole part of a 16.16 at +0x0E; 256 when missing) x 25558 (RESSIM
+	# 925, the same in all its frames) >> 16: 99 in most missions, 37 in MISS2 (storm), 96 in MISS7
+	var r178: PackedByteArray = r.data(178) if r.has(178) else PackedByteArray()
+	var haze_s := r178.decode_s16(0x10) if r178.size() >= 0x12 else 256
+	var haze_k := maxi(1, (haze_s * 25558) >> 16)
 	return {"map": LGRes.text(r.data(170)), "groups": groups, "zones": zones, "entities": ents,
-			"sky": sky}
+			"sky": sky, "haze_k": haze_k}
 
 
 # Map file -> heights, ground tiles (detail + outer grid), planet textures.

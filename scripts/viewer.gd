@@ -129,28 +129,33 @@ const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the am
 const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
 const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
-const LIVE_FOG_BEGIN := 35.0    # live mode: a light depth fog from here to there (game units): the far hills fade
-const LIVE_FOG_END := 320.0     # into the sky's colour (aerial perspective), the map looks deeper and bigger
-const LIVE_FOG_MAX := 0.65      # (never a wall: 65 % at the most)
+# live mode: the game's haze (0x2B4E8C), one curve for every planet: level 0 up to 20 units, then
+# min(15, 16 (1 - exp(-(d - 20) / k))), k = the mission's haze radius (99 in most). Godot's depth fog
+# pow(smoothstep(begin, end, d), 0.4) follows it within 0.01 with begin 20 + 16 k / 99, end 20 + 300 k / 99; its
+# level 15 is not a wall (0.66-0.80 of the way to the haze colour in the SKY tables): LIVE_FOG_MAX
+const LIVE_FOG_BEGIN := 36.0
+const LIVE_FOG_END := 320.0
+const LIVE_FOG_MAX := 0.72
+const LIVE_FOG_CURVE := 0.4
 const LIVE_SHADOW := 70.0       # live mode: the objects' shadows up to there (the ground casts none)
 const LIVE_SATURATION := 1.4    # the 3D's colours (the sky and the water take it back: their "desat")
 const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
 # live mode: each planet's ambiance over that look (its RESPLNTn file; a storm sky, SKY0S, changes its planet's):
-# depth fog (begin, end, its most), its colour (the sky's haze mixed with a tint), the sun's colour and light, the
+# the fog's colour (the sky's haze mixed with a tint), the sun's colour and light, the
 # sky's share of the ambient light, saturation, contrast, brightness; sparkle: snow crystals catching the light
 const PLANET_LOOK := {
-	"RESPLNT0.RES": {"fog": [35.0, 320.0, 0.6], "tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
+	"RESPLNT0.RES": {"tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
 		"sun": Color(1.0, 0.94, 0.82), "light": 0.82, "ambient": 0.3, "sat": 1.45, "contrast": 1.03},
-	"RESPLNT1.RES": {"fog": [15.0, 180.0, 0.8], "tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.5,        # ice
+	"RESPLNT1.RES": {"tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.5,        # ice
 		"sun": Color(0.86, 0.93, 1.0), "light": 0.8, "ambient": 0.4, "sat": 1.2, "contrast": 1.08, "sparkle": 1.2},
-	"RESPLNT2.RES": {"fog": [20.0, 260.0, 0.75], "tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
+	"RESPLNT2.RES": {"tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
 		"sun": Color(1.0, 0.87, 0.68), "light": 0.95, "ambient": 0.24, "sat": 1.3, "contrast": 1.1},
-	"RESPLNT3.RES": {"fog": [25.0, 240.0, 0.7], "tint": Color(0.1, 0.12, 0.1), "tint_mix": 0.6,          # meteor:
+	"RESPLNT3.RES": {"tint": Color(0.1, 0.12, 0.1), "tint_mix": 0.6,          # meteor:
 		"sun": Color(0.82, 1.0, 0.84), "light": 0.62, "ambient": 0.2, "sat": 1.3, "contrast": 1.08},       # dark teal
 
-	"RESPLNT4.RES": {"fog": [25.0, 250.0, 0.7], "tint": Color(0.18, 0.24, 0.36), "tint_mix": 0.6,        # night
+	"RESPLNT4.RES": {"tint": Color(0.18, 0.24, 0.36), "tint_mix": 0.6,        # night
 		"sun": Color(0.62, 0.74, 1.0), "light": 0.42, "ambient": 0.1, "sat": 1.0, "contrast": 1.12, "bright": 0.72},
-	"SKY0S.RES": {"fog": [20.0, 220.0, 0.78], "tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
+	"SKY0S.RES": {"tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
 		"sun": Color(0.82, 0.86, 0.92), "light": 0.5, "ambient": 0.36, "sat": 1.15, "contrast": 0.98},
 }
 const VIEW_DROP := 2.0           # rows of the game's screen from the middle of its 3D window to where the view looks
@@ -335,7 +340,7 @@ func _ready() -> void:
 		env.fog_depth_begin = LIVE_FOG_BEGIN
 		env.fog_depth_end = LIVE_FOG_END
 		env.fog_density = LIVE_FOG_MAX
-		env.fog_depth_curve = 1.2
+		env.fog_depth_curve = LIVE_FOG_CURVE
 		env.fog_aerial_perspective = 0.7
 		env.fog_sun_scatter = 0.1
 		env.fog_sky_affect = 0.0
@@ -604,6 +609,7 @@ func _load(index: int) -> void:
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
+	haze_k = mis.get("haze_k", 99)
 	map_dif = m.get("dif", DEFAULT_DIF)
 	map_amb = m.get("amb", DEFAULT_AMB)
 	if live:
@@ -1114,10 +1120,7 @@ func planet_look(planet: String, sky_file: String) -> void:
 	var base: Dictionary = a
 	if sky_file.get_file().to_upper() == "SKY0S.RES" or planet.to_upper() == "RESPLNT4.RES":
 		base = PLANET_LOOK["RESPLNT0.RES"]
-	var fog: Array = a.get("fog", [LIVE_FOG_BEGIN, LIVE_FOG_END, LIVE_FOG_MAX])
-	env.fog_depth_begin = fog[0]
-	env.fog_depth_end = fog[1]
-	env.fog_density = fog[2]
+	_haze_fog(haze_k)
 	env.fog_light_color = env.fog_light_color.lerp(a.get("tint", Color.WHITE), a.get("tint_mix", 0.0))
 	sun.light_color = a.get("sun", Color.WHITE)
 	sun.light_energy = base.get("light", LIVE_LIGHT) * map_dif / DEFAULT_DIF
@@ -1131,6 +1134,18 @@ func planet_look(planet: String, sky_file: String) -> void:
 	if env_nofog_cache != null:                   # the coop's maps: the same colours
 		for p in ["ambient_light_sky_contribution", "adjustment_saturation", "adjustment_contrast", "adjustment_brightness"]:
 			env_nofog_cache.set(p, env.get(p))
+
+
+# The depth fog for haze radius k (see LIVE_FOG_BEGIN): the mission's, or the one the running game draws with (the
+# bridge's 'HAZE': Terra Nova Plus's FAR distance makes it 180)
+var haze_k := 99
+
+
+func _haze_fog(k: float) -> void:
+	env.fog_depth_begin = 20.0 + 16.0 * k / 99.0
+	env.fog_depth_end = 20.0 + 300.0 * k / 99.0
+	env.fog_depth_curve = LIVE_FOG_CURVE
+	env.fog_density = LIVE_FOG_MAX
 
 
 func _apply_look() -> void:
@@ -3265,6 +3280,8 @@ func _live_update() -> void:
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
+		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
+			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "WAYP":
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":

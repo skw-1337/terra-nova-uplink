@@ -1499,6 +1499,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.add_to_group("lamps")
 			if cls == 2 or (cls == 4 and sub == MINE_TYPE):
 				mi.set_meta("half", md["half_len"])      # (its pitch on the ground: _ground_pitch)
+			if cls == 3 and sub >= SHIP_FIRST and sub <= SHIP_LAST:
+				mi.set_meta("foot", _foot_of(md["mesh"]))   # (kept out of the slopes: _ship_lift)
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
@@ -6018,6 +6020,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		if objects_ok and not TNObjects.is_sprite(objects.ref_for(e[0], e[1])):
 			f = objects.draw_offset(e[0], e[1])
 		var y: float = e[5] - f
+		if node.has_meta("foot"):
+			y += _ship_lift(node, m, e[3], e[4], e[6])
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):
@@ -6046,6 +6050,50 @@ func _ground_pitch(m: Dictionary, x: float, y: float, heading: float, half: floa
 	var c := half * cos(heading)
 	var s := half * sin(heading)
 	return atan2(TNData.height_at(m, x + c, y + s) - TNData.height_at(m, x - c, y - s), 2.0 * half)
+
+
+# Landed ships (class 3, types 8 to 14: the dropships, the shuttles, the recon aircraft) on a slope. The game draws
+# them level at z - 0.667 (0x29B3AC, no pitch for class 3) and, drawing its objects over its ground (no depth
+# test between the two), shows the whole ship even where its hull goes below the slope. Here the ground hides what is
+# under it: on a steep pickup point half the dropship sank into the hill. Raised so: level as the game has it, by
+# what the ground under its lowest part (the bottom quarter of its height, measured on the model; sampled at its
+# corners, edges and middle) rises above the ground under its origin; on flat ground nothing changes.
+const SHIP_FIRST := 8
+const SHIP_LAST := 14
+
+
+func _foot_of(mesh: Mesh) -> Array:
+	var bb := mesh.get_aabb()
+	var lo := bb.position.y
+	var cut := lo + 0.25 * bb.size.y
+	var r := Rect2()
+	var first := true
+	for s in mesh.get_surface_count():
+		var v: PackedVector3Array = mesh.surface_get_arrays(s)[Mesh.ARRAY_VERTEX]
+		for p in v:
+			if p.y <= cut:
+				if first:
+					r = Rect2(p.x, p.z, 0.0, 0.0)
+					first = false
+				else:
+					r = r.expand(Vector2(p.x, p.z))
+	return [lo, r]
+
+
+func _ship_lift(node: Node3D, m: Dictionary, x: float, y: float, heading: float) -> float:
+	var ft: Array = node.get_meta("foot")
+	var r: Rect2 = ft[1]
+	var c := cos(-heading)
+	var s := sin(-heading)
+	var top := -INF
+	for k in 9:
+		var lx := r.position.x + r.size.x * 0.5 * float(k % 3)
+		var lz := r.position.y + r.size.y * 0.5 * float(k / 3)
+		# (local to world as Basis(UP, -heading) turns it: x' = x cos + z sin, z' = -x sin + z cos)
+		top = maxf(top, TNData.height_at(m, x + lx * c + lz * s, y - lx * s + lz * c))
+	# (measured from the ground under its origin, not from its hull: the game itself draws it 0.133 into flat ground,
+	# z - 0.667 with z 0.533 above it, MISS31's shuttle and cruiser; that is kept)
+	return maxf(0.0, top - TNData.height_at(m, x, y))
 
 
 # Half the model's length by class and type, when its node has none (no model in the data: a box).

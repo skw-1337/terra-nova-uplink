@@ -4413,8 +4413,9 @@ func _sub_views(q: PackedByteArray) -> void:
 		(tr.material as ShaderMaterial).set_shader_parameter("hud", hud_tex)
 		(tr.material as ShaderMaterial).set_shader_parameter("frame", Vector4(r.position.x, r.position.y, r.size.x, r.size.y))
 		# the game's labels over its small view: the probe's compass (lavender, dark blue outline), the target camera's
-		# name (red)
-		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel in [3, 4] else (18.0 if panel == 2 else 0.0))
+		# name (red), and its red messages anywhere in the panel (an ID lock: "SENDING" under the name while the
+		# game sends the target's identity, MISS8; drawn by the game in the same red, index 68, they were hidden)
+		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel in [3, 4] else (r.size.y if panel == 2 else 0.0))
 		(tr.material as ShaderMaterial).set_shader_parameter("label_a", 47.0 if panel in [3, 4] else 68.0)
 		(tr.material as ShaderMaterial).set_shader_parameter("label_b", 59.0 if panel in [3, 4] else 68.0)
 		# the 360 view's panels are mirrors: what is on the player's left is on the left of the one behind him, and the

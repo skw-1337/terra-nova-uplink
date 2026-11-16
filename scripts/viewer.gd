@@ -649,6 +649,7 @@ func _load(index: int) -> void:
 	cloud_set = Vector2(-1.0, -1.0)
 	_limb_light(m)
 	sky_ref_y = TNData.height_at(m, _drop_zone(mis).x, _drop_zone(mis).y) + SKY_EYE
+	far_ground = _mean_ground(m, pl)
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	map_dif = m.get("dif", DEFAULT_DIF)
 	map_amb = m.get("amb", DEFAULT_AMB)
@@ -2580,9 +2581,12 @@ func _set_sky(path: String, light: Vector2) -> void:
 		mat.set_shader_parameter("levels", sk["cloud_levels"])
 		mat.set_shader_parameter("levels_soft", sk["cloud_levels"])
 		var band: Array = sk["band_rain"] if int(mis_params.get("weather_kind", 0)) == 2 else sk["band"]
-		var bi := Image.create(4, 1, false, Image.FORMAT_RGB8)   # sampled as the cloud texels are (the same colours)
+		var bi := Image.create(5, 1, false, Image.FORMAT_RGB8)   # sampled as the cloud texels are (the same colours)
 		for i in 4:
 			bi.set_pixel(i, 0, band[i])
+		# 5th: under the horizon, where no ground is drawn (beyond the outer map, 256 units past the map's edge),
+		# the map's mean ground colour at the modern look's full haze (tn_haze: 0.70 of the haze colour, sRGB)
+		bi.set_pixel(4, 0, far_ground.lerp(sk["haze"], 0.7))
 		mat.set_shader_parameter("bands", ImageTexture.create_from_image(bi))
 	var haze: Color = sk["haze"]
 	mat.set_shader_parameter("haze", Vector3(haze.r, haze.g, haze.b))
@@ -2689,8 +2693,36 @@ func _set_sky(path: String, light: Vector2) -> void:
 	_sky_items_place()
 
 
+var far_ground := Color(0.5, 0.5, 0.5)      # the ground at the outer map's edge (sRGB), _mean_ground
 
 
+# The mean colour of the ground at the outer map's edge (what the far ground under the horizon continues): its tiles'
+# mean colours along the outer grid's border (8 points deep), or over the detail grid without one.
+func _mean_ground(m: Dictionary, pl: Dictionary) -> Color:
+	var cols = pl.get("tile_color", [])
+	var g: Dictionary = m.get("outer", {})
+	var rim := 8
+	if not g.has("tilemap"):
+		g = m.get("detail", {})
+		rim = 1 << 20
+	if cols.is_empty() or not g.has("tilemap"):
+		return Color(0.5, 0.5, 0.5)
+	var img: Image = g["tilemap"]
+	var w := img.get_width()
+	var h := img.get_height()
+	var acc := Vector3.ZERO
+	var n := 0
+	for y in range(0, h, 2):
+		for x in range(0, w, 2):
+			if mini(mini(x, w - 1 - x), mini(y, h - 1 - y)) >= rim:
+				continue
+			var ti := int(round(img.get_pixel(x, y).r * 255.0))
+			if ti < cols.size():
+				var c: Color = cols[ti]
+				acc += Vector3(c.r, c.g, c.b)
+				n += 1
+	acc /= maxf(1.0, float(n))
+	return Color(acc.x, acc.y, acc.z)
 
 
 # The sky's own pictures (resource 153's list, not the moon) are drawn lower the higher the eye (0x2A816C: (eye's

@@ -37,7 +37,7 @@ float hash(vec3 p) {
 // Nothing else: no sun or glow under the ceiling (the game shows none).
 uniform sampler2DArray levels : source_color, filter_nearest_mipmap, repeat_enable;
 uniform sampler2DArray levels_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // modern look
-uniform sampler2D bands : source_color, filter_nearest;   // 4 x 1: the far band's colours, as the clouds' texels
+uniform sampler2D bands : source_color, filter_nearest;   // 5 x 1: the far band's colours, as the clouds' texels; the far ground
 // infrared (live, tn_ir): the same through the planet's IR table 60, in the game's colours
 uniform sampler2DArray levels_ir : source_color, filter_nearest_mipmap, repeat_enable;
 uniform sampler2D bands_ir : source_color, filter_nearest;
@@ -80,8 +80,10 @@ vec3 band_at(sampler2D b, float r) {
 }
 
 vec3 planet_sky(vec3 d, vec3 eye, bool per_row) {
-	if (d.y <= 0.0) {
-		return texelFetch(bands, ivec2(3, 0), 0).rgb;
+	if (d.y <= 0.0) {                     // the game: band 3 down to the ground; where no ground is drawn (beyond
+		// the outer map), the hazed ground instead (bands texel 4), from the horizon down over ~2 degrees
+		return mix(texelFetch(bands, ivec2(3, 0), 0).rgb, texelFetch(bands, ivec2(4, 0), 0).rgb,
+				smoothstep(0.0, 0.035, -d.y));
 	}
 	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
 	float r = ceiling_r(d, per_row);

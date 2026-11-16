@@ -634,7 +634,8 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 # Jouer depuis la fenetre du visualiseur (--play) : il renvoie clavier et souris sur le port 47824.
 #   'K' + scancode (u16, 0xE0xx = touche etendue) + appui (u8) -> touche postee a la fenetre DOSBox (position physique,
 #        donc presets / remappage de TNPlus inchanges ; Alt en WM_SYSKEY comme le ferait Windows)
-#   'M' + dx, dy (i16)  -> regard comme le freelook de TNPlus : cap += dx * 12, tangage += dy * 8 (bornes du jeu),
+#   'M' + dx, dy (i16)  -> regard comme le freelook de TNPlus : cap += dx * 12, tangage += dy * 8, borne a +/-0x2000
+#        (45 deg : la borne du regard relatif du jeu, 0x2c9254),
 #        curseur du jeu tenu au centre de la vue (ou partent les tirs)
 #   'B' + bouton (1 gauche, 2 droit) + appui -> evenement dans la file de la lib souris du jeu (tir, verrouillage)
 #   'P' + x, y (i16)  -> regard coupe (Y ou Pause dans le visualiseur) : curseur du jeu a cette position de son
@@ -644,7 +645,7 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 #   'R' + dx, dy (i16) -> the cursor moved by that much (game pixels) with a button held: see glisser
 #   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
 PLAY = '--play' in sys.argv
-SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -7187, 6127
+SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -0x2000, 0x2000
 if PLAY:
     import ctypes
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

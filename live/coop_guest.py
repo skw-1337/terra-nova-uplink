@@ -42,6 +42,9 @@ WEAPON_KEYS = {0x02: 0, 0x03: 1, 0x04: 2, 0x05: 3}   # 1-4: weapon slot (suit re
 SEL, SLOTS, SLOT_N = 0xCE, 0x45, 0xF                # selected slot, 4 weapon slots (+0 type: weapon names 1-17)
 HUD_PORT = 47832              # the guest window's coop_hud.gd: 'GHD' state, armour, max, entity (online: via 47841)
 PBA, PBA_N, ENERGY = 0x3A5608, 0x582, 0x88   # English exe: suit records, the energy word (shots draw from it)
+# the suit's power plant, 16.16 dwords: +0x86 the energy (+0x88 is its integer word), +0x8A its maximum (a hit on the
+# plant lowers it, 0x28b938); the game's panel bar is the one over the other (0x26d944)
+EN_CUR, EN_MAX = 0x86, 0x8A
 PARTS = [(0x15 + 7 * k, 0x17 + 7 * k) for k in range(4)]   # the armour: 4 parts (+0x14 + 7k: flag, current, max, current)
 SQUAD_R = 25.0                # suits this close to the player at mission start = his squad (the guest's choices)
 OK, DOWN, SPECTATE = 0, 1, 2
@@ -129,7 +132,6 @@ class Guest:
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
-        self.emax = 1
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
         self.post_key, self.drop_t = None, 0.0                   # the bridge's key poster (DOSBox window)
@@ -190,8 +192,8 @@ class Guest:
         # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (1 s apart)
         slots = bytes(self.g.read(self.suit(self.gid) + SLOTS + SLOT_N * k, 1)[0] for k in range(4)) if self.gid else bytes(4)
         en = 0
-        if self.gid:                                           # then his energy, % of what he had at pickup
-            en = max(0, min(100, self.energy(self.gid) * 100 // max(1, self.emax)))
+        if self.gid:                                           # then his energy, % of the suit's max (+0x8A), as the game's panel bar
+            en = self.energy_pct(self.gid)
         return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if time.time() - self.jump_t >= 1.0 else 0, en])
 
     def versus_hits(self, me):
@@ -327,6 +329,12 @@ class Guest:
     def energy(self, e):
         return struct.unpack('<h', self.g.read(self.suit(e) + ENERGY, 2))[0]
 
+    def energy_pct(self, e):
+        """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power
+        plant damage lowers the max, and he changes suits)"""
+        cur, mx = struct.unpack('<ii', self.g.read(self.suit(e) + EN_CUR, 8))
+        return 0 if mx <= 0 else max(0, min(100, cur * 100 // mx))
+
     def alive(self, e):
         return e and self.g.read(self.master + 0x25 * e, 2) == b'\x01\x01' and self.armour(e) > 0
 
@@ -362,7 +370,6 @@ class Guest:
         if gid:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
             self.amax, self.state, self.taken_t = self.armour_max(gid), OK, time.time()
-            self.emax = max(1, self.energy(gid))
             print('guest: entity %d' % gid, flush=True)
             self.tag.put(gid, self.name, self.face)
         else:

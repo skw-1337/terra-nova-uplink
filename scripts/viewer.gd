@@ -3694,6 +3694,13 @@ func _live_units(pk: PackedByteArray) -> void:
 			for hid in [_live_node(idx), live_fx.get(idx), live_piles.get(idx)]:
 				if hid != null and is_instance_valid(hid):
 					hid.visible = false
+	for idx in live_sizes:                             # each soldier's own lengths (the bridge's SLEN): for the game's
+		var se = ents.get(idx)                         # poses and for its own steps alike (_gait: the far ones, the
+		if se == null or se[0] != 1:                   # player's own body)
+			continue
+		var sn := _live_node(idx)
+		if sn != null and sn.has_meta("soldier") and sn.get_meta("size", []) != live_sizes[idx]:
+			_live_size(sn, live_sizes[idx])
 	for idx in joints:                                 # soldiers the game draws: its own animation
 		var node: Node3D = live_extra.get(idx)
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
@@ -3703,8 +3710,6 @@ func _live_units(pk: PackedByteArray) -> void:
 			if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
 				node.set_meta("jt0", now_ms)                # its poses again after a while without (GAIT_BACK)
 			node.set_meta("jt", now_ms)
-			if live_sizes.has(idx) and node.get_meta("size", []) != live_sizes[idx]:
-				_live_size(node, live_sizes[idx])
 			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand"), node.get_meta("arm_rest", [])):
 				node.set_meta("stale_t", now_ms)            # a half-frozen pose: it walks on its own steps
 			if not _gait_wanted(node, now_ms):

@@ -835,6 +835,14 @@ joints_net = None                         # (table, {entite: articulations brute
 REPRISE = 0.15                            # s : une lecture nette resservie au plus tant
 
 
+DESSINEES = (4, 5, 10, 11, 12, 13, 14, 15)    # the joints the game writes only when it draws the suit
+perimees = set()                           # suits moved since the game last drew them (their pose is not sent)
+
+
+def dessinees(jr):
+    return b''.join(jr[12 * k:12 * k + 12] for k in DESSINEES)
+
+
 def joints_lus(t):
     lus = {}
     for i in range(NENT):
@@ -2083,6 +2091,17 @@ while True:
         # dans une limite large (2 pour le mech et les lourdes, 1 sinon) ; la premiere fois, l'ancienne regle
         prev = joints_prev.get(i)
         joints_prev[i] = (jr, x0, y0)
+        if not mech:
+            # the knees, shoulders, elbows and hands are written only while the game draws the suit: the same bytes as
+            # before with the suit somewhere else = it moved undrawn (out of the game's view or range), its pose is not
+            # the game's any more, until the game writes them again. (The whole record was compared: the toes, ankles,
+            # hips, pelvis and neck, rewritten every picture, always differed, the test never held; the viewer told by
+            # bone lengths instead, which the Hog clones' legs, of no fixed length, never passed: they stood as statues)
+            if prev is None: perimees.discard(i)
+            elif dessinees(prev[0]) != dessinees(jr): perimees.discard(i)
+            elif (prev[1], prev[2]) != (x0, y0): perimees.add(i)
+            if i in perimees:
+                continue
         lim = (2.0 if mech or tab[o + 2] in LOURDES else 1.0) * 65536
         if any(math.hypot(v[0] - x0, v[1] - y0) > lim for v in used):
             continue

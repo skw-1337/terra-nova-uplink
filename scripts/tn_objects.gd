@@ -392,6 +392,29 @@ func load_sky(path: String, pal: PackedColorArray) -> Dictionary:
 		out["light"] = lightest
 		img.generate_mipmaps()
 		out["clouds"] = ImageTexture.create_from_image(img)
+		# the game's cloud ceiling (0x2A7222 - 0x2A7622) hazes its rows by their distance from overhead: plain up to
+		# 192 texels, then the rows of resource 151 (cloud haze, 8 x 256 palette indices) 1 to 7, as layers 0-7 here
+		var idx := _bitmap_idx(f152[0])
+		var t151: PackedByteArray = r.data(151) if r.has(151) else PackedByteArray()
+		var layers: Array[Image] = [img]
+		for k in range(1, 8):
+			var rgb := PackedByteArray()
+			rgb.resize(256 * 256 * 3)
+			for p in 256 * 256:
+				var c: Color = pal[t151[k * 256 + idx[p]] if t151.size() >= 2048 else idx[p]]
+				rgb[3 * p] = c.r8
+				rgb[3 * p + 1] = c.g8
+				rgb[3 * p + 2] = c.b8
+			var li := Image.create_from_data(256, 256, false, Image.FORMAT_RGB8, rgb)
+			li.generate_mipmaps()
+			layers.append(li)
+		var arr := Texture2DArray.new()
+		arr.create_from_images(layers)
+		out["cloud_levels"] = arr
+		# ... and beyond 1024 texels draws plain colours: palette 0xA2 + 3, + 2, + 1, then 0xA2 under its last rows
+		# (raining: 0x20 for 0xA2, 0x2A7085)
+		out["band"] = [pal[0xA5], pal[0xA4], pal[0xA3], pal[0xA2]]
+		out["band_rain"] = [pal[0x23], pal[0x22], pal[0x21], pal[0x20]]
 	var lay: PackedByteArray = LGRes.frames(r.data(153))[0]
 	out["base"] = pal[lay[2]]
 	# moon: ref at 0x14 (frame, 152); the engine draws it in the map's light direction

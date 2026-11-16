@@ -1,4 +1,4 @@
-// Planet sky: the game's cloud texture on a curved ceiling (44 texels per unit of slope, one texel per unit the eye
+// Planet sky: the game's cloud texture on its flat ceiling (44 texels per unit of slope, one texel per unit the eye
 // moves, shifted by the game's wind offset in live mode), drawn as a sky with depth (planet_sky below); airless worlds
 // get the game's star field (SKY3 / SKY4 resource 154, a 512 x 320 wrapping map), one map pixel per screen pixel of
 // the game's 320-pixel-wide view: the map repeats 4 times around the horizon.
@@ -25,42 +25,38 @@ float hash(vec3 p) {
 	return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
 }
 
-// The planet's sky, the same in both looks: an atmosphere from deep at the zenith to pale at the horizon (from the
-// planet's own colours), clouds told from the blue (the white part of the game's texture), lit on the sun's side and
-// darker underneath, clear gaps at a large scale, a veil of haze low on the horizon, the sun with its halo.
-uniform float cloud_cover = 0.8;           // more: more clouds
-uniform vec3 zenith_tint : source_color = vec3(0.16, 0.34, 0.74);
+// The planet's sky, as the game draws its cloud ceiling (0x2A7222 - 0x2A7622), the same in both looks: the cloud
+// texture on a flat ceiling (cloud_px texels per unit of slope), each point hazed by its distance r from overhead in
+// texels (thresholds at 0x35C7BC): plain under 192, then the rows 1 to 7 of the sky's cloud haze table (SKY 151:
+// levels 1-7 here, from 192, 256, 320, 416, 512, 640, 800), then plain colours, the far band: band0 from 1024,
+// band1 from 1200, band2 from 3200, and band3 at the horizon (palette 0xA5, 0xA4, 0xA3, 0xA2; rain: 0x23 .. 0x20).
+// Nothing else: no sun or glow under the ceiling (the game shows none).
+uniform sampler2DArray levels : source_color, filter_nearest_mipmap, repeat_enable;
+uniform sampler2DArray levels_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // modern look
+uniform vec3 band0 : source_color = vec3(0.86, 0.92, 0.85);
+uniform vec3 band1 : source_color = vec3(0.9, 0.95, 0.88);
+uniform vec3 band2 : source_color = vec3(0.95, 0.97, 0.9);
+uniform vec3 band3 : source_color = vec3(0.99, 0.99, 0.93);
 
-vec3 planet_sky(vec3 d, vec3 eye, vec3 sun) {
-	vec3 avg = textureLod(clouds_soft, vec2(0.5), 10.0).rgb;            // the planet's sky, on average
-	vec3 horizon = mix(light, haze, 0.35);
-	float y = max(d.y, 0.0);
-	vec3 zenith = mix(avg, zenith_tint, 0.75);
-	vec3 atmos = mix(horizon, zenith, pow(y, 0.5));
-	float s = max(dot(d, sun), 0.0);
-	atmos += vec3(1.0, 0.85, 0.65) * 0.12 * pow(s, 3.0) * (1.0 - y);     // the air lighter and warmer towards the sun
-	vec2 t = tn_ripple(vec2(d.z, d.x) / (y + 0.12) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off);
-	vec3 c = texture(clouds_soft, t / 256.0).rgb;
-	float l = dot(c, vec3(0.3, 0.59, 0.11));
-	float la = dot(avg, vec3(0.3, 0.59, 0.11));
-	float big = dot(texture(clouds_soft, t / 1100.0 + vec2(0.37, 0.61)).rgb, vec3(0.3, 0.59, 0.11));
-	float cover = smoothstep(la - 0.04, la + 0.22, l);                   // the texture's white: the clouds
-	cover *= smoothstep(0.15, 0.75, (big - la) * 2.5 + 0.55 * cloud_cover);   // clear gaps at a large scale
-	cover *= smoothstep(0.0, 0.12, y);
-	float thick = smoothstep(la, la + 0.35, l);
-	vec3 lit = light * 1.08 + vec3(1.0, 0.92, 0.8) * 0.35 * pow(s, 5.0);    // on the sun's side: lighter, a warm rim
-	vec3 under = mix(light, avg, 0.55) * 0.72;                           // underneath: bluish grey
-	vec3 cloud = mix(under, lit, 0.35 + 0.65 * (1.0 - thick) * 0.6 + 0.4 * pow(s, 2.0));
-	vec3 col = mix(atmos, cloud, cover);
-	col = mix(col, horizon, exp(-y * 14.0) * 0.75);                      // haze low on the horizon
-	col += vec3(1.0, 0.93, 0.8) * (0.25 * pow(s, 60.0) + 1.6 * smoothstep(0.9993, 0.9997, s)) * (1.0 - 0.8 * cover);
-	return col;
+vec3 planet_sky(vec3 d, vec3 eye) {
+	if (d.y <= 0.0) {
+		return band3;
+	}
+	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
+	float r = length(rel);
+	if (r >= 1024.0) {
+		return r >= 3200.0 ? band2 : (r >= 1200.0 ? band1 : band0);
+	}
+	float level = 0.0;
+	level += step(192.0, r) + step(256.0, r) + step(320.0, r) + step(416.0, r);
+	level += step(512.0, r) + step(640.0, r) + step(800.0, r);
+	vec2 t = tn_ripple(rel + vec2(eye.z, eye.x) * cloud_par + cloud_off) / 256.0;
+	return modern ? texture(levels_soft, vec3(t, level)).rgb : texture(levels, vec3(t, level)).rgb;
 }
 
 void sky() {
 	vec3 d = EYEDIR;
-	vec3 sun = LIGHT0_ENABLED ? LIGHT0_DIRECTION : vec3(0.0, 1.0, 0.0);
-	vec3 col = has_clouds ? planet_sky(d, POSITION, sun) : haze;
+	vec3 col = has_clouds ? planet_sky(d, POSITION) : haze;
 	if (!has_clouds && d.y > 0.0) {
 		vec3 top = vec3(0.0);
 		if (has_stars) {

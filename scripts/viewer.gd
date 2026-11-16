@@ -164,7 +164,7 @@ const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game o
 const PLANET_LOOK := {
 	"RESPLNT0.RES": {"tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
 		"sun": Color(1.0, 0.94, 0.82), "light": 0.82, "ambient": 0.3, "sat": 1.45, "contrast": 1.03},
-	"RESPLNT1.RES": {"tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.5,        # ice
+	"RESPLNT1.RES": {"tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.0,        # ice (its fog: the sky's own pale green haze)
 		"sun": Color(0.86, 0.93, 1.0), "light": 0.8, "ambient": 0.4, "sat": 1.2, "contrast": 1.08, "sparkle": 1.2},
 	"RESPLNT2.RES": {"tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
 		"sun": Color(1.0, 0.87, 0.68), "light": 0.95, "ambient": 0.24, "sat": 1.3, "contrast": 1.1},
@@ -2355,6 +2355,12 @@ func _set_sky(path: String, light: Vector2) -> void:
 	if sk["clouds"] != null:
 		mat.set_shader_parameter("clouds", sk["clouds"])
 		mat.set_shader_parameter("clouds_soft", sk["clouds"])
+		mat.set_shader_parameter("levels", sk["cloud_levels"])
+		mat.set_shader_parameter("levels_soft", sk["cloud_levels"])
+		var band: Array = sk["band_rain"] if int(mis_params.get("weather_kind", 0)) == 2 else sk["band"]
+		for i in 4:
+			var bc: Color = band[i]
+			mat.set_shader_parameter("band%d" % i, Vector3(bc.r, bc.g, bc.b))
 	var haze: Color = sk["haze"]
 	mat.set_shader_parameter("haze", Vector3(haze.r, haze.g, haze.b))
 	env.sky.sky_material = mat

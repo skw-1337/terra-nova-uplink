@@ -1207,10 +1207,7 @@ def send_hud():
     if PLAY:
         curseur_hud(scr, alpha)
     hud_n += 1
-    pal = g.read(PAL, 768)
-    if pal_fade(pal) < 0.999 and pal_ref is not None:
-        pal = pal_ref                         # (fading: the viewer darkens the whole window itself, 'FAD')
-    s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + pal, ('127.0.0.1', 47823))
+    s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + g.read(PAL, 768), ('127.0.0.1', 47823))
     # what is clear goes without its colour (the viewer never shows it): in the full view (G) the screen is all 3D, and
     # with its colours the packet went over what one packet holds (66 to 80 KB) as soon as the picture was busy (the
     # player in the air): not sent, the HUD stayed as it was until he landed. 6 KB without them
@@ -1271,43 +1268,9 @@ def curseur_hud(scr, alpha):
         return
 
 
-# The game's own fades (a mission that ends: its palette goes to black in ~0.7 s, then it empties its entities and
-# leaves the 3D; also the death screen): 'FAD' + n (u32) + level (f32, 1 = the palette as it was in play, 0 = black),
-# sent as soon as it changes (and 5 times a second while below 1), also when the game no longer draws its 3D (the
-# fade goes on after its last picture). The level is the palette's brightness against the brightest one seen since
-# the game came back to its 3D, channel by channel, the highest of the three (a red flash is no fade). A level that
-# stays put part way (a brighter palette for a moment, a flash, then the usual one again) is no fade either: after
-# 0.6 s the palette becomes the reference again (a fade goes on to black, it does not stop half way).
-pal_ref, pal_ref_sum, fad_last, fad_t = None, None, 1.0, 0.0
-fad_still = (1.0, 0.0)
-
-
-def pal_fade(pal):
-    global pal_ref, pal_ref_sum, fad_last, fad_t, fad_still
-    sm = [sum(pal[c::3]) for c in range(3)]
-    if pal_ref is None or sum(sm) >= sum(pal_ref_sum):
-        pal_ref, pal_ref_sum = pal, sm
-    lvl = min(1.0, max(sm[c] / pal_ref_sum[c] for c in range(3) if pal_ref_sum[c] > 0)) if any(pal_ref_sum) else 1.0
-    now = time.time()
-    if abs(lvl - fad_still[0]) > 0.01:
-        fad_still = (lvl, now)
-    elif 0.3 < lvl < 0.995 and now - fad_still[1] > 0.6:
-        pal_ref, pal_ref_sum, lvl = pal, sm, 1.0
-        fad_still = (1.0, now)
-    if abs(lvl - fad_last) > 0.005 or (lvl < 0.999 and now - fad_t > 0.2):
-        fad_last, fad_t = lvl, now
-        s.sendto(b'FAD' + struct.pack('<If', hud_n, lvl), ('127.0.0.1', 47823))
-    return lvl
-
-
 def hud_loop():
-    t = 0.0
     while True:
-        if not send_hud():
-            if time.time() - t > 0.015:
-                t = time.time()
-                pal_fade(g.read(PAL, 768))
-            time.sleep(0.0005)
+        if not send_hud(): time.sleep(0.0005)
 
 
 if HUD:
@@ -1367,7 +1330,6 @@ def menu_loop():
 
 
 def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw, fh):
-    global pal_ref
     import collections, os
     import numpy as np
     if True:
@@ -1384,7 +1346,6 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
                 if PLAY and curseur['mission']: cursor_restore()   # (the 3D's cursors, emptied while the mouse was free)
         elif mode == 1 and not menu and now - last_t < 0.1:
             mode = 0
-            pal_ref = None                         # (the fades measured against the mission's own palette, pal_fade)
             with cur_lock:
                 curseur['menu'] = 0
                 if PLAY: cursor_restore()              # la fleche du jeu, de retour pour la 3D

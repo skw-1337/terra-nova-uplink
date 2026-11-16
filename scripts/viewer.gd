@@ -1638,8 +1638,8 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 # pose it slides along with them (their ankles, hips and pelvis rewritten every frame, always in the same place: the
 # game shows them gliding too, unseen at its size), and the player's own (never drawn, seen from inside) only gets its
 # feet moved from one footfall to the next. Those suits (the player's; one without a pose from the game for GAIT_STALE
-# ms, the bridge leaving out the frozen ones, and for GAIT_BACK ms after; one whose arms were off their standing
-# length by more than ARM_TOL in the last STEADY_HOLD ms: a half-frozen pose) walk on their own steps instead: the
+# ms, the bridge leaving out the frozen ones and the viewer the poses it has not just drawn, _arms_off; and for
+# GAIT_BACK ms after) walk on their own steps instead: the
 # feet one after the other, each planted on the ground until the body has moved on, set down ahead of its hip and
 # lifted as far behind it, at the cadence of a long stride (GAIT_STRIDE: faster, longer steps, both feet off the
 # ground a moment between them, a run); when it stops, the foot left behind steps up to its place (the one ahead
@@ -1650,8 +1650,10 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 # crouching, dying), cross-faded from and to their steps (_pose_suit).
 const ARM_TOL := 0.15
 const ARM_TOL_NECK := 0.5
+const NECK_TORSO := 0.53                       # neck to a shoulder / torso, drawn (0.50 to 0.56 measured)
+const NECK_TOL := 0.2                          # off by more with the suit's own torso: not drawn
+const LEG_TOL := 0.1                           # a thigh or shin off its length by more: the knee left where last drawn
 const ARM_BONES := [[9, 10], [10, 12], [12, 14], [9, 11], [11, 13], [13, 15]]
-const STEADY_HOLD := 3000
 const GAIT_STALE := 250                        # ms without a pose from the game
 const GAIT_BACK := 400                         # ms of its poses again before they are drawn
 const GAIT_STRIDE := 2.6                       # legs covered by a cycle, a step of each foot (the game's walk: 4.3,
@@ -1676,16 +1678,27 @@ const WALK_EASE := 8.0                         # the upper body's swing eased (r
 const POSE_FADE := 250.0                       # ms: from the game's pose to its own steps and back
 
 
-func _arms_off(p: Array, stand: Array, rest: Array = []) -> bool:
+# A pose the game has not just drawn (its knees, shoulders, elbows and hands left where it last drew the suit, its hips
+# and neck moved on): a bone off its length. legs: the suit's thigh and shin once the bridge sent them (SLEN), the
+# game's own pose then has them within 1.5 %.
+func _arms_off(p: Array, stand: Array, rest: Array = [], legs: Array = []) -> bool:
 	for i in ARM_BONES.size():
 		var b: Array = ARM_BONES[i]
 		var l0: float = rest[i] if i < rest.size() else (stand[b[0]] as Vector3).distance_to(stand[b[1]])
-		# the neck to a shoulder is no bone in the game: drawn, it varies by up to a quarter (the shoulders turning,
-		# one side shorter than the other); within ARM_TOL it tripped on most suits the game poses, which then walked
-		# on their own steps, legs straight, instead of crouching and striding as drawn
-		var tol := ARM_TOL_NECK if b[0] == 9 else ARM_TOL
+		# the neck to a shoulder is no bone in the game: drawn, 0.50 to 0.56 x the suit's torso (NECK_TORSO, the
+		# shoulders turning). Taken from the standing pose instead (0.42 x for the squad's suits) it tripped on suits
+		# the game was drawing, which then walked on their own steps for 3 s, their feet on the map's ground
+		# (narrower strides than the game's, a leg straight on a step)
+		var tol := ARM_TOL if b[0] != 9 else (NECK_TOL if i < rest.size() else ARM_TOL_NECK)
 		if l0 > 0.0 and absf((p[b[0]] as Vector3).distance_to(p[b[1]]) / l0 - 1.0) > tol:
 			return true
+	if legs.size() == 4:
+		for s in 2:
+			var leg: Array = LEGS[s]
+			for k in 2:
+				var l0: float = legs[2 * s + k]
+				if l0 > 0.0 and absf((p[leg[k]] as Vector3).distance_to(p[leg[k + 1]]) / l0 - 1.0) > LEG_TOL:
+					return true
 	return false
 
 
@@ -1700,8 +1713,6 @@ func _live_size(node: Node3D, sz: Array) -> void:
 	var th: float = float(sz[0])                 # (the bones the game draws its suits with: standing, its hip to ankle is
 	var sh: float = float(sz[1])                 # LEG_STAND x their sum, the knees a little bent)
 	node.set_meta("leg_rest", [th, sh, th, sh])
-	var stand: Array = node.get_meta("stand")
-	var k_torso: float = float(sz[4]) / maxf((stand[8] as Vector3).distance_to(stand[9]), 0.001)
 	var rest := []
 	for b in ARM_BONES:
 		if b in [[10, 12], [11, 13]]:
@@ -1709,14 +1720,14 @@ func _live_size(node: Node3D, sz: Array) -> void:
 		elif b in [[12, 14], [13, 15]]:
 			rest.append(float(sz[3]))
 		else:
-			rest.append((stand[b[0]] as Vector3).distance_to(stand[b[1]]) * k_torso)
+			rest.append(float(sz[4]) * NECK_TORSO)
 	node.set_meta("arm_rest", rest)
 
 
 func _gait_wanted(node: Node3D, now: int) -> bool:
 	if not node.has_meta("leg_rest") or node.has_meta("corpse"):
 		return false
-	return node.has_meta("player_body") or now - int(node.get_meta("stale_t", -100000)) < STEADY_HOLD or \
+	return node.has_meta("player_body") or \
 			now - int(node.get_meta("jt", -100000)) > GAIT_STALE or now - int(node.get_meta("jt0", -100000)) < GAIT_BACK
 
 
@@ -4035,13 +4046,17 @@ func _live_units(pk: PackedByteArray) -> void:
 			node = live_nodes[idx - live_off]
 		if node != null and node.visible and node.has_meta("soldier"):
 			var now_ms := Time.get_ticks_msec()
-			if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
-				node.set_meta("jt0", now_ms)                # its poses again after a while without (GAIT_BACK)
-			node.set_meta("jt", now_ms)
-			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand"), node.get_meta("arm_rest", [])):
-				node.set_meta("stale_t", now_ms)            # a half-frozen pose: it walks on its own steps
-			if not _gait_wanted(node, now_ms):
-				_pose_suit(node, joints[idx], false)
+			# a pose the game has not just drawn (_arms_off) is left out: the suit keeps its last one, and with none for
+			# GAIT_STALE (a far suit the game no longer animates) walks on its own steps. (Each one put the suit on its own
+			# steps for 3 s: one the game drew in all but 2 frames in 760 walked on them most of the time, its feet on
+			# the map's ground, strides narrower than the game's, a leg straight on a step)
+			if not (node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand"),
+					node.get_meta("arm_rest", []), node.get_meta("leg_rest") if node.has_meta("size") else [])):
+				if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
+					node.set_meta("jt0", now_ms)            # its poses again after a while without (GAIT_BACK)
+				node.set_meta("jt", now_ms)
+				if not _gait_wanted(node, now_ms):
+					_pose_suit(node, joints[idx], false)
 			if not node.has_meta("corpse") and not node.has_meta("gait"):
 				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits
 				# ~0.06 above the game's, seen up close)

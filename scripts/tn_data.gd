@@ -772,7 +772,9 @@ static func _read_water(r, raw: PackedByteArray, count: int, fp: PackedColorArra
 
 
 # Brightness of the 16 rows of the planet's light table (RESPLNT 53: 16 x 256 palette indices, row 0 = full light):
-# the luminance of each remapped colour against its own, over the colours of the ground tiles.
+# the luminance of each remapped colour against its own, over the colours of the ground tiles. In linear light: the
+# shaders multiply the (linear) texels by it, and the game's rows darken the palette's own (sRGB) values (level 7 of
+# planet 1: 0.18 of them, 0.035 in linear light; taken in sRGB it showed 0.45).
 static func _light_rows(r, raw: PackedByteArray, fp: PackedColorArray) -> PackedFloat32Array:
 	var out := PackedFloat32Array()
 	out.resize(16)
@@ -780,7 +782,7 @@ static func _light_rows(r, raw: PackedByteArray, fp: PackedColorArray) -> Packed
 	var t53: PackedByteArray = r.data(53) if r.has(53) else PackedByteArray()
 	if t53.size() < 4096:
 		for k in 16:
-			out[k] = 1.0 - k / 16.0
+			out[k] = pow(1.0 - k / 16.0, 2.2)
 		return out
 	var hist := PackedInt32Array()
 	hist.resize(256)
@@ -789,7 +791,8 @@ static func _light_rows(r, raw: PackedByteArray, fp: PackedColorArray) -> Packed
 	var lum := PackedFloat32Array()
 	lum.resize(256)
 	for c in 256:
-		lum[c] = 0.3 * fp[c].r + 0.59 * fp[c].g + 0.11 * fp[c].b
+		var l := fp[c].srgb_to_linear()
+		lum[c] = 0.2126 * l.r + 0.7152 * l.g + 0.0722 * l.b
 	for k in 16:
 		var num := 0.0
 		var den := 0.0
@@ -797,7 +800,7 @@ static func _light_rows(r, raw: PackedByteArray, fp: PackedColorArray) -> Packed
 			if hist[c] > 0:
 				num += hist[c] * lum[t53[k * 256 + c]]
 				den += hist[c] * lum[c]
-		out[k] = num / den if den > 0.0 else 1.0 - k / 16.0
+		out[k] = num / den if den > 0.0 else pow(1.0 - k / 16.0, 2.2)
 	return out
 
 

@@ -1106,7 +1106,6 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	if sky_clouds != null:
 		sm.set_shader_parameter("clouds_soft", sky_clouds)
 	sm.set_shader_parameter("light", Vector3(sky_light.r, sky_light.g, sky_light.b))
-	sm.set_shader_parameter("horizon_light", Vector3(sky_light.r, sky_light.g, sky_light.b))   # (the ground's name for it)
 	sm.set_shader_parameter("sun_dir", sun_to)
 	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
@@ -2023,7 +2022,8 @@ func _oldschool_palette() -> void:
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 		if oldschool_key == "":
-			oldschool_rect.visible = (live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0") 					or (not live and OS.get_environment("TN_OLDSCHOOL") == "1")     # (the map viewer: on when asked)
+			oldschool_rect.visible = (live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0") \
+					or (not live and OS.get_environment("TN_OLDSCHOOL") == "1")     # (the map viewer: on when asked)
 			_apply_look()
 		oldschool_key = pal_key
 

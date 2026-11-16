@@ -892,6 +892,8 @@ def articulations(tab):
 #   'F' + 1 / 0 -> the viewer's mouse is free in the 3D (its cursor mode), said twice a second: see curseur_mission
 #   'R' + dx, dy (i16) -> the cursor moved by that much (game pixels) with a button held: see glisser
 #   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
+#   'O' + number, order, who, kind (bytes), entity (u16), x, y (floats) -> the order wheel: a squad order (orders.py);
+#        answered on the viewer's port by 'ORDR' + number, result (0: taken), the game's order code (u16)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -0x2000, 0x2000
 if PLAY:
@@ -945,6 +947,7 @@ tenues = {}                                   # code -> [instant de l'appui, der
 
 
 def repeter_touches():
+    if ordres is not None and ordres.typing: return      # (an order's keys are going: nothing else is typed into the COMM menu)
     now = time.time()
     for sc, t in list(tenues.items()):
         if now - t[0] > 0.25 and now - t[1] > 0.033:
@@ -1026,6 +1029,34 @@ def post_key(sc, down, rep=False):
     u32w.PostMessageW(ctypes.c_void_p(win), msg, vk, ctypes.c_ssize_t(lp - (1 << 32) if lp >= 1 << 31 else lp).value)
 
 
+# The order wheel's orders (orders.py): given to the game with its own keys, on a thread of their own. The keys the
+# player holds are known apart (joueur: the viewer's 'K' packets): his Shift, Ctrl and Alt are let go in the game for
+# the time of an order's keys, and pressed again after only if he still holds them (touches: his own key and that
+# second press never cross, a modifier let go meanwhile is not left down)
+joueur = set()
+touches = threading.Lock()
+
+
+def ordre_mods(rendre=None):
+    with touches:
+        if rendre is None:
+            pris = [k for k in joueur if k in (0x1D, 0xE01D, 0x38, 0xE038, 0x2A, 0x36)]
+            for k in pris: post_key(k, False)
+            return pris
+        for k in rendre:
+            if k in joueur: post_key(k, True)
+
+
+ordres = None
+if PLAY and os.environ.get('TN_ORDER_WHEEL') == '1':   # (the launcher's "Order wheel": nothing of it otherwise)
+    import orders
+    try:
+        ordres = orders.Orders(g, code, A_MASTER, A_PID, post_key, tnp_touches, mods=ordre_mods, log=lambda *a: print(*a, flush=True))
+    except Exception as ex:
+        print('orders: %r' % (ex,), flush=True)
+ordres_t = 0.0
+
+
 def handle_input():
     global guest
     look = False
@@ -1036,7 +1067,9 @@ def handle_input():
             break
         if pk[:1] == b'K' and len(pk) >= 4:
             sc, down = struct.unpack('<HB', pk[1:4])
-            post_key(sc, bool(down))
+            with touches:
+                (joueur.add if down else joueur.discard)(sc)
+                post_key(sc, bool(down))
         elif pk[:1] == b'M' and len(pk) >= 5:
             dx, dy = struct.unpack('<hh', pk[1:5])
             e = A_MASTER + u16(A_PID + 2) * 0x25
@@ -1057,6 +1090,10 @@ def handle_input():
         elif pk[:1] == b'R' and len(pk) >= 5:
             dx, dy = struct.unpack('<hh', pk[1:5])
             glisse['du'][0] += dx; glisse['du'][1] += dy
+        elif pk[:1] == b'O' and len(pk) == 15 and ordres is not None:
+            num, order, who, kind, ent, ox, oy = struct.unpack('<4BH2f', pk[1:])
+            ordres.send(order, who, kind, ent, ox, oy,
+                        lambda res, oc, num=num: s.sendto(b'ORDR' + struct.pack('<BBH', num, res, oc), ('127.0.0.1', 47821)))
         elif pk[:4] == b'CHAT' and guest is not None:          # the host window's lobby chat
             guest.lobby.say('host', pk[4:].decode('utf-8', 'ignore'))
             guest.lobby_t = 0.0
@@ -2294,6 +2331,12 @@ while True:
         threading.Thread(target=menu_loop, daemon=True).start()
     if PLAY:
         handle_input()
+        if ordres is not None and time.time() - ordres_t > 0.2:   # the order wheel: the squad, the lock, who can be attacked
+            ordres_t = time.time()
+            try:
+                s.sendto(ordres.status(tab, NENT, x + y > 0 and not curseur['menu']), ('127.0.0.1', 47821))
+            except Exception as ex:
+                if os.environ.get('TN_DEBUG'): print('orders:', repr(ex), flush=True)
         repeter_touches()
         glisser(time.time())
         maj_garder(time.time())
@@ -2314,10 +2357,11 @@ while True:
         s.sendto(pk, ('127.0.0.1', 47821))    # (+ the desert clouds' sway phase, +193 a tick)
         if guest: guest.relay(pk)              # (the coop guest's window too: his sky, waypoint, haze; not the IR view)
         s.sendto(b'IRVW' + bytes([1 if g.read(VISION, 1)[0] in (1, 2) else 0]), ('127.0.0.1', 47821))
-        pk = b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
-                                   struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0])
-        s.sendto(pk, ('127.0.0.1', 47821))
-        if guest: guest.relay(pk)
+        if ordres is None or not ordres.nav_set:     # (not while an order borrows the marker: it is not the player's)
+            pk = b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
+                                       struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0])
+            s.sendto(pk, ('127.0.0.1', 47821))
+            if guest: guest.relay(pk)
         if BRUME and time.time() - brume_t > 1.0:
             brume_t = time.time()
             hk = hazing.radius(g.read(BRUME, 1024))

@@ -12,7 +12,9 @@
 #   specs           weapon w: range word 0x39511E + w * 0x24 (x 6 m), shots word 0x39511A (shown when > 1), damage
 #                   RESPTERM 0x5AB string 0x149 + w; suit s: speed 0x170 + s, visuals 0x174 + s, weapon slots
 #                   0x178 + s, jets 0x17C + s, sensors words 0x395BEB / 0x395BE7 + s * 70
-#   mission         number dword 0x359708 (its file MISSn.RES), name RESMISS 0x6AA string [n - 1], note 0x428BF0
+#   mission         number dword 0x359708 (its file MISSn.RES), name RESMISS 0x6AA string [n - 1], note 0x428BF0;
+#                   a Random Scenario Builder mission (dword 0x35CD9C != 0) has no number: its file is RESCUSTM
+#                   0x974 string 0x21 + byte 0x442F18 (FFLoadMission 0x244BE8), missaim.res, missice.res...
 #   redraw          the screen's task [0x36F4B4] waits for event 0x101: posting 0x0B there (as 0x2E809C does)
 #                   redraws every column, no click; the column the host clicked last: byte 0x35CF20
 #   host's screen   the guest's name: resource 364's offset for his pilot pointed at a string of ours (the coop
@@ -30,6 +32,7 @@ TWO_SLOT, ASF_DEFAULT, ASF_OVERRIDE = 0x395111, 0x390328, 0x43D2F8
 W_TABLE, W_N = 0x395110, 0x24
 SUIT_SENSE, SUIT_N = 0x395BE7, 70
 MISSION_NO, NOTE = 0x359708, 0x428BF0
+RSB_FLAG, RSB_INDEX, RSB_FIRST = 0x35CD9C, 0x442F18, 0x21
 TASK, WAKE, REDRAW = 0x36F4B4, 0x101, 0x0B
 HOST_COL = 0x35CF20
 OUTFIT_SIG = bytes.fromhex('9b1a14')   # the task's script position (+0x10) while the outfitting screen waits
@@ -55,6 +58,7 @@ class Lobby:
         self.pal, self.pal_t = b'', 0.0   # the palette last sent (again every 5 s, his window may have restarted)
         self.was_outfit, self.note = False, ''
         self.names, self.wnames, self.snames, self.anames, self.opnames = {}, {}, {}, {}, []
+        self.rsb_files = []              # RESCUSTM 0x974: the Random Scenario Builder's mission files
         self.wmask, self.amask, self.outfit_str = {}, {}, []
         self.faces_file = b''            # RESBASE 215 as on disk: where it is in memory, its offsets
         self.tag = None                  # what the host's screen shows of the guest: (pilot, name, ready, face)
@@ -86,6 +90,10 @@ class Lobby:
                     out[i] = fr[2 * i + 1]
             self.opnames = lgres.strings(miss[0x6AA][2])
             self.faces_file = lgres.load(os.path.join(d, 'RESBASE.RES'))[215][2]
+        except (OSError, KeyError, IndexError, struct.error):
+            pass
+        try:
+            self.rsb_files = lgres.strings(lgres.load(os.path.join(d, 'RESCUSTM.RES'))[0x974][2])
         except (OSError, KeyError, IndexError, struct.error):
             pass
 
@@ -164,10 +172,16 @@ class Lobby:
                 self.note = (self.g.read(NOTE, 600) or b'').split(b'\0')[0].replace(b'\x01', b'\n').decode('cp850', 'replace')
         self.was_outfit = outfit
         no = struct.unpack('<I', self.g.read(MISSION_NO, 4))[0]
+        op = self.opnames[no - 1] if 0 < no <= len(self.opnames) else ''
+        msnfile = 'MISS%d.RES' % no if 0 < no < 100 else ''
+        if struct.unpack('<I', self.g.read(RSB_FLAG, 4))[0]:   # generator: no number (0x359708 = 42-44 or stale)
+            k = RSB_FIRST + self.u8(RSB_INDEX)
+            f = self.rsb_files[k].strip().upper() if k < len(self.rsb_files) else ''
+            op, msnfile = '', f if f.startswith('MISS') and f.endswith('.RES') else ''
         return {**extra, 'outfit': outfit, 'mission': in_mission, 'col': self.col,
                 'locked': self.locked, 'ready': self.ready, 'host_col': self.u8(HOST_COL) & 3,
-                'op': self.opnames[no - 1] if 0 < no <= len(self.opnames) else '', 'note': self.note,
-                'msnfile': 'MISS%d.RES' % no if 0 < no < 100 else '', 'chat': self.chat[-12:],
+                'op': op, 'note': self.note,
+                'msnfile': msnfile, 'chat': self.chat[-12:],
                 'cols': cols, 'pilots': self.pilots(),
                 'suits': [[s, self.snames.get(s, 'Suit %d' % s), self.suit_spec(s)] for s in suits],
                 'weapons': [[w, self.wnames.get(w, '#%d' % w), self.wmask.get(w, 0xFF), 1 if self.two_slot(w) else 0,

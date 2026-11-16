@@ -65,12 +65,14 @@ var ir_on := false
 # player's own view in the probe's panel while the probe's is in the HUD, 5 to 7 = the 360 view's left, back and
 # right cameras, 8 = the player's own view in the map's panel while the map is in the HUD).
 const SUB_RECTS := {1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true}
-const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels
+const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels (the
+                                  # game's code says 84.55 at zoom 1, as SUB_FOV: kept until a live check settles it)
 const PROBE_TILT := 0.3
-const SUB_FOV := 100.0            # horizontal, degrees
-const SUB_FOV_SELF := 84.5        # the player's own view in a panel (4, 8): the game's own field (its compass
+const SUB_FOV := 84.55            # horizontal, degrees: the game's panel cameras at zoom 1, 2 atan(1 / 1.1) (its
+                                  # projection multiplies the zoom by 1.1, 0x29e7b3), over their whole canvas
+const SUB_FOV_SELF := 84.55       # the player's own view in a panel (4, 8): the game's own field (its compass
                                   # labels there: S seen 37 deg aside at 140 of the panel's 170 half pixels)
-const SUB_FOV_AROUND := 84.5      # the 360 view's cameras (5 to 7): the player's own field too (a squadmate followed
+const SUB_FOV_AROUND := 84.55     # the 360 view's cameras (5 to 7): the player's own field too (a squadmate followed
                                   # across each panel while the player turns on the spot: 83 to 85 degrees)
 const SUB_EASE := 0.2             # side view cameras: share of the way to the new reading (~120 a second)
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
@@ -104,7 +106,11 @@ var mats := {}
 # --live: the camera follows the running game (sent by live/live_bridge.py over UDP, port 47821:
 # x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
 var LIVE_PORT := 47821                         # --live-port N (coop: the guest's window)
-const GAME_Z := 0.12          # the game's heights are this much above the ground (units, shots)
+const MINE_TYPE := 47          # class 4: the mine, pitched with the ground as a vehicle (0x29b3ac)
+# half the length of each vehicle type's model (RESTNOBJ 1372 headers), when a node has no model to read it from
+const VEHICLE_HALF := [1.1730, 0.9594, 1.0267, 1.7062, 0.7459, 1.1133, 1.1266, 2.7452, 1.2472, 4.6339, 0.9448, 0.7686]
+const GAME_Z := 0.12          # shots, smoke, flying lift: this much below the game's heights (units are drawn with
+								# the game's own offset by class and type: TNObjects.draw_offset)
 var live := false
 var udp: PacketPeerUDP
 var live_seen := 0
@@ -653,7 +659,7 @@ func _load(index: int) -> void:
 	smoke_pending.clear()
 	for e in mis["entities"]:
 		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"],
-				e.get("team", 0), e.get("pitch", 0.0)))
+				e.get("team", 0), e.get("pitch", 0.0), e.get("state", 0)))
 		live_nodes[-1].set_meta("mission", true)       # placed from the file: buildings stay on the ground
 		counts[e["cls"]] = counts.get(e["cls"], 0) + 1
 	for z in mis["zones"]:
@@ -1274,9 +1280,10 @@ const PITCH_SIGN := 1.0   # a mission record's pitch: nose up for > 0 (not compa
 
 
 # team: the mission's side of its group (1 = the player's; 0: unknown, told from the type's name); pitch: the mission
-# record's (classes 0, 3 and 4; vehicles and building type 0x2F lie on the slope instead, 0x29DD64)
+# record's (classes 0, 3 and 4; vehicles and building type 0x2F lie on the slope instead, 0x29DD64); state: a decor
+# object's picture (1: hit once, its burnt stump; the mission file or the live game say so).
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
-		label: bool, z: float = 0.0, team: int = 0, pitch: float = 0.0) -> MeshInstance3D:
+		label: bool, z: float = 0.0, team: int = 0, pitch: float = 0.0, state: int = 0) -> MeshInstance3D:
 	var name: String = data.type_name(cls, sub)
 	var low := name.to_lower()
 	var ground := TNData.height_at(m, x, y)
@@ -1287,7 +1294,9 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		lift = 3.0
 	var mi := MeshInstance3D.new()
 	var top := 0.0
-	var ref: Vector2i = objects.ref_for(cls, sub) if objects_ok else Vector2i.ZERO
+	var ref: Vector2i = objects.ref_for(cls, sub, state) if objects_ok else Vector2i.ZERO
+	var no_picture := objects_ok and cls == 0 and state != 0 and ref == Vector2i.ZERO   # (the game draws nothing)
+	mi.set_meta("state", state)
 	var soldier := false
 	if cls == 1 and objects_ok:
 		var suit := TNObjects.suit_of(sub)
@@ -1329,6 +1338,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 			if lamp != TNObjects.LAMP_NONE:
 				mi.set_meta("lamp", [ref, cls, sub])
 				mi.add_to_group("lamps")
+			if cls == 2 or (cls == 4 and sub == MINE_TYPE):
+				mi.set_meta("half", md["half_len"])      # (its pitch on the ground: _ground_pitch)
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
@@ -1339,7 +1350,9 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 			mi.material_override = _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
-	if mi.mesh == null and not soldier and not fumee:   # nothing usable in the data (e.g. the biped mech)
+	# nothing usable in the data (e.g. the biped mech): a box; not for the Fumee the game deletes at load, nor a hit
+	# decor whose second picture is none
+	if mi.mesh == null and not soldier and not fumee and not no_picture:
 		var box := BoxMesh.new()
 		match cls:
 			0:
@@ -1360,7 +1373,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		top -= box.size.y * 0.5
 	mi.position = Vector3(x, ground + lift, y)
 	mi.rotation.y = -heading
-	if pitch != 0.0 and TNObjects.is_model(ref) and (cls == 0 or cls == 3 or (cls == 4 and sub != 0x2F)):
+	if (cls == 2 or (cls == 4 and sub == MINE_TYPE)) and mi.has_meta("half"):   # a vehicle or a mine: pitched with
+		# the ground as the game draws it (0x29DD64)
+		mi.basis = Basis(Vector3.UP, -heading) * Basis(Vector3(0, 0, 1), _ground_pitch(m, x, y, heading, mi.get_meta("half")))
+	elif pitch != 0.0 and TNObjects.is_model(ref) and (cls == 0 or cls == 3 or (cls == 4 and sub != MINE_TYPE)):
 		mi.rotate_object_local(Vector3(0, 0, 1), PITCH_SIGN * pitch)   # (models face +X: their side axis is Z)
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
@@ -1577,7 +1593,8 @@ const GAIT_TURN := 0.6                         # a foot set down with the suit f
 const GAIT_LIFT := 0.16                        # a foot's lift mid-step, share of the leg
 const GAIT_DROP := 0.14                        # the pelvis lowered at most this share of the leg
 const GAIT_AIR := 0.3                          # its feet this share of the leg above the ground: in the air
-const GAIT_FEET := 0.06                        # a suit's feet below its entity (its height minus GAME_Z)
+const GAIT_FEET := 0.034                       # a suit's feet below its entity (its height minus the game's
+										# draw offset, 0.146: the same feet as when it was 0.06 below the entity - 0.12)
 const GAIT_LEAN := 0.12                        # forward lean at full speed (radians)
 const GAIT_NEAR := 12.0                        # its steps every frame nearer the camera (~28 us each), else GAIT_FAR_HZ
 const GAIT_FAR_HZ := Vector2(60.0, 30.0)       # times a second, the second one beyond GAIT_FAR
@@ -3620,7 +3637,9 @@ func _live_update() -> void:
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
 			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
-		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "WAYP":
+		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
+			if q.size() == 16:                              # the game's angle word (12 bytes: an older bridge, none)
+				_waypoint_word(q.decode_u32(12) & 0xFFFF)
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
 		elif q.size() >= 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			cloud_base = Vector2(q.decode_float(4), q.decode_float(8))   # the game's wind offset of its clouds
@@ -3661,7 +3680,14 @@ func _live_update() -> void:
 # pyramid too, without the distance (letters that size are too small there).
 const WAYPOINT_COLOUR := 0x9C                    # its colour in the game's palette
 const WAYPOINT_POINTS := [Vector3(0, 1, 0), Vector3(-1, -0.5, 0), Vector3(0.5, -0.5, 0.855), Vector3(0.5, -0.5, -0.855)]
-const WAYPOINT_TURN := 0.12                      # turns a second (the game: 1 / 256 of a turn with each picture)
+# its turn: the game's own angle word (sent by the bridge), heading as the units' (-word turns about up; these points
+# stand 90 degrees off the game's model axes), followed between packets at its last rate. Without it (an older
+# bridge): about the game's rate, 1/256 of a turn with each 3D view it draws (~64 a second; twice that with a camera
+# panel open), the same way
+const WAYPOINT_TURN := 0.25                      # turns a second (an approximation: see above)
+var wp_word := -1.0                              # its last angle word (-1: none came), the time it came, its rate
+var wp_t := 0.0
+var wp_rate := 0.0
 const WAYPOINT_LINE := 1.25                      # its lines' width, in rows of the game's picture
 const WAYPOINT_TEXT := 9.5                       # its letters' size, the same (capitals 7 rows high)
 var waypoint: Node3D
@@ -3726,11 +3752,26 @@ func _live_waypoint(at: Vector2) -> void:
 	_waypoint_update(0.0)
 
 
+func _waypoint_word(w: int) -> void:
+	var now := Time.get_ticks_usec() / 1e6
+	var dt := now - wp_t
+	if wp_word < 0.0 or dt > 0.5:
+		wp_rate = 0.0                                   # (the first, or after a gap: no rate from stale data)
+	elif dt > 0.0:
+		wp_rate = fposmod(float(w) - wp_word, 65536.0) / dt
+	wp_word = float(w)
+	wp_t = now
+
+
 func _waypoint_update(delta: float) -> void:
 	if waypoint == null or not waypoint.visible:
 		return
 	var spin := waypoint.get_node("spin") as Node3D
-	spin.rotation.y = fposmod(spin.rotation.y + TAU * WAYPOINT_TURN * delta, TAU)
+	if wp_word >= 0.0:
+		var wd := wp_word + wp_rate * minf(Time.get_ticks_usec() / 1e6 - wp_t, 0.25)
+		spin.rotation.y = fposmod(-wd / 65536.0 * TAU - PI / 2.0, TAU)
+	else:
+		spin.rotation.y = fposmod(spin.rotation.y - TAU * WAYPOINT_TURN * delta, TAU)
 	var vs := get_viewport().get_visible_rect().size
 	(waypoint.get_meta("mat") as ShaderMaterial).set_shader_parameter("width", WAYPOINT_LINE * vs.y / 400.0)
 	# the letters: what a window pixel is worth one unit away (the field of view is the game's horizontal one, zoom
@@ -3860,8 +3901,10 @@ func _live_units(pk: PackedByteArray) -> void:
 		if mine or e[0] > 4:
 			continue                                    # units, vehicles, probes, buildings set up in play (turrets),
 		# and decor: when a tree or bush is hit, the game empties its vegetation cell and makes every plant of the
-		# cell a decor entity, intact (drawn like the plant); a destroyed one leaves the table, its ground burnt
-		var ct := Vector2i(e[0], e[1])
+		# cell a decor entity, intact (drawn like the plant); hit once, its picture is its burnt stump (the bridge:
+		# bit 1 of active), a destroyed one leaves the table, its ground burnt. (A mission's own plants keep the
+		# state of the file: the only ones, MISS13's, start burnt and the game never puts one back)
+		var ct := Vector3i(e[0], e[1], (int(e[2]) >> 1) & 1 if e[0] == 0 else 0)
 		if live_extra.has(idx) and live_extra[idx].get_meta("ct") != ct:
 			var old: Node3D = live_extra[idx]           # slot reused by another unit
 			if old.has_meta("soldier") or old.has_meta("mech"):
@@ -3870,7 +3913,7 @@ func _live_units(pk: PackedByteArray) -> void:
 				old.queue_free()
 			live_extra.erase(idx)
 		if not live_extra.has(idx) and e[2] != 0:
-			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0)
+			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0, 0, 0.0, ct.z)
 			live_extra[idx].set_meta("ct", ct)
 			if idx == body:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
@@ -4207,8 +4250,8 @@ func env_nofog() -> Environment:
 # A burst suit (6/33): one entity, drawn by the game as a pile of the suit's armour pieces (its limb sprites: torso,
 # thighs, shins, arms, feet) lying flat every which way around it, ~0.6 unit across (seen on the running game).
 # The entity is thrown up when the soldier dies and bounces to rest (its height: the whole pile follows it). Where
-# each piece lies is not decoded: spread from the entity's number. The suit is the one of the soldier killed there
-# (the bridge puts it in the heading; else the nearest death seen here).
+# each piece lies is not decoded: spread from the entity's number. The suit is the game's own, from its burst record
+# (the bridge puts it in the heading; -1, not known: the nearest death seen here).
 const PILE_RADIUS := 0.3                      # (measured: a compact pile, ~0.5 unit across)
 const PILE_SHADE := 0.8                       # lighter than the standing suits (their light grey, on the game)
 const PILE_SCALE := 0.0027                    # world units per sprite pixel (measured: smaller than standing suits')
@@ -4616,6 +4659,11 @@ func _live_fx(idx: int, e) -> void:
 		mi.extra_cull_margin = 2.0
 	elif kind == 2 or kind == 7 or kind == 10:
 		mi.transform = Transform3D(Basis.IDENTITY, pos)
+	elif kind == 6:
+		# the missile as the game draws it (0x29b3ac): its heading (+0x1B, set once at launch along its horizontal
+		# velocity), level for its whole flight (+0x1D stays 0, no roll), from its first frame on
+		var yawed := Basis(Vector3.UP, -float(e[6]))
+		mi.transform = Transform3D(yawed if mi.get_meta("model", false) else yawed * Basis(Vector3(0, 0, 1), -PI / 2), pos)
 	else:                                           # other shots: a bolt along its flight
 		var dir := Vector3.ZERO
 		if not fresh:
@@ -4625,10 +4673,7 @@ func _live_fx(idx: int, e) -> void:
 		if dir == Vector3.ZERO:
 			dir = -camera.global_transform.basis.z
 		mi.look_at_from_position(pos, pos + dir, Vector3.UP if absf(dir.y) < 0.99 else Vector3.FORWARD)
-		if kind == 6 and mi.get_meta("model", false):
-			mi.rotate_object_local(Vector3.UP, PI / 2)  # (a model's nose is its +x)
-		else:
-			mi.rotate_object_local(Vector3.RIGHT, -PI / 2 if kind == 6 else PI / 2)   # long axis along the flight, nose ahead
+		mi.rotate_object_local(Vector3.RIGHT, PI / 2)   # long axis along the flight
 	mi.set_meta("prev", pos)
 	mi.visible = true
 
@@ -4921,10 +4966,12 @@ var beams := {}                                 # 6/28 entity -> [from, to, colo
 
 # A piece of a blown-up building (class 6 type 32, live_bridge.py debris). The game draws a small slab seen from both
 # sides: a rectangle of one of its textures (the more of it the bigger the piece: an eighth of the picture per
-# thirty-second of a unit), or its dark grey 0x25 when it has none, lying in the piece's own ground plane and turned
-# by its three angles as it tumbles. Before: the default of an effect Uplink did not know, an orange ball (the yellow
-# circles of ticket #12).
-var shards := {}                                # 6/32 entity -> [texture, half width, half length, heading, pitch, bank]
+# thirty-second of a unit), or its dark grey 0x25 when it has none. The game's rectangle (0x29B730: corners +/-a,
+# +/-b in x, y and a fixed +/-0.25 in z, turned by heading +0x1B and pitch +0x1D only): 2a wide, always level and
+# across the heading, 2 * sqrt(b^2 + 1/16) long (0.5 to 0.66), the pitch turning it about its width. The third angle
+# (+0x1F) is sent but the game never uses it. Before: the default of an effect Uplink did not know, an orange ball
+# (the yellow circles of ticket #12).
+var shards := {}                                # 6/32 entity -> [texture, half width, b, heading, pitch, (unused)]
 var shard_mesh: QuadMesh
 var shard_mats := {}
 
@@ -4964,7 +5011,7 @@ func _live_shard(idx: int, e, d: Array) -> void:
 	var a: float = d[1]
 	var b: float = d[2]
 	var mi: MeshInstance3D = live_fx.get(idx)
-	if a <= 0.0 or b <= 0.0:                         # (a piece with no size: the game draws nothing either)
+	if a <= 0.0:                                     # (no width: nothing to see; b = 0 is a 2a x 0.5 strip)
 		if mi != null:
 			mi.visible = false
 		return
@@ -4981,20 +5028,19 @@ func _live_shard(idx: int, e, d: Array) -> void:
 		world.add_child(mi)
 		live_fx[idx] = mi
 	mi.material_override = _shard_mat(int(d[0]), int(round(a * 32.0)), int(round(b * 32.0)))
-	# the game's axes: x, y on the ground, z up; the slab in its own x, y plane, turned by its heading (about z), its
-	# pitch (about its x) and its bank (about its y). Uplink's: x, up, y
+	# the game's axes: x, y on the ground, z up (Uplink's: x, up, y). Its model axes turned by heading and pitch
+	# (rotation order 1, no third angle): X across the heading, Y and Z in the vertical plane of the heading. The
+	# corners: +/-U +/-V, U = a X (half width), V = b Y + 0.25 Z (half length); the texture's u across the width
 	var h := TAU * float(d[3]) / 65536.0
 	var p := TAU * float(d[4]) / 65536.0
-	var k := TAU * float(d[5]) / 65536.0
-	var gx := Vector3(cos(h), sin(h), 0.0)
-	var gy := Vector3(-sin(h), cos(h), 0.0)
-	var gz := Vector3(0.0, 0.0, 1.0)
-	var gy2 := gy * cos(p) + gz * sin(p)
-	var gz2 := gz * cos(p) - gy * sin(p)
-	var gx2 := gx * cos(k) - gz2 * sin(k)
-	var gz3 := gz2 * cos(k) + gx * sin(k)
-	mi.transform = Transform3D(Basis(Vector3(gx2.x, gx2.z, gx2.y) * (2.0 * a), Vector3(gy2.x, gy2.z, gy2.y) * (2.0 * b),
-			Vector3(gz3.x, gz3.z, gz3.y)), Vector3(e[3], e[5], e[4]))
+	var gx := Vector3(-sin(h), cos(h), 0.0)
+	var gy := Vector3(sin(p) * cos(h), sin(p) * sin(h), -cos(p))
+	var gz := Vector3(cos(p) * cos(h), cos(p) * sin(h), sin(p))
+	var u := gx * a
+	var v := gy * b + gz * 0.25
+	var c0 := Vector3(u.x, u.z, u.y) * -2.0
+	var c1 := Vector3(v.x, v.z, v.y) * 2.0
+	mi.transform = Transform3D(Basis(c0, c1, c0.cross(c1).normalized()), Vector3(e[3], e[5], e[4]))
 	mi.visible = true
 var beam_mode := false                          # the bridge sends the beams (an older one: Uplink's own, as before)
 var beam_mats := {}
@@ -5483,12 +5529,17 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		return
 	if node.has_meta("corpse"):                      # alive again: the mission was restarted
 		node.remove_meta("corpse")
-	# units (classes 1-3) and buildings set up in play (a deployed turret): the game's own height, already real
-	# (no extra lift: a probe hovers by itself)
+	# units (classes 1-3) and buildings set up in play (a deployed turret, a mine): the game's own height, already
+	# real (no extra lift: a probe hovers by itself), less the game's draw offset of its class and type (RESSIM.RES:
+	# 0.146 for a suit or a vehicle, 0.3 the mech, 0.117 to 0.667 probes and ships, 0 a building; a picture, as the
+	# camera probe, drawn at its z)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
-		var y: float = e[5] - GAME_Z
-		if node.has_meta("anchored"):                 # a probe's disc: the game projects its anchor at the point
-			y = e[5]
+		# A picture (0x29BE78) is projected from the entity's raw z: an anchored one (a probe's disc) has its anchor on
+		# that point (_sprite_quad), any other its foot
+		var f := 0.0
+		if objects_ok and not TNObjects.is_sprite(objects.ref_for(e[0], e[1])):
+			f = objects.draw_offset(e[0], e[1])
+		var y: float = e[5] - f
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):
@@ -5499,20 +5550,31 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		# (a rock left 0.13 above the map's ground there)
 	else:
 		node.position = Vector3(e[3], TNData.height_at(m, e[3], e[4]) + float(node.get_meta("lift", 0.0)), e[4])
-	if e[0] != 2:
+	if e[0] != 2 and not (e[0] == 4 and e[1] == MINE_TYPE):
 		node.basis = Basis(Vector3.UP, -e[6])           # (a body tipped over is set back up)
 		return
-	# vehicles lie on the ground like the game draws them (its entity has only a heading): the slope under them,
-	# eased so that bumps do not shake them
-	var x: float = e[3]
-	var y: float = e[4]
-	var n := Vector3(TNData.height_at(m, x - 0.6, y) - TNData.height_at(m, x + 0.6, y), 1.2,
-			TNData.height_at(m, x, y - 0.6) - TNData.height_at(m, x, y + 0.6)).normalized()
-	var up: Vector3 = node.get_meta("up", n)
-	up = up.lerp(n, 0.2).normalized()
-	node.set_meta("up", up)
-	var yawed := Basis(Vector3.UP, -e[6])
-	node.basis = Basis(Quaternion(Vector3.UP, up)) * yawed
+	# vehicles and mines pitch with the ground along their heading as the game draws them (its entity has only a
+	# heading): no roll, no easing, worked out again on every draw
+	node.basis = Basis(Vector3.UP, -e[6]) * Basis(Vector3(0, 0, 1),
+			_ground_pitch(m, e[3], e[4], e[6], float(node.get_meta("half", _half_len(e[0], e[1])))))
+
+
+# The game's pitch of a vehicle (and of a mine) on the ground (0x29dd64 of the English exe): atan2(ground ahead -
+# ground behind, its length), the ground taken half its model's length ahead of and behind its origin along its
+# heading. Positive: the nose up (a turn about its sideways axis, local Z: its length is local X).
+func _ground_pitch(m: Dictionary, x: float, y: float, heading: float, half: float) -> float:
+	if half <= 0.0:
+		return 0.0
+	var c := half * cos(heading)
+	var s := half * sin(heading)
+	return atan2(TNData.height_at(m, x + c, y + s) - TNData.height_at(m, x - c, y - s), 2.0 * half)
+
+
+# Half the model's length by class and type, when its node has none (no model in the data: a box).
+func _half_len(cls: int, sub: int) -> float:
+	if cls == 4:
+		return 0.0798 if sub == MINE_TYPE else 0.0
+	return float(VEHICLE_HALF[sub]) if cls == 2 and sub >= 0 and sub < VEHICLE_HALF.size() else 0.0
 
 
 func _process(delta: float) -> void:

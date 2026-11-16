@@ -1,4 +1,4 @@
-# Online coop view (COOP_VERSION 3): the host's view packet (the viewer's live format: camera, then 32 bytes per
+# Online coop view (COOP_VERSION 4): the host's view packet (the viewer's live format: camera, then 32 bytes per
 # entity, then 200 bytes per posed suit) turned into small messages for Steam, and back. scripts/coop_view.gd is the
 # guest's decoder (same formats); Decoder here is its twin, for the tests (live/test_coop_view.py).
 # Messages: a 3-byte tag, then zlib:
@@ -27,7 +27,7 @@ JOINT_STEP = 1 / 2048              # joints (suit frame, ground at 0): +-16 unit
 KEY_EVERY = 1.0                    # s between keyframes
 STILL = 0.5                        # s a class 0 / 4 entity stays unchanged before it goes to the decor
 DECOR = (0, 4)
-ACTIVE, POS_F32, HEAD_F32, RAW = 1, 2, 4, 8
+ACTIVE, POS_F32, HEAD_F32, RAW, HIT = 1, 2, 4, 8, 16   # HIT: a decor plant hit once (its burnt stump: active bit 1)
 JOINT_F32 = 1
 LEVEL = 6
 MAX_PACKET = 1200                  # Steam P2P: the biggest unreliable packet
@@ -73,9 +73,9 @@ def f32(v):
 def q_ent(i, rec):
     cls, typ, act = struct.unpack_from('<3i', rec)
     x, y, z, h = struct.unpack_from('<4f', rec, 12)
-    if not (0 <= cls < 256 and 0 <= typ < 256 and act in (0, 1)) or not all(map(math.isfinite, (x, y, z, h))):
+    if not (0 <= cls < 256 and 0 <= typ < 256 and 0 <= act <= 3) or not all(map(math.isfinite, (x, y, z, h))):
         return struct.pack('<HB', i, RAW) + rec
-    flags = ACTIVE if act else 0
+    flags = (ACTIVE if act & 1 else 0) | (HIT if act & 2 else 0)
     q = [round((v - c) / POS_STEP) for v, c in zip((x, y, z), POS_ORIGIN)]
     if all(-32768 <= v < 32768 for v in q):
         pos = struct.pack('<3h', *q)
@@ -119,7 +119,7 @@ def d_ent(b, o):
     else:
         head = f32(struct.unpack_from('<H', b, o)[0] / 65536 * 2 * math.pi)
         o += 2
-    return i, struct.pack('<3i', cls, typ, flags & ACTIVE) + pos + head, o
+    return i, struct.pack('<3i', cls, typ, (flags & ACTIVE) | (2 if flags & HIT else 0)) + pos + head, o
 
 
 def d_joint(b, o):

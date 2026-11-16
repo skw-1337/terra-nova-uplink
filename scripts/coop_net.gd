@@ -17,7 +17,7 @@
 # host and a guest side by side over one fake Steam (fake_steam, role and the ports set before _ready).
 extends CanvasLayer
 
-const COOP_VERSION := "3"           # bump when the host / guest packets change
+const COOP_VERSION := "4"           # bump when the host / guest packets change
 const APP_ID := 480
 const LOBBY_FRIENDS_ONLY := 1        # ELobbyType
 const RESULT_OK := 1                 # EResult

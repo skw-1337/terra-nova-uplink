@@ -222,7 +222,10 @@ func load_mission(path: String) -> Dictionary:
 				"pitch": f.decode_s16(22) / 65536.0 * TAU,      # (drawn by 0x29B3AC: only 2 records in all the files)
 				"x": f.decode_s32(8) / 65536.0, "y": f.decode_s32(12) / 65536.0,
 				"z": f.decode_s32(16) / 65536.0,     # height above the ground (only the Nid d'aigle bridge)
-				"heading": f.decode_u16(20) / 65536.0 * TAU})
+				"heading": f.decode_u16(20) / 65536.0 * TAU,
+				# a decor object's initial state (copied to its decor record +6): 1 = hit once, drawn with its
+				# second picture (the 8 burnt plants of MISS13)
+				"state": (1 if f[0x1B] != 0 else 0) if f[0] == 0 and f.size() > 0x1B else 0})
 	var sky := LGRes.text(r.data(178).slice(0, 16)) if r.has(178) else ""
 	# the haze radius (0x2AC848): s16 at +0x10 (the whole part of a 16.16 at +0x0E; 256 when missing) x 25558 (RESSIM
 	# 925, the same in all its frames) >> 16: 99 in most missions, 37 in MISS2 (storm), 96 in MISS7

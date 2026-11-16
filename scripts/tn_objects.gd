@@ -10,7 +10,8 @@ extends RefCounted
 const LGRes = preload("res://scripts/lgres.gd")
 
 # object class -> [RESTNOBJ table, refs per type]; each ref = u16 frame, u16 resource.
-# Decor and buildings have two refs per type: intact, destroyed.
+# Decor and buildings have two refs per type: decor (plants) intact, then hit once (a burnt stump, the picture its
+# decor record's state byte picks: 0x29ad0a; a second hit removes it), buildings intact, destroyed.
 const TABLES := {0: [1371, 2], 2: [1372, 1], 3: [1373, 1], 4: [1374, 2]}
 const MODELS := Vector2i(1343, 1362)       # compound resources holding the models
 const SPRITES := Vector2i(1160, 1195)      # sprite / animation bitmaps
@@ -26,12 +27,18 @@ enum {LAMP_NONE = -1, LAMP_OFF = 0, LAMP_ON = 1}
 var res                 # RESTNOBJ.RES
 var tex_ref := {}       # global texture index -> Vector2i(resource, frame), from RESMAP.RES 1440
 var refs := {}          # class -> Array of Vector2i(resource, frame) (intact version)
+var refs2 := {}         # class -> Array of the second refs (classes 0 and 4; (0, 0): none)
 var props := {}         # class -> Array of property frames (one per type)
 var model_cache := {}
 var tex_cache := {}
+# How far below its entity the game draws a unit's model (0x2d45cc of the English exe, added to z by 0x29b3ac when
+# the unit has a physics body): a s32 of its class's RESSIM.RES table divided by 6 (16.16). Classes 1-3 only.
+const SIM_TABLES := {1: [919, 0x22], 2: [920, 0x12], 3: [921, 0x13]}
+var draw_off := {}      # class -> Array of offsets (units), one per type
 
 
 func setup(data_dir: String) -> bool:
+	_load_draw_offsets(data_dir)
 	res = LGRes.open(data_dir.path_join("RESTNOBJ.RES"))
 	var m = LGRes.open(data_dir.path_join("RESMAP.RES"))
 	if res == null or m == null or not m.has(1440):
@@ -43,15 +50,46 @@ func setup(data_dir: String) -> bool:
 		tex_ref[t.decode_u32(k)] = Vector2i(v >> 16, v & 0xFFFF)
 	for c in TABLES:
 		var arr := []
+		var arr2 := []
 		var stride: int = TABLES[c][1]
 		for f in LGRes.frames(res.data(TABLES[c][0])):
 			var b: PackedByteArray = f
 			for i in range(0, b.size() / 4, stride):
 				arr.append(Vector2i(b.decode_u16(4 * i + 2), b.decode_u16(4 * i)))
+				if stride == 2:
+					arr2.append(Vector2i(b.decode_u16(4 * i + 6), b.decode_u16(4 * i + 4)) if 4 * i + 8 <= b.size() else Vector2i.ZERO)
 		refs[c] = arr
+		refs2[c] = arr2
 	for c in 7:
 		props[c] = LGRes.frames(res.data(PROPS + c))
 	return true
+
+
+func _load_draw_offsets(data_dir: String) -> void:
+	draw_off = {}
+	var sim = LGRes.open(data_dir.path_join("RESSIM.RES"))
+	for c in SIM_TABLES:
+		var arr := []
+		if sim != null and sim.has(SIM_TABLES[c][0]):
+			for f in LGRes.frames(sim.data(SIM_TABLES[c][0])):
+				var b: PackedByteArray = f
+				var at: int = SIM_TABLES[c][1]
+				arr.append(float(int(b.decode_s32(at) / 6)) / 65536.0 if b.size() >= at + 4 else 0.0)
+		if arr.is_empty():                              # (no file: its values)
+			var n: int = {1: 18, 2: 12, 3: 17}[c]
+			for t in n:
+				if c == 3:
+					arr.append(0.116653 if t <= 6 else 0.5 if t == 7 else 0.666656 if t <= 14 else 0.145828)
+				else:
+					arr.append(0.299988 if c == 1 and t == 9 else 0.145828)
+		draw_off[c] = arr
+
+
+# The game's draw offset of a class / type: its model's origin is drawn this far below its entity's z (0 for other
+# classes, and beyond the table).
+func draw_offset(cls: int, sub: int) -> float:
+	var arr: Array = draw_off.get(cls, [])
+	return float(arr[sub]) if sub >= 0 and sub < arr.size() else 0.0
 
 
 # World width of a type's sprite (0x29AF44): twice the collision radius of its type (property frame: u16 shape kind
@@ -437,7 +475,11 @@ static func _star_map(d: PackedByteArray, pal: PackedColorArray) -> ImageTexture
 	return ImageTexture.create_from_image(img)
 
 
-func ref_for(cls: int, sub: int) -> Vector2i:
+# state: a decor object's (class 0) picture slot, 1 = hit once: its second ref (ZERO: the game draws nothing).
+func ref_for(cls: int, sub: int, state := 0) -> Vector2i:
+	if state != 0 and cls == 0:
+		var arr2: Array = refs2.get(cls, [])
+		return arr2[sub] if sub < arr2.size() else Vector2i.ZERO
 	var arr: Array = refs.get(cls, [])
 	return arr[sub] if sub < arr.size() else Vector2i.ZERO
 
@@ -701,7 +743,11 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 		lm.vertex_color_is_srgb = true
 		sl.set_material(lm)
 		sl.commit(mesh)
-	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top, "params": f.decode_u16(0x44)}
+	# half its length (header z extent, +0x10 max / +0x1C min): the game tilts a vehicle by the ground this far ahead
+	# of and behind its origin (0x29dd64)
+	var half_len := float((f.decode_s32(0x10) - f.decode_s32(0x1c)) / 2) / 65536.0
+	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top, "params": f.decode_u16(0x44),
+			"half_len": half_len}
 
 
 # Walks the bytecode like the game's interpreter, but draws every polygon (no back-face jumps).

@@ -1,7 +1,7 @@
 # Pont vers Terra Nova Uplink (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
 # (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
 # Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
-#   python live_bridge.py [--fov 91.5] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
+#   python live_bridge.py [--fov N] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance Uplink dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, threading, time, zlib
@@ -10,7 +10,7 @@ import hazing
 
 g = tnre.Guest()
 arg = lambda k, d: float(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else d
-FOV, EYE, HZ = arg('--fov', 100.0), arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
+FOV, EYE, HZ = arg('--fov', None), arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
 NENT = 300                               # entrees lues dans la table des entites
 HUD, PLAY = '--hud' in sys.argv, '--play' in sys.argv   # avant --launch, qui les passe au visualiseur
 CAM = None
@@ -34,6 +34,30 @@ print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage ca
 _p = re.compile(re.escape(bytes.fromhex('f605')) + b'(....)' + re.escape(bytes.fromhex('020f85')) + b'.{4}.{0,40}?' +
                 re.escape(bytes.fromhex('668b35')) + b'(....)', re.S).match(code, caps[0][1])
 A_DRAPEAU, A_PENTE = (struct.unpack('<I', _p.group(1))[0], struct.unpack('<I', _p.group(2))[0]) if _p else (None, None)
+# The main view's final heading and pitch, as the game drew them: saved at the end of its camera routine (EN 0x2695A0)
+# after the slope, the shake (0x38FA74: a jolt for one frame when the player is hit) and its dead band
+#   mov ax, [cap camera] / mov [cap garde], ax / mov ax, [tangage camera] / mov [tangage garde], ax / pop... / ret
+_s = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 5)] for m in re.finditer(
+    re.escape(b'\x66\xa1') + b'(....)' + re.escape(b'\x66\xa3') + b'(....)' + re.escape(b'\x66\xa1') + b'(....)' +
+    re.escape(b'\x66\xa3') + b'(....)' + re.escape(bytes.fromhex('5f5e5a595bc3')), code, re.S)]
+_s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == A_CAMHEAD and v[2] == A_CAMPITCH]
+A_SAVH, A_SAVP = (_s[0][1], _s[0][3]) if len(_s) == 1 else (None, None)
+# The death camera: the dword the game tests before placing the main view (0x26969A: not 0 = the player's suit burst,
+# the view rides its torso piece; L4), next to the player's id and the camera block
+#   mov ax, [id] / mov edx, [mort] / mov [entite vue], ax / test edx, edx / je ... / mov eax, camera / mov edx, cap / call
+_s = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 6)] for m in re.finditer(
+    re.escape(b'\x66\xa1') + b'(....)' + re.escape(b'\x8b\x15') + b'(....)' + re.escape(b'\x66\xa3') + b'(....)' +
+    re.escape(bytes.fromhex('85d274')) + b'.' + re.escape(b'\xb8') + b'(....)' + re.escape(b'\xba') + b'(....)\xe8', code, re.S)]
+_s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == A_PID + 2 and v[3] == A_CAMPITCH - 0x16]
+A_DEATH = _s[0][1] if len(_s) == 1 else None
+# ... and the death camera's direction: the torso piece's velocity, 3 x i32, rewritten every frame by the burst
+# (its use in 0x28236c: mov edx, [vy] / mov eax, edx / imul edx / shrd eax, edx, 16 / mov edx, [vx])
+_s = [[struct.unpack('<I', m.group(i))[0] for i in (1, 2)] for m in re.finditer(
+    re.escape(b'\x8b\x15') + b'(....)' + re.escape(bytes.fromhex('89d0f7ea0facd0108b15')) + b'(....)', code, re.S)]
+_s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == v[1] + 4]
+A_VEC = _s[0][1] if len(_s) == 1 else None
+if A_VEC is None: A_DEATH = None
+print('vue finale : cap %s, tangage %s ; camera de mort %s, vitesse %s' % tuple('%#x' % a if a else 'introuvable' for a in (A_SAVH, A_SAVP, A_DEATH, A_VEC)))
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
@@ -151,12 +175,27 @@ arts_vus = set()                              # objets deja envoyes avec un angl
 joints_prev = {}                          # entite -> (articulations brutes, x, y) du tour precedent
 print('exe %s' % ('francais' if FR else 'anglais'))
 
+# Mission file being played. FFLoadMission (EN 0x244BDC) builds its name in a buffer (sprintf "miss%d.res", or for a
+# Random Scenario Builder mission the RESCUSTM 0x974 list item: missaim.res, missice.res...), then copies it to a
+# second buffer: read that copy. Not a name there (main menu, unknown exe): the first such name in the game's data.
+MIS_COPIE, MIS_SPRINTF = (0x37069E, 0x428BE0) if FR else (0x3705EE, 0x428B30)
+MIS_RE = re.compile(rb'(?<![a-z0-9_])miss[a-z0-9]+\.res', re.I)
+
+
+def fichier_mission():
+    nom = g.read(MIS_COPIE, 16).split(b'\0', 1)[0]
+    if MIS_RE.fullmatch(nom):
+        return nom.decode('ascii', 'ignore').upper()
+    noms = {0x340000 + m.start(): m.group() for m in MIS_RE.finditer(g.read(0x340000, 0x140000))}
+    if not noms:
+        return None
+    return noms.get(MIS_SPRINTF, noms[min(noms)]).decode('ascii', 'ignore').upper()
+
+
 viewer = None
 if '--launch' in sys.argv:
-    import collections, os, subprocess
-    data = g.read(0x340000, 0x140000)
-    names = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', data, re.I))
-    mission = names.most_common(1)[0][0] if names else None   # lance depuis les menus : la mission suit ('MIS')
+    import os, subprocess
+    mission = fichier_mission()                  # lance depuis les menus : None, la mission suit ('MIS')
     res = sys.argv[sys.argv.index('--res') + 1] if '--res' in sys.argv else '1600x900'
     godot = os.environ.get('GODOT', r'C:\Tools\Godot\Godot_v4.7.2-stable_win64.exe')
     vpath = os.environ.get('TN_VIEWER', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # le depot
@@ -208,13 +247,24 @@ NUAGES = 0x427E6C if FR else 0x427DBC
 # the game's haze table (hazing.py): the k it is drawn with goes to the viewer's fog ('HAZE' + k f32, each second)
 BRUME = hazing.table_address(code, 0x200000)
 brume_t = 0.0
-# vue infrarouge du jeu (touche I) : 1 = IR (0x38A3FE dans l'exe francais, retrouve sur l'image ; anglais suppose a
-# -0xB0 comme la camera principale voisine, pas verifie)
-INFRA = 0x38A3FE if FR else 0x38A34E
+# The game's infrared vision (key I): its vision mode byte, 0 off, 1 switching on, 2 on, 3 switching off. The toggle
+# (0x292180) flips 0 -> 1 or 2 -> 3, each HUD frame (0x2629ed) steps 1 -> 2 and 3 -> 0; the setter (EN 0x26b8f8, FR
+# 0x26b908: cmp al, [mode]) takes the picture's colour ramp from its table (EN 0x35AECC, FR 0x35AEEC). On = 1 or 2,
+# the game's own test (0x26b970). Checked in both exes' code. (The byte read before, 0x38A34E / 0x38A3FE, was the
+# middle panel's fill type: right only while that panel showed the map in the cockpit view)
+VISION = 0x35AE00 if FR else 0x35ADE0
 # the player's waypoint (a click on the cockpit's map): x, y 16.16, x = 0: none. The game draws it in its own 3D (a
 # purple wire pyramid and its distance: drawobj.c, routine 0x29BA3C of the English exe, 0x29BA2C of the French one),
-# which the viewer does not show: it draws its own.   'WAYP' + x, y (f32), 10 times a second
+# which the viewer does not show: it draws its own, turned by the game's own angle word: the routine draws the
+# pyramid at that heading, then adds 1/256 of a turn (each 3D view it draws: "mov dh, [a + 1] / ... / mov ax, [a] /
+# inc dh"; never reset, it keeps its phase from one waypoint to the next).
+#   'WAYP' + x, y (f32) + the angle word (u32, 0..65535), 10 times a second
 BALISE = 0x3900A0 if FR else 0x38FFF0
+_s = [(struct.unpack('<I', m.group(1))[0], struct.unpack('<I', m.group(2))[0]) for m in re.finditer(
+    re.escape(bytes.fromhex('8a35')) + b'(....)' + re.escape(bytes.fromhex('886424228854240166a1')) + b'(....)' +
+    re.escape(bytes.fromhex('fec6')), code, re.S)]
+_s = [b for a, b in _s if a == b + 1 and 0x300000 <= b < 0x500000]
+BALISE_ANGLE = _s[0] if len(_s) == 1 else (0x41E2D8 if FR else 0x41E228)
 # the main view's own entity (word): the player's, or his drone's while its picture is swapped with the HUD's (the
 # VIEW button of the drone's camera panel: "DRONE VIEW" in red; the panel then shows the player's own view). The
 # main camera is then the drone's: where it is, along its heading, with the pitch the game gives that view; the
@@ -253,10 +303,6 @@ def cadres():
 OEIL = 0x38FBCC if FR else 0x38FB1C    # hauteur de l'oeil ajoutee par le jeu (16.16)
 vues = {}                                 # panneau -> (temps, entite, x, y, z, cap)
 nuages_t = 0.0
-# soldats morts : leur corps eclate en morceaux d'armure (entites 6/33) ; une table par numero de soldat n garde leur
-# position apres la mort (0x38337F + n * 0x14E dans l'exe francais), la fiche soldat leur armure (+0xDE)
-CORPS = 0x38337F if FR else 0x3832CF
-corps_t, corps = 0.0, []
 # grenade fumigene : a l'impact le jeu cree une entite 6/29 (la meme que la poussiere d'un tir laser) qui ne bouge pas
 # et vit ~17 s ; le nuage est un systeme de particules du moteur (dessin : routine 0x29DF38 puis 0x2A56A8 de l'exe
 # anglais). Fiche n = mot a +3 de l'entree : FUM_REC + n * 0x2C, poignee (int32) a +0xA (-1 : aucune). Variables du
@@ -280,6 +326,28 @@ for _nom, _sig in (('REC', rb'\x8b\x50\x01\xc1\xfa\x10\x8d\x04\x95\x00\x00\x00\x
 if len(FUM) != 6:
     print('fumee : signatures introuvables (nuages non envoyes)', FUM)
     FUM = {}
+# A dead soldier's suit bursts into armour pieces (a 6/33 pile entity). The game keeps each burst in one of 12 slots
+# (in use: a byte each, set by the allocator 0x2823dc); slot k's record, BURST + k * 0x3A9, holds the suit (+0, dword)
+# and the pile entity (+0x3A7, word); the pile's effect record (FUM REC + n * 0x2C) holds k at +0xA (its draw:
+# 0x29ca48). EN 0x39250C / 0x392500, FR 0x3925BC / 0x3925B0, by signature
+PILES = {}
+for _nom, _sig in (('BURST', rb'\x8b\x4c\xa8\x0a\x88\x14\x24\x69\xd1\xa9\x03\x00\x00\x66\xa1....\x66\x8b\x0d....\x81\xc2(....)'),
+                   ('FLAGS', rb'\x8a\x15(....)\x31\xc0\x84\xd2\x74.\x40\x83\xf8\x0c')):
+    _m = [struct.unpack('<I', m.group(1))[0] for m in re.finditer(_sig, code, re.S)]
+    _m = [a for a in _m if 0x300000 <= a < 0x500000]
+    if len(_m) == 1:
+        PILES[_nom] = _m[0]
+if len(PILES) != 2 or 'REC' not in FUM:
+    print('armures : signatures introuvables (morceaux sans armure)', PILES)
+    PILES = {}
+# A decor object's picture: its decor record (9 bytes, n = word +3 of its entry) holds at +6 the picture slot, 1 once
+# a plant has been hit (its burnt stump; a second hit removes it). Written by the damage routine "mov byte [esi*8 +
+# esi + etat], 1" (EN 0x28e242: 0x3BA086), read by the draw 0x29ad22. Sent as bit 1 of the entity's active int
+_s = [struct.unpack('<I', m.group(1))[0] for m in re.finditer(rb'\xc6\x84\xc6(....)\x01', code, re.S)]
+_s = [a for a in _s if 0x300000 <= a < 0x500000]
+DECOR_ETAT = _s[0] if len(_s) == 1 else None
+if DECOR_ETAT is None:
+    print('decor : signature introuvable (plantes touchees dessinees intactes)')
 fumee_t, fumee_prev, fx_prev = 0.0, False, ()
 # un arbre qui saute (et une armure qui eclate) : boule de feu 6/23, puis le meme nuage qu'une grenade fumigene (meme
 # systeme, ~190 particules, 1 a 15 s) au meme endroit. Uplink dessine deja la fumee d'un arbre (sa colonne noire) :
@@ -537,10 +605,10 @@ beam_prev, beam_t = False, 0.0
 
 # The pieces a blown-up building throws (class 6 type 32). The game draws each as a slab seen from both sides (its
 # routine 0x29B730): a rectangle in one of its textures (index in its table at +0x26 of the effect's record; under 0:
-# no texture, its colour 0x25), its half sizes two numbers from 0 to 7 thirty-seconds of a unit taken from the
-# entity's address (0: a piece that does not show), turned by the entity's three angles (+0x1B, +0x1D, +0x1F).
-#   'DEBR' + number (u16), then per piece: entity (i32), texture (i32), half width, half length (float), the three
-#   angles (u16)
+# no texture, its colour 0x25), its half sizes a, b two numbers from 0 to 7 thirty-seconds of a unit taken from the
+# entity's address (a = 0: no width, nothing shows; b = 0 still a 2a x 0.5 strip), turned by +0x1B and +0x1D only
+# (+0x1F, a random constant, is sent but the game never reads it).
+#   'DEBR' + number (u16), then per piece: entity (i32), texture (i32), a, b (float), the three angles (u16)
 def debris(tab):
     if not FUM: return []
     out = []
@@ -687,32 +755,43 @@ def eclairs(tab):
     return out
 
 
-def armure_debris(x, y, vivants):
-    best, arm = 3.0, -1
-    for n, cx, cy in corps:
-        if n in vivants: continue
-        d = math.hypot(cx - x, cy - y)
-        if d < best:
-            best, arm = d, n
-    if arm < 0: return -1
-    return struct.unpack('<I', g.read(SOLDATS + arm * 0x582 + 0xDE, 4))[0]
+def armures_piles():
+    # the bursts in use: pile entity -> (slot, suit 0-10)
+    if not PILES: return {}
+    out = {}
+    fl = g.read(PILES['FLAGS'], 12)
+    for k in range(12):
+        if not fl[k]: continue
+        r = PILES['BURST'] + k * 0x3A9
+        suit, ent = struct.unpack('<I', g.read(r, 4))[0], struct.unpack('<H', g.read(r + 0x3A7, 2))[0]
+        if suit <= 10: out[ent] = (k, suit)
+    return out
+
+
+def armure_pile(i, nf, piles):
+    # a pile's suit: its burst's, when its effect record points at that slot and the slot names it (a slot taken again
+    # after 12 bursts drops its old pile a little later); -1: not known (the viewer guesses)
+    p = piles.get(i)
+    if p is None: return -1
+    return p[1] if struct.unpack('<i', g.read(FUM['REC'] + nf * 0x2C + 0xA, 4))[0] == p[0] else -1
 d32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
 hud_t = 0.0
 
 # Zoom du jeu (touches HUD zoom + / -) : la camera principale (0x38FB24 dans l'exe anglais, 0x38FBD4 en francais)
-# tient un zoom effectif, et tan(champ / 2) suit 1 / zoom ; le plus petit zoom vu (vue normale) vaut --fov.
+# tient un zoom effectif (TN+ y met deja son champ et la largeur de la vue), et chaque projection du jeu le multiplie
+# par 1,1 (0x11999 : 0x29eb6f, 0x29e7b3) : tan(champ / 2) = 1 / (1,1 zoom) sur toute la largeur de l'image (vrai 16:9
+# de TN+). L'angle a +0x18 (atan(1 / zoom)) n'est que celui du tri des objets.
 A_ZOOM = 0x38FBD4 if FR else 0x38FB24     # (lance depuis les menus : pas encore de camera a reconnaitre)
-
-
-ZOOM_NORMAL = 0.88916                      # zoom de la vue normale (0xE3A0), ou le champ vaut --fov
+FOV_SANS_ZOOM = 104.58                     # avant la camera (menus) : la vue du cockpit d'Uplink, 2 atan(1 / (1,1 * 596 / 848))
+ZOOM_NORMAL = 0.88916                      # --fov N, comme avant : le champ a ce zoom (0xE3A0), suivant 1 / zoom
 
 
 def fov_now():
-    # le jeu tient tan(demi-champ) = 1 / zoom (l'angle a +0x18) : le champ suit le zoom lu, sans reference a suivre
-    # (le plus petit zoom vu servait de reference : une valeur basse passagere zoomait la vue de Godot pour de bon)
+    # le champ du jeu au zoom lu ; --fov N (les lanceurs passent 91.5 : a 0,4 % pres la meme loi, 1 / (1,0956 zoom))
     z = d32(A_ZOOM) / 65536 if A_ZOOM else 0
-    if not 0.05 < z < 50: return FOV
-    return math.degrees(2 * math.atan(math.tan(math.radians(FOV / 2)) * ZOOM_NORMAL / z))
+    if not 0.05 < z < 50: return FOV_SANS_ZOOM if FOV is None else FOV
+    if FOV is not None: return math.degrees(2 * math.atan(math.tan(math.radians(FOV / 2)) * ZOOM_NORMAL / z))
+    return math.degrees(2 * math.atan(1 / (1.1 * z)))
 hud_n = 0
 hud_copies = -1
 COPIES = 0x46613C                          # compteur d'images affichees du code HD
@@ -720,7 +799,8 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 # Jouer depuis la fenetre du visualiseur (--play) : il renvoie clavier et souris sur le port 47824.
 #   'K' + scancode (u16, 0xE0xx = touche etendue) + appui (u8) -> touche postee a la fenetre DOSBox (position physique,
 #        donc presets / remappage de TNPlus inchanges ; Alt en WM_SYSKEY comme le ferait Windows)
-#   'M' + dx, dy (i16)  -> regard comme le freelook de TNPlus : cap += dx * 12, tangage += dy * 8 (bornes du jeu),
+#   'M' + dx, dy (i16)  -> regard comme le freelook de TNPlus : cap += dx * 12, tangage += dy * 8, borne a +/-0x2000
+#        (45 deg : la borne du regard relatif du jeu, 0x2c9254),
 #        curseur du jeu tenu au centre de la vue (ou partent les tirs)
 #   'B' + bouton (1 gauche, 2 droit) + appui -> evenement dans la file de la lib souris du jeu (tir, verrouillage)
 #   'P' + x, y (i16)  -> regard coupe (Y ou Pause dans le visualiseur) : curseur du jeu a cette position de son
@@ -730,7 +810,7 @@ COPIES = 0x46613C                          # compteur d'images affichees du code
 #   'R' + dx, dy (i16) -> the cursor moved by that much (game pixels) with a button held: see glisser
 #   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
 PLAY = '--play' in sys.argv
-SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -7187, 6127
+SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -0x2000, 0x2000
 if PLAY:
     import ctypes
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1236,9 +1316,9 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
             # envoi au retour dans la 3D pouvait se perdre, ou lire le nom de la mission d'avant
             if now - getattr(menu_step, 'mis_t', 0.0) > 1.0:
                 menu_step.mis_t = now
-                noms = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', g.read(0x340000, 0x140000), re.I))
-                if noms:
-                    tx.sendto(b'MIS' + struct.pack('<I', n) + noms.most_common(1)[0][0].encode(), ('127.0.0.1', 47823))
+                nom = fichier_mission()
+                if nom:
+                    tx.sendto(b'MIS' + struct.pack('<I', n) + nom.encode(), ('127.0.0.1', 47823))
             time.sleep(0.05); return last_c, last_t, mode, n, img_n, None, sent_t, mod_t, fw, fh
         im = grab()
         if im is None:
@@ -1666,22 +1746,32 @@ s16 = lambda a: struct.unpack('<h', g.read(a, 2))[0]
 i32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
 
 
-# The eye's height above the player's entity. The game's main view stands 0.05 above the neck of the player's suit
-# (joint 9 of its record, which the game keeps up to date even for the suit it is seen from): 0.32 for the suit the
-# first measure was made with, 0.397 for a heavy one (measured: the shared viewpoint 0x41EB68 while the main view is
-# drawn). With 0.32 for every suit, what is near the eyes stood too high from a heavy suit: a grenade leaving the
-# gun, a beam's start. --eye N: that height for every suit, as before.
+# The main view's eye, from the player's entity (dx, dy, dz). The game's routine 0x27ec90 (EN) puts it on the line
+# from the pelvis to the neck of the player's suit (joints 8 and 9 of its record, kept up to date even for the suit
+# it is seen from), past the neck by k times that length, k by the suit (dword +0xDE, table 0x27ec64), then adds
+# [0x38FB1C] to z. The torso leans forward, so the eye is a little ahead of the entity (0.019 standing, about 0.07
+# crouched), 0.397 above it for a heavy suit. --eye N: that height straight above the entity for every suit.
 EYE_AUTO = '--eye' not in sys.argv
-oeil_vu = [EYE]
+oeil_vu = [(0.0, 0.0, EYE)]
+EYE_K = {0: 0x4D65, 1: 0x5D17, 2: 0x4771, 10: 0x50D7}   # other suits (3-9, above 10, negative): 0x5174
 
 
 def oeil(e, z):
-    if not EYE_AUTO: return EYE
+    if not EYE_AUTO: return (0.0, 0.0, EYE)
     try:
         nf = u16(e + 3)
-        cou = i32(SOLDATS + nf * 0x582 + 0x1AF + 9 * 12 + 8) / 65536
-        h = cou - z + 0.05
-        if 0.15 < h < 0.9 and nf <= 200: oeil_vu[0] = h      # (else: the last good one, a record being rewritten)
+        S = SOLDATS + nf * 0x582
+        k = EYE_K.get(i32(S + 0xDE), 0x5174)
+        j8 = struct.unpack('<3i', g.read(S + 0x1AF + 8 * 12, 12))
+        j9 = struct.unpack('<3i', g.read(S + 0x1AF + 9 * 12, 12))
+        ent = struct.unpack('<3i', g.read(e + 0x0F, 12))
+        oe = [j9[i] + (((j9[i] - j8[i]) * k) >> 16) for i in range(3)]
+        oe[2] += d32(OEIL)
+        d = tuple((oe[i] - ent[i]) / 65536 for i in range(3))
+        torse = math.dist(j8, j9) / 65536
+        if (nf <= 200 and 0.10 < torse < 0.45 and max(abs(j8[0] - ent[0]), abs(j8[1] - ent[1])) < 0.01 * 65536
+                and math.hypot(d[0], d[1]) < 0.15 and 0.15 < d[2] < 0.9):
+            oeil_vu[0] = d                                    # (else: the last good one, a record being rewritten)
     except BaseException:
         pass
     return oeil_vu[0]
@@ -1695,6 +1785,34 @@ def tangage():
     if A_PENTE is not None and cam == s16(A_PITCH) and not g.read(A_DRAPEAU, 1)[0] & 2:
         cam = ((cam + s16(A_PENTE) + 0x8000) & 0xffff) - 0x8000
     return cam
+
+
+def camera_mort():
+    # The death camera: once the player's suit has burst, the game's main view rides its flying torso piece until the
+    # mission ends (~5 s; the dword stays set until the next mission loads). 0x2822f0: per axis P + (3 (P - Q)) / 5
+    # (idiv: toward zero) from the piece's two points P, Q; 0x28236c: heading atan2(vy, vx) + 180 deg, pitch
+    # -atan2(vz, horizontal) from its velocity; no eye, no head turn, no slope; [0x38FB1C] added to z. The shake (a
+    # hit) on top, as the game: its saved final camera when it is that view's within 0x800. None: not dead (or values
+    # that make no sense: the normal view)
+    if A_DEATH is None: return None
+    d = d32(A_DEATH) & 0xffffffff
+    if not d: return None
+    try:
+        P = struct.unpack('<3i', g.read(d, 12))
+        Q = struct.unpack('<3i', g.read(d + 12, 12))
+        v = struct.unpack('<3i', g.read(A_VEC, 12))
+    except BaseException:
+        return None
+    if not (all(abs(p - q) < 2 * 65536 for p, q in zip(P, Q)) and all(-256 * 65536 <= c < 768 * 65536 for c in P[:2])):
+        return None
+    c = [p + (abs(3 * (p - q)) // 5) * (1 if p >= q else -1) for p, q in zip(P, Q)]
+    h = (math.atan2(v[1], v[0]) + math.pi) % (2 * math.pi)
+    t = math.atan2(v[2], math.hypot(v[0], v[1]))         # (sent as the bridge's pitch: positive = up)
+    if A_SAVH is not None:
+        savh = u16(A_SAVH)
+        if abs(((savh - round(h / (2 * math.pi) * 65536) + 0x8000) & 0xffff) - 0x8000) <= 0x800:
+            h, t = savh / 65536 * 2 * math.pi, -s16(A_SAVP) / 65536 * 2 * math.pi
+    return (c[0] / 65536, c[1] / 65536, (c[2] + d32(OEIL)) / 65536, h, t)
 
 
 # The game left by its Exit: DOS is back (the edition's own text menu, "Press a number key", behind Uplink). Seen by
@@ -1774,11 +1892,7 @@ while True:
         if ba:
             s.sendto(b'ARMS' + struct.pack('<H', len(ba)) + b''.join(struct.pack('<iB', i, m) for i, m in ba),
                      ('127.0.0.1', 47821))
-    if time.time() - corps_t > 0.5:
-        corps_t = time.time()
-        raw = g.read(CORPS, 200 * 0x14E)
-        corps = [(n, *(v / 65536 for v in struct.unpack_from('<ii', raw, n * 0x14E))) for n in range(200)]
-    vivants = {struct.unpack_from('<H', tab, 0x25 * i + 3)[0] for i in range(NENT) if tab[0x25 * i] and tab[0x25 * i + 1] == 1}
+    piles = decor = None
     for i in range(NENT):
         o = 0x25 * i
         if tab[o + 1] > 6 or (tab[o + 1] >= 5 and tab[o] == 0): continue
@@ -1788,8 +1902,14 @@ while True:
         if tab[o + 1] == 6 and tab[o + 2] in (28, 29):   # poussiere : le cap porte le champ que le jeu retire au
             eh = float(struct.unpack_from('<H', tab, o + 7)[0])   # hasard (il disperse ses points autour d'elle)
         if tab[o + 1] == 6 and tab[o + 2] == 33:     # morceau d'armure : le cap porte l'armure du soldat mort
-            eh = float(armure_debris(ex / 65536, ey / 65536, vivants))
-        body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], 1 if tab[o] else 0, ex / 65536, ey / 65536, ez / 65536, eh))
+            if piles is None: piles = armures_piles()
+            eh = float(armure_pile(i, struct.unpack_from('<H', tab, o + 3)[0], piles))
+        actif = 1 if tab[o] else 0
+        if tab[o + 1] == 0 and actif and DECOR_ETAT is not None:   # decor : touche une fois -> bit 1 (sa souche)
+            if decor is None: decor = g.read(DECOR_ETAT - 6, 256 * 9)
+            nd = struct.unpack_from('<h', tab, o + 3)[0]
+            if 0 <= nd < 256 and decor[9 * nd + 6]: actif |= 2
+        body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], actif, ex / 65536, ey / 65536, ez / 65536, eh))
     # the main view through the player's drone (see VUE_ENT)
     vue = u16(VUE_ENT)
     sonde = vue != pid and 0 < vue < NENT and bool(tab[0x25 * vue]) and tab[0x25 * vue + 1] == 3
@@ -1872,7 +1992,8 @@ while True:
             if i != pid:                              # (la pose figee du joueur n'apprend rien)
                 animees[i] = (tab[o + 2], pose)
     # celles que le jeu anime apprennent la marche de leur type (debout seulement : pas accroupies ni a terre) ;
-    # les autres la rejouent, posees sur leur entite (hauteur du jeu moins 0,12, comme ses pieds)
+    # les autres la rejouent, posees sur leur entite (hauteur du jeu moins son decalage de dessin, comme ses pieds :
+    # RESSIM 919, 9557 / 65536 pour une combinaison, 19660 / 65536 le marcheur, type 9)
     now_w = time.time()
     ou_unite = lambda i: (*(v / 65536 for v in struct.unpack_from('<ii', tab, 0x25 * i + 0x0F)),
                           struct.unpack_from('<H', tab, 0x25 * i + 0x1B)[0] / 65536 * 2 * math.pi)
@@ -1888,7 +2009,8 @@ while True:
         haut = max(zs) - min(zs) if zs and any(zs) else 0.0
         p = marche.pose(i, tab[o + 2], ux, uy, ucap, now_w, haut)
         if p:
-            joints.append(struct.pack('<if', i, struct.unpack_from('<i', tab, o + 0x17)[0] / 65536 - 0.12) + p)
+            pieds = (struct.unpack_from('<i', tab, o + 0x17)[0] - (19660 if tab[o + 2] == 9 else 9557)) / 65536
+            joints.append(struct.pack('<if', i, pieds) + p)
     if n % int(HZ * 5) == 0 and os.environ.get('TN_DEBUG_WALK'):
         print('marche : %d animees par le jeu, %d figees, %d rejouees' % (len(animees), len(figees),
               sum(1 for i in figees if i in marche.rep and marche.rep[i][2])), flush=True)
@@ -1934,7 +2056,9 @@ while True:
         # l'exe anglais : cap de l'unite + reglage du panneau + visee), hauteur = z de l'unite + [0x38FB1C] + 0,1875
         cap_v = struct.unpack_from('<H', vp, 0xC)[0] / 65536 * 2 * math.pi
         tang_v = -struct.unpack_from('<h', vp, 0x16)[0] / 65536 * 2 * math.pi
-        vz += EYE - (d32(OEIL) / 65536 + 0.1875)  # meme oeil que la vue principale (EYE, ajuste sur le jeu)
+        # (the game puts every panel's view at the unit's z + [0x38FB1C] + 0.1875, whatever the suit: not at the
+        # main view's eye. The height is that constant, not vz - ez_: two reads taken at different moments)
+        haut_v = d32(OEIL) / 65536 + 0.1875
         panneau = (4 if tete else 2) if cible else (3 if tab[0x25 * vi + 1] == 3 else 1)
         zoom = 1.0 if panneau == 4 else d32(CAMS + (0xBA * 2 if panneau == 3 else 0)) / 65536
         if not 0.2 < zoom < 20: zoom = 1.0
@@ -1943,7 +2067,7 @@ while True:
         # son cap tel quel, il vise la cible et non l'avant du joueur)
         ex_, ey_, ez_ = (v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vi + 0x0F))
         ecap = struct.unpack_from('<H', tab, 0x25 * vi + 0x1B)[0] / 65536 * 2 * math.pi
-        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, vz - ez_, cap_v if panneau == 2 else cap_v - ecap, tang_v, zoom)
+        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, haut_v, cap_v if panneau == 2 else cap_v - ecap, tang_v, zoom)
     # each view's panel: 0 left, 1 middle, 2 right (the player's own view, 4: in the panel that swapped with the HUD)
     ou = {1: 0, 2: 0, 3: 2, 4: 2 if echange is None else echange, 5: 0, 6: 1, 7: 2}
     sv = []
@@ -1956,8 +2080,9 @@ while True:
     autour = [k for k in range(3) if pmode[k] in (13, 14, 15)]
     cd = cadres() if sv or autour else []     # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
     cadre = lambda i: None if not cd else cd[0] if i == 0 else cd[-1] if i == 2 else (cd[1] if len(cd) >= 3 else None)
-    # the 360 view: the player's own eyes turned by each panel's heading (left, behind, right), his head with them
+    # the 360 view: the player's view turned by each panel's heading (left, behind, right), his head with them
     # (the game's routine 0x275260 again: the unit's heading + the panel's + the head's, and the main view's pitch;
+    # its height is every panel's, z + [0x38FB1C] + 0.1875, not the main view's eye;
     # the picture is then turned over, a mirror's: the viewer does it). Not in the full view (G: no cockpit, the
     # panels keep their mode and their frame, which then lies under the 3D window: the game draws none)
     if autour:
@@ -1965,17 +2090,31 @@ while True:
         for k in autour:
             c = cadre(k)
             if c is None or (fx0 <= (c[0] + c[2]) // 2 < fx0 + fw and fy0 <= (c[1] + c[3]) // 2 < fy0 + fh): continue
-            sv.append((5 + k, (0, pid, x, y, z + eye, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
+            sv.append((5 + k, (0, pid, x, y, z + d32(OEIL) / 65536 + 0.1875, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
     # each view in its panel's frame (the player's own view is sent as 8 when its panel is not the drone's, which has
     # its own buttons); none: said too, the viewer takes them off
     sv = [(8 if k == 4 and ou[4] != 2 else k, v, cadre(ou[k])) for k, v in sv]
     sv = [(k, v, c) for k, v, c in sv if c is not None]
     s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *c) for k, v, c in sv),
              ('127.0.0.1', 47821))
-    cam = (x, y, z + eye, head, pitch)
+    cam_h, cam_p = head, pitch
+    # the main view's heading and pitch as the game drew them (its saved final camera: with the shake of a hit), when
+    # the view is the player's own and not the death camera; a value off by more than the largest shake (0x800) is
+    # one left from before (mission start, a reload): rebuilt then
+    mort = camera_mort() if vue == pid and not CAM else None
+    if A_SAVH is not None and vue == pid and not mort:
+        savh = u16(A_SAVH)
+        if abs(((savh - u16(e + 0x1B) - u16(A_HEADYAW) + 0x8000) & 0xffff) - 0x8000) <= 0x800:
+            cam_h, cam_p = savh / 65536 * 2 * math.pi, -s16(A_SAVP) / 65536 * 2 * math.pi
+    cam = (x + eye[0], y + eye[1], z + eye[2], cam_h, cam_p)
+    if mort:
+        cam = mort
     if sonde:
+        # the drone's view as the game sets it (0x26952f): its entity's x, y, z, heading +0x1B and pitch +0x1D (positive
+        # = down), nothing added (no eye, no ground slope: tangage()'s slope is the player's, frozen in this view)
         cam = (*(v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vue + 0x0F)),
-               struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)
+               struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi,
+               -struct.unpack_from('<h', tab, 0x25 * vue + 0x1D)[0] / 65536 * 2 * math.pi)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid) +
@@ -2015,8 +2154,9 @@ while True:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))) + g.read(NUAGES - 0xC, 4),
                  ('127.0.0.1', 47821))         # (+ the desert clouds' sway phase, +193 a tick)
-        s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
-        s.sendto(b'WAYP' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8)))), ('127.0.0.1', 47821))
+        s.sendto(b'IRVW' + bytes([1 if g.read(VISION, 1)[0] in (1, 2) else 0]), ('127.0.0.1', 47821))
+        s.sendto(b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
+                                        struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0]), ('127.0.0.1', 47821))
         if BRUME and time.time() - brume_t > 1.0:
             brume_t = time.time()
             hk = hazing.radius(g.read(BRUME, 1024))
@@ -2032,7 +2172,8 @@ while True:
         for a in SOL_PTRS:
             pc = struct.unpack('<I', g.read(a, 4))[0]
             if 0x400000 <= pc < 0x4000000 and 0 <= x < 512 and 0 <= y < 512:
-                h = struct.unpack('<h', g.read(pc + 3 * (int(y) * 513 + int(x)) + 1, 2))[0] / 384
+                # hauteur sur 12 bits (bits 15:4, 1/24 d'unite) : le jeu retire le quart de tour et l'ombre (sar 4)
+                h = (struct.unpack('<h', g.read(pc + 3 * (int(y) * 513 + int(x)) + 1, 2))[0] >> 4) / 24
                 if abs(h - z) < 1.5:
                     carte = pc
                     break

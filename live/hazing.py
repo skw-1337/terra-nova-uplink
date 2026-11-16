@@ -29,7 +29,7 @@ _cache = {}
 def radius(table):
     """the k whose table matches best (exact for the game's own and TN+'s), or None for a table that is no haze"""
     t = bytes(table[:1024])
-    if len(t) < 1024 or max(t) > 15:
+    if len(t) < 1024 or max(t) > 15 or max(t) == 0:     # (all 0: not built yet, before the first mission)
         return None
     if t in _cache:
         return _cache[t]

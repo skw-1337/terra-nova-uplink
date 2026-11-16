@@ -109,6 +109,7 @@ var live_shot := ""
 var live_shot_frame := 60
 var live_nodes := []          # one node per mission entity, in file order
 var live_off := -1            # game entity table index of the first mission entity
+var mission_tag := ""         # the mission's file (the pirates' arms in the map viewer, _pirate_arms)
 var live_sizes := {}          # game entity index -> its soldier's bone lengths (the bridge's SLEN, _live_size)
 var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
@@ -611,6 +612,7 @@ func _load(index: int) -> void:
 	live_off = -1
 	live_alarm = false                        # (cleared by the game at each mission start)
 	live_sizes.clear()
+	mission_tag = String(entry["file"]).get_file().to_upper()
 	live_extra.clear()
 	live_fx.clear()
 	live_piles.clear()
@@ -1120,7 +1122,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	var soldier := false
 	if cls == 1 and objects_ok:
 		var suit := TNObjects.suit_of(sub)
-		top = _add_mech(mi) if suit == TNObjects.MECH_SUIT else _add_soldier(mi, suit)   # parts = children
+		top = _add_mech(mi) if suit == TNObjects.MECH_SUIT else _add_soldier(mi, suit, _pirate_arms(suit, x, y))
 		soldier = top > 0.0
 	if cls == 4 and sub == TNObjects.SMOKE_TYPE and objects_ok:
 		var sm: Dictionary = objects.smoke_anim(pal, pal_key)
@@ -1201,27 +1203,68 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	return mi
 
 
+const PIRATE_SUIT := 9
+const CAPTAIN_SUIT := 10
+const CAPTAIN_ARM := 12605.0 / 32768.0    # the game's odds for each arm (rand 0..0x7FFF mod 13 < 5)
+
+
+# The map viewer cannot know which pirates the game gives captain arms (its random draws at mission start, seeded 0,
+# depend on every draw before): each arm drawn with the game's odds from the mission and the place, the same at each
+# load. Live, the bridge's ARMS packet tells the real ones (_live_arms).
+func _pirate_arms(suit: int, x: float, y: float) -> int:
+	if suit != PIRATE_SUIT:
+		return 0
+	var h := hash("%s/%.3f/%.3f" % [mission_tag, x, y])
+	var out := 0
+	if float(h & 0x7FFF) / 32768.0 < CAPTAIN_ARM:
+		out |= 1
+	if float((h >> 15) & 0x7FFF) / 32768.0 < CAPTAIN_ARM:
+		out |= 2
+	return out
+
+
+# A pirate whose arms the game drew otherwise than the viewer's guess: built again.
+func _live_arms(idx: int, arms: int) -> void:
+	var node := _live_node(idx)
+	if node == null or not node.has_meta("soldier") or node.has_meta("corpse") or int(node.get_meta("suit", -1)) != PIRATE_SUIT:
+		return
+	if int(node.get_meta("arms", 0)) == arms:
+		return
+	for part in node.get_meta("soldier"):
+		(part[0] as Node).queue_free()
+	_add_soldier(node, PIRATE_SUIT, arms)
+
+
 const LIMB_WPX := 1.0 / 256.0   # a limb sprite's pixel across its bone, in world units (the game's part +4 = 256)
 const LIMB_PULL := 0.05          # a standing suit's feet and shins drawn this much nearer the camera (_add_soldier)
 
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
 # Joints of skeletons 884 / 885: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 pelvis, 9 neck,
 # 10/11 shoulders, 12/13 elbows, 14/15 hands. Returns the suit height (0 when it has no sprites).
-func _add_soldier(holder: Node3D, suit: int) -> float:
+# arms: a pirate's (suit 9) captain arms, bit 0 the right one (segments 3, 4), bit 1 the left (9, 10): the game draws
+# each, at the pirate's creation, with the captain's sprites (suit 10) 5 times in 13 (0x27F150).
+func _add_soldier(holder: Node3D, suit: int, arms := 0) -> float:
 	var segs: Array = objects.skeleton(suit)
-	var limbs := {}
-	for sg in segs:
-		var ld: Dictionary = objects.limb(suit, sg[2], pal, pal_key)
+	var limbs := {}                                    # segment index -> its limb
+	var lsuit := {}                                    # segment index -> the suit its sprites come from
+	for k in segs.size():
+		var sg: Array = segs[k]
+		var es := suit
+		if suit == PIRATE_SUIT and ((k in [3, 4] and arms & 1) or (k in [9, 10] and arms & 2)):
+			es = CAPTAIN_SUIT
+		var ld: Dictionary = objects.limb(es, sg[2], pal, pal_key)
 		if ld.is_empty():
 			return 0.0
-		limbs[sg[2]] = ld
+		limbs[k] = ld
+		lsuit[k] = es
 	var p := _soldier_pose(suit, segs, limbs)
 	var parts := []
-	for sg in segs:
-		var ld: Dictionary = limbs[sg[2]]
+	for k in segs.size():
+		var sg: Array = segs[k]
+		var ld: Dictionary = limbs[k]
 		var seg := MeshInstance3D.new()
 		seg.mesh = _limb_quad(ld)
-		seg.material_override = _limb_mat(suit, sg[2], ld)
+		seg.material_override = _limb_mat(lsuit[k], sg[2], ld)
 		# a left limb: the right one's sprite, mirrored (per instance: both sides share the material)
 		seg.set_instance_shader_parameter("mirror", 1.0 if int(sg[3]) & 1 else 0.0)
 		# drawn nearer the camera than they are (limb.gdshader pull): the feet and shins only, a sole reaching under
@@ -1231,6 +1274,7 @@ func _add_soldier(holder: Node3D, suit: int) -> float:
 		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2])])
 	holder.set_meta("soldier", parts)
 	holder.set_meta("suit", suit)
+	holder.set_meta("arms", arms)
 	holder.set_meta("leg_rest", [p[6].distance_to(p[4]), p[4].distance_to(p[2]), p[7].distance_to(p[5]),
 			p[5].distance_to(p[3])])          # thighs and shins standing (see _leg_lengths)
 	holder.set_meta("stand", p)              # and its arms (_arms_back)
@@ -1689,13 +1733,17 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 	var t: Array[Vector3] = []
 	for v in TEMPLATE_POSE:
 		t.append(v)
-	var length := func(part: int) -> float:
-		return limbs[part]["len"] / 256.0 * _part_scale(suit, part) if limbs.has(part) else 0.08
+	var length := func(k: int) -> float:              # segment k's bone (limbs by segment)
+		return limbs[k]["len"] / 256.0 * _part_scale(suit, segs[k][2]) if limbs.has(k) else 0.08
+	var torso := -1
+	for k in segs.size():
+		if segs[k][2] == 5:
+			torso = k
 	# free joints (pelvis, hips, shoulders) keep their place relative to the pelvis / neck,
 	# scaled with the torso; every limb keeps its direction and takes this suit's length
-	var k_torso: float = length.call(5) / t[8].distance_to(t[9])
+	var k_torso: float = length.call(torso) / t[8].distance_to(t[9])
 	p[8] = t[8]
-	p[9] = p[8] + (t[9] - t[8]).normalized() * length.call(5)
+	p[9] = p[8] + (t[9] - t[8]).normalized() * length.call(torso)
 	for i in 2:
 		p[6 + i] = p[8] + (t[6 + i] - t[8]) * k_torso
 		p[10 + i] = p[9] + (t[10 + i] - t[9]) * k_torso
@@ -1703,11 +1751,11 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 		for c in range(1, chain.size()):
 			var a: int = chain[c - 1]
 			var b: int = chain[c]
-			var part := -1
-			for sg in segs:
-				if (sg[0] == a and sg[1] == b) or (sg[0] == b and sg[1] == a):
-					part = sg[2]
-			p[b] = p[a] + (t[b] - t[a]).normalized() * length.call(part)
+			var seg_k := -1
+			for k in segs.size():
+				if (segs[k][0] == a and segs[k][1] == b) or (segs[k][0] == b and segs[k][1] == a):
+					seg_k = k
+			p[b] = p[a] + (t[b] - t[a]).normalized() * length.call(seg_k)
 	var ground := minf(minf(p[0].y, p[1].y), minf(p[2].y, p[3].y))
 	for k in 16:
 		p[k].y -= ground
@@ -3291,6 +3339,9 @@ func _live_update() -> void:
 				var o := 6 + 28 * k
 				live_sizes[q.decode_s32(o)] = [q.decode_float(o + 4), q.decode_float(o + 8), q.decode_float(o + 12),
 						q.decode_float(o + 16), q.decode_float(o + 20), q.decode_float(o + 24)]
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "ARMS" and q.size() == 6 + 5 * q.decode_u16(4):
+			for k in q.decode_u16(4):
+				_live_arms(q.decode_s32(6 + 5 * k), q[10 + 5 * k])
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)

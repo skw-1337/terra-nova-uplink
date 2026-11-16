@@ -359,6 +359,28 @@ def tailles(tab):
     return out
 
 
+# A pirate's arms (suit 9): at its creation the game draws each arm (5 times in 13) with the captain's sprites
+# (0x27F150): the high words of its segments' sprite references, +0x133 (right upper arm) and +0x193 (left), = 873
+# (RESTNOBJ 800 + 7 x 10 + 3) for a captain's arm, 866 otherwise. Bit 0 right, bit 1 left. Kept for the pirate's life.
+BRAS = {}
+
+
+def bras(tab):
+    """[(entity, mask)] of the pirates in the table"""
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 1: continue
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        if nf > 200: continue
+        r = g.read(SOLDATS + nf * 0x582 + 0xDE, 0xC0)
+        if struct.unpack_from('<I', r, 0)[0] != 9: continue
+        w1, w2 = (struct.unpack_from('<H', r, a - 0xDE)[0] for a in (0x135, 0x195))
+        if not (800 <= w1 <= 883 and 800 <= w2 <= 883): continue
+        out.append((i, (1 if w1 == 873 else 0) | (2 if w2 == 873 else 0)))
+    return out
+
+
 def petite(i, nf, n):
     k = PETITES.get((i, nf))
     if k is None:
@@ -1713,6 +1735,10 @@ while True:
         tl = tailles(tab)
         if tl:
             s.sendto(b'SLEN' + struct.pack('<H', len(tl)) + b''.join(struct.pack('<i6f', i, *v) for i, v in tl),
+                     ('127.0.0.1', 47821))
+        ba = bras(tab)
+        if ba:
+            s.sendto(b'ARMS' + struct.pack('<H', len(ba)) + b''.join(struct.pack('<iB', i, m) for i, m in ba),
                      ('127.0.0.1', 47821))
     if time.time() - corps_t > 0.5:
         corps_t = time.time()

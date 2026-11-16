@@ -575,6 +575,7 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 		for p in groups[s]:
 			var v: PackedVector3Array = p[0]
 			var uv: PackedVector2Array = p[1]
+			var ns: PackedVector3Array = p[4]
 			var col := Color.WHITE
 			if s < 0:
 				var ci: int = p[3]
@@ -585,10 +586,11 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 						st.set_uv(uv[j])
 					else:
 						st.set_color(col)
+					var n: Vector3 = ns[j]
+					st.set_normal(Vector3(n.z, -n.y, n.x))   # the game's normals: flat faces, not averaged
 					var q: Vector3 = v[j]
 					top = maxf(top, -q.y)
 					st.add_vertex(Vector3(q.z, -q.y, q.x))
-		st.generate_normals()
 		var mat := StandardMaterial3D.new()
 		mat.roughness = 1.0
 		mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
@@ -633,9 +635,11 @@ class Decoder:
 	const ART_SIGN := 1.0   # the way a part turns for a growing angle (checked on the dropship's door)
 	var pts := {}           # point index -> position (model space, y down)
 	var uv := {}            # point index -> Vector2
-	var polys := []         # [PackedVector3Array, PackedVector2Array, texture slot or -1, color]
+	var polys := []         # [PackedVector3Array, PackedVector2Array, texture slot or -1, color, normals, mode]
 	var lines := []         # [a, b, color]
 	var color := 0
+	var mode := 0           # shading mode (op 0x31): 1 = one shade per polygon from its stored normal, 2 = per point
+	var vn := {}            # point index -> normal given by op 0x34 (smooth shading, mode 2)
 
 	func v3(o: int) -> Vector3:
 		return Vector3(f.decode_s32(o), f.decode_s32(o + 4), f.decode_s32(o + 8)) / 65536.0
@@ -649,22 +653,33 @@ class Decoder:
 	# nrm: the polygon's stored normal, when it has one. The game decides visibility with it, not
 	# with the vertex order, so mirrored parts (the mech's left foot) can be wound backwards: put
 	# them back in the order the rest of the data uses (clockwise seen from outside).
+	# Normals as the game shades: mode 1, the stored normal for the whole polygon (one shade per face, op 0x33 at
+	# 0x2F52E8); mode 2, each point's own from op 0x34. No stored normal (ops 0x04 / 0x26, unused by the models):
+	# the face's own.
 	func add_poly(idx: Array, uvs: PackedVector2Array, slot: int, col: int, nrm := Vector3.ZERO) -> void:
 		var v := PackedVector3Array()
 		for i in idx:
 			v.append(pt(i))
 		if v.size() < 3:
 			return
-		if nrm != Vector3.ZERO:
-			var nw := Vector3.ZERO                 # Newell normal of the vertex order
-			for k in v.size():
-				var a := v[k]
-				var b := v[(k + 1) % v.size()]
-				nw += Vector3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y))
-			if nw.dot(nrm) > 0.0:
-				v.reverse()
-				uvs.reverse()
-		polys.append([v, uvs, slot, col])
+		var nw := Vector3.ZERO                     # Newell normal of the vertex order
+		for k in v.size():
+			var a := v[k]
+			var b := v[(k + 1) % v.size()]
+			nw += Vector3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y))
+		var rev := nrm != Vector3.ZERO and nw.dot(nrm) > 0.0
+		if rev:
+			v.reverse()
+			uvs.reverse()
+		var face := nrm.normalized() if nrm != Vector3.ZERO else (-nw).normalized()
+		if face == Vector3.ZERO:
+			face = Vector3.UP
+		var ns := PackedVector3Array()
+		for i in idx:
+			ns.append(vn[i] if mode == 2 and vn.has(i) else face)
+		if rev:
+			ns.reverse()
+		polys.append([v, uvs, slot, col, ns, mode])
 
 	func run(pc: int, xf: Transform3D, depth: int) -> void:
 		if depth > 24:
@@ -802,7 +817,8 @@ class Decoder:
 					pc += 0x10
 				0x2b:
 					pc += 4 + 2 * f.decode_u16(pc + 2)
-				0x30, 0x31:
+				0x30, 0x31:                        # shading mode, global: kept into the sub-parts (0x2F58AA)
+					mode = f[pc + 2]
 					pc += 3
 				0x33:                              # polygon with its normal: flat / wire / textured
 					var skip := f.decode_s16(pc + 2)
@@ -831,6 +847,8 @@ class Decoder:
 				0x34:                              # vertex normals for shading, 0xFFFF-terminated
 					pc += 2
 					while pc + 2 <= f.size() and f.decode_u16(pc) != 0xFFFF:
+						if pc + 0xE <= f.size():
+							vn[f.decode_u16(pc)] = (xf.basis * v3(pc + 2)).normalized()
 						pc += 0x1a
 					pc += 0x1a
 				_:

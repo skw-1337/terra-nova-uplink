@@ -337,6 +337,34 @@ def meteo():
 PETITES = {}
 
 
+# The game's draw distances (routine 0x2A0E54): an entity is drawn when max(|dx|, |dy|) (whole cells, floored) x k is
+# at most 4 x its type's distance, k = (half-angle of the main camera's view + 0x100) >> 11 (4 at the stock zoom). The
+# table: 9 rows of 128 bytes (class), loaded from RESTNOBJ 1376 + class at 0x2A0D70 (TN+ scales it): read in memory.
+# Sent as one bit per entity ('DRAW'); the viewer hides what the game does not draw when asked (TN_DRAW_DISTANCE=1).
+PORTEES = next((a for a in (struct.unpack('<I', _m.group(1))[0] for _m in re.finditer(
+    rb'\x31\xf6\x89\xf0\xbf(....)\x05\x60\x05\x00\x00', code, re.S)) if 0x300000 <= a < 0x500000), None)
+if PORTEES is None:
+    print('distances : signature introuvable (pas de DRAW)')
+portees_t, portees_tab = 0.0, b''
+
+
+def portee(tab, cx, cy, k, table):
+    """bitset of the entities the game draws, seen from (cx, cy) (16.16 ints) with the view factor k"""
+    bits = bytearray((NENT + 7) // 8)
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o]: continue
+        c, t = tab[o + 1], tab[o + 2]
+        x, y = struct.unpack_from('<ii', tab, o + 0x0F)
+        dx = (((x - cx + 0x80000000) & 0xFFFFFFFF) - 0x80000000) >> 16    # (int32 difference, floored)
+        dy = (((y - cy + 0x80000000) & 0xFFFFFFFF) - 0x80000000) >> 16
+        d = max(abs(dx), abs(dy))
+        v = table[c * 128 + t] if c < 9 and t < 128 and len(table) >= 9 * 128 else 127
+        if k == 0 or d * k <= 4 * v:
+            bits[i >> 3] |= 1 << (i & 7)
+    return bytes(bits)
+
+
 # Each soldier's own size (0x2817B0, from a random value or the squad's table): its bone lengths in its record
 # (SOLDATS + n * 0x582, 16.16): torso +0x2AB, upper arm +0x2BB, forearm +0x2BF, thigh +0x2C3, shin +0x2C7, and the
 # legs' reach +0x2ED (0.9 x thigh + shin). Not for the mech (suit 11: its own values there).
@@ -1767,6 +1795,14 @@ while True:
     carte_hud = echange is not None and not sonde
     if sonde: vues.pop(3, None)                   # (the drone's panel shows one or the other)
     if echange is None: vues.pop(4, None)
+    if PORTEES:                               # what the game draws, every frame (its table re-read every 2 s)
+        if time.time() - portees_t > 2.0:
+            portees_t, portees_tab = time.time(), g.read(PORTEES, 9 * 128)
+        ou = vue if sonde else pid
+        if 0 <= ou < NENT:
+            k = (u16(A_ZOOM + 0x18) + 0x100) >> 11 if A_ZOOM else 4
+            s.sendto(b'DRAW' + struct.pack('<H', NENT) + portee(tab, *struct.unpack_from('<ii', tab, 0x25 * ou + 0x0F), k,
+                     portees_tab), ('127.0.0.1', 47821))
     # animation des soldats : le jeu calcule a chaque image les 16 articulations de chaque armure affichee (fiche
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
     # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds

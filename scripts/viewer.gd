@@ -112,6 +112,8 @@ var live_shot_frame := 60
 var live_nodes := []          # one node per mission entity, in file order
 var live_off := -1            # game entity table index of the first mission entity
 var mission_tag := ""         # the mission's file (the pirates' arms in the map viewer, _pirate_arms)
+var draw_distance := OS.get_environment("TN_DRAW_DISTANCE") == "1"   # live: hide what the game does not draw
+var live_drawn := PackedByteArray()  # the bridge's DRAW bits (entity index), empty: none received
 var live_sizes := {}          # game entity index -> its soldier's bone lengths (the bridge's SLEN, _live_size)
 var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
@@ -3375,6 +3377,8 @@ func _live_update() -> void:
 			_live_vegetation(q.slice(4))
 		elif q.size() >= 8 and q.slice(0, 4).get_string_from_ascii() == "SCOR":
 			_live_scorch(q.slice(4))
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "DRAW" and q.size() == 6 + (q.decode_u16(4) + 7) / 8:
+			live_drawn = q.slice(6)
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "SLEN" and q.size() == 6 + 28 * q.decode_u16(4):
 			for k in q.decode_u16(4):
 				var o := 6 + 28 * k
@@ -3682,6 +3686,14 @@ func _live_units(pk: PackedByteArray) -> void:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
 		if live_extra.has(idx):
 			_live_place(live_extra[idx], e, m)
+	if draw_distance and not live_drawn.is_empty() and not free_look:
+		# as in the game (its distances per type, see the bridge's DRAW): hidden, not freed (a suit keeps its steps)
+		for idx in ents:
+			if idx >> 3 >= live_drawn.size() or live_drawn[idx >> 3] & (1 << (idx & 7)) or idx == body:
+				continue
+			for n in [_live_node(idx), live_fx.get(idx), live_piles.get(idx)]:
+				if n != null and is_instance_valid(n):
+					n.visible = false
 	for idx in joints:                                 # soldiers the game draws: its own animation
 		var node: Node3D = live_extra.get(idx)
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():

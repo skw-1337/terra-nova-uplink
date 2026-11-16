@@ -1,7 +1,7 @@
 # Pont vers Terra Nova Uplink (mode --live) : lit la camera du jeu qui tourne (lecture seule) et l'envoie en UDP
 # (127.0.0.1:47821) : x, y, z (unites du jeu), cap camera et inclinaison (radians), champ horizontal (degres).
 # Adresses retrouvees par la signature "camera" de TNPlus (id du joueur, table des objets, cap camera, tangage).
-#   python live_bridge.py [--fov N] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
+#   python live_bridge.py [--fov N|auto] [--eye 0.32] [--hz 120] [--once] [--launch [--res 1600x900 | --res native]]
 #   --launch : retrouve la mission en cours (nom MISSnn.RES en memoire), lance Uplink dessus en mode
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, threading, time, zlib
@@ -10,7 +10,11 @@ import hazing
 
 g = tnre.Guest()
 arg = lambda k, d: float(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else d
-FOV, EYE, HZ = arg('--fov', None), arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
+EYE, HZ = arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
+# --fov N: a fixed field at the normal zoom. The launchers up to 2.7 pass --fov 91.5 (the old calibration); that, and
+# --fov auto, mean the game's own field (fov_now), read from its camera.
+_fov = sys.argv[sys.argv.index('--fov') + 1] if '--fov' in sys.argv[:-1] else 'auto'
+FOV = None if _fov in ('auto', '91.5') else float(_fov)
 NENT = 300                               # entrees lues dans la table des entites
 HUD, PLAY = '--hud' in sys.argv, '--play' in sys.argv   # avant --launch, qui les passe au visualiseur
 CAM = None
@@ -818,7 +822,7 @@ ZOOM_NORMAL = 0.88916                      # --fov N, comme avant : le champ a c
 
 
 def fov_now():
-    # le champ du jeu au zoom lu ; --fov N (les lanceurs passent 91.5 : a 0,4 % pres la meme loi, 1 / (1,0956 zoom))
+    # le champ du jeu au zoom lu ; --fov N : ce champ au zoom normal, suivant 1 / zoom (91.5 = auto, voir FOV)
     z = d32(A_ZOOM) / 65536 if A_ZOOM else 0
     if not 0.05 < z < 50: return FOV_SANS_ZOOM if FOV is None else FOV
     if FOV is not None: return math.degrees(2 * math.atan(math.tan(math.radians(FOV / 2)) * ZOOM_NORMAL / z))

@@ -743,6 +743,20 @@ func _read_planet(path: String) -> Dictionary:
 	# the game's light table at 0x41C228 in reverse (its row k = file row 15 - k, from row 15 on file row 0)
 	out["shade_rows"] = r.data(53) if r.has(53) else PackedByteArray()
 	out["ir"] = ir_palettes(r)
+	out["ir_lut"] = null                        # (live: the IR tables as one 256 x 4 texture, rows 59, 60, 61, 62)
+	var irp: Dictionary = out["ir"]
+	if irp.has(59) and irp.has(60) and irp.has(61) and irp.has(62):
+		var irimg := Image.create(256, 4, false, Image.FORMAT_RGB8)
+		for k in 4:
+			var cols: PackedColorArray = irp[59 + k]
+			for i in 256:
+				irimg.set_pixel(i, k, cols[i])
+		out["ir_lut"] = ImageTexture.create_from_image(irimg)
+		var ircols := {}                        # the IR colours themselves (RESPLNT 66), for the old school pass
+		for k in range(59, 63):
+			for c in (irp[k] as PackedColorArray):
+				ircols[c.to_html(false)] = c
+		out["ir_colours"] = ircols.values()
 	# share of the tiles' pixels in colours 1-16: planet 3's ground is drawn with them (a pale teal to dark green
 	# ramp, its shading), so its 3D view uses them too (old school: their palette from 1, not 17)
 	out["base_share"] = float(base_n) / maxf(1.0, count * 4096.0)

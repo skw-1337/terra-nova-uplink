@@ -140,6 +140,8 @@ var ground_mats := []        # ground materials of the map, for the sky they mir
 var water_mats := []         # the water's (water.gdshader): plain in the infrared view
 var sky_clouds: Texture2D
 var sky_haze_lut: ImageTexture = null    # the sky's haze rows (SKY 150) as colours: 256 indices x 16 levels
+var sky_haze_idx: ImageTexture = null    # the same as palette indices (R8)
+var cur_ir := {}                         # the planet's IR tables (TNData.ir_palettes)
 var sky_haze := Color(0.7, 0.76, 0.84)
 var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the horizon)
 var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light direction)
@@ -638,6 +640,7 @@ func _load(index: int) -> void:
 				continue
 			Terrain.build(world, grid, gi[1], gi[2], gi[3], _water_mat(pl, grid, gi[2], gi[1], tint), only)
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
+	cur_ir = pl.get("ir", {})
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
 	haze_k = mis.get("haze_k", 99)
@@ -654,7 +657,9 @@ func _load(index: int) -> void:
 		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
 		for i in 256:
 			pimg.set_pixel(i, 0, pal[i])
-		objects.game_shade = {"shade_idx": pl["shade_idx"], "pal_tex": ImageTexture.create_from_image(pimg)}
+		objects.game_shade = {"shade_idx": pl["shade_idx"], "pal_tex": ImageTexture.create_from_image(pimg),
+				"ir_lut": pl.get("ir_lut")}
+	_ir_colours(pl)
 	RenderingServer.global_shader_parameter_set("tn_model_light", Vector4(sun_to.x, sun_to.y, sun_to.z, 1.0))
 	RenderingServer.global_shader_parameter_set("tn_model_shade", Vector4(map_amb, map_dif, 0.0, 0.0))
 	if live:
@@ -816,6 +821,12 @@ func _sprite_mat_rows(ref: Vector2i, sp: Dictionary, m: Dictionary) -> ShaderMat
 		sm.set_shader_parameter("tex", sp["texture"])
 		sm.set_shader_parameter("tex_rows", arr)
 		sm.set_shader_parameter("per_index", true)
+		var irp: Dictionary = (m["planet_data"] as Dictionary).get("ir", {})
+		if irp.has(60):                                # infrared: the plants through table 60 (0x29BFE1)
+			var ti := objects.sprite_ir(ref, pal_key, 60, irp[60])
+			if ti != null:
+				sm.set_shader_parameter("tex_ir", ti)
+				sm.set_shader_parameter("has_ir", true)
 		mats[k] = sm
 	return mats[k]
 
@@ -1137,6 +1148,9 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	if pl.get("tiles_idx") != null and pl.get("shade_idx") != null:   # (live, old school: _sky_to adds the haze rows)
 		sm.set_shader_parameter("tiles_idx", pl["tiles_idx"])
 		sm.set_shader_parameter("shade_idx", pl["shade_idx"])
+	if pl.get("ir_lut") != null:
+		sm.set_shader_parameter("ir_lut", pl["ir_lut"])
+		sm.set_shader_parameter("has_ir", true)
 	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
 	sm.set_shader_parameter("origin", origin)
@@ -1207,6 +1221,7 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("has_haze_lut", sky_haze_lut != null)
 	if sky_haze_lut != null:
 		sm.set_shader_parameter("haze_lut", sky_haze_lut)
+		sm.set_shader_parameter("haze_lut_idx", sky_haze_idx)
 	if sky_clouds != null:
 		sm.set_shader_parameter("clouds", sky_clouds)
 	sm.set_shader_parameter("haze", Vector3(sky_haze.r, sky_haze.g, sky_haze.b))
@@ -1217,6 +1232,20 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("sun_dir", sun_to)
 	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
+
+
+# The planet's IR colours (RESPLNT 66 through tables 59-62) to the passes over the view (old school, infrared): in IR,
+# what the ground, the plants and the models drew in them is kept, the rest goes through the old luma ramp.
+func _ir_colours(pl: Dictionary) -> void:
+	var cols: Array = pl.get("ir_colours", [])
+	var img := Image.create(64, 1, false, Image.FORMAT_RGB8)
+	for i in mini(cols.size(), 64):
+		img.set_pixel(i, 0, cols[i])
+	var tex := ImageTexture.create_from_image(img)
+	for r in [oldschool_rect, ir_rect]:
+		if r != null:
+			(r.material as ShaderMaterial).set_shader_parameter("ir_pal", tex)
+			(r.material as ShaderMaterial).set_shader_parameter("ir_n", mini(cols.size(), 64))
 
 
 # Old school off (F12, and the map viewer): the modern sky and water (sky_common.gdshaderinc); on: the game's.
@@ -2527,6 +2556,31 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
+	mat.set_shader_parameter("has_ir", false)
+	if live and cur_ir.has(60) and sk.get("cloud_idx") != null:   # infrared: the cloud layer through table 60 (0x2A7654)
+		var c60: PackedColorArray = cur_ir[60]
+		var cidx: PackedByteArray = sk["cloud_idx"]
+		var t151: PackedByteArray = sk.get("cloud_haze", PackedByteArray())
+		var ilayers: Array[Image] = []
+		for k in 8:
+			var rgb := PackedByteArray()
+			rgb.resize(256 * 256 * 3)
+			for p in 256 * 256:
+				var c: Color = c60[t151[k * 256 + cidx[p]] if k > 0 and t151.size() >= 2048 else cidx[p]]
+				rgb[3 * p] = c.r8
+				rgb[3 * p + 1] = c.g8
+				rgb[3 * p + 2] = c.b8
+			var li := Image.create_from_data(256, 256, false, Image.FORMAT_RGB8, rgb)
+			li.generate_mipmaps()
+			ilayers.append(li)
+		var iarr := Texture2DArray.new()
+		iarr.create_from_images(ilayers)
+		var bimg := Image.create(4, 1, false, Image.FORMAT_RGB8)
+		for i in 4:
+			bimg.set_pixel(i, 0, c60[0xA5 - i])
+		mat.set_shader_parameter("levels_ir", iarr)
+		mat.set_shader_parameter("bands_ir", ImageTexture.create_from_image(bimg))
+		mat.set_shader_parameter("has_ir", true)
 	sky_haze_lut = null
 	var t150: PackedByteArray = sk.get("haze_rows", PackedByteArray())
 	if t150.size() >= 4096 and pal.size() >= 256:      # the colour of each palette index at each haze level
@@ -2538,6 +2592,8 @@ func _set_sky(path: String, light: Vector2) -> void:
 			rgb[3 * i + 1] = c.g8
 			rgb[3 * i + 2] = c.b8
 		sky_haze_lut = ImageTexture.create_from_image(Image.create_from_data(256, 16, false, Image.FORMAT_RGB8, rgb))
+		sky_haze_idx = ImageTexture.create_from_image(Image.create_from_data(256, 16, false, Image.FORMAT_R8,
+				t150.slice(0, 4096)))
 	for sm in ground_mats + [mats["water"]]:
 		_sky_to(sm)
 	_apply_look()
@@ -3780,6 +3836,7 @@ func _live_update() -> void:
 				wm.set_shader_parameter("plain", ir_on)
 			if oldschool_rect != null:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
+			RenderingServer.global_shader_parameter_set("tn_ir", 1.0 if ir_on else 0.0)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
 			_sub_views(q)
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "FX29" and q.size() == 6 + 5 * q.decode_u16(4):

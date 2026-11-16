@@ -16,6 +16,9 @@ uniform sampler2D idx_tex : filter_nearest, repeat_enable;   // the texture's pa
 uniform bool textured = false;                                // else the index is the vertex colour's red x 255
 uniform sampler2D shade_idx : filter_nearest, repeat_disable;  // RESPLNT 53: 256 x 16 palette indices
 uniform sampler2D pal_tex : filter_nearest, repeat_disable;    // the planet's palette, 256 x 1
+uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of IR tables 59-62
+uniform bool has_ir = false;
+uniform int ir_table = 2;                                      // its row: 61 (the models), 62 the suits / hot ones
 
 varying vec3 wn;
 
@@ -32,6 +35,9 @@ void fragment() {
 	} else {
 		idx = int(COLOR.r * 255.0 + 0.5);
 	}
+	if (has_ir && tn_ir > 0.5) {         // infrared: unlit (0x29E4F4), through table 61
+		ALBEDO = tn_game_colour(texelFetch(ir_lut, ivec2(idx, ir_table), 0).rgb);
+	} else {
 	vec3 n = normalize(wn);
 	vec3 l = normalize(tn_model_light.xyz);
 	vec3 v = normalize(CAMERA_POSITION_WORLD - NODE_POSITION_WORLD);
@@ -47,4 +53,5 @@ void fragment() {
 	int frow = max(0, 15 - row);
 	int j = int(texelFetch(shade_idx, ivec2(idx, frow), 0).r * 255.0 + 0.5);
 	ALBEDO = tn_game_colour(texelFetch(pal_tex, ivec2(j, 0), 0).rgb);
+	}
 }

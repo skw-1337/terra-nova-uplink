@@ -11,6 +11,7 @@ uniform float sway = 0.06;                      // flutter amplitude (the game's
 uniform float size = 0.03;                      // flake size (units)
 uniform float stretch = 1.0;                    // rain: streaks along the fall
 uniform vec4 color : source_color = vec4(0.92, 0.95, 1.0, 0.9);
+global uniform float tn_ir;                     // the game's infrared view: its flakes do not show in it
 
 varying vec2 uv;
 varying float fade;
@@ -42,5 +43,5 @@ void vertex() {
 void fragment() {
 	float r = stretch > 1.5 ? abs(uv.x) : length(uv);
 	ALBEDO = color.rgb;
-	ALPHA = color.a * fade * (1.0 - smoothstep(0.35, 1.0, r));
+	ALPHA = color.a * fade * (1.0 - smoothstep(0.35, 1.0, r)) * (tn_ir > 0.5 ? 0.0 : 1.0);
 }

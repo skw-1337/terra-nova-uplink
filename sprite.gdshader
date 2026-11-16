@@ -15,6 +15,8 @@ uniform bool use_vcol = false;          // the instance colour (MultiMesh) as th
 uniform bool per_index = false;
 uniform sampler2DArray tex_rows : source_color, filter_linear_mipmap, repeat_enable;
 uniform float row = 0.0;
+uniform sampler2D tex_ir : source_color, filter_linear_mipmap, repeat_enable;   // the sprite through its IR table
+uniform bool has_ir = false;
 
 void vertex() {
 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
@@ -32,13 +34,17 @@ void vertex() {
 
 void fragment() {
 	vec4 c = texture(tex, UV) * albedo;
-	if (per_index) {
+	bool ir = per_index && has_ir && tn_ir > 0.5;
+	if (ir) {                            // infrared: unlit, through its table (no haze)
+		c = texture(tex_ir, UV);
+		c.rgb = tn_game_colour(tn_haze_srgb(c.rgb));
+	} else if (per_index) {
 		c = texture(tex_rows, vec3(UV, use_vcol ? floor(COLOR.r * 15.0 + 0.5) : row));
 		c.rgb = tn_game_colour(tn_haze_srgb(c.rgb));
 	} else if (use_vcol) {
 		c *= COLOR;
 	}
-	ALBEDO = tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	ALBEDO = ir ? c.rgb : tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 	ALPHA = c.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.5;
 }

@@ -5,6 +5,7 @@
 shader_type sky;
 
 #include "res://sky_common.gdshaderinc"
+#include "res://tn_haze.gdshaderinc"
 
 uniform sampler2D clouds : source_color, filter_nearest_mipmap, repeat_enable;
 uniform sampler2D clouds_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // modern look
@@ -36,6 +37,10 @@ float hash(vec3 p) {
 uniform sampler2DArray levels : source_color, filter_nearest_mipmap, repeat_enable;
 uniform sampler2DArray levels_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // modern look
 uniform sampler2D bands : source_color, filter_nearest;   // 4 x 1: the far band's colours, as the clouds' texels
+// infrared (live, tn_ir): the same through the planet's IR table 60, in the game's colours
+uniform sampler2DArray levels_ir : source_color, filter_nearest_mipmap, repeat_enable;
+uniform sampler2D bands_ir : source_color, filter_nearest;
+uniform bool has_ir = false;
 uniform vec3 row_right = vec3(1.0, 0.0, 0.0);
 uniform vec3 row_up = vec3(0.0, 1.0, 0.0);
 uniform vec3 row_fwd = vec3(0.0, 0.0, -1.0);
@@ -67,6 +72,21 @@ vec3 planet_sky(vec3 d, vec3 eye, bool per_row) {
 	return modern ? texture(levels_soft, vec3(t, level)).rgb : texture(levels, vec3(t, level)).rgb;
 }
 
+vec3 ir_sky(vec3 d, vec3 eye, bool per_row) {
+	if (d.y <= 0.0) {
+		return texelFetch(bands_ir, ivec2(3, 0), 0).rgb;
+	}
+	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
+	float r = ceiling_r(d, per_row);
+	if (r >= 1024.0) {
+		return texelFetch(bands_ir, ivec2(r >= 6400.0 ? 3 : (r >= 3200.0 ? 2 : (r >= 1200.0 ? 1 : 0)), 0), 0).rgb;
+	}
+	float level = step(192.0, r) + step(256.0, r) + step(320.0, r) + step(416.0, r);
+	level += step(512.0, r) + step(640.0, r) + step(800.0, r);
+	vec2 t = tn_ripple(rel + vec2(eye.z, eye.x) * cloud_par + cloud_off) / 256.0;
+	return texture(levels_ir, vec3(t, level)).rgb;
+}
+
 void sky() {
 	vec3 d = EYEDIR;
 	vec3 col = has_clouds ? planet_sky(d, POSITION, !AT_CUBEMAP_PASS) : haze;
@@ -86,4 +106,7 @@ void sky() {
 	}
 	col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, desat);
 	COLOR = col * gain;
+	if (has_ir && has_clouds && tn_ir > 0.5) {
+		COLOR = tn_game_colour(tn_haze_srgb(ir_sky(d, POSITION, !AT_CUBEMAP_PASS)));
+	}
 }

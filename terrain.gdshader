@@ -26,7 +26,10 @@ uniform sampler2DArray tiles_lit_soft : source_color, filter_linear_mipmap_aniso
 uniform sampler2DArray tiles_idx : filter_nearest, repeat_disable;
 uniform sampler2D shade_idx : filter_nearest, repeat_disable;
 uniform sampler2D haze_lut : filter_nearest, repeat_disable;
+uniform sampler2D haze_lut_idx : filter_nearest, repeat_disable;  // the same rows as palette indices (R8)
 uniform bool has_haze_lut = false;
+uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of tables 59, 60, 61, 62
+uniform bool has_ir = false;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
 
 
@@ -241,7 +244,8 @@ void fragment() {
 	int frow = 15 - clamp(int(floor(vlight)), 0, 15);       // the row's file row (0 = full light)
 	float row_light = per_index ? 1.0 : light_rows[frow];
 	float loff = float(frow) * tile_count;
-	if (game_colours && per_index && has_haze_lut && !modern) {
+	bool ir = tn_ir > 0.5 && has_ir;
+	if (game_colours && per_index && has_haze_lut && (!modern || ir)) {
 		vec2 cell = clamp(floor(g), vec2(0.0), vec2(grid_n - 2.0));
 		vec2 f = clamp(g - cell, 0.0, 0.99999);
 		vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
@@ -268,6 +272,10 @@ void fragment() {
 			lv = clamp(int(floor(16.0 * (1.0 - exp(-max(max(dd.x, dd.y) - 20.0, 0.0) / tn_haze_range.x)))), 0, 15);
 		}
 		vec3 c = tn_game_colour(texelFetch(haze_lut, ivec2(i1, lv), 0).rgb);
+		if (ir) {                         // infrared: table 59 of the hazed texel, no light row (0x2B5643, remap loop)
+			int ih = int(texelFetch(haze_lut_idx, ivec2(i0, lv), 0).r * 255.0 + 0.5);
+			c = tn_game_colour(texelFetch(ir_lut, ivec2(ih, 0), 0).rgb);
+		}
 		ROUGHNESS = 1.0;
 		EMISSION = c;
 		ALBEDO = c * shadow_dark;         // what an object's shadow takes away (light())

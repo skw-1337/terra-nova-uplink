@@ -17,6 +17,9 @@ global uniform vec4 tn_haze_range;
 // tn_view_bcs: the view's brightness, contrast and saturation (Godot applies the brightness in linear light, then the
 // contrast and the saturation in sRGB), w 1 when they are on (live)
 global uniform vec4 tn_view_bcs;
+// tn_ir: 1 while the game's infrared view is on (live): the ground, the plants and the models drawn through the
+// planet's IR remap tables (RESPLNT 59-62, colours of RESPLNT 66), unlit, as the game draws them in it
+global uniform float tn_ir;
 
 vec3 tn_haze_srgb(vec3 c) {
 	c = max(c, vec3(0.0));

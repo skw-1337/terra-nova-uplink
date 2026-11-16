@@ -415,6 +415,8 @@ func load_sky(path: String, pal: PackedColorArray) -> Dictionary:
 		var arr := Texture2DArray.new()
 		arr.create_from_images(layers)
 		out["cloud_levels"] = arr
+		out["cloud_idx"] = idx                    # (live, infrared: the same through the planet's IR table 60)
+		out["cloud_haze"] = t151
 		# ... and beyond 1024 texels draws plain colours: palette 0xA2 + 3, + 2, + 1, then 0xA2 under its last rows
 		# (raining: 0x20 for 0xA2, 0x2A7085)
 		out["band"] = [pal[0xA5], pal[0xA4], pal[0xA3], pal[0xA2]]
@@ -640,6 +642,22 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 	return tex
 
 
+# A sprite through one of the IR remap tables (256 colours: TNData.ir_palettes), or null.
+func sprite_ir(ref: Vector2i, pal_key: String, table: int, cols: PackedColorArray) -> Texture2D:
+	var key := "si%d/%d/%s/%d" % [ref.x, ref.y, pal_key, table]
+	if tex_cache.has(key):
+		return tex_cache[key]
+	var tex: Texture2D = null
+	var fr := LGRes.frames(res.data(ref.x))
+	if is_sprite(ref) and ref.y < fr.size() and cols.size() == 256:
+		var img := _bitmap(fr[ref.y], cols)
+		if img != null:
+			img.generate_mipmaps()
+			tex = ImageTexture.create_from_image(img)
+	tex_cache[key] = tex
+	return tex
+
+
 # A model texture's palette indices as an R8 texture (model.gdshader), or null.
 func _texture_idx(global_index: int) -> Texture2D:
 	var key := "i%d" % global_index
@@ -800,6 +818,9 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 			sm.shader = MODEL_SHADER
 			sm.set_shader_parameter("shade_idx", game_shade["shade_idx"])
 			sm.set_shader_parameter("pal_tex", game_shade["pal_tex"])
+			if game_shade.get("ir_lut") != null:
+				sm.set_shader_parameter("ir_lut", game_shade["ir_lut"])
+				sm.set_shader_parameter("has_ir", true)
 			var it: Texture2D = _texture_idx(slots.get(s, 0)) if s >= 0 else null
 			sm.set_shader_parameter("textured", it != null)
 			if it != null:

@@ -46,3 +46,7 @@ tn_model_shade={
 "type": "vec4",
 "value": Vector4(0.3, 0.7, 0, 0)
 }
+tn_ir={
+"type": "float",
+"value": 0.0
+}

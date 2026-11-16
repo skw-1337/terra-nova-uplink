@@ -23,6 +23,26 @@ vec3 ir_ramp(float l) {
 	return C[5];
 }
 
+// the planet's IR colours (viewer.gd _ir_colours): what the ground, the plants and the models drew through the game's
+// IR tables is snapped to the nearest of them (kept); anything else (sky, suits, effects) takes the luma ramp
+uniform sampler2D ir_pal : filter_nearest;
+uniform int ir_n = 0;
+
+vec3 ir_keep(vec3 c, vec3 other) {
+	float best = 1e9;
+	vec3 o = other;
+	for (int i = 0; i < ir_n; i++) {
+		vec3 p = texelFetch(ir_pal, ivec2(i, 0), 0).rgb;
+		vec3 e = p - c;
+		float d = dot(e, e);
+		if (d < best) {
+			best = d;
+			o = p;
+		}
+	}
+	return best < 0.004 ? o : other;
+}
+
 const float BAYER[16] = {0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0};
 
 void fragment() {
@@ -56,7 +76,7 @@ void fragment() {
 		}
 	}
 	if (ir) {
-		out_col = ir_ramp(clamp(dot(out_col, vec3(0.299, 0.587, 0.114)) * 1.15, 0.0, 1.0));
+		out_col = ir_keep(c, ir_ramp(clamp(dot(out_col, vec3(0.299, 0.587, 0.114)) * 1.15, 0.0, 1.0)));
 	}
 	COLOR = vec4(out_col, 1.0);
 }

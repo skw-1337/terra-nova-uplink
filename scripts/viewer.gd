@@ -685,6 +685,8 @@ func _load(index: int) -> void:
 	anim_seen.clear()
 	anim_mats.clear()                         # (their pictures are in the mission's palette)
 	smoke_pending.clear()
+	puffs.clear()                             # (their nodes went with the old world too: kept, every later frame
+	puff_units.clear()                        # threw errors on freed nodes until Uplink crashed)
 	for e in mis["entities"]:
 		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"],
 				e.get("team", 0), e.get("pitch", 0.0), e.get("state", 0)))
@@ -4077,6 +4079,14 @@ func _waypoint_update(delta: float) -> void:
 # entity's slot is reused (shots, sparks), so the run is the best match, not a perfect one.
 # After them: the soldiers' joints, the articulated parts, then the entity the view is seen from: the player, or his
 # drone while he looks through it (its view swapped with the HUD's: "DRONE VIEW").
+# an effect's node can be freed by another path (an animation that ended, a node replaced by another kind) while
+# its dictionary still holds it: dropped here before anything touches it
+func _drop_freed(d: Dictionary) -> void:
+	for idx in d.keys():
+		if not is_instance_valid(d[idx]):
+			d.erase(idx)
+
+
 func _live_units(pk: PackedByteArray) -> void:
 	var n := pk.decode_s32(24)
 	var player := pk.decode_s32(28)
@@ -4177,12 +4187,10 @@ func _live_units(pk: PackedByteArray) -> void:
 			_live_place(node, e, m)
 			if e != null and e[2] != 0:
 				node.set_meta("alive", true)
-	for idx in live_fx:
-		live_fx[idx].visible = false
-	for idx in live_piles:
-		live_piles[idx].visible = false
-	for idx in live_extra:
-		live_extra[idx].visible = false
+	for d in [live_fx, live_piles, live_extra]:
+		_drop_freed(d)
+		for idx in d:
+			d[idx].visible = false
 	puff_units.clear()
 	if ents.has(player):                             # the player's own jetpack only: around the other soldiers the
 		var u = ents[player]                         # weapons' dust settles at their feet too (thousands of 6/29 in a
@@ -5109,8 +5117,11 @@ func _dust_update() -> void:
 	var tick := int(now * DUST_HZ / 1000.0)
 	var cb := camera.global_transform.basis
 	for idx in live_fx:
-		var mi: MeshInstance3D = live_fx[idx]
-		if mi == null or not is_instance_valid(mi) or not mi.visible or not mi.has_meta("dust_pos"):
+		var any = live_fx[idx]
+		if not is_instance_valid(any):
+			continue
+		var mi: MeshInstance3D = any
+		if mi == null or not mi.visible or not mi.has_meta("dust_pos"):
 			continue
 		var kind: int = mi.get_meta("kind", -1)
 		if not (kind == 3 or kind == 5 or kind == 11) or not mi.mesh is ImmediateMesh:
@@ -5591,7 +5602,9 @@ func _live_anim(idx: int, typ: int, pos: Vector3) -> void:
 	var now := Time.get_ticks_msec()
 	var seen = anim_seen.get(idx)
 	var fresh: bool = seen == null or seen[1] != typ or now - int(seen[0]) > FX_GAP_MS or (seen[2] as Vector3).distance_to(pos) > 0.5
-	var node: MeshInstance3D = null if fresh or seen == null else seen[3]
+	var node: MeshInstance3D = null
+	if not fresh and seen != null and is_instance_valid(seen[3]):   # (a looping node ended by _anims_update is freed)
+		node = seen[3]
 	if fresh:
 		node = _spawn_anim(pos, typ, idx)
 		if typ == 23 and not smoke_pending.any(func(s): return (s[0] as Vector3).distance_to(pos) < 0.5):
@@ -5981,6 +5994,8 @@ func _puffs_update() -> void:
 	var keep := []
 	for p in puffs:
 		var age := (now - int(p[1])) / 1000.0
+		if not is_instance_valid(p[0]):
+			continue
 		if age >= PUFF_LIFE:
 			p[0].queue_free()
 			continue

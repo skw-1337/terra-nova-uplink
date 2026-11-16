@@ -631,6 +631,7 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 	d.run(code, Transform3D.IDENTITY, 0)
 	if d.polys.is_empty():
 		return {}
+	d.separate()
 	var mesh := ArrayMesh.new()
 	var groups := {}                             # slot (or -1 for flat colors) -> [poly]
 	for p in d.polys:
@@ -711,6 +712,9 @@ class Decoder:
 	var lines := []         # [a, b, color]
 	var color := 0
 	var mode := 0           # shading mode (op 0x31): 1 = one shade per polygon from its stored normal, 2 = per point
+	var part := 0           # the rigid part being walked (a new one under each 0x10-0x12 / 0x28 / 0x29)
+	var parts := 0
+	var path := []          # the BSP nodes (op 6) above: [pc, 0 / 1 for its first / second branch]
 	var vn := {}            # point index -> normal given by op 0x34 (smooth shading, mode 2)
 
 	func v3(o: int) -> Vector3:
@@ -751,7 +755,170 @@ class Decoder:
 			ns.append(vn[i] if mode == 2 and vn.has(i) else face)
 		if rev:
 			ns.reverse()
-		polys.append([v, uvs, slot, col, ns, mode])
+		polys.append([v, uvs, slot, col, ns, mode, polys.size(), part, path])
+
+	# The game paints a model's polygons in its program's order, no depth (op 0x33 draws at once, 0x2F52E8): a decal
+	# drawn after the plate under it wins, even in its plane. Here a depth buffer decides: two polygons of the same
+	# part in (nearly) the same plane and overlapping fought (a stone head's face: exactly coplanar; the harvester's
+	# plates, 0.0007 apart, from afar). The game's winner is pushed out along its normal to MIN_SEP in front: the later
+	# one, or under a BSP node that orders them by the view, the one in front (as the game shows it from most views).
+	const MIN_SEP := 0.005
+	const MAX_SHIFT := 0.01
+	const NEAR_PLANE := 0.003
+	const MIN_OVERLAP := 0.05
+
+	var sep_pairs := []     # [winner, loser] found by separate()
+	var sep_nrm := []
+
+	func separate(verify := false) -> Dictionary:
+		if verify:                                       # (tests: the pairs found, after the shifts)
+			var least := INF
+			for pr in sep_pairs:
+				least = minf(least, _sep(pr[0], pr[1], sep_nrm))
+			return {"pairs": sep_pairs.size(), "worst": least}
+		var n := polys.size()
+		var nrm := []
+		for p in polys:
+			var v: PackedVector3Array = p[0]
+			var nw := Vector3.ZERO
+			for k in v.size():
+				var a := v[k]
+				var b := v[(k + 1) % v.size()]
+				nw += Vector3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y))
+			nrm.append((-nw).normalized())
+		var pairs := []                                  # [winner, loser]
+		for i in n:
+			var ni: Vector3 = nrm[i]
+			if ni == Vector3.ZERO:
+				continue
+			for j in range(i + 1, n):
+				var nj: Vector3 = nrm[j]
+				if polys[i][7] != polys[j][7] or ni.dot(nj) <= 0.999:
+					continue
+				if not _near_plane(polys[j][0], polys[i][0][0], ni) or not _near_plane(polys[i][0], polys[j][0][0], nj):
+					continue
+				var ov := _overlap(polys[i][0], polys[j][0], ni)
+				if ov < MIN_OVERLAP:
+					continue
+				var w := j                                 # drawn later
+				if _split(polys[i][8], polys[j][8]):        # their order follows the view: the one in front
+					w = i if _mean(polys[i][0], ni) > _mean(polys[j][0], ni) else j
+				pairs.append([w, i + j - w])
+		pairs.sort_custom(func(a, b): return polys[a[0]][6] < polys[b[0]][6])
+		sep_pairs = pairs
+		sep_nrm = nrm
+		var moved := {}                                  # polygon -> its total shift
+		for pass_n in 4:                                 # (a chain: a winner pushed past the one above it, again)
+			var changed := false
+			for pr in pairs:
+				var s := _sep(pr[0], pr[1], nrm)
+				if s >= MIN_SEP - 1e-6:
+					continue
+				var shift := minf(MIN_SEP - s, MAX_SHIFT - moved.get(pr[0], 0.0))
+				if shift <= 0.0:
+					continue
+				var v: PackedVector3Array = polys[pr[0]][0]
+				for k in v.size():
+					v[k] += nrm[pr[0]] * shift
+				polys[pr[0]][0] = v
+				moved[pr[0]] = moved.get(pr[0], 0.0) + shift
+				changed = true
+			if not changed:
+				break
+		var max_shift := 0.0
+		for k in moved:
+			max_shift = maxf(max_shift, moved[k])
+		return {"pairs": pairs.size(), "moved": moved.size(), "max_shift": max_shift}
+
+	static func _near_plane(v: PackedVector3Array, at: Vector3, n: Vector3) -> bool:
+		for q in v:
+			if absf(n.dot(q - at)) > NEAR_PLANE:
+				return false
+		return true
+
+	static func _mean(v: PackedVector3Array, n: Vector3) -> float:
+		var s := 0.0
+		for q in v:
+			s += n.dot(q)
+		return s / v.size()
+
+	# two BSP paths that part at a node (one under each branch)
+	static func _split(a: Array, b: Array) -> bool:
+		for x in a:
+			for y in b:
+				if x[0] == y[0] and x[1] != y[1]:
+					return true
+		return false
+
+	# how far the winner's plane stands in front of the loser's, the least over both polygons' points
+	func _sep(w: int, l: int, nrm: Array) -> float:
+		var nw: Vector3 = nrm[w]
+		var nl: Vector3 = nrm[l]
+		var vw: PackedVector3Array = polys[w][0]
+		var vl: PackedVector3Array = polys[l][0]
+		var s := INF
+		for q in vw:
+			s = minf(s, nl.dot(q - vl[0]))
+		for q in vl:
+			s = minf(s, nw.dot(vw[0] - q))
+		return s
+
+	# share of the smaller polygon covered by the other, both seen along n (convex clipping)
+	static func _overlap(a: PackedVector3Array, b: PackedVector3Array, n: Vector3) -> float:
+		var ax := 0 if absf(n.x) >= absf(n.y) and absf(n.x) >= absf(n.z) else (1 if absf(n.y) >= absf(n.z) else 2)
+		var pa := _flat(a, ax)
+		var pb := _flat(b, ax)
+		var area_a := absf(_area(pa))
+		var area_b := absf(_area(pb))
+		if area_a < 1e-10 or area_b < 1e-10:
+			return 0.0
+		var clip := _clip(pa, pb)
+		return absf(_area(clip)) / minf(area_a, area_b)
+
+	static func _flat(v: PackedVector3Array, drop: int) -> PackedVector2Array:
+		var out := PackedVector2Array()
+		for q in v:
+			out.append(Vector2(q.y, q.z) if drop == 0 else (Vector2(q.x, q.z) if drop == 1 else Vector2(q.x, q.y)))
+		if _area(out) < 0.0:
+			out.reverse()
+		return out
+
+	static func _area(p: PackedVector2Array) -> float:
+		var s := 0.0
+		for k in p.size():
+			s += p[k].cross(p[(k + 1) % p.size()])
+		return s * 0.5
+
+	# subject clipped by a convex counter-clockwise polygon (Sutherland-Hodgman)
+	static func _clip(subject: PackedVector2Array, by: PackedVector2Array) -> PackedVector2Array:
+		var out := subject
+		for k in by.size():
+			if out.is_empty():
+				break
+			var e0 := by[k]
+			var e1 := by[(k + 1) % by.size()]
+			var inp := out
+			out = PackedVector2Array()
+			for m in inp.size():
+				var c := inp[m]
+				var p := inp[(m + inp.size() - 1) % inp.size()]
+				var c_in := (e1 - e0).cross(c - e0) >= 0.0
+				var p_in := (e1 - e0).cross(p - e0) >= 0.0
+				if c_in:
+					if not p_in:
+						out.append(_cut(p, c, e0, e1))
+					out.append(c)
+				elif p_in:
+					out.append(_cut(p, c, e0, e1))
+		return out
+
+	static func _cut(p: Vector2, c: Vector2, e0: Vector2, e1: Vector2) -> Vector2:
+		var d := c - p
+		var e := e1 - e0
+		var den := d.cross(e)
+		if absf(den) < 1e-12:
+			return c
+		return p + d * ((e0 - p).cross(e) / den)
 
 	func run(pc: int, xf: Transform3D, depth: int) -> void:
 		if depth > 24:
@@ -786,8 +953,12 @@ class Decoder:
 				0x06:                              # BSP node: both sides, then continue
 					var a := f.decode_s32(pc + 0x1a)
 					var b := f.decode_s32(pc + 0x1e)
+					var above := path
+					path = above + [[pc, 0]]
 					run(pc + a, xf, depth + 1)
+					path = above + [[pc, 1]]
 					run(pc + b, xf, depth + 1)
+					path = above
 					pc += 0x22
 				0x07, 0x2e, 0x2f:
 					pc += 2
@@ -821,7 +992,11 @@ class Decoder:
 						ang = params.decode_u16(po) / 65536.0 * TAU
 					var axis: Vector3 = [Vector3.RIGHT, Vector3.BACK, Vector3.UP][op - 0x10]   # model x, z, y (y down)
 					var t2 := Transform3D(xf.basis * Basis(axis, ang * ART_SIGN), xf * v3(pc + 6))
+					var was := part
+					parts += 1
+					part = parts
 					run(target, t2, depth + 1)
+					part = was
 					pc += 0x14
 				0x14:                              # subroutine
 					run(pc + f.decode_s16(pc + 2), xf, depth + 1)
@@ -883,7 +1058,11 @@ class Decoder:
 							bs = bs * Basis(Vector3.RIGHT, params.decode_u16(pn) / 65536.0 * TAU * ART_SIGN)
 						else:
 							at -= (xf.basis * bs).x * (params.decode_s32(pn) / 65536.0)
+					var was2 := part
+					parts += 1
+					part = parts
 					run(pc + 0x34, Transform3D(xf.basis * bs, at), depth + 1)
+					part = was2
 					return
 				0x2a, 0x2c:
 					pc += 0x10

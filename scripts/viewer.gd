@@ -147,7 +147,7 @@ var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the ho
 var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light direction)
 # --hud: the game's own screen (cockpit, HUD) over the view, its 3D window transparent (port 47823: 'PAL' palette +
 # 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
-# off-centre like the game's, whose view looks 2 rows under the middle of its 3D window (_view_row)
+# off-centre like the game's, whose view looks at the middle of its 3D window (_view_row)
 const HUD_PORT := 47823
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
@@ -182,7 +182,6 @@ const PLANET_LOOK := {
 	"SKY0S.RES": {"tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
 		"sun": Color(0.82, 0.86, 0.92), "light": 0.5, "ambient": 0.36, "sat": 1.15, "contrast": 0.98},
 }
-const VIEW_DROP := 2.0           # rows of the game's screen from the middle of its 3D window to where the view looks
 var hud := false
 var hud_udp: PacketPeerUDP
 var hud_img: Image
@@ -3001,12 +3000,11 @@ func _hud_update() -> void:
 			hud_version += 1
 
 
-# The row of the game's 320 x 400 screen the view looks at: the middle of its 3D window + VIEW_DROP. The cockpit view
-# (window 11, 42, 298 x 199): row 143.5, the 51 % of the window once measured on lock boxes. The full view (G: 0, 16,
-# 320 x 383): 209.5; the same 51 % gave 211.3 and Uplink's picture came out 2 rows lower than the game's own there
-# (measured on the skyline of both, at three zooms). The game itself zooms about the window's middle.
+# The row of the game's 320 x 400 screen the view looks at: the middle of its 3D window. The game projects about
+# half its canvas ([0x41ebd8] = height >> 1: 99 of the cockpit's 199 rows, 191 of the full view's 383); 2 rows
+# lower (the old 51 %) put Uplink's whole picture 2 rows under the game's at every pitch, in both views.
 func _view_row() -> float:
-	return hud_win.position.y + hud_win.size.y * 0.5 + VIEW_DROP
+	return hud_win.position.y + hud_win.size.y * 0.5
 
 
 # The pixel of the game's screen its cursor is kept on in the look mode (the bridge's centre()): the middle of the 3D

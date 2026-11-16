@@ -312,7 +312,7 @@ func _update() -> void:
 
 func _cockpit(pk: PackedByteArray) -> void:
 	# the game's 3D window: the viewer frames its view on it like the host's (off-centre frustum), the crosshair
-	# where that view looks, 2 rows under the window's middle (the viewer's _view_row)
+	# where that view looks, the window's middle (the viewer's _view_row)
 	win = Rect2(pk.decode_s16(3), pk.decode_s16(5), pk.decode_s16(7), pk.decode_s16(9))
 	var vp := get_parent()
 	if vp and "hud_win" in vp:

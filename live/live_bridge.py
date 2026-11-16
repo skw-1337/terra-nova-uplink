@@ -903,9 +903,8 @@ if PLAY:
 
 # Where the game's cursor is kept in the look mode: the crosshair, where the shots go. The middle of the game's 3D
 # window, 3 rows down: 160, 144 in the cockpit view (window 11, 42, 298 x 199), as always; 160, 210 in the full view
-# (G: window 0, 16, 320 x 383), where it stayed at 160, 144, far above the middle of the picture. (Measured: the game
-# zooms about the middle of its window, and Uplink's picture lines up with the game's when its camera looks 2 rows
-# under that middle: the cursor's pixel is the one under it.) Without TN+'s HD picture (no window to read): 36 % down
+# (G: window 0, 16, 320 x 383), where it stayed at 160, 144, far above the middle of the picture. (The game projects
+# about the middle of its window, row height >> 1.) Without TN+'s HD picture (no window to read): 36 % down
 # the screen, the cockpit view's.
 def centre():
     w, h = struct.unpack('<hh', g.read(m_frame, 4))

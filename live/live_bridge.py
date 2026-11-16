@@ -150,12 +150,27 @@ arts_vus = set()                              # objets deja envoyes avec un angl
 joints_prev = {}                          # entite -> (articulations brutes, x, y) du tour precedent
 print('exe %s' % ('francais' if FR else 'anglais'))
 
+# Mission file being played. FFLoadMission (EN 0x244BDC) builds its name in a buffer (sprintf "miss%d.res", or for a
+# Random Scenario Builder mission the RESCUSTM 0x974 list item: missaim.res, missice.res...), then copies it to a
+# second buffer: read that copy. Not a name there (main menu, unknown exe): the first such name in the game's data.
+MIS_COPIE, MIS_SPRINTF = (0x37069E, 0x428BE0) if FR else (0x3705EE, 0x428B30)
+MIS_RE = re.compile(rb'(?<![a-z0-9_])miss[a-z0-9]+\.res', re.I)
+
+
+def fichier_mission():
+    nom = g.read(MIS_COPIE, 16).split(b'\0', 1)[0]
+    if MIS_RE.fullmatch(nom):
+        return nom.decode('ascii', 'ignore').upper()
+    noms = {0x340000 + m.start(): m.group() for m in MIS_RE.finditer(g.read(0x340000, 0x140000))}
+    if not noms:
+        return None
+    return noms.get(MIS_SPRINTF, noms[min(noms)]).decode('ascii', 'ignore').upper()
+
+
 viewer = None
 if '--launch' in sys.argv:
-    import collections, os, subprocess
-    data = g.read(0x340000, 0x140000)
-    names = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', data, re.I))
-    mission = names.most_common(1)[0][0] if names else None   # lance depuis les menus : la mission suit ('MIS')
+    import os, subprocess
+    mission = fichier_mission()                  # lance depuis les menus : None, la mission suit ('MIS')
     res = sys.argv[sys.argv.index('--res') + 1] if '--res' in sys.argv else '1600x900'
     godot = os.environ.get('GODOT', r'C:\Tools\Godot\Godot_v4.7.2-stable_win64.exe')
     vpath = os.environ.get('TN_VIEWER', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # le depot
@@ -1151,9 +1166,9 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
             # envoi au retour dans la 3D pouvait se perdre, ou lire le nom de la mission d'avant
             if now - getattr(menu_step, 'mis_t', 0.0) > 1.0:
                 menu_step.mis_t = now
-                noms = collections.Counter(m.group().decode().upper() for m in re.finditer(rb'miss\d+\.res', g.read(0x340000, 0x140000), re.I))
-                if noms:
-                    tx.sendto(b'MIS' + struct.pack('<I', n) + noms.most_common(1)[0][0].encode(), ('127.0.0.1', 47823))
+                nom = fichier_mission()
+                if nom:
+                    tx.sendto(b'MIS' + struct.pack('<I', n) + nom.encode(), ('127.0.0.1', 47823))
             time.sleep(0.05); return last_c, last_t, mode, n, img_n, None, sent_t, mod_t, fw, fh
         im = grab()
         if im is None:

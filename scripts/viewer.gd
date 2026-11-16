@@ -161,8 +161,9 @@ const LIVE_SHADOW := 70.0       # live mode: the objects' shadows up to there (t
 const LIVE_SATURATION := 1.4    # the 3D's colours (the sky and the water take it back: their "desat")
 const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
 # live mode: each planet's ambiance over that look (its RESPLNTn file; a storm sky, SKY0S, changes its planet's):
-# the fog's colour (the sky's haze mixed with a tint), the sun's colour and light, the
-# sky's share of the ambient light, saturation, contrast, brightness; sparkle: snow crystals catching the light
+# the fog's colour (the sky's haze mixed with a tint), the sun's colour (the ground's: the models take a white sun) and
+# light, the sky's share of the ambient light, saturation, contrast, brightness; sparkle: snow crystals catching the
+# light
 const PLANET_LOOK := {
 	"RESPLNT0.RES": {"tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.0,        # temperate (its haze: the sky's own)
 		"sun": Color(1.0, 0.94, 0.82), "light": 0.82, "ambient": 0.3, "sat": 1.45, "contrast": 1.03},
@@ -798,6 +799,7 @@ func _sprite_lit(ref: Vector2i, sp: Dictionary, c: Color) -> ShaderMaterial:
 # look's base sun (not the map's own diffuse light: the levels hold it)
 const GROUND_SUN_REF := 0.845
 var ground_light := Color(1, 1, 1)
+var planet_sun := Color(1, 1, 1)         # the planet's sun colour (PLANET_LOOK), for the ground only
 const VIEW_LIGHT := 1.0                  # the map viewer's sun and ambient
 const VIEW_AMBIENT := 0.35
 const DEFAULT_DIF := 46000.0 / 65536.0   # the usual pair of res 82 (diffuse, ambient once clamped)
@@ -846,7 +848,7 @@ func _sync_sun_half() -> void:
 
 func _ground_look(base_light: float, base_ambient: float) -> void:
 	var amb := base_ambient
-	var c := sun.light_color * base_light * GROUND_SUN_REF
+	var c := planet_sun * base_light * GROUND_SUN_REF
 	ground_light = Color(c.r + sky_haze.r * amb, c.g + sky_haze.g * amb, c.b + sky_haze.b * amb)
 	for sm in ground_mats:
 		sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
@@ -1166,7 +1168,12 @@ func planet_look(planet: String, sky_file: String) -> void:
 		base = PLANET_LOOK["RESPLNT0.RES"]
 	_haze_fog(haze_k)
 	env.fog_light_color = env.fog_light_color.lerp(a.get("tint", Color.WHITE), a.get("tint_mix", 0.0))
-	sun.light_color = a.get("sun", Color.WHITE)
+	# the sun lights the models (the ground takes the planet's sun colour in ground_light): white, as the game shades
+	# them through its shade rows (RESPLNT 53), which keep a grey grey on every planet. A tinted sun showed once
+	# the maps' own light (res 82) made it the models' main light: MAP10's 1.36 x the sun and 0.16 x the sky's ambient
+	# turned the temperate planet's warm sun into khaki buildings and olive weapons
+	planet_sun = a.get("sun", Color.WHITE)
+	sun.light_color = Color.WHITE
 	sun.light_energy = base.get("light", LIVE_LIGHT) * map_dif / DEFAULT_DIF
 	env.ambient_light_sky_contribution = base.get("ambient", LIVE_AMBIENT) * map_amb / DEFAULT_AMB
 	_ground_look(base.get("light", LIVE_LIGHT), env.ambient_light_energy * base.get("ambient", LIVE_AMBIENT))

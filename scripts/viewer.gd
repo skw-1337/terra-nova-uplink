@@ -3355,6 +3355,405 @@ func _bind_taps() -> void:
 		bind_tap_t = now + 50
 
 
+# ------------------------------------------------------------------ the order wheel
+# Squad orders on one button (the launcher's "Order wheel": TN_ORDER_WHEEL = 1; off unless asked). The button is the
+# middle one unless the player chose another (TN_ORDER_KEY: MID, M4, M5, or a key as TN+ writes its own, a PC scancode
+# in hex after SHIFT+, CTRL+ or ALT+ if any); with the wheel on it is Uplink's, no longer one of TN+'s second binds.
+# A short press: the obvious order at once (an enemy under the crosshair: attack it; the ground: go there). Held: the
+# wheel opens on the middle of the view (order_wheel.gd), nothing picked; the mouse then picks a pane instead of
+# turning the view, the mouse wheel changes who gets the order (the entire squad, then each squadmate), let go on a
+# pane: sent; let go in the middle, or the right button: nothing. What is aimed at is kept from the press: the enemy
+# nearest the crosshair (those the bridge names, 'ORDS': the game's units of another side, in sight), else the point
+# of the ground under it. The bridge gives the order to the game with the game's own keys (live_bridge.py 'O',
+# orders.py) and says whether it took it ('ORDR'). Not on a game screen, not without a squad, not for a coop guest.
+const OrderWheel = preload("res://scripts/order_wheel.gd")
+const LGRes = preload("res://scripts/lgres.gd")
+const ORDER_TAP_MS := 200                # held less: the obvious order, no wheel
+const ORDER_SHOW_MS := 2000              # the marker and the line stay that long after an order
+const ORDER_DEAD := 48.0                 # the hand within that of where it was (pixels of a 1080-row window): no pane
+const ORDER_REACH := 150.0               # ... and it counts no further than that (a quick way back)
+var order_on := OS.get_environment("TN_ORDER_WHEEL") == "1"
+var order_key := _order_key()            # [mouse button (0: a key), physical key, modifiers]
+var order_state := 0                     # 0 nothing, 1 the button is down (wheel not open yet), 2 the wheel, 3 cancelled
+var order_t := 0                         # when the button went down
+var order_ptr := Vector2.ZERO            # how far the hand went since
+var order_aim := {}                      # what was aimed at then: "ent" (-1: none), "point" (game x, y; null: none)
+var order_who := 0                       # 0 the entire squad, else the place in order_mates + 1
+var order_mates := []                    # the squadmates, from the bridge: [the game's F key number, entity, pilot]
+var order_can := false                   # the bridge: there is a squad to give orders to
+var order_lock := 0                      # the player's locked target (0: none)
+var order_enemies := PackedInt32Array()  # the entities an attack can be ordered on
+var order_news := -100000                # when the bridge last said so
+var order_n := 0                         # the last order's number (the bridge answers with it)
+var order_rmb := false                   # the right button that cancelled is still down (its release is not the game's)
+var order_mouse := Vector2.ZERO          # where the mouse last was in the window (the cursor mode's aim)
+var order_mark := {}                     # the last order's target, shown until order_mark_end
+var order_mark_end := 0
+var order_line := ""                     # ... and its line
+var order_line_bad := false
+var order_wheel: OrderWheel
+var order_names := PackedStringArray()   # the pilots' names (RESGAME.RES 364: the COMM panel's)
+var order_names_read := false
+
+
+static func _order_key() -> Array:
+	var spec := OS.get_environment("TN_ORDER_KEY").strip_edges().to_upper()
+	var b: int = {"": MOUSE_BUTTON_MIDDLE, "MID": MOUSE_BUTTON_MIDDLE, "M4": MOUSE_BUTTON_XBUTTON1, "M5": MOUSE_BUTTON_XBUTTON2}.get(spec, 0)
+	if b != 0:
+		return [b, KEY_NONE, 0]
+	var k := _own_key(spec)
+	return [0, k[0], k[1]] if not k.is_empty() else [MOUSE_BUTTON_MIDDLE, KEY_NONE, 0]
+
+
+# an order can be given now: in a mission, its map loaded, with a squad (the bridge's news, fresh), the mouse not
+# dragging a map
+func _order_ready() -> bool:
+	if not (order_on and play and play_started and not menu_mode and not guest_win and not play_hold and order_can) \
+			or current.is_empty() or Time.get_ticks_msec() - order_news >= 1500:
+		return false
+	# (the mission's own map is the one loaded: the aim is taken on its ground)
+	return live_mis_name == "" or str(current["entry"]["file"]).get_file().to_upper() == live_mis_name
+
+
+# the bridge's 'ORDS': a squad to order (bit 0), its count, the player's lock, three squadmates (in use, entity,
+# pilot), then the entities that can be attacked
+func _order_status(q: PackedByteArray) -> void:
+	if q.size() < 22:
+		return
+	order_news = Time.get_ticks_msec()
+	order_can = q[4] & 1 == 1
+	order_lock = q.decode_u16(6)
+	order_mates.clear()
+	for k in 3:
+		if q[8 + 4 * k] != 0:
+			order_mates.append([k + 1, q.decode_u16(9 + 4 * k), q[11 + 4 * k]])
+	var n := mini(q.decode_u16(20), (q.size() - 22) / 2)
+	order_enemies.resize(n)
+	for i in n:
+		order_enemies[i] = q.decode_u16(22 + 2 * i)
+
+
+# the bridge's 'ORDR': the last order's number, 0 if the game took it
+func _order_result(q: PackedByteArray) -> void:
+	if q.size() >= 8 and q[4] == order_n and q[5] != 0:
+		order_line = "ORDER NOT SENT"
+		order_line_bad = true
+		order_mark = {}
+		order_mark_end = Time.get_ticks_msec() + ORDER_SHOW_MS
+
+
+func _order_name(mate: Array) -> String:
+	if not order_names_read:
+		order_names_read = true
+		var res = LGRes.open(data.data_dir().path_join("RESGAME.RES"))
+		if res and res.has(364):
+			order_names = res.strings(364)
+	var pilot: int = mate[2]
+	if pilot < 33 and pilot < order_names.size() and order_names[pilot].strip_edges() != "":
+		return order_names[pilot].strip_edges().to_upper()
+	return "SQUADMATE %d" % int(mate[0])
+
+
+func _order_who_name() -> String:
+	if order_who <= 0 or order_who > order_mates.size():
+		return "ENTIRE SQUAD"
+	return _order_name(order_mates[order_who - 1])
+
+
+# The ray of the view through a pixel of the window, and the pixel a point of the world is seen at. Not Camera3D's
+# own (project_ray_normal, unproject_position): with the HUD's camera (_hud_camera: a frustum as wide as the window,
+# its centre where the game's 3D window has it) they take the view's centre for the window's and the frustum's size
+# for its height (measured: a point seen 512 pixels left of the middle was given 288 pixels left of it).
+func _order_ray(at: Vector2) -> Vector3:
+	var vs := get_viewport().get_visible_rect().size
+	if camera.projection != Camera3D.PROJECTION_FRUSTUM:
+		return camera.project_ray_normal(at)
+	var f := vs.x * 0.5 / tan(deg_to_rad(camera.fov) * 0.5)
+	var yc := vs.y * 0.5 + camera.frustum_offset.y / camera.size * vs.x
+	return (camera.global_transform.basis * Vector3(at.x - vs.x * 0.5, yc - at.y, -f)).normalized()
+
+
+func _order_pixel(p: Vector3) -> Vector2:
+	if camera.projection != Camera3D.PROJECTION_FRUSTUM:
+		return camera.unproject_position(p)
+	var vs := get_viewport().get_visible_rect().size
+	var l := camera.global_transform.affine_inverse() * p
+	var f := vs.x * 0.5 / tan(deg_to_rad(camera.fov) * 0.5)
+	var yc := vs.y * 0.5 + camera.frustum_offset.y / camera.size * vs.x
+	return Vector2(vs.x * 0.5 + l.x / maxf(-l.z, 0.001) * f, yc - l.y / maxf(-l.z, 0.001) * f)
+
+
+# nothing of the ground between the eye and a unit (it is not ordered through a hill)
+func _order_sight(m: Dictionary, from: Vector3, to: Vector3) -> bool:
+	var n := clampi(int(from.distance_to(to) * 2.0), 8, 96)
+	for i in range(1, n):
+		var q := from.lerp(to, float(i) / n)
+		if TNData.height_at(m, q.x, q.z) > q.y + 0.3:
+			return false
+	return true
+
+
+# what the player aims at: the crosshair (the look mode; the game's cursor on the 3D view in the cursor mode)
+func _order_pick() -> Dictionary:
+	var vs := get_viewport().get_visible_rect().size
+	var at := (Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		if hud_win.size.y > 0 and hud_win.has_point(_play_game_pos(order_mouse)):
+			at = order_mouse
+	var m: Dictionary = current["map"]
+	var from := camera.global_position
+	var dir := _order_ray(at)
+	var ent := -1
+	var best := 1.0
+	for id in order_enemies:                               # the enemy nearest the ray, within 1.6 degrees or its own size
+		var e = live_ents.get(id)
+		if e == null or int(e[2]) & 1 == 0:
+			continue
+		var p := Vector3(e[3], e[5] + 0.2, e[4])
+		var d := from.distance_to(p)
+		if d < 0.3:
+			continue
+		var r := dir.angle_to(p - from) / maxf(deg_to_rad(1.6), atan(0.7 / d))
+		if r < best and _order_sight(m, from, p + Vector3(0, 0.3, 0)):   # (its head in sight is enough)
+			best = r
+			ent = id
+	var point = null                                       # the ground under the ray, inside the map
+	var t := 0.0
+	while t < 300.0 and dir.y < 0.3:
+		var step := maxf(0.25, t * 0.02)
+		var q := from + dir * (t + step)
+		if q.x < 0.0 or q.z < 0.0 or q.x >= 512.0 or q.z >= 512.0:
+			break
+		if q.y <= TNData.height_at(m, q.x, q.z):
+			var lo := t
+			var hi := t + step
+			for i in 14:
+				var mid := (lo + hi) * 0.5
+				var c := from + dir * mid
+				if c.y <= TNData.height_at(m, c.x, c.z):
+					hi = mid
+				else:
+					lo = mid
+			q = from + dir * hi
+			if q.x >= 10.0 and q.z >= 10.0 and q.x <= 502.0 and q.z <= 502.0:
+				point = Vector2(q.x, q.z)
+			break
+		t += step
+	return {"ent": ent, "point": point}
+
+
+# where an order of that kind would go, of what is aimed at: [1, the ground's point] or [2, the entity], [0] nothing
+func _order_target(order: int) -> Array:
+	var ent: int = order_aim.get("ent", -1)
+	var point = order_aim.get("point")
+	if order == 1:                                         # move there: the ground, else where the enemy stands
+		if point != null:
+			return [1, point]
+		var e = live_ents.get(ent)
+		return [1, Vector2(e[3], e[4])] if e != null else [0]
+	if ent >= 0:
+		return [2, ent]
+	if order == 0:                                         # attack with nothing aimed at: the player's own lock
+		return [2, order_lock] if order_lock != 0 else [0]
+	return [1, point] if point != null else [0]
+
+
+# the order's button, down or up
+func _order_button(down: bool) -> void:
+	if down:
+		if order_state != 0 or not _order_ready():
+			return
+		order_aim = _order_pick()
+		order_t = Time.get_ticks_msec()
+		order_ptr = Vector2.ZERO
+		order_who = 0
+		order_state = 1
+		return
+	var was := order_state
+	order_state = 0
+	if was == 1:                                           # a short press: the obvious order
+		if int(order_aim.get("ent", -1)) >= 0:
+			_order_send(0, 0)
+		elif order_aim.get("point") != null:
+			_order_send(1, 0)
+	elif was == 2:
+		var pane := OrderWheel.pane_at(order_ptr, ORDER_DEAD * _order_scale())
+		if pane >= 0 and not _order_off().has(pane):
+			_order_send(pane, order_who)
+
+
+func _order_scale() -> float:
+	return get_viewport().get_visible_rect().size.y / 1080.0
+
+
+# the panes that cannot be picked now
+func _order_off() -> Dictionary:
+	var off := {}
+	if _order_target(0)[0] == 0:
+		off[0] = "NO TARGET"
+	if _order_target(1)[0] == 0:
+		off[1] = "NO GROUND"
+	return off
+
+
+# the mouse wheel while the button is held: who gets the order
+func _order_turn(step: int) -> void:
+	order_state = 2                                        # (the wheel at once: who is written under it)
+	order_who = posmod(order_who + step, order_mates.size() + 1)
+
+
+func _order_cancel() -> void:
+	if order_state != 0:
+		order_state = 3                                    # (until the button is let go)
+
+
+func _order_send(order: int, who: int) -> void:
+	var tg := _order_target(order)
+	var kind := 0
+	var ent := 0
+	var pt := Vector2.ZERO
+	if order == 0 and int(order_aim.get("ent", -1)) >= 0:
+		kind = 1
+		ent = int(order_aim["ent"])
+	elif order == 1:
+		if tg[0] == 0:
+			return
+		kind = 2
+		pt = tg[1]
+	elif order == 0 and tg[0] == 0:
+		return
+	var mate := 0
+	var to := "ENTIRE SQUAD"
+	if who > 0 and who <= order_mates.size():
+		mate = int(order_mates[who - 1][0])
+		to = _order_name(order_mates[who - 1])
+	order_n = (order_n + 1) & 0xFF
+	var b := PackedByteArray()
+	b.resize(15)
+	b[0] = 0x4F
+	b[1] = order_n
+	b[2] = order
+	b[3] = mate
+	b[4] = kind
+	b.encode_u16(5, ent)
+	b.encode_float(7, pt.x)
+	b.encode_float(11, pt.y)
+	_play_send(b)
+	order_line = "ORDER: %s > %s" % [OrderWheel.LABELS[order], to]
+	order_line_bad = false
+	order_mark = {"at": tg} if order <= 1 else {}
+	order_mark_end = Time.get_ticks_msec() + ORDER_SHOW_MS
+
+
+# where a target is on the screen: [1 the ground / 2 an enemy / 0 not in view, its pixel]
+func _order_on_screen(tg: Array) -> Array:
+	if tg.is_empty() or int(tg[0]) == 0 or current.is_empty():
+		return [0, Vector2.ZERO]
+	var p: Vector3
+	if int(tg[0]) == 2:
+		var e = live_ents.get(int(tg[1]))
+		if e == null:
+			return [0, Vector2.ZERO]
+		p = Vector3(e[3], e[5] + 0.2, e[4])
+	else:
+		var g: Vector2 = tg[1]
+		p = Vector3(g.x, TNData.height_at(current["map"], g.x, g.y), g.y)
+	if camera.is_position_behind(p):
+		return [0, Vector2.ZERO]
+	return [int(tg[0]), _order_pixel(p)]
+
+
+# each frame: the wheel opens once the button has been held long enough, its picture follows
+func _order_update() -> void:
+	if not order_on:
+		return
+	var now := Time.get_ticks_msec()
+	if order_state != 0 and not _order_ready():
+		order_state = 3                                    # (a game screen came, the squad is gone)
+	if order_state == 1 and now - order_t >= ORDER_TAP_MS:
+		order_state = 2
+	if now >= order_mark_end:
+		order_line = ""
+		order_mark = {}
+	if order_wheel == null:
+		if order_state != 2 and order_line == "" and order_mark.is_empty():
+			return
+		var ol := CanvasLayer.new()
+		ol.layer = 5                                       # over the game's HUD and the old school look, under its screens
+		add_child(ol)
+		order_wheel = OrderWheel.new()
+		ol.add_child(order_wheel)
+	var w := order_wheel
+	var vs := get_viewport().get_visible_rect().size
+	w.k = _order_scale()
+	w.centre = ((Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs).round()
+	w.shown = order_state == 2
+	var mark := [0, Vector2.ZERO]
+	if order_state == 2:
+		w.off = _order_off()
+		var pane := OrderWheel.pane_at(order_ptr, ORDER_DEAD * w.k)
+		w.picked = -1 if w.off.has(pane) else pane
+		w.who = _order_who_name()
+		# the mark in the middle: where the pane under the hand would send them, else what is aimed at
+		mark = _order_on_screen(_order_target(w.picked if w.picked == 0 or w.picked == 1 else -1))
+		if mark[0] == 0 and w.picked < 0:
+			mark = _order_on_screen(_order_target(0))
+	elif not order_mark.is_empty() and not menu_mode:
+		mark = _order_on_screen(order_mark["at"])
+	w.marker = mark[0]
+	w.marker_at = mark[1]
+	w.line = "" if menu_mode else order_line
+	w.line_bad = order_line_bad
+	w.visible = w.shown or w.marker != 0 or w.line != ""
+	w.queue_redraw()
+
+
+# the order wheel's own inputs, before anything else gets them: true if the event was its
+func _order_input(event: InputEvent) -> bool:
+	if not order_on or guest_win:
+		return false
+	if event is InputEventMouse:
+		order_mouse = event.position
+	if event is InputEventMouseButton:
+		if int(order_key[0]) != 0 and event.button_index == int(order_key[0]):
+			_order_button(event.pressed)
+			return true
+		if event.button_index == MOUSE_BUTTON_RIGHT and order_rmb and not event.pressed:
+			order_rmb = false
+			return true
+		if order_state == 0:
+			return false
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			if event.pressed and order_state != 3:
+				_order_turn(1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -1)
+			return true
+		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			order_rmb = true
+			_order_cancel()
+			return true
+		return false
+	if event is InputEventMouseMotion:
+		if order_state != 1 and order_state != 2:          # (cancelled: the mouse turns the view again at once)
+			return false
+		order_ptr = (order_ptr + event.relative).limit_length(ORDER_REACH * _order_scale())
+		return true                                        # (the view does not turn meanwhile)
+	if event is InputEventKey and int(order_key[0]) == 0 and event.physical_keycode == int(order_key[1]):
+		if not event.pressed:
+			if order_state == 0:
+				return false
+			_order_button(false)
+			return true
+		if event.echo:
+			return order_state != 0
+		var mods := (KEY_MASK_SHIFT if event.shift_pressed else 0) | (KEY_MASK_CTRL if event.ctrl_pressed else 0) | \
+				(KEY_MASK_ALT if event.alt_pressed else 0)
+		if mods != int(order_key[2]):
+			return false
+		_order_button(true)
+		return true
+	return false
+
+
 # look <-> cursor (the look key, Pause, or a bind): the cursor starts on the view's centre
 func _look_swap() -> void:
 	if not play_started or play_hold or menu_mode:      # (a game screen: the mouse is its cursor's)
@@ -3442,6 +3841,8 @@ func _play_release_all() -> void:
 	bind_down.clear()                                    # (their keys were among those)
 	bind_taps.clear()
 	bind_tap = ""
+	order_state = 0                                      # (the order wheel closes, nothing sent)
+	order_rmb = false
 	for bt in [1, 2]:                                    # a button let go elsewhere (alt-tab) would fire forever
 		_play_send(PackedByteArray([0x42, bt, 0]))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -3742,6 +4143,9 @@ func _input(event: InputEvent) -> void:
 	# the viewer: look (mouse captured, it turns the view, clicks at the view's centre) and cursor (the game's own
 	# cursor follows the mouse, clicks where it is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if _order_input(event):                                # the order wheel: its button, and the mouse while it is held
+		get_viewport().set_input_as_handled()
+		return
 	# a second bind's button let go: seen first, the branches below take the mouse's events for something else (the
 	# right button held, a game screen, a button of Uplink's own). (A bound key's release always reaches _bind below.)
 	if event is InputEventMouseButton and not event.pressed and BIND_BUTTONS.has(event.button_index):
@@ -3931,6 +4335,7 @@ func _live_update() -> void:
 	if play:
 		_play_cursor()
 		_bind_taps()
+		_order_update()
 	if host_btn:
 		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 		if versus_btn:
@@ -3960,6 +4365,10 @@ func _live_update() -> void:
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "ARMS" and q.size() == 6 + 5 * q.decode_u16(4):
 			for k in q.decode_u16(4):
 				_live_arms(q.decode_s32(6 + 5 * k), q[10 + 5 * k])
+		elif q.size() >= 22 and q.slice(0, 4).get_string_from_ascii() == "ORDS":
+			_order_status(q)                                # the squad and who can be attacked (live_bridge.py, orders.py)
+		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "ORDR":
+			_order_result(q)
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)

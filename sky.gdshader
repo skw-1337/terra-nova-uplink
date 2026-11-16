@@ -21,6 +21,7 @@ uniform vec2 cloud_off = vec2(0.0);        // texels (column, row): the game's w
 uniform float desat = 1.0;                 // live mode: undoes the view's saturation boost (the game's own colours)
 uniform float gain = 1.0;                  // live mode: the game's sky is brighter than this viewer's
 uniform float star_pixel = 0.00307;        // radians per star map pixel (TAU / 4 / 512)
+const float HORIZON_GLOW = 0.3;            // skies without clouds, modern look: share of the haze colour at the horizon
 
 float hash(vec3 p) {
 	return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
@@ -56,20 +57,44 @@ float ceiling_r(vec3 d, bool per_row) {
 	return length(d.xz) / max(d.y, 1e-6) * cloud_px * 1.12;
 }
 
+// The far band's colours as a gradient (the game steps from one to the next: a flat bar of each across the view, a
+// hard grey bar on the rain skies): each colour at the middle of its span of r (in log r), blended between them, the
+// last (band3) from 9000 on and under the horizon
+vec3 band_at(sampler2D b, float r) {
+	const float C0 = 7.0108;              // ln of the middle of 1024 .. 1200
+	const float C1 = 7.5805;              // 1200 .. 3200
+	const float C2 = 8.4175;              // 3200 .. 6400
+	const float C3 = 9.1050;              // 9000
+	float lr = log(max(r, 1.0));
+	vec3 c0 = texelFetch(b, ivec2(0, 0), 0).rgb;
+	vec3 c1 = texelFetch(b, ivec2(1, 0), 0).rgb;
+	vec3 c2 = texelFetch(b, ivec2(2, 0), 0).rgb;
+	vec3 c3 = texelFetch(b, ivec2(3, 0), 0).rgb;
+	if (lr < C1) {
+		return mix(c0, c1, smoothstep(C0, C1, lr));
+	}
+	if (lr < C2) {
+		return mix(c1, c2, smoothstep(C1, C2, lr));
+	}
+	return mix(c2, c3, smoothstep(C2, C3, lr));
+}
+
 vec3 planet_sky(vec3 d, vec3 eye, bool per_row) {
 	if (d.y <= 0.0) {
 		return texelFetch(bands, ivec2(3, 0), 0).rgb;
 	}
 	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
 	float r = ceiling_r(d, per_row);
-	if (r >= 1024.0) {
-		return texelFetch(bands, ivec2(r >= 6400.0 ? 3 : (r >= 3200.0 ? 2 : (r >= 1200.0 ? 1 : 0)), 0), 0).rgb;
+	if (r >= 1100.0) {
+		return band_at(bands, r);
 	}
 	float level = 0.0;
 	level += step(192.0, r) + step(256.0, r) + step(320.0, r) + step(416.0, r);
 	level += step(512.0, r) + step(640.0, r) + step(800.0, r);
 	vec2 t = tn_ripple(rel + vec2(eye.z, eye.x) * cloud_par + cloud_off) / 256.0;
-	return modern ? texture(levels_soft, vec3(t, level)).rgb : texture(levels, vec3(t, level)).rgb;
+	vec3 c = modern ? texture(levels_soft, vec3(t, level)).rgb : texture(levels, vec3(t, level)).rgb;
+	// the last clouds fade into the band (the game: a hard edge at 1024)
+	return mix(c, band_at(bands, r), smoothstep(880.0, 1100.0, r));
 }
 
 vec3 ir_sky(vec3 d, vec3 eye, bool per_row) {
@@ -90,6 +115,7 @@ vec3 ir_sky(vec3 d, vec3 eye, bool per_row) {
 void sky() {
 	vec3 d = EYEDIR;
 	vec3 col = has_clouds ? planet_sky(d, POSITION, !AT_CUBEMAP_PASS) : haze;
+	float glow = modern ? HORIZON_GLOW : 0.0;
 	if (!has_clouds && d.y > 0.0) {
 		vec3 top = vec3(0.0);
 		if (has_stars) {
@@ -102,7 +128,12 @@ void sky() {
 			float s2 = hash(floor(d * 420.0));
 			top = s2 > 0.9975 ? vec3(0.55 + 0.45 * fract(s2 * 97.0)) : vec3(0.0);
 		}
-		col = mix(haze, top, smoothstep(0.0, 0.08, d.y));
+		// the game fills a sky without clouds with one flat colour (0x2A82D0) down to the ground: no glow at the
+		// horizon (the old school look). The modern look keeps a faint one, wide and soft (the full haze colour over
+		// 0.08 rad drew a hard grey bar across the night skies, over the far relief, worse once snapped to the palette)
+		col = mix(haze * glow, top, smoothstep(0.0, 0.18, d.y));
+	} else if (!has_clouds) {
+		col = haze * glow;                 // under the horizon, where no ground is drawn: the same
 	}
 	col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, desat);
 	COLOR = col * gain;

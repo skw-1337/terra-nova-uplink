@@ -45,8 +45,10 @@ KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A 
 # 0x442439; 1.03 a ms) and fuel ((rating / 15 << 9) x dt >> 16) & 0xFF (halved if suit +0xD is 4, none in mission
 # 0x2F), none of either: no lift. No jets in mission 0x2E. The game's lift in the air (thrust into the body's +0x44,
 # 0x269CF4) only exists for the player's suit and how the body turns it into speed is not decoded: JET_ACC (speed
-# units/s per s) stands for it. Damage to the jets (sputter, 0x27DF14) is left out
-JET_ACC = float(os.environ.get('TN_JET_ACC', '1600'))
+# units/s per s) stands for it, set against the host's own jets (MISS30, Space held 2 s from full energy: the host
+# 5.3 units up when it runs out, 12.0 at the top; the guest with 750: 6.4 and 12.2; with 1600 he went to 30).
+# Damage to the jets (sputter, 0x27DF14) is left out
+JET_ACC = float(os.environ.get('TN_JET_ACC', '750'))
 JET_KICK, JET_FREE, AIR = 150, 200, 0x4000   # the ground kick, free airtime (ms), "near the ground" (0.25, 0x28927C)
 # The ground under him: the game's height map (English exe: pointer at 0x36F50A, 513 x 513 points of 3 bytes, the
 # height s16 at +1, >> 4, / 24 units), between its 4 points (the game cuts the cells in triangles: a few hundredths

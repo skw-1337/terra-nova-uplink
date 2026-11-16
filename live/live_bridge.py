@@ -33,6 +33,23 @@ print('camera : id %#x, objets %#x, cap camera %#x, tangage tete %#x, tangage ca
 _p = re.compile(re.escape(bytes.fromhex('f605')) + b'(....)' + re.escape(bytes.fromhex('020f85')) + b'.{4}.{0,40}?' +
                 re.escape(bytes.fromhex('668b35')) + b'(....)', re.S).match(code, caps[0][1])
 A_DRAPEAU, A_PENTE = (struct.unpack('<I', _p.group(1))[0], struct.unpack('<I', _p.group(2))[0]) if _p else (None, None)
+# The main view's final heading and pitch, as the game drew them: saved at the end of its camera routine (EN 0x2695A0)
+# after the slope, the shake (0x38FA74: a jolt for one frame when the player is hit) and its dead band
+#   mov ax, [cap camera] / mov [cap garde], ax / mov ax, [tangage camera] / mov [tangage garde], ax / pop... / ret
+_s = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 5)] for m in re.finditer(
+    re.escape(b'\x66\xa1') + b'(....)' + re.escape(b'\x66\xa3') + b'(....)' + re.escape(b'\x66\xa1') + b'(....)' +
+    re.escape(b'\x66\xa3') + b'(....)' + re.escape(bytes.fromhex('5f5e5a595bc3')), code, re.S)]
+_s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == A_CAMHEAD and v[2] == A_CAMPITCH]
+A_SAVH, A_SAVP = (_s[0][1], _s[0][3]) if len(_s) == 1 else (None, None)
+# The death camera: the dword the game tests before placing the main view (0x26969A: not 0 = the player's suit burst,
+# the view rides its torso piece; L4), next to the player's id and the camera block
+#   mov ax, [id] / mov edx, [mort] / mov [entite vue], ax / test edx, edx / je ... / mov eax, camera / mov edx, cap / call
+_s = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 6)] for m in re.finditer(
+    re.escape(b'\x66\xa1') + b'(....)' + re.escape(b'\x8b\x15') + b'(....)' + re.escape(b'\x66\xa3') + b'(....)' +
+    re.escape(bytes.fromhex('85d274')) + b'.' + re.escape(b'\xb8') + b'(....)' + re.escape(b'\xba') + b'(....)\xe8', code, re.S)]
+_s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == A_PID + 2 and v[3] == A_CAMPITCH - 0x16]
+A_DEATH = _s[0][1] if len(_s) == 1 else None
+print('vue finale : cap %s, tangage %s ; camera de mort %s' % tuple('%#x' % a if a else 'introuvable' for a in (A_SAVH, A_SAVP, A_DEATH)))
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
@@ -1898,7 +1915,15 @@ while True:
     sv = [(k, v, c) for k, v, c in sv if c is not None]
     s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *c) for k, v, c in sv),
              ('127.0.0.1', 47821))
-    cam = (x + eye[0], y + eye[1], z + eye[2], head, pitch)
+    cam_h, cam_p = head, pitch
+    # the main view's heading and pitch as the game drew them (its saved final camera: with the shake of a hit), when
+    # the view is the player's own and not the death camera; a value off by more than the largest shake (0x800) is
+    # one left from before (mission start, a reload): rebuilt then
+    if A_SAVH is not None and vue == pid and not (A_DEATH and d32(A_DEATH)):
+        savh = u16(A_SAVH)
+        if abs(((savh - u16(e + 0x1B) - u16(A_HEADYAW) + 0x8000) & 0xffff) - 0x8000) <= 0x800:
+            cam_h, cam_p = savh / 65536 * 2 * math.pi, -s16(A_SAVP) / 65536 * 2 * math.pi
+    cam = (x + eye[0], y + eye[1], z + eye[2], cam_h, cam_p)
     if sonde:
         # the drone's view as the game sets it (0x26952f): its entity's x, y, z, heading +0x1B and pitch +0x1D (positive
         # = down), nothing added (no eye, no ground slope: tangage()'s slope is the player's, frozen in this view)

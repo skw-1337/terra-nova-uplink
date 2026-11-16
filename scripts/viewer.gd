@@ -95,6 +95,9 @@ var mats := {}
 # --live: the camera follows the running game (sent by live/live_bridge.py over UDP, port 47821:
 # x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
 var LIVE_PORT := 47821                         # --live-port N (coop: the guest's window)
+const MINE_TYPE := 47          # class 4: the mine, pitched with the ground as a vehicle (0x29b3ac)
+# half the length of each vehicle type's model (RESTNOBJ 1372 headers), when a node has no model to read it from
+const VEHICLE_HALF := [1.1730, 0.9594, 1.0267, 1.7062, 0.7459, 1.1133, 1.1266, 2.7452, 1.2472, 4.6339, 0.9448, 0.7686]
 const GAME_Z := 0.12          # shots, smoke, flying lift: this much below the game's heights (units are drawn with
 								# the game's own offset by class and type: TNObjects.draw_offset)
 var live := false
@@ -1137,6 +1140,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 			top = md["height"]
 			if md["params"] > 0:
 				mi.set_meta("art_ref", ref)              # articulated parts: posed by the live game (_live_arts)
+			if cls == 2 or (cls == 4 and sub == MINE_TYPE):
+				mi.set_meta("half", md["half_len"])      # (its pitch on the ground: _ground_pitch)
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
@@ -1170,6 +1175,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		top -= box.size.y * 0.5
 	mi.position = Vector3(x, ground + lift, y)
 	mi.rotation.y = -heading
+	if cls == 2 and mi.has_meta("half"):            # a vehicle: pitched with the ground as the game draws it
+		mi.basis = Basis(Vector3.UP, -heading) * Basis(Vector3(0, 0, 1), _ground_pitch(m, x, y, heading, mi.get_meta("half")))
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
 	if label:
@@ -5067,20 +5074,31 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		# (a rock left 0.13 above the map's ground there)
 	else:
 		node.position = Vector3(e[3], TNData.height_at(m, e[3], e[4]) + float(node.get_meta("lift", 0.0)), e[4])
-	if e[0] != 2:
+	if e[0] != 2 and not (e[0] == 4 and e[1] == MINE_TYPE):
 		node.basis = Basis(Vector3.UP, -e[6])           # (a body tipped over is set back up)
 		return
-	# vehicles lie on the ground like the game draws them (its entity has only a heading): the slope under them,
-	# eased so that bumps do not shake them
-	var x: float = e[3]
-	var y: float = e[4]
-	var n := Vector3(TNData.height_at(m, x - 0.6, y) - TNData.height_at(m, x + 0.6, y), 1.2,
-			TNData.height_at(m, x, y - 0.6) - TNData.height_at(m, x, y + 0.6)).normalized()
-	var up: Vector3 = node.get_meta("up", n)
-	up = up.lerp(n, 0.2).normalized()
-	node.set_meta("up", up)
-	var yawed := Basis(Vector3.UP, -e[6])
-	node.basis = Basis(Quaternion(Vector3.UP, up)) * yawed
+	# vehicles and mines pitch with the ground along their heading as the game draws them (its entity has only a
+	# heading): no roll, no easing, worked out again on every draw
+	node.basis = Basis(Vector3.UP, -e[6]) * Basis(Vector3(0, 0, 1),
+			_ground_pitch(m, e[3], e[4], e[6], float(node.get_meta("half", _half_len(e[0], e[1])))))
+
+
+# The game's pitch of a vehicle (and of a mine) on the ground (0x29dd64 of the English exe): atan2(ground ahead -
+# ground behind, its length), the ground taken half its model's length ahead of and behind its origin along its
+# heading. Positive: the nose up (a turn about its sideways axis, local Z: its length is local X).
+func _ground_pitch(m: Dictionary, x: float, y: float, heading: float, half: float) -> float:
+	if half <= 0.0:
+		return 0.0
+	var c := half * cos(heading)
+	var s := half * sin(heading)
+	return atan2(TNData.height_at(m, x + c, y + s) - TNData.height_at(m, x - c, y - s), 2.0 * half)
+
+
+# Half the model's length by class and type, when its node has none (no model in the data: a box).
+func _half_len(cls: int, sub: int) -> float:
+	if cls == 4:
+		return 0.0798 if sub == MINE_TYPE else 0.0
+	return float(VEHICLE_HALF[sub]) if cls == 2 and sub >= 0 and sub < VEHICLE_HALF.size() else 0.0
 
 
 func _process(delta: float) -> void:

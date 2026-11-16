@@ -650,7 +650,11 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 		lm.vertex_color_is_srgb = true
 		sl.set_material(lm)
 		sl.commit(mesh)
-	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top, "params": f.decode_u16(0x44)}
+	# half its length (header z extent, +0x10 max / +0x1C min): the game tilts a vehicle by the ground this far ahead
+	# of and behind its origin (0x29dd64)
+	var half_len := float((f.decode_s32(0x10) - f.decode_s32(0x1c)) / 2) / 65536.0
+	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top, "params": f.decode_u16(0x44),
+			"half_len": half_len}
 
 
 # Walks the bytecode like the game's interpreter, but draws every polygon (no back-face jumps).

@@ -9,7 +9,7 @@ import tnre
 
 g = tnre.Guest()
 arg = lambda k, d: float(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else d
-FOV, EYE, HZ = arg('--fov', 100.0), arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
+FOV, EYE, HZ = arg('--fov', None), arg('--eye', 0.32), arg('--hz', 120.0)   # oeil : 0.32 au-dessus de l'entite du joueur (ajuste sur la poussiere d'un tir laser, a 0.5 px pres)
 NENT = 300                               # entrees lues dans la table des entites
 HUD, PLAY = '--hud' in sys.argv, '--play' in sys.argv   # avant --launch, qui les passe au visualiseur
 CAM = None
@@ -653,19 +653,20 @@ d32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
 hud_t = 0.0
 
 # Zoom du jeu (touches HUD zoom + / -) : la camera principale (0x38FB24 dans l'exe anglais, 0x38FBD4 en francais)
-# tient un zoom effectif, et tan(champ / 2) suit 1 / zoom ; le plus petit zoom vu (vue normale) vaut --fov.
+# tient un zoom effectif (TN+ y met deja son champ et la largeur de la vue), et chaque projection du jeu le multiplie
+# par 1,1 (0x11999 : 0x29eb6f, 0x29e7b3) : tan(champ / 2) = 1 / (1,1 zoom) sur toute la largeur de l'image (vrai 16:9
+# de TN+). L'angle a +0x18 (atan(1 / zoom)) n'est que celui du tri des objets.
 A_ZOOM = 0x38FBD4 if FR else 0x38FB24     # (lance depuis les menus : pas encore de camera a reconnaitre)
-
-
-ZOOM_NORMAL = 0.88916                      # zoom de la vue normale (0xE3A0), ou le champ vaut --fov
+FOV_SANS_ZOOM = 104.58                     # avant la camera (menus) : la vue du cockpit d'Uplink, 2 atan(1 / (1,1 * 596 / 848))
+ZOOM_NORMAL = 0.88916                      # --fov N, comme avant : le champ a ce zoom (0xE3A0), suivant 1 / zoom
 
 
 def fov_now():
-    # le jeu tient tan(demi-champ) = 1 / zoom (l'angle a +0x18) : le champ suit le zoom lu, sans reference a suivre
-    # (le plus petit zoom vu servait de reference : une valeur basse passagere zoomait la vue de Godot pour de bon)
+    # le champ du jeu au zoom lu ; --fov N (les lanceurs passent 91.5 : a 0,4 % pres la meme loi, 1 / (1,0956 zoom))
     z = d32(A_ZOOM) / 65536 if A_ZOOM else 0
-    if not 0.05 < z < 50: return FOV
-    return math.degrees(2 * math.atan(math.tan(math.radians(FOV / 2)) * ZOOM_NORMAL / z))
+    if not 0.05 < z < 50: return FOV_SANS_ZOOM if FOV is None else FOV
+    if FOV is not None: return math.degrees(2 * math.atan(math.tan(math.radians(FOV / 2)) * ZOOM_NORMAL / z))
+    return math.degrees(2 * math.atan(1 / (1.1 * z)))
 hud_n = 0
 hud_copies = -1
 COPIES = 0x46613C                          # compteur d'images affichees du code HD

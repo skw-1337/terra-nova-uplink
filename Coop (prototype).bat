@@ -24,6 +24,6 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-python -u "%HERE%live\live_bridge.py" --launch --hud --play --guest --fov 91.5 --res 1696x960
+python -u "%HERE%live\live_bridge.py" --launch --hud --play --guest --res 1696x960
 rem the window closes with Uplink; it stays open only if the bridge stopped on an error
 if errorlevel 1 pause

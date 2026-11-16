@@ -57,12 +57,14 @@ var ir_on := false
 # player's own view in the probe's panel while the probe's is in the HUD, 5 to 7 = the 360 view's left, back and
 # right cameras, 8 = the player's own view in the map's panel while the map is in the HUD).
 const SUB_RECTS := {1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true}
-const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels
+const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels (the
+                                  # game's code says 84.55 at zoom 1, as SUB_FOV: kept until a live check settles it)
 const PROBE_TILT := 0.3
-const SUB_FOV := 100.0            # horizontal, degrees
-const SUB_FOV_SELF := 84.5        # the player's own view in a panel (4, 8): the game's own field (its compass
+const SUB_FOV := 84.55            # horizontal, degrees: the game's panel cameras at zoom 1, 2 atan(1 / 1.1) (its
+                                  # projection multiplies the zoom by 1.1, 0x29e7b3), over their whole canvas
+const SUB_FOV_SELF := 84.55       # the player's own view in a panel (4, 8): the game's own field (its compass
                                   # labels there: S seen 37 deg aside at 140 of the panel's 170 half pixels)
-const SUB_FOV_AROUND := 84.5      # the 360 view's cameras (5 to 7): the player's own field too (a squadmate followed
+const SUB_FOV_AROUND := 84.55     # the 360 view's cameras (5 to 7): the player's own field too (a squadmate followed
                                   # across each panel while the player turns on the spot: 83 to 85 degrees)
 const SUB_EASE := 0.2             # side view cameras: share of the way to the new reading (~120 a second)
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only

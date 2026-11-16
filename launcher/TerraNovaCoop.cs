@@ -1065,7 +1065,7 @@ static class Uplink
         Proc game = Procs().Find(p => p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(dir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
         if (game != null) env["TNRE_PID"] = game.Id.ToString();
         return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") + "\" --launch --hud --play" +
-            (host ? " --guest-remote" : "") + " --fov 91.5 --res " + Cfg("window") + (host && Cfg("mode") == "versus" ? " --versus" : ""),
+            (host ? " --guest-remote" : "") + " --res " + Cfg("window") + (host && Cfg("mode") == "versus" ? " --versus" : ""),
             UplinkDir, env, true);
     }
 

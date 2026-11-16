@@ -2,7 +2,9 @@
 // upright on the screen like the game's (its pixels shown 1.2 x taller than wide, see limb.gdshader), anchored on
 // the effect's position. Mesh: quad in world units, anchor at the origin.
 shader_type spatial;
-render_mode unshaded, cull_disabled;
+render_mode unshaded, cull_disabled, fog_disabled;
+
+#include "res://tn_haze.gdshaderinc"
 
 uniform sampler2DArray frames : source_color, filter_linear_mipmap, repeat_disable;
 uniform int frame_count = 1;
@@ -30,5 +32,5 @@ void fragment() {
 	if (c.a < 0.5) {
 		discard;
 	}
-	ALBEDO = c.rgb;
+	ALBEDO = tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 }

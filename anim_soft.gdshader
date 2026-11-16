@@ -1,7 +1,9 @@
 // An effect animation of the game whose pictures are see-through (its smoke, the white flash of a blast): as
 // anim.gdshader, blended with what is behind it.
 shader_type spatial;
-render_mode unshaded, cull_disabled, depth_draw_never;
+render_mode unshaded, cull_disabled, depth_draw_never, fog_disabled;
+
+#include "res://tn_haze.gdshaderinc"
 
 uniform sampler2DArray frames : source_color, filter_linear_mipmap, repeat_disable;
 uniform int frame_count = 1;
@@ -26,6 +28,6 @@ void fragment() {
 		f = min(frame, float(frame_count - 1));
 	}
 	vec4 c = texture(frames, vec3(UV, f));
-	ALBEDO = c.rgb;
+	ALBEDO = tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 	ALPHA = c.a;
 }

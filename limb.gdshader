@@ -5,7 +5,9 @@
 // (its length = world units per sprite pixel across the bone: the game's 1/256, whatever the bone's length).
 // Mesh: quad in sprite pixels, x across, y down the sprite (joint a at y = 0).
 shader_type spatial;
-render_mode unshaded, cull_disabled;
+render_mode unshaded, cull_disabled, fog_disabled;
+
+#include "res://tn_haze.gdshaderinc"
 
 uniform sampler2DArray views : source_color, filter_linear_mipmap, repeat_disable;
 uniform int view_count = 16;      // 16 views all around, or 9 from back to front (torso)
@@ -115,5 +117,5 @@ void fragment() {
 	if (col.a < 0.5) {
 		discard;
 	}
-	ALBEDO = col.rgb * factor * deep;
+	ALBEDO = tn_haze(col.rgb * factor * deep, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 }

@@ -23,3 +23,14 @@ window/size/viewport_height=900
 [rendering]
 
 anti_aliasing/quality/msaa_3d=2
+
+[shader_globals]
+
+tn_haze_color={
+"type": "vec4",
+"value": Vector4(0.7, 0.76, 0.84, 0)
+}
+tn_haze_range={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}

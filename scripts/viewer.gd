@@ -19,6 +19,7 @@ const DUST = preload("res://dust.gdshader")
 const HAZE = preload("res://haze.gdshader")
 const BEAM = preload("res://beam.gdshader")
 const WATER = preload("res://water.gdshader")
+const SPRITE = preload("res://sprite.gdshader")
 const SNOW = preload("res://snow.gdshader")
 const SKY_SHADER = preload("res://sky.gdshader")
 const SKY_DISTANCE := 2400.0             # sky sprites: far away, following the camera
@@ -79,6 +80,7 @@ const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidd
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
 const FX_LAYER := 1 << 1          # shots and effects: seen by every view, left alone by the ground's burn marks (decals)
 const DEEP_LAYER := 1 << 17       # models on the map's darkest light level: lit by sun_half, not by the sun (_apply_deep)
+const NO_HAZE_LAYER := 1 << 16    # a camera without it sees no haze (tn_haze.gdshaderinc: the co-op maps high above)
 var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
@@ -162,7 +164,7 @@ const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game o
 # the fog's colour (the sky's haze mixed with a tint), the sun's colour and light, the
 # sky's share of the ambient light, saturation, contrast, brightness; sparkle: snow crystals catching the light
 const PLANET_LOOK := {
-	"RESPLNT0.RES": {"tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
+	"RESPLNT0.RES": {"tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.0,        # temperate (its haze: the sky's own)
 		"sun": Color(1.0, 0.94, 0.82), "light": 0.82, "ambient": 0.3, "sat": 1.45, "contrast": 1.03},
 	"RESPLNT1.RES": {"tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.0,        # ice (its fog: the sky's own pale green haze)
 		"sun": Color(0.86, 0.93, 1.0), "light": 0.8, "ambient": 0.4, "sat": 1.2, "contrast": 1.08, "sparkle": 1.2},
@@ -360,8 +362,8 @@ func _ready() -> void:
 		env.fog_depth_end = LIVE_FOG_END
 		env.fog_density = LIVE_FOG_MAX
 		env.fog_depth_curve = LIVE_FOG_CURVE
-		env.fog_aerial_perspective = 0.7
-		env.fog_sun_scatter = 0.1
+		env.fog_aerial_perspective = 0.0      # (its colour as is, as the game's haze rows and the shaders' haze)
+		env.fog_sun_scatter = 0.0
 		env.fog_sky_affect = 0.0
 		var lpi := args.find("--live-port")
 		if lpi >= 0 and lpi + 1 < args.size():
@@ -456,6 +458,7 @@ func _build_scene() -> void:
 	env.fog_density = 0.0005
 	env.fog_sky_affect = 0.3
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	_haze_globals()
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -733,7 +736,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			mat = mats["rock"] if shape == "rock" else mats["tree"]
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		var lit := mat is StandardMaterial3D        # sprites: the light of the ground at their foot
+		var lit := mat is StandardMaterial3D or mat is ShaderMaterial   # sprites: the light of the ground at their foot
 		mm.use_colors = lit                   # (before the count)
 		mm.mesh = mesh
 		var trs: Array = groups[key]
@@ -751,8 +754,10 @@ func _add_vegetation(m: Dictionary) -> int:
 		mmi.multimesh = mm
 		if mat != null:
 			mmi.material_override = mat
-		if lit:
+		if mat is StandardMaterial3D:
 			(mat as StandardMaterial3D).vertex_color_use_as_albedo = true
+		elif lit:
+			(mat as ShaderMaterial).set_shader_parameter("use_vcol", true)
 		mmi.add_to_group("vegetation")
 		mmi.visible = veg_on
 		world.add_child(mmi)
@@ -777,13 +782,13 @@ func _foot_light(m: Dictionary, x: float, y: float) -> Color:
 
 
 # (a sprite object: its own copy of the sprite's material at that light)
-func _sprite_lit(ref: Vector2i, sp: Dictionary, c: Color) -> StandardMaterial3D:
+func _sprite_lit(ref: Vector2i, sp: Dictionary, c: Color) -> ShaderMaterial:
 	var q := Color(roundi(c.r * 40.0) / 40.0, roundi(c.g * 40.0) / 40.0, roundi(c.b * 40.0) / 40.0)
 	var key := "sprite%s/lit%s" % [ref, q.to_html(false)]
 	if not mats.has(key):
-		var sm := _sprite_mat(ref, sp).duplicate() as StandardMaterial3D
-		sm.vertex_color_use_as_albedo = false
-		sm.albedo_color = q                              # (alpha untouched: the sprite's cut-out)
+		var sm := _sprite_mat(ref, sp).duplicate() as ShaderMaterial
+		sm.set_shader_parameter("use_vcol", false)
+		sm.set_shader_parameter("albedo", q)             # (alpha untouched: the sprite's cut-out)
 		mats[key] = sm
 	return mats[key]
 
@@ -910,19 +915,13 @@ static func _sprite_anchored(sp: Dictionary) -> bool:
 	return sp.get("anchor", Vector2.ZERO) != Vector2.ZERO and px.x > 0.0 and px.y > 0.0
 
 
-func _sprite_mat(key: Vector2i, sp: Dictionary) -> StandardMaterial3D:
+func _sprite_mat(key: Vector2i, sp: Dictionary) -> ShaderMaterial:
 	var k := "sprite%s" % key
 	if mats.has(k):
 		return mats[k]
-	var sm := StandardMaterial3D.new()
-	sm.albedo_texture = sp["texture"]
-	sm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	sm.alpha_scissor_threshold = 0.5
-	sm.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
-	sm.billboard_keep_scale = true
-	sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # no sun: the ground's light at their foot (_foot_light)
-	sm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	sm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var sm := ShaderMaterial.new()                 # upright, facing the camera, alpha cut, no sun: the ground's light
+	sm.shader = SPRITE                             # at their foot (_foot_light), hazed as the game does
+	sm.set_shader_parameter("tex", sp["texture"])
 	mats[k] = sm
 	return sm
 
@@ -1176,6 +1175,7 @@ func planet_look(planet: String, sky_file: String) -> void:
 	env.adjustment_brightness = a.get("bright", 1.0)
 	for sm in ground_mats:
 		sm.set_shader_parameter("sparkle", a.get("sparkle", 0.0))
+	_haze_globals()                               # (after the view's adjustments: the haze colour goes through them)
 	if env_nofog_cache != null:                   # the coop's maps: the same colours
 		for p in ["ambient_light_sky_contribution", "adjustment_saturation", "adjustment_contrast", "adjustment_brightness"]:
 			env_nofog_cache.set(p, env.get(p))
@@ -1187,10 +1187,41 @@ var haze_k := 99
 
 
 func _haze_fog(k: float) -> void:
+	haze_k = roundi(k)
 	env.fog_depth_begin = 20.0 + 16.0 * k / 99.0
 	env.fog_depth_end = 20.0 + 300.0 * k / 99.0
 	env.fog_depth_curve = LIVE_FOG_CURVE
 	env.fog_density = LIVE_FOG_MAX
+	_haze_globals()
+
+
+# The haze of the shaders that draw it as the game does (tn_haze.gdshaderinc: the ground, the water, the sprites, the
+# suits, the effects): in live mode the game's levels from the haze radius k, each a share of the way to the haze
+# colour in the palette's values (measured on the running game, MISS10, its table forced to one level: 0.11 at
+# level 4, 0.27 at 8, 0.49 at 12, 0.70 at 15, towards the sky's own haze colour, SKY 150 level 15); the colour is
+# taken back through the view's contrast and saturation (applied after, in sRGB: the haze then ends on the sky's own
+# colour, as in the game). The map viewer keeps its exponential fog. Godot's fog (env) still hazes the models.
+const HAZE_SHARE_A := 0.019      # share at level L: (A + B L) L
+const HAZE_SHARE_B := 0.00185
+
+
+func _haze_globals() -> void:
+	var c := env.fog_light_color
+	var r := Vector4.ZERO
+	var b := 1.0
+	if env.fog_enabled and env.fog_mode == Environment.FOG_MODE_DEPTH:
+		r = Vector4(maxf(float(haze_k), 1.0), HAZE_SHARE_A, HAZE_SHARE_B, 1.0)
+		if env.adjustment_enabled:
+			b = maxf(env.adjustment_brightness, 0.01)
+			var v := Vector3(c.r, c.g, c.b)
+			var m := (v.x + v.y + v.z) / 3.0
+			v = Vector3(m, m, m) + (v - Vector3(m, m, m)) / maxf(env.adjustment_saturation, 0.01)
+			v = Vector3(0.5, 0.5, 0.5) + (v - Vector3(0.5, 0.5, 0.5)) / maxf(env.adjustment_contrast, 0.01)
+			c = Color(v.x, v.y, v.z)
+	elif env.fog_enabled:
+		r = Vector4(env.fog_density, 0.0, 0.0, 2.0)
+	RenderingServer.global_shader_parameter_set("tn_haze_color", Vector4(c.r, c.g, c.b, b))
+	RenderingServer.global_shader_parameter_set("tn_haze_range", r)
 
 
 # The cloud ceiling (mission resource 178): a plane at cloud_h, 1 texel a unit, seen from the eye (0x2A7222:
@@ -2371,6 +2402,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		sm.ground_horizon_color = Color(0.72, 0.78, 0.86)
 		env.sky.sky_material = sm
 		env.fog_light_color = Color(0.7, 0.76, 0.84)
+		_haze_globals()
 		return
 	var mat := ShaderMaterial.new()
 	mat.shader = SKY_SHADER
@@ -2392,6 +2424,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 	mat.set_shader_parameter("haze", Vector3(haze.r, haze.g, haze.b))
 	env.sky.sky_material = mat
 	env.fog_light_color = haze
+	_haze_globals()
 	mat.set_shader_parameter("gain", LIVE_SKY if live else 1.0)
 	mat.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	if sk.get("light") != null:                         # the clouds lighten towards the horizon

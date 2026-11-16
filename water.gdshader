@@ -6,9 +6,10 @@
 // Modern look (old school off): the sky mirrored on moving waves instead (sky_common), on the same texels.
 // One material per ground grid (its tile map), drawn over the water cells of that grid (Terrain.build: only).
 shader_type spatial;
-render_mode unshaded, cull_back, depth_draw_never, shadows_disabled;
+render_mode unshaded, cull_back, depth_draw_never, shadows_disabled, fog_disabled;
 
 #include "res://sky_common.gdshaderinc"
+#include "res://tn_haze.gdshaderinc"
 
 uniform sampler2DArray tiles : source_color, filter_nearest, repeat_disable;
 uniform sampler2DArray water_mask : filter_nearest, repeat_disable;   // palette index - 161 on water texels, else 0
@@ -115,4 +116,5 @@ void fragment() {
 		vec3 ps = to_srgb(p);
 		ALBEDO = to_linear(fk * tint + (1.0 - fk) * ps * (2.0 / 3.0 + tint * (255.0 / 768.0)));
 	}
+	ALBEDO = tn_haze(ALBEDO, wpos, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 }

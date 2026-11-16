@@ -5,7 +5,9 @@
 // brightness, RESPLNT 53). No sun on the ground (its slopes and the hills' shadows are in the levels): the colour is
 // given as emission, and the light only takes away where an object's shadow falls (light()).
 shader_type spatial;
-render_mode ambient_light_disabled, specular_disabled;
+render_mode ambient_light_disabled, specular_disabled, fog_disabled;
+
+#include "res://tn_haze.gdshaderinc"
 
 uniform float light_rows[16];                  // brightness of the light table's rows, row 0 = full light
 uniform vec3 ground_light = vec3(1.0);         // the ground at full light (the viewer's look)
@@ -308,6 +310,9 @@ void fragment() {
 	}
 	vec3 lit = ALBEDO * row_light * bump_light * ground_light;
 	vec3 glow = EMISSION;
-	EMISSION = lit + glow;
-	ALBEDO = lit * shadow_dark;              // (only the shadows use it: light())
+	// hazed as the game does (tn_haze.gdshaderinc). ALBEDO only serves the shadows (light()): what a full shadow
+	// takes away, down to the hazed colour of the shaded ground
+	vec3 hz = tn_haze(lit, wpos, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	EMISSION = hz + glow;
+	ALBEDO = hz - tn_haze(lit * (1.0 - shadow_dark), wpos, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 }

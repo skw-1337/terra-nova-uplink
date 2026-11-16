@@ -228,6 +228,7 @@ func _build_briefing() -> void:
 	map_cam.far = 4000.0
 	if _viewer() and _viewer().has_method("env_nofog"):
 		map_cam.environment = _viewer().env_nofog()     # (200 above the map: the live view's fog would cover it)
+	map_cam.cull_mask = 0xFFFFF & ~(1 << 16)         # nor the haze of the ground (the viewer's NO_HAZE_LAYER)
 	map_view.add_child(map_cam)
 	var mf := PanelContainer.new()
 	mf.add_theme_stylebox_override("panel", _box(Color(0, 0, 0), FRAME, 1, 1))

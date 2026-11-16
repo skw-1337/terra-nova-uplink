@@ -831,41 +831,45 @@ hud_n = 0
 hud_copies = -1
 COPIES = 0x46613C                          # compteur d'images affichees du code HD
 DESSIN = 0x466104                          # non nul pendant que le jeu dessine son image 3D (81 % du temps)
-joints_net = None                         # (table, {entite: articulations brutes}, instant) : la derniere lecture nette
-dessin_libre = 0.0                        # la derniere fois que le jeu ne dessinait pas
+joints_net = None                         # (table, {entite: articulations brutes}, instant, image) : la derniere lecture nette
+REPRISE = 0.15                            # s : une lecture nette resservie au plus tant
+
+
+def joints_lus(t):
+    lus = {}
+    for i in range(NENT):
+        o = 0x25 * i
+        if not t[o] or t[o + 1] != 1: continue
+        nf = struct.unpack_from('<H', t, o + 3)[0]
+        if nf <= 200: lus[i] = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
+    return lus
+
+
+def guetter():
+    """Catch the gap after each of the game's 3D pictures: the suits' joints (192 bytes at +0x1AF of their records)
+    and the entity table they go with, read once per picture while the game is not drawing (0x466104) and kept if it
+    did not start again meanwhile (same picture counter). It rewrites the knees, shoulders, elbows and hands while it
+    draws a suit; a read in the middle of that caught bones up to 3 times their length. Called every tick and while
+    the bridge waits for the next one (never waits itself: a wait for the gap held every packet up to 60 ms)."""
+    global joints_net
+    c = d32(COPIES)
+    if joints_net is not None and c == joints_net[3]:
+        return                                # (this picture's already read)
+    if d32(DESSIN):
+        return
+    t = g.read(A_MASTER, 0x25 * NENT)
+    lus = joints_lus(t)
+    if not d32(DESSIN) and d32(COPIES) == c:
+        joints_net = (t, lus, time.time(), c)
 
 
 def articulations(tab):
-    """The suits' joints (192 bytes at +0x1AF of their records) and the entity table they go with, read between two of
-    the game's 3D pictures: it rewrites the knees, shoulders, elbows and hands while it draws a suit, and a read in the
-    middle of that caught bones up to 3 times their length (a hand 0.28 from its elbow for 0.13): the viewer took it
-    for a half-frozen pose and walked the suit on its own steps for 3 s, strides not the game's. A read that overlaps
-    a picture gives the last clean one again; none for 0.1 s (about 1 tick in 5 falls between two pictures, but in
-    runs): the next gap is waited for, at most 60 ms. A game that never leaves its drawing (no HD code): as before."""
-    global joints_net, dessin_libre
-    for essai in range(2):
-        c = d32(COPIES)
-        net = not d32(DESSIN)
-        if net: dessin_libre = time.time()
-        t = g.read(A_MASTER, 0x25 * NENT) if net else tab
-        lus = {}
-        for i in range(NENT):
-            o = 0x25 * i
-            if not t[o] or t[o + 1] != 1: continue
-            nf = struct.unpack_from('<H', t, o + 3)[0]
-            if nf <= 200: lus[i] = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
-        if net and not d32(DESSIN) and d32(COPIES) == c:
-            joints_net = (t, lus, time.time())
-            return t, lus
-        if joints_net is not None and time.time() - joints_net[2] < 0.1:
-            return joints_net[0], joints_net[1]
-        if essai or time.time() - dessin_libre > 0.5:
-            break
-        t0 = time.time()
-        while d32(DESSIN) and time.time() - t0 < 0.06:
-            time.sleep(0)
-        tab = t
-    return t, lus
+    """The joints and the entity table of the last clean read (guetter), kept REPRISE s; none since (a game that never
+    leaves its drawing: no HD code): read now, the bone checks then leave out a torn suit."""
+    guetter()
+    if joints_net is not None and time.time() - joints_net[2] < REPRISE:
+        return joints_net[0], joints_net[1]
+    return tab, joints_lus(tab)
 
 # Jouer depuis la fenetre du visualiseur (--play) : il renvoie clavier et souris sur le port 47824.
 #   'K' + scancode (u16, 0xE0xx = touche etendue) + appui (u8) -> touche postee a la fenetre DOSBox (position physique,
@@ -2006,6 +2010,7 @@ while True:
             s.sendto(pk, ('127.0.0.1', 47821))
             if guest: guest.relay(pk)
     piles = decor = None
+    body_at = {}                              # entity -> its place in body (a suit posed below gets its pose's place)
     for i in range(NENT):
         o = 0x25 * i
         if tab[o + 1] > 6 or (tab[o + 1] >= 5 and tab[o] == 0): continue
@@ -2022,6 +2027,7 @@ while True:
             if decor is None: decor = g.read(DECOR_ETAT - 6, 256 * 9)
             nd = struct.unpack_from('<h', tab, o + 3)[0]
             if 0 <= nd < 256 and decor[9 * nd + 6]: actif |= 2
+        body_at[i] = len(body)
         body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], actif, ex / 65536, ey / 65536, ez / 65536, eh))
     # the main view through the player's drone (see VUE_ENT)
     vue = u16(VUE_ENT)
@@ -2103,6 +2109,11 @@ while True:
         sol = min(w[2] * sg for w in q[:4])
         pose = [c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]
         joints.append(struct.pack('<if48f', i, sol * sg, *pose))
+        if i != pid and i in body_at and tab_j is not tab:
+            # the suit where its pose was read (the same picture): a pose from a read before, on the entity's place
+            # now, slid its planted feet forward until the next read
+            bx, by, bz = struct.unpack_from('<iii', tab_j, o + 0x0F)
+            body[body_at[i]] = body[body_at[i]][:16] + struct.pack('<4f', bx / 65536, by / 65536, bz / 65536, cap)
         # the limb drawer's reference vector of each of its 5 chains (record +0x26F, 12 bytes a chain: 0x2F7798 hands
         # skeleton +0x10 + 12 chain to 0x2F6C50, which picks each limb's view from it), in the same frame
         rv = struct.unpack('<15i', g.read(SOLDATS + nf * 0x582 + 0x26F, 60))
@@ -2331,7 +2342,14 @@ while True:
         break
     if viewer is not None and time.time() - devant_t > 0.5:
         devant()
-    if PLAY:
-        select.select([rx], [], [], 1 / HZ)   # clavier / souris traites des leur arrivee
-    else:
-        time.sleep(1 / HZ)
+    fin_tour = time.time() + 1 / HZ          # (waiting: the gap after each of the game's pictures caught, guetter)
+    while True:
+        guetter()
+        reste = fin_tour - time.time()
+        if reste <= 0:
+            break
+        if PLAY:
+            if select.select([rx], [], [], min(reste, 0.001))[0]:
+                break                         # clavier / souris traites des leur arrivee
+        else:
+            time.sleep(min(reste, 0.001))

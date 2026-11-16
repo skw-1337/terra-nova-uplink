@@ -36,6 +36,9 @@ LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 120.0   #
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
+# online: the bridge's packets about the picture relayed to the guest (relay), and their least gap (s): the sky's
+# drift 5 a second (it moves slowly), the waypoint (its angle word turns every frame) twice; the rest when it changes
+RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25}
 KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A D, Space (network input is filtered)
 # The jets (Space), as the game's 0x288EF0 / 0x288F78 for a suit: near the ground a kick of 150 up every 2nd game
 # update, unpaid; in the air free for 200 ms, then each update pays energy dt x 2^32 / ((f + 0x20000) / 3) (16.16, f =
@@ -144,6 +147,7 @@ class Guest:
         self.remote, self.sent_t, self.view_hz = remote, 0.0, max(1.0, view_hz)
         self.smoke_t, self.smoke_on = 0.0, False
         self.weather_pk, self.weather_t = b'', 0.0
+        self.relayed = {}                                     # online: per tag, the last packet relayed and when
         self.fx_pk, self.fx_sent, self.fx_t = b'', b'', 0.0
         self.beam_pk, self.beam_sent, self.part_pk, self.part_sent, self.part_t = None, None, None, None, 0.0
         self.joined = not remote                               # online: once his window speaks (coop_net.gd's 'R' / 'N')
@@ -614,8 +618,10 @@ class Guest:
         if len(pk) < 60000:
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
-    def step(self, body, joints, arts=(), cam=None):
-        # cam: the bridge's main view (x, y, z, heading, pitch): the spectator's
+    def step(self, body, joints, arts=(), cam=None, seen=None, alarm=0):
+        # cam: the bridge's main view (x, y, z, heading, pitch): the spectator's; seen: the entity it is seen from (the
+        # host, or his drone); alarm: the mission's alarm byte. The views end as the host's: the entity whose body the
+        # view hides, then the alarm (the type-57 lamps)
         g, M = self.g, self.master
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
@@ -665,7 +671,7 @@ class Guest:
         if self.state != OK:                                   # the guest watches through the host's eyes
             self.send(struct.pack('<6f2i', *(cam or self.host_cam(me)), self.fov_now(), len(body), me) +
                       b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
-                      struct.pack('<i', len(arts)) + b''.join(arts))
+                      struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', seen or me, 1 if alarm else 0))
             return
         eg = M + self.gid * 0x25
         k = lambda sc: 1 if sc in self.keys else 0
@@ -732,7 +738,7 @@ class Guest:
                 joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
         view = (struct.pack('<6f2i', *eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
-                struct.pack('<i', len(arts)) + b''.join(arts))
+                struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', self.gid, 1 if alarm else 0))
         self.send(view)
 
     def resync(self, pk):
@@ -845,6 +851,23 @@ class Guest:
         if pk != self.weather_pk or time.time() - self.weather_t > 2.0:
             self.weather_pk, self.weather_t = pk, time.time()
             self.s.sendto(b'WTH' + pk[4:], ('127.0.0.1', REMOTE_VIEW))
+
+    def relay(self, pk):
+        """What the bridge sends the host's window about his picture and the guest's needs as well: the sky's drift
+        and sway (SKYO), the waypoint (WAYP), the haze (HAZE), the soldiers' bone lengths and arms (SLEN, ARMS), the
+        ground tiles (TEXL, local only). Local: as it is. Online: 'LIV' + the packet (coop_net.gd hands the listed
+        ones to his viewer), when it changes, at most RELAY_GAP a second, and every 2 s."""
+        if not self.remote:
+            self.s.sendto(pk, ('127.0.0.1', LIVE_PORT))
+            return
+        tag, now = pk[:4], time.time()
+        gap = RELAY_GAP.get(tag)
+        if gap is None:
+            return
+        last, t = self.relayed.get(tag, (b'', 0.0))
+        if (pk != last and now - t >= gap) or now - t >= 2.0:
+            self.relayed[tag] = (pk, now)
+            self.s.sendto(b'LIV' + pk, ('127.0.0.1', REMOTE_VIEW))
 
     def fx29(self, pk=None):
         """What each 6/29 is when not a shot's dust ('FX29', live_bridge.py sortes_29: a jetpack's trail, a tree's

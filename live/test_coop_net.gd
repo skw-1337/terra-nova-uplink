@@ -52,6 +52,7 @@ var lefts := []                      # t of each 'X' there (a guest left: his te
 var views := []                      # [t, md5] on the guest's live port
 var huds := []                       # [t, hex] on the guest's HUD port
 var fxs := []                        # [t, packet] FX29 on the guest's live port (what each 6/29 is)
+var livs := []                       # [t, packet] HAZE / IRVW on the guest's live port (relayed 'LIV')
 var results := []                    # [ok, name, detail]
 
 
@@ -79,6 +80,8 @@ func _process(_delta: float) -> bool:
 		var lp := live.get_packet()
 		if lp.size() >= 4 and lp.slice(0, 4).get_string_from_ascii() == "FX29":
 			fxs.append([now(), lp])
+		elif lp.size() >= 4 and lp.slice(0, 4).get_string_from_ascii() in ["HAZE", "IRVW"]:
+			livs.append([now(), lp])
 		else:
 			views.append([now(), _md5(lp)])
 	while hud.get_available_packet_count() > 0:
@@ -276,6 +279,18 @@ func _run() -> void:
 	await until(func(): return count(fxs, t_fx) > 0, 2.0)
 	check(count(fxs, t_fx) == 1 and (fxs[-1][1] as PackedByteArray).slice(4) == pay, "6/29 sorts reach the guest's viewer (FXS -> FX29)",
 		"%d" % count(fxs, t_fx))
+	# the bridge's own packets about the picture, as coop_guest.py relay sends them: 'LIV' + packet, listed tags only
+	var haze := "LIVHAZE".to_ascii_buffer()
+	haze.append_array(PackedByteArray([0, 0, 0xC6, 0x42]))   # k 99.0
+	var irvw := "LIVIRVW".to_ascii_buffer()
+	irvw.append(1)                                           # the host's infrared view: his own, not relayed
+	var t_liv := now()
+	fx_out.put_packet(irvw)
+	fx_out.put_packet(haze)
+	await until(func(): return count(livs, t_liv) > 0, 2.0)
+	await wait(0.3)
+	check(count(livs, t_liv) == 1 and (livs[-1][1] as PackedByteArray) == haze.slice(3), "LIV: HAZE reaches the guest's viewer as the bridge sent it, IRVW does not",
+		"%d" % count(livs, t_liv))
 
 	# --- the guest's input, to the bridge (peer_ok)
 	var t_in := now()

@@ -1919,12 +1919,14 @@ while True:
         taille_t = time.time()
         tl = tailles(tab)
         if tl:
-            s.sendto(b'SLEN' + struct.pack('<H', len(tl)) + b''.join(struct.pack('<i6f', i, *v) for i, v in tl),
-                     ('127.0.0.1', 47821))
+            pk = b'SLEN' + struct.pack('<H', len(tl)) + b''.join(struct.pack('<i6f', i, *v) for i, v in tl)
+            s.sendto(pk, ('127.0.0.1', 47821))
+            if guest: guest.relay(pk)          # (the coop guest's window too)
         ba = bras(tab)
         if ba:
-            s.sendto(b'ARMS' + struct.pack('<H', len(ba)) + b''.join(struct.pack('<iB', i, m) for i, m in ba),
-                     ('127.0.0.1', 47821))
+            pk = b'ARMS' + struct.pack('<H', len(ba)) + b''.join(struct.pack('<iB', i, m) for i, m in ba)
+            s.sendto(pk, ('127.0.0.1', 47821))
+            if guest: guest.relay(pk)
     piles = decor = None
     for i in range(NENT):
         o = 0x25 * i
@@ -2149,10 +2151,11 @@ while True:
                struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi,
                -struct.unpack_from('<h', tab, 0x25 * vue + 0x1D)[0] / 65536 * 2 * math.pi)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
+    alarm = g.read(ALARME, 1)[0] if ALARME else 0
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid) +
-             struct.pack('<i', g.read(ALARME, 1)[0] if ALARME else 0), ('127.0.0.1', 47821))
-    if guest: guest.step(body, joints, arts, cam)   # (cam: what the guest sees when he has no suit)
+             struct.pack('<i', alarm), ('127.0.0.1', 47821))
+    if guest: guest.step(body, joints, arts, cam, vue if sonde else pid, alarm)   # (cam: what he sees with no suit)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()
         nuages = fumees(tab)
@@ -2185,16 +2188,20 @@ while True:
                 print('curseur :', repr(ex), file=sys.stderr, flush=True)
     if time.time() - nuages_t > 0.1:
         nuages_t = time.time()
-        s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))) + g.read(NUAGES - 0xC, 4),
-                 ('127.0.0.1', 47821))         # (+ the desert clouds' sway phase, +193 a tick)
+        pk = b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))) + g.read(NUAGES - 0xC, 4)
+        s.sendto(pk, ('127.0.0.1', 47821))    # (+ the desert clouds' sway phase, +193 a tick)
+        if guest: guest.relay(pk)              # (the coop guest's window too: his sky, waypoint, haze; not the IR view)
         s.sendto(b'IRVW' + bytes([1 if g.read(VISION, 1)[0] in (1, 2) else 0]), ('127.0.0.1', 47821))
-        s.sendto(b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
-                                        struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0]), ('127.0.0.1', 47821))
+        pk = b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
+                                   struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0])
+        s.sendto(pk, ('127.0.0.1', 47821))
+        if guest: guest.relay(pk)
         if BRUME and time.time() - brume_t > 1.0:
             brume_t = time.time()
             hk = hazing.radius(g.read(BRUME, 1024))
             if hk:
                 s.sendto(b'HAZE' + struct.pack('<f', hk), ('127.0.0.1', 47821))
+                if guest: guest.relay(b'HAZE' + struct.pack('<f', hk))
         if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
             wthr = meteo()
             s.sendto(wthr, ('127.0.0.1', 47821))
@@ -2204,7 +2211,7 @@ while True:
                 texl = tuiles_sol()
                 if texl:
                     s.sendto(texl, ('127.0.0.1', 47821))
-                    if guest and not guest.remote: guest.s.sendto(texl, ('127.0.0.1', coop_guest.LIVE_PORT))   # (the guest's window on this PC)
+                    if guest and not guest.remote: guest.relay(texl)   # (the guest's window on this PC)
             except Exception as ex:
                 if time.time() - tuiles_t > 5.0:
                     tuiles_t = time.time()

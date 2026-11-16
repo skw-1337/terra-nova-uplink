@@ -14,6 +14,9 @@
 // Cameras that leave out the layer bit 16 (NO_HAZE_LAYER: the co-op maps high above the ground) see no haze.
 global uniform vec4 tn_haze_color;
 global uniform vec4 tn_haze_range;
+// tn_view_bcs: the view's brightness, contrast and saturation (Godot applies the brightness in linear light, then the
+// contrast and the saturation in sRGB), w 1 when they are on (live)
+global uniform vec4 tn_view_bcs;
 
 vec3 tn_haze_srgb(vec3 c) {
 	c = max(c, vec3(0.0));
@@ -23,6 +26,20 @@ vec3 tn_haze_srgb(vec3 c) {
 vec3 tn_haze_linear(vec3 c) {
 	c = max(c, vec3(0.0));
 	return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThan(c, vec3(0.04045)));
+}
+
+// A colour the game draws (its palette's values, sRGB 0-1): the linear colour that shows it on the screen once the
+// view's adjustments are applied (they are the models' look; the ground and its sprites are drawn in the game's own
+// colours)
+vec3 tn_game_colour(vec3 srgb) {
+	if (tn_view_bcs.w < 0.5) {
+		return tn_haze_linear(srgb);
+	}
+	vec3 v = srgb;
+	float m = (v.x + v.y + v.z) / 3.0;
+	v = vec3(m) + (v - vec3(m)) / max(tn_view_bcs.z, 0.01);
+	v = vec3(0.5) + (v - vec3(0.5)) / max(tn_view_bcs.y, 0.01);
+	return tn_haze_linear(v) / max(tn_view_bcs.x, 0.01);
 }
 
 // col: the colour in linear light, wpos: the point's world position, cam: the camera's, layers: CAMERA_VISIBLE_LAYERS

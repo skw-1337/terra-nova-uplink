@@ -10,7 +10,15 @@ render_mode ambient_light_disabled, specular_disabled, fog_disabled;
 #include "res://tn_haze.gdshaderinc"
 
 uniform float light_rows[16];                  // brightness of the light table's rows, row 0 = full light
-uniform vec3 ground_light = vec3(1.0);         // the ground at full light (the viewer's look)
+uniform vec3 ground_light = vec3(1.0);         // the ground at full light (the map viewer's look)
+// per_index: the tiles as the game lights them, each texel's palette index swapped through the row (layer
+// row x tile_count + tile, file row 0 = full light): no brightness factor then. game_colours (live): their colours
+// shown as the game's, through the view's adjustments (tn_game_colour), without the viewer's look
+uniform bool per_index = false;
+uniform float tile_count = 64.0;
+uniform bool game_colours = false;
+uniform sampler2DArray tiles_lit : source_color, filter_nearest_mipmap_anisotropic, repeat_disable;
+uniform sampler2DArray tiles_lit_soft : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
 
 
@@ -74,7 +82,7 @@ vec3 detail_noised(vec2 p) {
 
 
 // a ground cell's tile at a position beyond its edges (mirrored)
-vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy) {
+vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
 	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
 	vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
 	float tile = floor(t.r * 255.0 + 0.5);
@@ -97,22 +105,25 @@ vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy) {
 	}
 	// clamped, not wrapped: uv stays in 0..1 (mirrored above), and a wrapping filter mixed the tile's opposite edge
 	// into its border texels (a thin light line along the cells of two-material tiles)
+	if (per_index) {
+		return textureGrad(tiles_lit_soft, vec3(uv, tile + loff), dx, dy).rgb;
+	}
 	return textureGrad(tiles_soft, vec3(uv, tile), dx, dy).rgb;
 }
 
 uniform float blend_width = 0.3;      // blend between two cells (share of a cell each side)
 
 // the four cells around the point blended into each other along an uneven edge (no more square tiles)
-vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp) {
+vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff) {
 	vec2 qc = q - 0.5;
 	vec2 c0 = floor(qc);
 	vec2 fb = fract(qc);
 	vec2 jit = vec2(detail_noised(wp.xz * 0.7).x, detail_noised(wp.xz * 0.7 + 31.7).x) - 0.5;
 	vec2 fw = smoothstep(0.5 - blend_width, 0.5 + blend_width, clamp(fb + jit * 0.5, 0.0, 1.0));
-	vec3 a = cell_tile(c0, q, dx, dy);
-	vec3 b = cell_tile(c0 + vec2(1.0, 0.0), q, dx, dy);
-	vec3 c = cell_tile(c0 + vec2(0.0, 1.0), q, dx, dy);
-	vec3 d = cell_tile(c0 + vec2(1.0, 1.0), q, dx, dy);
+	vec3 a = cell_tile(c0, q, dx, dy, loff);
+	vec3 b = cell_tile(c0 + vec2(1.0, 0.0), q, dx, dy, loff);
+	vec3 c = cell_tile(c0 + vec2(0.0, 1.0), q, dx, dy, loff);
+	vec3 d = cell_tile(c0 + vec2(1.0, 1.0), q, dx, dy, loff);
 	return mix(mix(a, b, fw.x), mix(c, d, fw.x), fw.y);
 }
 
@@ -166,7 +177,7 @@ varying vec3 wpos;
 varying float vlight;
 
 // the ground's texel at grid position q (tile of its cell, turned), sharpened mip choice
-vec3 ground_at(vec2 q, vec2 dx, vec2 dy, out vec2 uv, out float tile, out vec2 du, out vec2 dv) {
+vec3 ground_at(vec2 q, vec2 dx, vec2 dy, float loff, out vec2 uv, out float tile, out vec2 du, out vec2 dv) {
 	vec2 cell = clamp(floor(q), vec2(0.0), vec2(grid_n - 2.0));
 	vec2 f = clamp(q - cell, 0.0, 1.0);
 	vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
@@ -188,6 +199,12 @@ vec3 ground_at(vec2 q, vec2 dx, vec2 dy, out vec2 uv, out float tile, out vec2 d
 	}
 	du = dx;
 	dv = dy;
+	if (per_index) {
+		if (modern) {
+			return textureGrad(tiles_lit_soft, vec3(uv * (63.0 / 64.0) + 0.5 / 64.0, tile + loff), dx, dy).rgb;
+		}
+		return textureGrad(tiles_lit, vec3(uv, tile + loff), dx, dy).rgb;
+	}
 	if (modern) {        // texel centres to the cell's edges: no half-texel strip of the edge texel along each border
 		return textureGrad(tiles_soft, vec3(uv * (63.0 / 64.0) + 0.5 / 64.0, tile), dx, dy).rgb;
 	}
@@ -213,17 +230,19 @@ void fragment() {
 	vec2 dx = dFdx(g);
 	vec2 dy = dFdy(g);
 	vec3 n_geo = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-	float row_light = light_rows[15 - clamp(int(floor(vlight)), 0, 15)];
+	int frow = 15 - clamp(int(floor(vlight)), 0, 15);       // the row's file row (0 = full light)
+	float row_light = per_index ? 1.0 : light_rows[frow];
+	float loff = float(frow) * tile_count;
 	vec2 uv;
 	float tile;
 	vec2 du;
 	vec2 dv;
-	vec3 col = ground_at(g, dx, dy, uv, tile, du, dv);
+	vec3 col = ground_at(g, dx, dy, loff, uv, tile, du, dv);
 	float l0 = dot(col, vec3(0.3, 0.59, 0.11));
 	// texels per screen pixel: the grain and the bump only where a texel covers more than a pixel (finer, they
 	// only added noise that shimmered as the view moved)
 	float tpp = max(length(dFdx(g)), length(dFdy(g))) * 64.0;
-	col = cells_blend(g, dx, dy, wpos);       // cells blended
+	col = cells_blend(g, dx, dy, wpos, loff);       // cells blended
 	// grain: the same tile 4 times finer modulates the brightness up close (grass blades, dirt streaks); its mips
 	// fade it to nothing further away, so it does not shimmer
 	vec3 fine = modern ? textureGrad(tiles_wrap, vec3(uv * 4.0, tile), du * 4.0, dv * 4.0).rgb   // wrapped: no seams
@@ -266,8 +285,8 @@ void fragment() {
 		float t2;
 		vec2 du2;
 		vec2 dv2;
-		float l1 = dot(ground_at(g + vec2(TEXEL, 0.0), dx, dy, uv2, t2, du2, dv2), vec3(0.3, 0.59, 0.11));
-		float l2 = dot(ground_at(g + vec2(0.0, TEXEL), dx, dy, uv2, t2, du2, dv2), vec3(0.3, 0.59, 0.11));
+		float l1 = dot(ground_at(g + vec2(TEXEL, 0.0), dx, dy, loff, uv2, t2, du2, dv2), vec3(0.3, 0.59, 0.11));
+		float l2 = dot(ground_at(g + vec2(0.0, TEXEL), dx, dy, loff, uv2, t2, du2, dv2), vec3(0.3, 0.59, 0.11));
 		vec2 slope = vec2(l1 - l0, l2 - l0) / (TEXEL * step_size) * bump_k;
 		vec3 nw = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 		nw = normalize(nw - vec3(slope.x, 0.0, slope.y));
@@ -309,6 +328,9 @@ void fragment() {
 		bump_light = clamp(1.0 + max(dot(nwb, sun_dir), 0.0) - max(dot(n_geo, sun_dir), 0.0), 0.6, 1.4);
 	}
 	vec3 lit = ALBEDO * row_light * bump_light * ground_light;
+	if (game_colours) {                  // the game's colours on the screen (its texels in sRGB, through the view)
+		lit = tn_game_colour(tn_haze_srgb(ALBEDO * row_light)) * bump_light;
+	}
 	vec3 glow = EMISSION;
 	// hazed as the game does (tn_haze.gdshaderinc). ALBEDO only serves the shadows (light()): what a full shadow
 	// takes away, down to the hazed colour of the shaded ground

@@ -757,8 +757,55 @@ func _read_planet(path: String) -> Dictionary:
 	out["edge"] = _edges(rgb_tiles)
 	out["qual"] = _plain_tiles(r)
 	out["rows"] = _light_rows(r, raw, fp)
+	var luts := shade_luts(out["shade_rows"], fp)
+	out["shade_luts"] = luts
+	out["tiles_lit"] = lit_tiles(raw, count, luts) if luts.size() == 16 else null
 	_read_water(r, raw, count, fp, out)
 	return out
+
+
+# The colours each shade row of RESPLNT 53 gives the 256 palette indices (file row k: 768 bytes, RGB): the game lights
+# its ground and its sprites by swapping each texel's index through the row (0x41C228), not by one factor for all.
+static func shade_luts(t53: PackedByteArray, fp: PackedColorArray) -> Array:
+	var out := []
+	if t53.size() < 4096 or fp.size() < 256:
+		return out
+	for k in 16:
+		var lut := PackedByteArray()
+		lut.resize(768)
+		for c in 256:
+			var fc: Color = fp[t53[k * 256 + c]]
+			lut[3 * c] = fc.r8
+			lut[3 * c + 1] = fc.g8
+			lut[3 * c + 2] = fc.b8
+		out.append(lut)
+	return out
+
+
+# A 64 x 64 tile (4096 palette indices) through one shade row (shade_luts), mipmapped.
+static func lit_tile(p: PackedByteArray, lut: PackedByteArray) -> Image:
+	var rgb := PackedByteArray()
+	rgb.resize(4096 * 3)
+	for i in 4096:
+		var c := 3 * p[i]
+		rgb[3 * i] = lut[c]
+		rgb[3 * i + 1] = lut[c + 1]
+		rgb[3 * i + 2] = lut[c + 2]
+	var img := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, rgb)
+	img.generate_mipmaps()
+	return img
+
+
+# The ground's tiles as the game draws them at each light row: layer k x count + tile = the tile through file row k
+# (terrain.gdshader picks the row per pixel, as the game does along its light gradient).
+static func lit_tiles(raw: PackedByteArray, count: int, luts: Array) -> Texture2DArray:
+	var imgs: Array[Image] = []
+	for k in 16:
+		for t in count:
+			imgs.append(lit_tile(raw.slice(t * 4096, t * 4096 + 4096), luts[k]))
+	var arr := Texture2DArray.new()
+	arr.create_from_images(imgs)
+	return arr
 
 
 # Water (0x2B219C, drawn only on a planet of kind 0: RESPLNT 40 byte 0): a tile is water when one of its materials

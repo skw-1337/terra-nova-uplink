@@ -606,6 +606,7 @@ func _load(index: int) -> void:
 	var out_mat: Material = mats["terrain"]
 	snow_pl = pl                          # (the game's snow on its tiles: _live_tiles)
 	snow_tex = null
+	snow_lit = null
 	snow_raw.clear()
 	snow_mats.clear()
 	if pl["ok"]:                          # real ground textures (else: average colors)
@@ -1074,6 +1075,12 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	sm.set_shader_parameter("tiles", pl["textures"])
 	sm.set_shader_parameter("tiles_soft", pl["textures"])
 	sm.set_shader_parameter("tiles_wrap", pl["textures"])
+	if pl.get("tiles_lit") != null:                     # lit per palette index through the shade rows, as the game
+		sm.set_shader_parameter("tiles_lit", pl["tiles_lit"])
+		sm.set_shader_parameter("tiles_lit_soft", pl["tiles_lit"])
+		sm.set_shader_parameter("tile_count", float(pl["count"]))
+		sm.set_shader_parameter("per_index", true)
+	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
@@ -1229,6 +1236,9 @@ func _haze_globals() -> void:
 		r = Vector4(env.fog_density, 0.0, 0.0, 2.0)
 	RenderingServer.global_shader_parameter_set("tn_haze_color", Vector4(c.r, c.g, c.b, b))
 	RenderingServer.global_shader_parameter_set("tn_haze_range", r)
+	var on := live and env.adjustment_enabled
+	RenderingServer.global_shader_parameter_set("tn_view_bcs", Vector4(env.adjustment_brightness,
+			env.adjustment_contrast, env.adjustment_saturation, 1.0) if on else Vector4(1, 1, 1, 0))
 
 
 # The cloud ceiling (mission resource 178): a plane at cloud_h, 1 texel a unit, seen from the eye (0x2A7222:
@@ -5500,6 +5510,7 @@ var weather_key := ""
 var snow_pl := {}                               # the map's planet (tn_data _read_planet)
 var snow_mats := []                             # the ground's materials (detail and outer maps)
 var snow_tex: Texture2DArray = null             # its tiles as the game holds them (null: the planet's own)
+var snow_lit: Texture2DArray = null             # the same through the shade rows (TNData.lit_tiles)
 var snow_raw := {}                              # tile -> the palette indices last laid on snow_tex
 
 
@@ -5532,6 +5543,16 @@ func _live_tiles(q: PackedByteArray) -> void:
 			for sm in snow_mats:
 				for u in ["tiles", "tiles_soft", "tiles_wrap"]:
 					(sm as ShaderMaterial).set_shader_parameter(u, snow_tex)
+			if snow_pl.get("tiles_lit") != null:
+				var lt: Texture2DArray = snow_pl["tiles_lit"]
+				var limgs: Array[Image] = []
+				for i in lt.get_layers():
+					limgs.append(lt.get_layer_data(i))
+				snow_lit = Texture2DArray.new()
+				snow_lit.create_from_images(limgs)
+				for sm in snow_mats:
+					for u in ["tiles_lit", "tiles_lit_soft"]:
+						(sm as ShaderMaterial).set_shader_parameter(u, snow_lit)
 		var rgb := PackedByteArray()
 		rgb.resize(4096 * 3)
 		for i in 4096:
@@ -5542,6 +5563,10 @@ func _live_tiles(q: PackedByteArray) -> void:
 		var img := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, rgb)
 		img.generate_mipmaps()
 		snow_tex.update_layer(img, t)
+		if snow_lit != null:
+			var luts: Array = snow_pl["shade_luts"]
+			for row in luts.size():
+				snow_lit.update_layer(TNData.lit_tile(p, luts[row]), row * n + t)
 		snow_raw[t] = p
 
 

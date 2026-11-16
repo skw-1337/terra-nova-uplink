@@ -237,8 +237,11 @@ func load_map(path: String, mission_file: String) -> Dictionary:
 			planet = raw80.slice(i, i + 12).get_string_from_ascii()
 			break
 	var pl := load_planet(resolve(mission_file, planet))
-	var detail := _grid(r.data(86), DETAIL_N, pl, path + "#86")
-	var outer := _grid(r.data(85), COARSE_N, pl, path + "#85") if r.has(85) else {}
+	# resource 81, word 0: the seed of the quarter turns the game draws for its plain tiles at load (see _grid)
+	var r81: PackedByteArray = r.data(81)
+	var seed := r81.decode_u16(0) if r81.size() >= 2 else -1
+	var detail := _grid(r.data(86), DETAIL_N, pl, path + "#86", seed)
+	var outer := _grid(r.data(85), COARSE_N, pl, path + "#85") if r.has(85) else {}   # (the game keeps its turns)
 	# Vegetation, as the engine lays it out: resource 83 = 128 x 128 map (stored column by column)
 	# of 4 x 4 unit cells; value v > 0 puts vegetation list v (resource 119 + v) in the cell,
 	# each list item at an offset inside the cell (16.16 fixed point, 0..4).
@@ -263,7 +266,7 @@ func load_map(path: String, mission_file: String) -> Dictionary:
 
 # Grid: heights, tile index per vertex (byte & 0x3F), fallback vertex colors, and the tile map
 # (R = tile, G = quarter turns) used by the terrain shader.
-func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "") -> Dictionary:
+func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "", seed: int = -1) -> Dictionary:
 	var h := PackedFloat32Array()
 	h.resize(n * n)
 	var col := PackedColorArray()
@@ -288,6 +291,22 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "") -> Dict
 			h[i] = d.decode_s16(3 * i + 1) * HEIGHT_SCALE
 		tiles[i] = t
 		col[i] = tile_color[t]
+	# The game's map loader (0x29411D -> 0x29431C) turns the plain tiles of the detail grid again, whatever the file
+	# stores: one material on all four corners (RESPLNT 52) that is in the planet's mask (RESPLNT 72), a quarter turn
+	# drawn from the map's seed (resource 81), the generator reset at each row and stepped on those tiles only.
+	# Seven generator maps (DVAL, ICE, IMBR, KEEP, SAND, VALE, WILD) store 0 there: their ground no longer repeats.
+	var qual: PackedByteArray = pl.get("qual", PackedByteArray())
+	var rerolled := PackedByteArray()
+	if seed >= 0 and n == DETAIL_N and qual.size() == 64:
+		rerolled.resize(n * n)
+		for y in n:
+			var st := seed
+			for x in n:
+				var i := y * n + x
+				if qual[d[3 * i] & 0x3F] == 1:              # the raw tile (before the "past the set" fallback)
+					st = (st * 2053 + 13849) & 0xFFFF       # (only the low 16 bits are ever used)
+					turns[i] = st >> 14
+					rerolled[i] = 1
 	var grid := {"n": n, "h": h, "col": col, "tile": tiles}
 	if pl["ok"]:
 		if STORED_TURNS:                 # R = tile, G = quarter turns, as the map stores them
@@ -298,7 +317,14 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "") -> Dict
 				out[2 * i + 1] = turns[i]
 			grid["tilemap"] = Image.create_from_data(n, n, false, Image.FORMAT_RG8, out)
 		else:
-			grid["tilemap"] = _tilemap(tiles, n, pl, key)
+			var img := _tilemap(tiles, n, pl, key)
+			if not rerolled.is_empty():                # the game's own turns win over the guess
+				var px := img.get_data()
+				for i in n * n:
+					if rerolled[i] == 1:
+						px[2 * i + 1] = turns[i]
+				img = Image.create_from_data(n, n, false, Image.FORMAT_RG8, px)
+			grid["tilemap"] = img
 	return grid
 
 
@@ -311,7 +337,7 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "") -> Dict
 #  3. polish the transition tiles (not the one-sided ones, whose stripes would drift inwards):
 #     keep the turn whose edges best continue the neighbours' edge colors.
 # The result is cached per map file in user://tilemaps.
-const TILEMAP_VERSION := 5
+const TILEMAP_VERSION := 6
 const STORED_TURNS := true       # TEST (2026-11-16): tile turns and 12-bit heights read from the map; false = the guess below
 const NB8 := [Vector2i(0, -1), Vector2i(1, -1), Vector2i(1, 0), Vector2i(1, 1), Vector2i(0, 1),
 		Vector2i(-1, 1), Vector2i(-1, 0), Vector2i(-1, -1)]   # N NE E SE S SW W NW
@@ -619,6 +645,27 @@ func _read_planet(path: String) -> Dictionary:
 	out["prof"] = prof
 	out["own"] = own
 	out["edge"] = _edges(rgb_tiles)
+	out["qual"] = _plain_tiles(r)
+	return out
+
+
+# Tiles the game turns at random at load (see _grid): its four corner materials (RESPLNT 52, 4 bytes a tile) are the
+# same one, and that material's bit is set in the mask (RESPLNT 72, dword 0). Empty when a table is missing.
+static func _plain_tiles(r) -> PackedByteArray:
+	var out := PackedByteArray()
+	if not r.has(52) or not r.has(72):
+		return out
+	var t52: PackedByteArray = r.data(52)
+	var t72: PackedByteArray = r.data(72)
+	if t72.size() < 4:
+		return out
+	var mask := t72.decode_u32(0)
+	out.resize(64)
+	for t in 64:
+		if 4 * t + 3 < t52.size():
+			var m := t52[4 * t]
+			if t52[4 * t + 1] == m and t52[4 * t + 2] == m and t52[4 * t + 3] == m and ((mask >> (m & 31)) & 1) != 0:
+				out[t] = 1
 	return out
 
 

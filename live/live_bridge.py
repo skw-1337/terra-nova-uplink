@@ -822,7 +822,8 @@ def handle_input():
             elif btn == 2: mouse_evt(8 if down else 16, 2 if down else 0, pos)
         elif pk in (b'HOST', b'HOSTV') and guest is None:   # the viewer's "Host online" button: its coop_net.gd opens the lobby
             import coop_guest
-            guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV')
+            guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV',
+                                     eye_fixed='--eye' in sys.argv, oeil=OEIL)
             guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
             print('coop: hosting online', flush=True)
         elif pk in (b'LOCK1', b'LOCK0') and guest is not None:   # the host window's lock of the guest's column
@@ -1561,7 +1562,8 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
     import coop_guest                           # (--guest-remote: online, through the host window's Steam link)
     guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote='--guest-remote' in sys.argv,
                              view_hz=arg('--view-hz', 20.0),   # online: views a second to the guest
-                             versus='--versus' in sys.argv)     # 1v1 (Terra Nova Coop's mode)
+                             versus='--versus' in sys.argv,     # 1v1 (Terra Nova Coop's mode)
+                             eye_fixed='--eye' in sys.argv, oeil=OEIL)   # (his suit's eye: the game's, as the host's)
     guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
 atexit.register(cursor_restore)
 atexit.register(maj_lacher)               # (a Shift still down when the bridge stops: the player would bound on)
@@ -1874,7 +1876,7 @@ while True:
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid), ('127.0.0.1', 47821))
-    if guest: guest.step(body, joints, arts)
+    if guest: guest.step(body, joints, arts, cam)   # (cam: what the guest sees when he has no suit)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()
         nuages = fumees(tab)

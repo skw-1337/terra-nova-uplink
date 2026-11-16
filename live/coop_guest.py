@@ -51,6 +51,11 @@ PILOTS, PILOT_N = 0x391E50, 0x32   # pilot records (English exe), 4: +0 in use, 
 # table), byte +5 = 1 the player's side, 2 the enemy (0x24a6c7, 0x24a90c). The in-use byte +0 is not a test: 0 for the player
 AI_SIDE, AI_N, AI_MAX = 0x3832F5, 0x14E, 0x3C
 OK, DOWN, SPECTATE = 0, 1, 2
+# the eye, as the game's routine 0x27ec90 puts the main view: neck (joint 9, suit record +0x21B, 3 x 16.16 in the world)
+# + k x (neck - joint 8, +0x20F), k by the suit's kind (+0xDE, jump table 0x27ec64); then the camera's own height
+# (the bridge's OEIL, 0x38FB1C). Measured in mission 30: 0.35-0.40 above the entity for suits 2 and 7, 0.47 suit 8, 0.8 mechs
+EYE_K, EYE_K_ELSE, J9, J8, SUIT_KIND = {0: 0x4D65, 1: 0x5D17, 2: 0x4771, 10: 0x50D7}, 0x5174, 0x21B, 0x20F, 0xDE
+HEADYAW, HEADPITCH, SLOPE, SLOPE_OFF = 0x441355, 0x441357, 0x35AEB4, 0x35F544   # English exe: the main view's terms
 # The guest's cockpit (coop_hud.gd) is the host's game screen (320 x 400, palette indices + alpha, see live_bridge.py
 # send_hud) with what is the host's own emptied: his panels' contents, compass, bars, rear view, and anything drawn in
 # the 3D window away from its frame (crosshair, target box). 'GCK' + palette + zlib(index, alpha), every 10 s.
@@ -113,7 +118,11 @@ def launch(godot, vpath, mission):
 
 
 class Guest:
-    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False, view_hz=20.0, versus=False):
+    def __init__(self, g, master, pid_addr, nent, eye, sens_x, fov_now, sock, remote=False, view_hz=20.0, versus=False,
+                 eye_fixed=False, oeil=None):
+        # eye: the eye's height above the entity when the game's can't be read (eye_fixed, the bridge's --eye: always);
+        # oeil: the address of the camera height the game adds (the bridge's OEIL)
+        self.eye_fixed, self.oeil, self.eyes = eye_fixed, oeil, {}   # eyes: each suit's last good eye (from its entity)
         # versus (1v1, experimental): the guest drives a suit of the other side instead of a teammate, its AI off, and
         # fights the host (his shots come from the enemy side, so they hurt); his "squad" is the enemy suits
         self.versus = versus or bool(os.environ.get('TN_COOP_VERSUS'))
@@ -374,6 +383,36 @@ class Guest:
         cur, mx = struct.unpack('<ii', self.g.read(self.suit(e) + EN_CUR, 8))
         return 0 if mx <= 0 else max(0, min(100, cur * 100 // mx))
 
+    def game_eye(self, e):
+        """the eye of entity e's suit as the game computes its main view (0x27ec90), a world (x, y, z); a record being
+        rewritten (out of the window) gives that suit's last good one"""
+        b = self.g.read(self.master + 0x25 * e, 0x1B)
+        p = [v / 65536 for v in struct.unpack_from('<3i', b, 0x0F)]
+        if self.eye_fixed:
+            return (p[0], p[1], p[2] + self.eye)
+        rec = struct.unpack_from('<H', b, 3)[0]
+        if rec <= 200:
+            s = PBA + PBA_N * rec
+            r = self.g.read(s + J8, 24)
+            j8, j9 = struct.unpack_from('<3i', r, 0), struct.unpack_from('<3i', r, 12)
+            k = EYE_K.get(struct.unpack('<I', self.g.read(s + SUIT_KIND, 4))[0], EYE_K_ELSE)
+            off = [(a + (((a - c) * k) >> 16)) / 65536 - q for a, c, q in zip(j9, j8, p)]   # imul / shrd 16
+            if 0.15 < off[2] < 1.2 and math.hypot(off[0], off[1]) < 0.2:
+                self.eyes[e] = off
+        off = self.eyes.get(e, (0.0, 0.0, self.eye))
+        z = off[2] + (self.i32(self.oeil) / 65536 if self.oeil else 0.0)
+        return (p[0] + off[0], p[1] + off[1], p[2] + z)
+
+    def host_cam(self, me):
+        """the host's main view as the game makes it (0x2695a0), when the bridge gave none: his eye, heading + head,
+        head pitch + the ground's slope (unless the game leaves it out); pitch as the bridge sends it (+ = up)"""
+        ex, ey, ez = self.game_eye(me)
+        eh = ((self.u16(self.master + 0x25 * me + 0x1B) + self.u16(HEADYAW)) & 0xffff) / 65536 * 2 * math.pi
+        t = struct.unpack('<h', self.g.read(HEADPITCH, 2))[0]
+        if not self.g.read(SLOPE_OFF, 1)[0] & 2:
+            t = ((t + struct.unpack('<h', self.g.read(SLOPE, 2))[0] + 0x8000) & 0xffff) - 0x8000
+        return (ex, ey, ez, eh, -t / 65536 * 2 * math.pi)
+
     def alive(self, e):
         return e and self.g.read(self.master + 0x25 * e, 2) == b'\x01\x01' and self.armour(e) > 0
 
@@ -469,7 +508,8 @@ class Guest:
         if len(pk) < 60000:
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
-    def step(self, body, joints, arts=()):
+    def step(self, body, joints, arts=(), cam=None):
+        # cam: the bridge's main view (x, y, z, heading, pitch): the spectator's
         g, M = self.g, self.master
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
@@ -517,9 +557,7 @@ class Guest:
             self.versus_hits(me)
         turn = self.read_input(self.state == OK)
         if self.state != OK:                                   # the guest watches through the host's eyes
-            ex, ey, ez = (self.i32(M + me * 0x25 + o) / 65536 for o in (0x0F, 0x13, 0x17))
-            eh = self.u16(M + me * 0x25 + 0x1B) / 65536 * 2 * math.pi
-            self.send(struct.pack('<6f2i', ex, ey, ez + self.eye, eh, 0.0, self.fov_now(), len(body), me) +
+            self.send(struct.pack('<6f2i', *(cam or self.host_cam(me)), self.fov_now(), len(body), me) +
                       b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
                       struct.pack('<i', len(arts)) + b''.join(arts))
             return
@@ -554,7 +592,7 @@ class Guest:
         gh = self.u16(eg + 0x1B) / 65536 * 2 * math.pi
         # aim: 30 units along the guest's view, or his locked target; held = a request every frame (the weapon's
         # reload sets the pace)
-        eye = (gx, gy, gz + self.eye)
+        eye = (gx, gy, self.game_eye(self.gid)[2])         # (the game's eye is up to 0.04 ahead: left out)
         view = (math.cos(gh) * math.cos(self.pitch), math.sin(gh) * math.cos(self.pitch), math.sin(self.pitch))
         if self.lock_req:
             self.lock_req = False
@@ -588,7 +626,7 @@ class Guest:
             if pose:
                 # after the index: the height of the feet in the world (the game's entity height minus its 0.12)
                 joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
-        view = (struct.pack('<6f2i', gx, gy, gz + self.eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
+        view = (struct.pack('<6f2i', *eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
                 struct.pack('<i', len(arts)) + b''.join(arts))
         self.send(view)

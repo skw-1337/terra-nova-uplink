@@ -466,10 +466,10 @@ beam_prev, beam_t = False, 0.0
 
 # The pieces a blown-up building throws (class 6 type 32). The game draws each as a slab seen from both sides (its
 # routine 0x29B730): a rectangle in one of its textures (index in its table at +0x26 of the effect's record; under 0:
-# no texture, its colour 0x25), its half sizes two numbers from 0 to 7 thirty-seconds of a unit taken from the
-# entity's address (0: a piece that does not show), turned by the entity's three angles (+0x1B, +0x1D, +0x1F).
-#   'DEBR' + number (u16), then per piece: entity (i32), texture (i32), half width, half length (float), the three
-#   angles (u16)
+# no texture, its colour 0x25), its half sizes a, b two numbers from 0 to 7 thirty-seconds of a unit taken from the
+# entity's address (a = 0: no width, nothing shows; b = 0 still a 2a x 0.5 strip), turned by +0x1B and +0x1D only
+# (+0x1F, a random constant, is sent but the game never reads it).
+#   'DEBR' + number (u16), then per piece: entity (i32), texture (i32), a, b (float), the three angles (u16)
 def debris(tab):
     if not FUM: return []
     out = []

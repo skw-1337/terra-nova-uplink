@@ -4495,10 +4495,12 @@ var beams := {}                                 # 6/28 entity -> [from, to, colo
 
 # A piece of a blown-up building (class 6 type 32, live_bridge.py debris). The game draws a small slab seen from both
 # sides: a rectangle of one of its textures (the more of it the bigger the piece: an eighth of the picture per
-# thirty-second of a unit), or its dark grey 0x25 when it has none, lying in the piece's own ground plane and turned
-# by its three angles as it tumbles. Before: the default of an effect Uplink did not know, an orange ball (the yellow
-# circles of ticket #12).
-var shards := {}                                # 6/32 entity -> [texture, half width, half length, heading, pitch, bank]
+# thirty-second of a unit), or its dark grey 0x25 when it has none. The game's rectangle (0x29B730: corners +/-a,
+# +/-b in x, y and a fixed +/-0.25 in z, turned by heading +0x1B and pitch +0x1D only): 2a wide, always level and
+# across the heading, 2 * sqrt(b^2 + 1/16) long (0.5 to 0.66), the pitch turning it about its width. The third angle
+# (+0x1F) is sent but the game never uses it. Before: the default of an effect Uplink did not know, an orange ball
+# (the yellow circles of ticket #12).
+var shards := {}                                # 6/32 entity -> [texture, half width, b, heading, pitch, (unused)]
 var shard_mesh: QuadMesh
 var shard_mats := {}
 
@@ -4538,7 +4540,7 @@ func _live_shard(idx: int, e, d: Array) -> void:
 	var a: float = d[1]
 	var b: float = d[2]
 	var mi: MeshInstance3D = live_fx.get(idx)
-	if a <= 0.0 or b <= 0.0:                         # (a piece with no size: the game draws nothing either)
+	if a <= 0.0:                                     # (no width: nothing to see; b = 0 is a 2a x 0.5 strip)
 		if mi != null:
 			mi.visible = false
 		return
@@ -4555,20 +4557,19 @@ func _live_shard(idx: int, e, d: Array) -> void:
 		world.add_child(mi)
 		live_fx[idx] = mi
 	mi.material_override = _shard_mat(int(d[0]), int(round(a * 32.0)), int(round(b * 32.0)))
-	# the game's axes: x, y on the ground, z up; the slab in its own x, y plane, turned by its heading (about z), its
-	# pitch (about its x) and its bank (about its y). Uplink's: x, up, y
+	# the game's axes: x, y on the ground, z up (Uplink's: x, up, y). Its model axes turned by heading and pitch
+	# (rotation order 1, no third angle): X across the heading, Y and Z in the vertical plane of the heading. The
+	# corners: +/-U +/-V, U = a X (half width), V = b Y + 0.25 Z (half length); the texture's u across the width
 	var h := TAU * float(d[3]) / 65536.0
 	var p := TAU * float(d[4]) / 65536.0
-	var k := TAU * float(d[5]) / 65536.0
-	var gx := Vector3(cos(h), sin(h), 0.0)
-	var gy := Vector3(-sin(h), cos(h), 0.0)
-	var gz := Vector3(0.0, 0.0, 1.0)
-	var gy2 := gy * cos(p) + gz * sin(p)
-	var gz2 := gz * cos(p) - gy * sin(p)
-	var gx2 := gx * cos(k) - gz2 * sin(k)
-	var gz3 := gz2 * cos(k) + gx * sin(k)
-	mi.transform = Transform3D(Basis(Vector3(gx2.x, gx2.z, gx2.y) * (2.0 * a), Vector3(gy2.x, gy2.z, gy2.y) * (2.0 * b),
-			Vector3(gz3.x, gz3.z, gz3.y)), Vector3(e[3], e[5], e[4]))
+	var gx := Vector3(-sin(h), cos(h), 0.0)
+	var gy := Vector3(sin(p) * cos(h), sin(p) * sin(h), -cos(p))
+	var gz := Vector3(cos(p) * cos(h), cos(p) * sin(h), sin(p))
+	var u := gx * a
+	var v := gy * b + gz * 0.25
+	var c0 := Vector3(u.x, u.z, u.y) * -2.0
+	var c1 := Vector3(v.x, v.z, v.y) * 2.0
+	mi.transform = Transform3D(Basis(c0, c1, c0.cross(c1).normalized()), Vector3(e[3], e[5], e[4]))
 	mi.visible = true
 var beam_mode := false                          # the bridge sends the beams (an older one: Uplink's own, as before)
 var beam_mats := {}

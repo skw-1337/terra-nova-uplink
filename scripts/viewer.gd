@@ -4479,6 +4479,25 @@ func _sub_views(q: PackedByteArray) -> void:
 		if not on and sv["node"] != null:
 			_sub_hide(sv["node"], false)
 			sv["node"] = null
+	_map_cursor(sub_views.has(8) and (sub_views[8]["rect"] as TextureRect).visible)
+
+
+# The game's full screen map (M, or its button under the cockpit's map): the map takes the HUD's view, which goes to a
+# panel (8). It is used with the cursor (waypoints, the squad's orders): the mouse goes to the game's cursor by itself
+# while it is shown, and back to looking around when it closes (only if it was taken for the map: a player already
+# in the cursor mode stays in it).
+var map_freed := false
+
+func _map_cursor(on: bool) -> void:
+	if not play or guest_win:
+		return
+	if on and not map_freed and play_started and not menu_mode and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		_look_swap()
+		map_freed = true
+	elif not on and map_freed:
+		map_freed = false
+		if play_started and not menu_mode and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 # The objects' articulated parts (the dropship's door, turrets): after the joints, a count then for each object its

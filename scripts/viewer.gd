@@ -648,6 +648,7 @@ func _load(index: int) -> void:
 	cloud_base = Vector2.ZERO
 	cloud_set = Vector2(-1.0, -1.0)
 	_limb_light(m)
+	sky_ref_y = TNData.height_at(m, _drop_zone(mis).x, _drop_zone(mis).y) + SKY_EYE
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	map_dif = m.get("dif", DEFAULT_DIF)
 	map_amb = m.get("amb", DEFAULT_AMB)
@@ -2370,12 +2371,15 @@ func _add_zone(m: Dictionary, z: Dictionary) -> void:
 	world.add_child(mi)
 
 
-func _place_camera(m: Dictionary, mis: Dictionary) -> void:
-	var target := Vector2(256, 256)
-	for z in mis["zones"]:
+func _drop_zone(mis: Dictionary) -> Vector2:
+	for z in mis.get("zones", []):
 		if z["name"].to_lower().contains("drop"):
-			target = Vector2(z["x"], z["y"])
-			break
+			return Vector2(z["x"], z["y"])
+	return Vector2(256, 256)
+
+
+func _place_camera(m: Dictionary, mis: Dictionary) -> void:
+	var target := _drop_zone(mis)
 	var ground := TNData.height_at(m, target.x, target.y)
 	yaw = 0.0
 	pitch = -0.45
@@ -2680,29 +2684,39 @@ func _set_sky(path: String, light: Vector2) -> void:
 		mi.position = dir * SKY_DISTANCE
 		sky_root.add_child(mi)
 		if not it.get("moon", false):
-			sky_items.append([mi, az, el])
+			sky_items.append([mi, az, el, q.size.y / SKY_DISTANCE * 0.5])
 	sky_items_y = INF
 	_sky_items_place()
 
 
+
+
+
+
 # The sky's own pictures (resource 153's list, not the moon) are drawn lower the higher the eye (0x2A816C: (eye's
-# height + 64) / 384 in tangent units): at the eye's usual height, half hidden by the horizon.
-var sky_items := []          # [node, azimuth, elevation]
+# height + 64) / 384 in tangent units, the eye's height 0x41EB70): at the eye's usual height, half hidden by the
+# horizon. The game moves them with the eye (as if they stood 384 units away: the Earth went down when the player
+# jumped, up when he fell); here they sit at infinity, at the game's angle for the eye at the drop zone (sky_ref_y)
+var sky_items := []          # [node, azimuth, elevation, half its height (tangent)]
 var sky_items_y := INF
+var sky_ref_y := 0.0         # the eye's height the sky's pictures are placed for (_load)
+const SKY_EYE := 0.4         # the eye above the ground (entity z + 0x38FB1C + 0x3000, 0x2752C4: 0.39 measured)
 
 
 func _sky_items_place() -> void:
-	if absf(camera.position.y - sky_items_y) < 0.05:
+	if sky_items_y == sky_ref_y:
 		return
-	sky_items_y = camera.position.y
-	var drop := (camera.position.y + 64.0) / 384.0
+	sky_items_y = sky_ref_y
+	var drop := (sky_ref_y + 64.0) / 384.0
 	var keep := []
 	for it in sky_items:
 		if not is_instance_valid(it[0]):
 			continue
 		keep.append(it)
 		var az: float = it[1]
-		var el: float = atan(tan(it[2]) - drop)
+		# the game's point is the picture's foot (MISS1's moon: rows 56-77 of 196 drawn, its foot at the computed
+		# row 92, behind the hills; centred there it was hidden whole): the billboard's middle half its height above
+		var el: float = atan(tan(it[2]) - drop + it[3])
 		(it[0] as Node3D).position = Vector3(cos(el) * cos(az), sin(el), cos(el) * sin(az)) * SKY_DISTANCE
 	sky_items = keep
 

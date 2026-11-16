@@ -1595,6 +1595,7 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 const LEGS := [[6, 4, 2, 0], [7, 5, 3, 1]]     # hip, knee, ankle, toe (left, right)
 const LEG_REACH := 0.98
 const LEG_SOFT := 0.04
+const LEG_KEEP := 0.04
 
 
 func _leg_lengths(p: Array, rest: Array) -> Array:
@@ -1608,6 +1609,12 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 		var dl := d.length()
 		if l1 <= 0.0 or l2 <= 0.0 or dl < 0.001:
 			continue
+		# a knee the game has just drawn already sits a thigh from the hip and a shin from the ankle (within 1.5 %
+		# measured): kept as it is, whichever way it bends (a stride's leg turned out, a foot up on a step); only the
+		# stale ones are put back
+		var gk: Vector3 = (q[leg[1]] as Vector3) - hip
+		if absf(gk.length() / l1 - 1.0) < LEG_KEEP and absf(((q[leg[2]] as Vector3) - (q[leg[1]] as Vector3)).length() / l2 - 1.0) < LEG_KEEP:
+			continue
 		var dn := d / dl
 		# near a straight leg the knee's bend changes fast with the reach (a standing suit, its ankle a hair nearer or
 		# farther each frame: the knee jumped from straight to bent, it stuttered in place): over the last LEG_SOFT of
@@ -1620,7 +1627,6 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 		var fw := Vector3(0, 0, 1) - dn * dn.z          # (pose axes: right, up, forward)
 		fw = fw.normalized() if fw.length() > 0.001 else Vector3(0, 0, 1)
 		# towards the game's own knee when it is clearly bent and not backwards (a stride, a crouch turned aside)
-		var gk: Vector3 = (q[leg[1]] as Vector3) - hip
 		var gp := gk - dn * gk.dot(dn)
 		if gp.length() > 0.25 * l1 and gp.normalized().dot(fw) > 0.0:
 			fw = gp.normalized()

@@ -2636,6 +2636,16 @@ func _set_sky(path: String, light: Vector2) -> void:
 		sky_haze_lut = ImageTexture.create_from_image(Image.create_from_data(256, 16, false, Image.FORMAT_RGB8, rgb))
 		sky_haze_idx = ImageTexture.create_from_image(Image.create_from_data(256, 16, false, Image.FORMAT_R8,
 				t150.slice(0, 4096)))
+		# the haze rows give the far ground the base colours 1-16 (the temperate planet's greens go to its teal greys
+		# 1 and 2 from level 12 on): the old school pass then needs them, or it turned that far ground a neutral grey
+		var base_n := 0
+		for i in range(256, 4096):
+			if i % 256 >= 17 and t150[i] >= 1 and t150[i] < 17:
+				base_n += 1
+		if base_n > 40:
+			pal_first = 1
+			if oldschool_rect != null:
+				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 	for sm in ground_mats + [mats["water"]]:
 		_sky_to(sm)
 	_apply_look()
@@ -4336,6 +4346,7 @@ func _sub_views(q: PackedByteArray) -> void:
 		if old:
 			(tr.material as ShaderMaterial).set_shader_parameter("pal_tex",
 					(oldschool_rect.material as ShaderMaterial).get_shader_parameter("pal_tex"))
+			(tr.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 			(tr.material as ShaderMaterial).set_shader_parameter("grid",
 					tr.size if old_sharp <= 0 else (r.size * old_sharp).min(tr.size))   # (as the main view's, _old_grid)
 		var idx := q.decode_s32(o + 1)

@@ -826,6 +826,42 @@ def fov_now():
 hud_n = 0
 hud_copies = -1
 COPIES = 0x46613C                          # compteur d'images affichees du code HD
+DESSIN = 0x466104                          # non nul pendant que le jeu dessine son image 3D (81 % du temps)
+joints_net = None                         # (table, {entite: articulations brutes}, instant) : la derniere lecture nette
+dessin_libre = 0.0                        # la derniere fois que le jeu ne dessinait pas
+
+
+def articulations(tab):
+    """The suits' joints (192 bytes at +0x1AF of their records) and the entity table they go with, read between two of
+    the game's 3D pictures: it rewrites the knees, shoulders, elbows and hands while it draws a suit, and a read in the
+    middle of that caught bones up to 3 times their length (a hand 0.28 from its elbow for 0.13): the viewer took it
+    for a half-frozen pose and walked the suit on its own steps for 3 s, strides not the game's. A read that overlaps
+    a picture gives the last clean one again; none for 0.1 s (about 1 tick in 5 falls between two pictures, but in
+    runs): the next gap is waited for, at most 60 ms. A game that never leaves its drawing (no HD code): as before."""
+    global joints_net, dessin_libre
+    for essai in range(2):
+        c = d32(COPIES)
+        net = not d32(DESSIN)
+        if net: dessin_libre = time.time()
+        t = g.read(A_MASTER, 0x25 * NENT) if net else tab
+        lus = {}
+        for i in range(NENT):
+            o = 0x25 * i
+            if not t[o] or t[o + 1] != 1: continue
+            nf = struct.unpack_from('<H', t, o + 3)[0]
+            if nf <= 200: lus[i] = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
+        if net and not d32(DESSIN) and d32(COPIES) == c:
+            joints_net = (t, lus, time.time())
+            return t, lus
+        if joints_net is not None and time.time() - joints_net[2] < 0.1:
+            return joints_net[0], joints_net[1]
+        if essai or time.time() - dessin_libre > 0.5:
+            break
+        t0 = time.time()
+        while d32(DESSIN) and time.time() - t0 < 0.06:
+            time.sleep(0)
+        tab = t
+    return t, lus
 
 # Jouer depuis la fenetre du visualiseur (--play) : il renvoie clavier et souris sur le port 47824.
 #   'K' + scancode (u16, 0xE0xx = touche etendue) + appui (u8) -> touche postee a la fenetre DOSBox (position physique,
@@ -1971,14 +2007,16 @@ while True:
     joints = []
     figees = []                                   # armures que le jeu n'anime pas (loin) : pas de pose (voir MARCHE_LOIN)
     animees = {}
+    tab_j, lus = articulations(tab)
     for i in range(NENT):
         o = 0x25 * i
         if not tab[o] or tab[o + 1] != 1: continue      # (le joueur aussi : il se voit dans les vues annexes)
+        if i not in lus or not tab_j[o] or tab_j[o + 1] != 1: continue
         nf = struct.unpack_from('<H', tab, o + 3)[0]
         if nf > 200: continue
-        jr = g.read(SOLDATS + nf * 0x582 + 0x1AF, 192)
+        jr = lus[i]
         j = [struct.unpack_from('<3i', jr, 12 * k) for k in range(16)]
-        x0, y0 = struct.unpack_from('<ii', tab, o + 0x0F)
+        x0, y0 = struct.unpack_from('<ii', tab_j, o + 0x0F)
         mech = tab[o + 2] == 9                     # le mech (type 9, squelette 886) : 10 articulations, grande foulee
         used = j[:10] if mech else j
         if not mech:                              # (le joueur aussi : le jeu n'anime pas sa propre armure, vue de
@@ -2015,7 +2053,7 @@ while True:
                 continue
         elif prev[0] == jr and (prev[1], prev[2]) != (x0, y0):
             continue                          # l'unite a bouge, ses articulations non : plus dessinee
-        cap = struct.unpack_from('<H', tab, o + 0x1B)[0] / 65536 * 2 * math.pi
+        cap = struct.unpack_from('<H', tab_j, o + 0x1B)[0] / 65536 * 2 * math.pi
         av, dr = (math.cos(cap), math.sin(cap)), (-math.sin(cap), math.cos(cap))
         q = [((v[0] - x0) / 65536, (v[1] - y0) / 65536, v[2] / 65536) for v in j]
         sg = 1 if q[9][2] > q[8][2] else -1

@@ -2210,20 +2210,17 @@ func _add_mech(holder: Node3D) -> float:
 	var hipw_i: int = (h.call(4, 0x6723) * 0xFB9F) >> 16
 	var ankle_i: int = (h.call(0, 0x6723) * 0x539C) >> 16
 	var hip_i: int = ((thigh_i + shin_i + ankle_i) * 0xCCCC) >> 16
-	var shin := shin_i / 65536.0
-	var thigh := thigh_i / 65536.0
 	var ankle := ankle_i / 65536.0
 	var hip_y := hip_i / 65536.0
 	var half := hipw_i / 131072.0
 	var toe := 0x2E00 / 65536.0
-	var d := hip_y - ankle                         # the knee: two bones from hip to ankle, behind their line
-	var a := (d * d + thigh * thigh - shin * shin) / (2.0 * d)
-	var back := sqrt(maxf(thigh * thigh - a * a, 0.0))
+	# the knee: half way from the hip to the ankle, as the game puts it on every mech it draws (read on MISS30's two
+	# walking mechs, every frame: within 0.003), so a standing leg is straight
 	for i in 2:
 		var side := -1.0 if i == 0 else 1.0
 		p[i] = Vector3(side * half, 0.0, toe)
 		p[2 + i] = Vector3(side * half, ankle, 0.0)
-		p[4 + i] = Vector3(side * half, hip_y - a, -back)
+		p[4 + i] = Vector3(side * half, (hip_y + ankle) / 2.0, 0.0)
 		p[6 + i] = Vector3(side * half, hip_y, 0.0)
 	p[8] = Vector3(0.0, hip_y, 0.0)
 	p[9] = Vector3(0.0, hip_y + body_i / 65536.0, 0.0)

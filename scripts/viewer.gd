@@ -278,6 +278,7 @@ const SCANCODES := {
 
 
 func _ready() -> void:
+	RenderingServer.frame_pre_draw.connect(_sky_rows)
 	_build_scene()
 	_build_ui()
 	var cfg := ConfigFile.new()
@@ -1206,6 +1207,20 @@ var ripple_tex: ImageTexture
 const CLOUD_REF := 1030.56             # 1080 - 8 x 6.18
 const TICK_HZ := 280.0                 # the game's clock (not measured: the map viewer's wind and ripple speed)
 var ripple_sin := PackedInt32Array()
+
+
+# The game picks its sky's haze level per screen row, at the row's end (sky.gdshader ceiling_r): the main camera's
+# axes and the tangent of half its width, given to the sky just before each frame is drawn.
+func _sky_rows() -> void:
+	if camera == null or env == null or env.sky == null or not (env.sky.sky_material is ShaderMaterial):
+		return
+	var sm := env.sky.sky_material as ShaderMaterial
+	var b := camera.global_transform.basis.orthonormalized()
+	var px := camera.get_camera_projection().x.x
+	sm.set_shader_parameter("row_right", b.x)
+	sm.set_shader_parameter("row_up", b.y)
+	sm.set_shader_parameter("row_fwd", -b.z)
+	sm.set_shader_parameter("row_edge", 1.0 / px if px > 0.0 else 0.0)
 
 
 func _clouds_update() -> void:
@@ -2358,9 +2373,10 @@ func _set_sky(path: String, light: Vector2) -> void:
 		mat.set_shader_parameter("levels", sk["cloud_levels"])
 		mat.set_shader_parameter("levels_soft", sk["cloud_levels"])
 		var band: Array = sk["band_rain"] if int(mis_params.get("weather_kind", 0)) == 2 else sk["band"]
+		var bi := Image.create(4, 1, false, Image.FORMAT_RGB8)   # sampled as the cloud texels are (the same colours)
 		for i in 4:
-			var bc: Color = band[i]
-			mat.set_shader_parameter("band%d" % i, Vector3(bc.r, bc.g, bc.b))
+			bi.set_pixel(i, 0, band[i])
+		mat.set_shader_parameter("bands", ImageTexture.create_from_image(bi))
 	var haze: Color = sk["haze"]
 	mat.set_shader_parameter("haze", Vector3(haze.r, haze.g, haze.b))
 	env.sky.sky_material = mat

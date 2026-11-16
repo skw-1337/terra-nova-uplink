@@ -29,23 +29,36 @@ float hash(vec3 p) {
 // texture on a flat ceiling (cloud_px texels per unit of slope), each point hazed by its distance r from overhead in
 // texels (thresholds at 0x35C7BC): plain under 192, then the rows 1 to 7 of the sky's cloud haze table (SKY 151:
 // levels 1-7 here, from 192, 256, 320, 416, 512, 640, 800), then plain colours, the far band: band0 from 1024,
-// band1 from 1200, band2 from 3200, and band3 at the horizon (palette 0xA5, 0xA4, 0xA3, 0xA2; rain: 0x23 .. 0x20).
+// band1 from 1200, band2 from 3200, band3 from 6400 and under the horizon (palette 0xA5, 0xA4, 0xA3, 0xA2; rain:
+// 0x23 .. 0x20). The game picks the level once per screen row, from the point its row's end ray (the view's edge)
+// meets the ceiling: flat bands across the view, not rings (row_*: the main camera, viewer.gd _sky_rows).
 // Nothing else: no sun or glow under the ceiling (the game shows none).
 uniform sampler2DArray levels : source_color, filter_nearest_mipmap, repeat_enable;
 uniform sampler2DArray levels_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // modern look
-uniform vec3 band0 : source_color = vec3(0.86, 0.92, 0.85);
-uniform vec3 band1 : source_color = vec3(0.9, 0.95, 0.88);
-uniform vec3 band2 : source_color = vec3(0.95, 0.97, 0.9);
-uniform vec3 band3 : source_color = vec3(0.99, 0.99, 0.93);
+uniform sampler2D bands : source_color, filter_nearest;   // 4 x 1: the far band's colours, as the clouds' texels
+uniform vec3 row_right = vec3(1.0, 0.0, 0.0);
+uniform vec3 row_up = vec3(0.0, 1.0, 0.0);
+uniform vec3 row_fwd = vec3(0.0, 0.0, -1.0);
+uniform float row_edge = 0.0;              // tangent of half the view's width; 0: per pixel
 
-vec3 planet_sky(vec3 d, vec3 eye) {
+// the distance from overhead (texels) that sets the haze level of the point seen along d
+float ceiling_r(vec3 d, bool per_row) {
+	float f = dot(d, row_fwd);
+	if (per_row && row_edge > 0.0 && f > 0.05) {
+		vec3 e = row_fwd + dot(d, row_up) / f * row_up + row_edge * row_right;
+		return e.y > 0.0 ? length(e.xz) / e.y * cloud_px : 1e9;
+	}
+	return length(d.xz) / max(d.y, 1e-6) * cloud_px * 1.12;
+}
+
+vec3 planet_sky(vec3 d, vec3 eye, bool per_row) {
 	if (d.y <= 0.0) {
-		return band3;
+		return texelFetch(bands, ivec2(3, 0), 0).rgb;
 	}
 	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
-	float r = length(rel);
+	float r = ceiling_r(d, per_row);
 	if (r >= 1024.0) {
-		return r >= 3200.0 ? band2 : (r >= 1200.0 ? band1 : band0);
+		return texelFetch(bands, ivec2(r >= 6400.0 ? 3 : (r >= 3200.0 ? 2 : (r >= 1200.0 ? 1 : 0)), 0), 0).rgb;
 	}
 	float level = 0.0;
 	level += step(192.0, r) + step(256.0, r) + step(320.0, r) + step(416.0, r);
@@ -56,7 +69,7 @@ vec3 planet_sky(vec3 d, vec3 eye) {
 
 void sky() {
 	vec3 d = EYEDIR;
-	vec3 col = has_clouds ? planet_sky(d, POSITION) : haze;
+	vec3 col = has_clouds ? planet_sky(d, POSITION, !AT_CUBEMAP_PASS) : haze;
 	if (!has_clouds && d.y > 0.0) {
 		vec3 top = vec3(0.0);
 		if (has_stars) {

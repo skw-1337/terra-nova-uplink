@@ -25,6 +25,8 @@ const SKY_DISTANCE := 2400.0             # sky sprites: far away, following the 
 const SKY_PIXEL := 0.0024                # their angular size per image pixel (radians)
 const DEFAULT_SUN := Vector3(-52, -35, 0)
 const SMOKE_WIDTH := 1.4                # world width of a smoke column
+const FUMEE_COLUMN := false             # the "Fumee" objects (4/61) as a looping smoke column (not the game's: it
+                                        # deletes them at load, see tn_objects.gd SMOKE_TYPE); the owner's choice
 const POSES_FILE := "res://data/soldier_poses.json"   # real poses read from the running game
 # Standing pose computed by the game for a Hog scout (suit 4), read in a RAM snapshot:
 # joints (right, up, forward) in world units, ground at 0. Other suits get the same joint
@@ -1135,22 +1137,29 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		var suit := TNObjects.suit_of(sub)
 		top = _add_mech(mi) if suit == TNObjects.MECH_SUIT else _add_soldier(mi, suit, _pirate_arms(suit, x, y))
 		soldier = top > 0.0
-	if cls == 4 and sub == TNObjects.SMOKE_TYPE and objects_ok:
-		var sm: Dictionary = objects.smoke_anim(pal, pal_key)
+	# "Fumee" (4/61): the game deletes it right after loading it (one puff of 1186, 0.9 s): nothing to draw. The old
+	# smoke column (looping for ever) is kept behind FUMEE_COLUMN, at the game's 14 frames a second
+	var fumee := cls == 4 and sub == TNObjects.SMOKE_TYPE and objects_ok
+	if fumee:
+		mi.visible = false
+	if fumee and FUMEE_COLUMN:
+		var sm: Dictionary = objects.anim(TNObjects.SMOKE_ANIM, pal, pal_key)
 		if not sm.is_empty():
+			mi.visible = true
 			var q := QuadMesh.new()
-			q.size = Vector2(SMOKE_WIDTH, SMOKE_WIDTH * sm["aspect"])
+			q.size = Vector2(SMOKE_WIDTH, SMOKE_WIDTH * sm["size"].y / sm["size"].x)
 			q.center_offset = Vector3(0, q.size.y * 0.5, 0)
 			mi.mesh = q
 			var smat := ShaderMaterial.new()
 			smat.shader = SMOKE
 			smat.set_shader_parameter("frames", sm["tex"])
 			smat.set_shader_parameter("frame_count", sm["frames"])
+			smat.set_shader_parameter("fps", 1000.0 / float(objects.fx_def(15).get("ms", 71)))
 			mi.material_override = smat
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			mi.extra_cull_margin = SMOKE_WIDTH
 			top = q.size.y
-	if soldier or mi.mesh != null:
+	if soldier or mi.mesh != null or fumee:
 		pass
 	elif TNObjects.is_model(ref):
 		# lamps (types 56 / 57): their colour and full brightness (tn_objects.gd LAMP_TYPES); 57 waits for the alarm
@@ -1178,7 +1187,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.material_override = _sprite_lit(ref, sp, k)
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
-	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
+	if mi.mesh == null and not soldier and not fumee:   # nothing usable in the data (e.g. the biped mech)
 		var box := BoxMesh.new()
 		match cls:
 			0:
@@ -4556,11 +4565,11 @@ const HAZE_WIDTH := 0.24                         # a thermal disruptor's haze (1
 # how much of its veil a kind lays: a railgun's 64 particles a system pile up into a white bar at the veil's own
 # strength, where the game shows a faint pale streak (seen side by side)
 const PART_THIN := {10: 0.25}
-# the game's translucency tables (its "colours" 248 to 254): the grey each one lays over the picture, and how much
-# (fitted on the tables themselves, read in the game's memory: 248 a thin white veil ... 253 nearly black)
-const PART_TINT := {248: Color(0.945, 0.945, 0.945, 0.16), 249: Color(0.82, 0.82, 0.82, 0.31), 250: Color(0.68, 0.68, 0.68, 0.45),
-		251: Color(0.49, 0.49, 0.49, 0.31), 252: Color(0.38, 0.38, 0.38, 0.39), 253: Color(0.08, 0.08, 0.08, 0.55),
-		254: Color(0.09, 0.09, 0.09, 0.32)}
+# the particles' translucency tables (their "colours" 248 to 255, [0x423230] + 4 c, built at 0x28D4E8): the grey each
+# one lays over the picture, and how much (as the code builds them: 248 a thin white veil ... 253 nearly black)
+const PART_TINT := {248: Color(0.882, 0.882, 0.882, 0.200), 249: Color(0.813, 0.813, 0.813, 0.304),
+		250: Color(0.682, 0.682, 0.682, 0.414), 251: Color(0.506, 0.506, 0.506, 0.349), 252: Color(0.394, 0.394, 0.394, 0.398),
+		253: Color(0.098, 0.098, 0.098, 0.561), 254: Color(0.138, 0.138, 0.138, 0.340), 255: Color(0.050, 0.050, 0.050, 0.316)}
 var part_mode := false                          # the bridge sends the particles (an older one: the dots, as before)
 var part_node: MultiMeshInstance3D = null       # dots and see-through discs
 var haze_node: MultiMeshInstance3D = null       # the thermal disruptor's

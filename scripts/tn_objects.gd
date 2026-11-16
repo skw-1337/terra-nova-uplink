@@ -192,9 +192,10 @@ func limb_histogram() -> PackedFloat32Array:
 
 
 # ------------------------------------------------------------------ effects
-# Translucent animations (bitmap type 5): 248 = thin smoke, 249 = dense smoke, both drawn by the
-# game through its translucency tables. 1186 = rising smoke column (13 frames), used for the
-# "Fumee" objects (buildings type 61, whose model entry is only an editor placeholder).
+# Translucent animations (bitmap type 5): 248 = dense, bright veil, 249 = thinner, darker one, both drawn by the
+# game through its translucency tables (BITMAP_VEILS). 1186 = rising smoke column (13 frames), effect 15 (played
+# once). The "Fumee" objects (buildings type 61, whose model entry is only an editor placeholder) are not drawn: the
+# game removes them right after loading them (0x2C9B20 -> 0x2894A0), after one short puff (viewer.gd FUMEE_COLUMN).
 const SMOKE_ANIM := 1186
 const SMOKE_TYPE := 61
 
@@ -232,12 +233,11 @@ func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
 	return out
 
 
-# A translucent bitmap (type 5, not compressed): its pixels 248 to 254 are not colours but the game's veils, each a
-# table that blends what is behind it with a grey (fitted on the tables read in the game's memory: 248 lays 16 % of
-# near white, 249 31 % of light grey ... 253 55 % of near black).
-const SOFT_VEILS := {248: Color(0.945, 0.945, 0.945, 0.16), 249: Color(0.82, 0.82, 0.82, 0.31), 250: Color(0.68, 0.68, 0.68, 0.45),
-		251: Color(0.49, 0.49, 0.49, 0.31), 252: Color(0.38, 0.38, 0.38, 0.39), 253: Color(0.08, 0.08, 0.08, 0.55),
-		254: Color(0.09, 0.09, 0.09, 0.32)}
+# A translucent bitmap (type 5, not compressed): its pixels 248 and 249 are not colours but the game's two bitmap
+# veils (tables at [0x360478] + 4 c, built at 0x261933 by 0x2F1C64): 248 = 120 + 0.469 x what is behind (colour 240 at
+# opacity 1/2), 249 = 56 + 0.656 x behind (colour 224 at 1/4); as a grey laid at an opacity. Any other pixel is drawn
+# as its palette colour, opaque and unlit (span routine 0x3328C2).
+const BITMAP_VEILS := {248: Color(0.886, 0.886, 0.886, 0.531), 249: Color(0.639, 0.639, 0.639, 0.344)}
 static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
 	if f.size() < 0x1c:
 		return null
@@ -250,11 +250,11 @@ static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
 	for y in h:
 		for x in w:
 			var v := f[0x1c + y * row + x]
-			if SOFT_VEILS.has(v):
-				img.set_pixel(x, y, SOFT_VEILS[v])
+			if BITMAP_VEILS.has(v):
+				img.set_pixel(x, y, BITMAP_VEILS[v])
 			elif v != 0:
 				var c: Color = pal[v]
-				img.set_pixel(x, y, Color(c.r, c.g, c.b, 0.85))
+				img.set_pixel(x, y, Color(c.r, c.g, c.b, 1.0))
 	return img
 
 
@@ -285,6 +285,8 @@ func fx_def(typ: int) -> Dictionary:
 	return fx_defs.get(typ, {})
 
 
+# 1186 as the texture of Uplink's own smoke puffs (viewer.gd _spawn_puff: trails, burning trees, grenades), in its
+# own colours (tuned with the puffs' tint): not the game's drawing of 1186 (anim, BITMAP_VEILS).
 func smoke_anim(pal: PackedColorArray, pal_key: String) -> Dictionary:
 	var key := "smoke/%s" % pal_key
 	if tex_cache.has(key):

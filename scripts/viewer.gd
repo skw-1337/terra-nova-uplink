@@ -1193,6 +1193,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	return mi
 
 
+const LIMB_WPX := 1.0 / 256.0   # a limb sprite's pixel across its bone, in world units (the game's part +4 = 256)
 const LIMB_PULL := 0.05          # a standing suit's feet and shins drawn this much nearer the camera (_add_soldier)
 
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
@@ -1270,8 +1271,9 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 		side = side.normalized()
 		var xn := side.cross(yn).normalized()
 		var seg: MeshInstance3D = part[0]
-		seg.transform = Transform3D(Basis(xn * sc, yn * sc, xn.cross(yn) * sc), ga)
-		seg.extra_cull_margin = part[4] * sc
+		# across the bone: the game's fixed 1/256 unit a sprite pixel (limb.gdshader), not the bone's scale
+		seg.transform = Transform3D(Basis(xn * LIMB_WPX, yn * sc, xn.cross(yn) * LIMB_WPX), ga)
+		seg.extra_cull_margin = maxf(part[4] * LIMB_WPX, part[3] * sc)
 		top = maxf(top, maxf(ga.y, gb.y))
 	return top
 

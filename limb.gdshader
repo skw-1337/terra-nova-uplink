@@ -1,7 +1,8 @@
 // Power suit limb, drawn like the game: the view of the limb picked from the camera's bearing around the bone,
 // laid flat on the screen at a fixed scale, hung from its first joint and turned so that its bone (the sprite's
 // two joints, one under the other) follows the bone's direction on the screen.
-// Node basis: Y = joint a -> joint b (its length = world units per sprite pixel), X = the limb's front.
+// Node basis: Y = joint a -> joint b (its length = world units per sprite pixel along the bone), X = the limb's front
+// (its length = world units per sprite pixel across the bone: the game's 1/256, whatever the bone's length).
 // Mesh: quad in sprite pixels, x across, y down the sprite (joint a at y = 0).
 shader_type spatial;
 render_mode unshaded, cull_disabled;
@@ -38,6 +39,7 @@ void vertex() {
 	vec3 axis = MODEL_MATRIX[1].xyz;
 	float s = length(axis);
 	vec3 ax = axis / s;
+	float wx = length(MODEL_MATRIX[0].xyz);
 	// the view: the camera's bearing around the bone, from the limb's front. The views go from the back (0) to the
 	// front (8) through the limb's right side, then back through its left; the 9-view torsos only hold the right
 	// side, mirrored for the left
@@ -87,8 +89,17 @@ void vertex() {
 		down = vec2(sin(spin), -cos(spin));
 	}
 	vec2 right = vec2(-down.y, down.x);
-	vec2 off = right * (VERTEX.x * s * widen) + down * (VERTEX.y * s * squash);
-	vec3 v = av + vec3(off.x, off.y * pixel_aspect, 0.0);
+	vec3 v;
+	if (spin >= 0.0) {                                   // a burst suit's piece: as before (its routine not checked)
+		vec2 off = right * (VERTEX.x * s * widen) + down * (VERTEX.y * s * squash);
+		v = av + vec3(off.x, off.y * pixel_aspect, 0.0);
+	} else {
+		// across the bone the game's width is the same on the screen in every direction (0x2F6FC3: (dy k, -dx k / 1.2)
+		// in its picture, shown 1.2 x taller): only the length along the bone takes the picture's stretch
+		vec2 along_v = down * (VERTEX.y * s * squash);
+		vec2 across = right * (VERTEX.x * wx * widen);
+		v = av + vec3(along_v.x, along_v.y * pixel_aspect, 0.0) + vec3(across, 0.0);
+	}
 	float l = length(v);
 	v *= max(l - pull, 0.05) / l;                        // same place on the screen, nearer
 	POSITION = PROJECTION_MATRIX * vec4(v, 1.0);

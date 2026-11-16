@@ -3691,9 +3691,9 @@ func _live_units(pk: PackedByteArray) -> void:
 		for idx in ents:
 			if idx >> 3 >= live_drawn.size() or live_drawn[idx >> 3] & (1 << (idx & 7)) or idx == body:
 				continue
-			for n in [_live_node(idx), live_fx.get(idx), live_piles.get(idx)]:
-				if n != null and is_instance_valid(n):
-					n.visible = false
+			for hid in [_live_node(idx), live_fx.get(idx), live_piles.get(idx)]:
+				if hid != null and is_instance_valid(hid):
+					hid.visible = false
 	for idx in joints:                                 # soldiers the game draws: its own animation
 		var node: Node3D = live_extra.get(idx)
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():

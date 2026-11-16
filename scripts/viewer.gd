@@ -2114,14 +2114,9 @@ func _pose_mech(holder: Node3D, p: Array) -> float:
 			fw = Vector3(0, 1, 0)
 		var xn := (fw - yn * fw.dot(yn)).normalized()
 		var node: MeshInstance3D = part[0]
-		if part[2] <= 1:                            # a foot (ankle -> toe): a flat pad, its y along the segment laid
-			# level, its x up (it hangs below the ankle), its sole on the toe's level (laid along the slanting segment
-			# it was a big tilted block)
-			var flat := Vector3(d.x, 0.0, d.z)
-			var yf := -(flat.normalized() if flat.length() > 0.0001 else f_hips)
-			var sole: float = node.mesh.get_aabb().position.x
-			node.transform = Transform3D(Basis(Vector3.UP, yf, Vector3.UP.cross(yf)), Vector3(ga.x, gb.y - sole, ga.z))
-			continue
+		# every part as the game places it (0x2F737C), the feet too: y along its segment (a foot: ankle to toe, down
+		# the slope to the ground), x the mech's facing square to it (the game's reference vectors at suit +0x26F,
+		# all "backwards" in the mech's frame, x = minus that)
 		node.transform = Transform3D(Basis(xn, yn, xn.cross(yn)), ga)
 		top = maxf(top, maxf(ga.y, gb.y))
 	return top

@@ -635,7 +635,8 @@ func _load(index: int) -> void:
 	anim_mats.clear()                         # (their pictures are in the mission's palette)
 	smoke_pending.clear()
 	for e in mis["entities"]:
-		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"]))
+		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"],
+				e.get("team", 0), e.get("pitch", 0.0)))
 		live_nodes[-1].set_meta("mission", true)       # placed from the file: buildings stay on the ground
 		counts[e["cls"]] = counts.get(e["cls"], 0) + 1
 	for z in mis["zones"]:
@@ -1243,8 +1244,13 @@ func _apply_look() -> void:
 		sm.set_shader_parameter("modern", m)
 
 
+const PITCH_SIGN := 1.0   # a mission record's pitch: nose up for > 0 (not compared with the game yet, MISS16 #20)
+
+
+# team: the mission's side of its group (1 = the player's; 0: unknown, told from the type's name); pitch: the mission
+# record's (classes 0, 3 and 4; vehicles and building type 0x2F lie on the slope instead, 0x29DD64)
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
-		label: bool, z: float = 0.0) -> MeshInstance3D:
+		label: bool, z: float = 0.0, team: int = 0, pitch: float = 0.0) -> MeshInstance3D:
 	var name: String = data.type_name(cls, sub)
 	var low := name.to_lower()
 	var ground := TNData.height_at(m, x, y)
@@ -1301,10 +1307,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.material_override = mats["decor"]
 			1:
 				box.size = Vector3(0.5, 1.4, 0.5)
-				mi.material_override = mats["friend"] if data.is_friendly(name) else mats["enemy"]
+				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
 			2, 3:
 				box.size = Vector3(1.4, 0.8, 1.4)
-				mi.material_override = mats["friend"] if data.is_friendly(name) else mats["enemy"]
+				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
 			_:
 				box.size = Vector3(4, 3, 4)
 				mi.material_override = mats["building"]
@@ -1314,6 +1320,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		top -= box.size.y * 0.5
 	mi.position = Vector3(x, ground + lift, y)
 	mi.rotation.y = -heading
+	if pitch != 0.0 and TNObjects.is_model(ref) and (cls == 0 or cls == 3 or (cls == 4 and sub != 0x2F)):
+		mi.rotate_object_local(Vector3(0, 0, 1), PITCH_SIGN * pitch)   # (models face +X: their side axis is Z)
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
 	if soldier or TNObjects.is_model(ref):         # (sprites take the light at their foot: _foot_light)
@@ -2100,6 +2108,7 @@ func _note(text: String) -> void:
 func _set_sky(path: String, light: Vector2) -> void:
 	for c in sky_root.get_children():
 		c.queue_free()
+	sky_items.clear()
 	var sk: Dictionary = objects.load_sky(path, pal) if objects_ok and path != "" else {}
 	# the map's light direction (azimuth, elevation; game y axis = Godot z), azimuth 0 along +x: the light levels the
 	# maps store are baked from it so (MAP10 99.6 % of points, MAP23 99.85 %), and the game lights its models with
@@ -2151,6 +2160,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# skies without clouds (space) show them
 	elif sk.get("moon") != null:
 		var moon: Dictionary = sk["moon"].duplicate()
+		moon["moon"] = true
 		moon["az"] = light.x
 		moon["el"] = light.y
 		sprites.append(moon)
@@ -2173,6 +2183,32 @@ func _set_sky(path: String, light: Vector2) -> void:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		mi.position = dir * SKY_DISTANCE
 		sky_root.add_child(mi)
+		if not it.get("moon", false):
+			sky_items.append([mi, az, el])
+	sky_items_y = INF
+	_sky_items_place()
+
+
+# The sky's own pictures (resource 153's list, not the moon) are drawn lower the higher the eye (0x2A816C: (eye's
+# height + 64) / 384 in tangent units): at the eye's usual height, half hidden by the horizon.
+var sky_items := []          # [node, azimuth, elevation]
+var sky_items_y := INF
+
+
+func _sky_items_place() -> void:
+	if absf(camera.position.y - sky_items_y) < 0.05:
+		return
+	sky_items_y = camera.position.y
+	var drop := (camera.position.y + 64.0) / 384.0
+	var keep := []
+	for it in sky_items:
+		if not is_instance_valid(it[0]):
+			continue
+		keep.append(it)
+		var az: float = it[1]
+		var el: float = atan(tan(it[2]) - drop)
+		(it[0] as Node3D).position = Vector3(cos(el) * cos(az), sin(el), cos(el) * sin(az)) * SKY_DISTANCE
+	sky_items = keep
 
 
 func _hud_setup() -> void:
@@ -5244,6 +5280,7 @@ func _process(delta: float) -> void:
 			hd_movie_box.ratio = vsz.x / vsz.y           # the video at its own proportions, black around
 	_sync_sun_half()
 	_clouds_update()
+	_sky_items_place()
 	sky_root.position = camera.position
 	if live:
 		_live_update()

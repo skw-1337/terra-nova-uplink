@@ -197,6 +197,8 @@ func load_mission(path: String) -> Dictionary:
 	if r == null:
 		return {}
 	var groups: PackedStringArray = LGRes.names16(r.data(172))
+	# each group's side (0x2C9456 / 0x2C96A0): resource 174, one byte a group, 1 or 2 (anything else, or no resource: 2)
+	var r174: PackedByteArray = r.data(174) if r.has(174) else PackedByteArray()
 	var zone_names: PackedStringArray = LGRes.names16(r.data(177))
 	var zc: PackedByteArray = r.data(176)
 	var zones := []
@@ -215,7 +217,9 @@ func load_mission(path: String) -> Dictionary:
 		if f.size() < 24:
 			continue
 		var g := f[7]
-		ents.append({"cls": f[0], "sub": f[1], "group": groups[g] if g < groups.size() else "",
+		var team: int = r174[g] if g < r174.size() else 2
+		ents.append({"cls": f[0], "sub": f[1], "group": groups[g] if g < groups.size() else "", "team": team if team == 1 else 2,
+				"pitch": f.decode_s16(22) / 65536.0 * TAU,      # (drawn by 0x29B3AC: only 2 records in all the files)
 				"x": f.decode_s32(8) / 65536.0, "y": f.decode_s32(12) / 65536.0,
 				"z": f.decode_s32(16) / 65536.0,     # height above the ground (only the Nid d'aigle bridge)
 				"heading": f.decode_u16(20) / 65536.0 * TAU})
@@ -579,7 +583,7 @@ static func _share(tt: int, r: int, k: int, m: int, mat: PackedByteArray, pair: 
 
 # Planet file: 64x64 ground tiles stored one after the other (resource 48; some planets have
 # fewer than 64), palette (resource 50 = RGB colors from palette index 17), tile -> material
-# (resource 43), material -> first tile (47), transition table (46: index = a*50 + b*5 + k).
+# (resource 43), material -> first tile (47), transition table (46: index = a*5n + b*5 + k, n = res 42 byte 0).
 func load_planet(path: String) -> Dictionary:
 	if planet_cache.has(path):
 		return planet_cache[path]
@@ -652,10 +656,12 @@ func _read_planet(path: String) -> Dictionary:
 	var mat: PackedByteArray = r.data(43)
 	var first: PackedByteArray = r.data(47)
 	var t46: PackedByteArray = r.data(46)
+	var r42: PackedByteArray = r.data(42) if r.has(42) else PackedByteArray()
+	var n_mat: int = r42[0] if r42.size() > 0 and r42[0] > 0 else maxi(1, int(sqrt(t46.size() / 5.0)))
 	var pair := {}
 	for i in t46.size():
 		if t46[i] != 255 and t46[i] < count:
-			pair[t46[i]] = Vector2i(i / 50, (i / 5) % 10)
+			pair[t46[i]] = Vector2i(i / (5 * n_mat), (i / 5) % n_mat)
 	# mean color of each material (its first tile), to tell A from B inside transition tiles
 	var mat_color := {}
 	for m in first.size() / 2:

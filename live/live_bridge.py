@@ -242,9 +242,12 @@ brule_prev, brule_t, brule_sent = None, 0.0, 0.0
 # nuages : decalage de la texture du ciel (texels 16.16, u puis v), qui avance avec le vent ; la position du joueur
 # s'y ajoute a l'affichage (plafond a 44 unites au-dessus de l'oeil, 1 texel par unite)
 NUAGES = 0x427E6C if FR else 0x427DBC
-# vue infrarouge du jeu (touche I) : 1 = IR (0x38A3FE dans l'exe francais, retrouve sur l'image ; anglais suppose a
-# -0xB0 comme la camera principale voisine, pas verifie)
-INFRA = 0x38A3FE if FR else 0x38A34E
+# The game's infrared vision (key I): its vision mode byte, 0 off, 1 switching on, 2 on, 3 switching off. The toggle
+# (0x292180) flips 0 -> 1 or 2 -> 3, each HUD frame (0x2629ed) steps 1 -> 2 and 3 -> 0; the setter (EN 0x26b8f8, FR
+# 0x26b908: cmp al, [mode]) takes the picture's colour ramp from its table (EN 0x35AECC, FR 0x35AEEC). On = 1 or 2,
+# the game's own test (0x26b970). Checked in both exes' code. (The byte read before, 0x38A34E / 0x38A3FE, was the
+# middle panel's fill type: right only while that panel showed the map in the cockpit view)
+VISION = 0x35AE00 if FR else 0x35ADE0
 # the player's waypoint (a click on the cockpit's map): x, y 16.16, x = 0: none. The game draws it in its own 3D (a
 # purple wire pyramid and its distance: drawobj.c, routine 0x29BA3C of the English exe, 0x29BA2C of the French one),
 # which the viewer does not show: it draws its own.   'WAYP' + x, y (f32), 10 times a second
@@ -2006,7 +2009,7 @@ while True:
     if time.time() - nuages_t > 0.1:
         nuages_t = time.time()
         s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
-        s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
+        s.sendto(b'IRVW' + bytes([1 if g.read(VISION, 1)[0] in (1, 2) else 0]), ('127.0.0.1', 47821))
         s.sendto(b'WAYP' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8)))), ('127.0.0.1', 47821))
         if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
             wthr = meteo()

@@ -24,9 +24,14 @@ var refs := {}          # class -> Array of Vector2i(resource, frame) (intact ve
 var props := {}         # class -> Array of property frames (one per type)
 var model_cache := {}
 var tex_cache := {}
+# How far below its entity the game draws a unit's model (0x2d45cc of the English exe, added to z by 0x29b3ac when
+# the unit has a physics body): a s32 of its class's RESSIM.RES table divided by 6 (16.16). Classes 1-3 only.
+const SIM_TABLES := {1: [919, 0x22], 2: [920, 0x12], 3: [921, 0x13]}
+var draw_off := {}      # class -> Array of offsets (units), one per type
 
 
 func setup(data_dir: String) -> bool:
+	_load_draw_offsets(data_dir)
 	res = LGRes.open(data_dir.path_join("RESTNOBJ.RES"))
 	var m = LGRes.open(data_dir.path_join("RESMAP.RES"))
 	if res == null or m == null or not m.has(1440):
@@ -47,6 +52,33 @@ func setup(data_dir: String) -> bool:
 	for c in 7:
 		props[c] = LGRes.frames(res.data(PROPS + c))
 	return true
+
+
+func _load_draw_offsets(data_dir: String) -> void:
+	draw_off = {}
+	var sim = LGRes.open(data_dir.path_join("RESSIM.RES"))
+	for c in SIM_TABLES:
+		var arr := []
+		if sim != null and sim.has(SIM_TABLES[c][0]):
+			for f in LGRes.frames(sim.data(SIM_TABLES[c][0])):
+				var b: PackedByteArray = f
+				var at: int = SIM_TABLES[c][1]
+				arr.append(float(int(b.decode_s32(at) / 6)) / 65536.0 if b.size() >= at + 4 else 0.0)
+		if arr.is_empty():                              # (no file: its values)
+			var n: int = {1: 18, 2: 12, 3: 17}[c]
+			for t in n:
+				if c == 3:
+					arr.append(0.116653 if t <= 6 else 0.5 if t == 7 else 0.666656 if t <= 14 else 0.145828)
+				else:
+					arr.append(0.299988 if c == 1 and t == 9 else 0.145828)
+		draw_off[c] = arr
+
+
+# The game's draw offset of a class / type: its model's origin is drawn this far below its entity's z (0 for other
+# classes, and beyond the table).
+func draw_offset(cls: int, sub: int) -> float:
+	var arr: Array = draw_off.get(cls, [])
+	return float(arr[sub]) if sub >= 0 and sub < arr.size() else 0.0
 
 
 # World width of a type's sprite. The engine scales every sprite to twice the collision radius of

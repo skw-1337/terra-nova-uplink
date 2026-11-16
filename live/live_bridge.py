@@ -1793,7 +1793,8 @@ while True:
             if i != pid:                              # (la pose figee du joueur n'apprend rien)
                 animees[i] = (tab[o + 2], pose)
     # celles que le jeu anime apprennent la marche de leur type (debout seulement : pas accroupies ni a terre) ;
-    # les autres la rejouent, posees sur leur entite (hauteur du jeu moins 0,12, comme ses pieds)
+    # les autres la rejouent, posees sur leur entite (hauteur du jeu moins son decalage de dessin, comme ses pieds :
+    # RESSIM 919, 9557 / 65536 pour une combinaison, 19660 / 65536 le marcheur, type 9)
     now_w = time.time()
     ou_unite = lambda i: (*(v / 65536 for v in struct.unpack_from('<ii', tab, 0x25 * i + 0x0F)),
                           struct.unpack_from('<H', tab, 0x25 * i + 0x1B)[0] / 65536 * 2 * math.pi)
@@ -1809,7 +1810,8 @@ while True:
         haut = max(zs) - min(zs) if zs and any(zs) else 0.0
         p = marche.pose(i, tab[o + 2], ux, uy, ucap, now_w, haut)
         if p:
-            joints.append(struct.pack('<if', i, struct.unpack_from('<i', tab, o + 0x17)[0] / 65536 - 0.12) + p)
+            pieds = (struct.unpack_from('<i', tab, o + 0x17)[0] - (19660 if tab[o + 2] == 9 else 9557)) / 65536
+            joints.append(struct.pack('<if', i, pieds) + p)
     if n % int(HZ * 5) == 0 and os.environ.get('TN_DEBUG_WALK'):
         print('marche : %d animees par le jeu, %d figees, %d rejouees' % (len(animees), len(figees),
               sum(1 for i in figees if i in marche.rep and marche.rep[i][2])), flush=True)

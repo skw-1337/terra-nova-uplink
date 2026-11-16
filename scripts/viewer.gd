@@ -95,7 +95,8 @@ var mats := {}
 # --live: the camera follows the running game (sent by live/live_bridge.py over UDP, port 47821:
 # x, y, z in game units, camera heading and pitch in radians, horizontal field of view in degrees)
 var LIVE_PORT := 47821                         # --live-port N (coop: the guest's window)
-const GAME_Z := 0.12          # the game's heights are this much above the ground (units, shots)
+const GAME_Z := 0.12          # shots, smoke, flying lift: this much below the game's heights (units are drawn with
+								# the game's own offset by class and type: TNObjects.draw_offset)
 var live := false
 var udp: PacketPeerUDP
 var live_seen := 0
@@ -1334,7 +1335,8 @@ const GAIT_TURN := 0.6                         # a foot set down with the suit f
 const GAIT_LIFT := 0.16                        # a foot's lift mid-step, share of the leg
 const GAIT_DROP := 0.14                        # the pelvis lowered at most this share of the leg
 const GAIT_AIR := 0.3                          # its feet this share of the leg above the ground: in the air
-const GAIT_FEET := 0.06                        # a suit's feet below its entity (its height minus GAME_Z)
+const GAIT_FEET := 0.034                       # a suit's feet below its entity (its height minus the game's
+										# draw offset, 0.146: the same feet as when it was 0.06 below the entity - 0.12)
 const GAIT_LEAN := 0.12                        # forward lean at full speed (radians)
 const GAIT_NEAR := 12.0                        # its steps every frame nearer the camera (~28 us each), else GAIT_FAR_HZ
 const GAIT_FAR_HZ := Vector2(60.0, 30.0)       # times a second, the second one beyond GAIT_FAR
@@ -5046,10 +5048,15 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		return
 	if node.has_meta("corpse"):                      # alive again: the mission was restarted
 		node.remove_meta("corpse")
-	# units (classes 1-3) and buildings set up in play (a deployed turret): the game's own height, already real
-	# (no extra lift: a probe hovers by itself)
+	# units (classes 1-3) and buildings set up in play (a deployed turret, a mine): the game's own height, already
+	# real (no extra lift: a probe hovers by itself), less the game's draw offset of its class and type (RESSIM.RES:
+	# 0.146 for a suit or a vehicle, 0.3 the mech, 0.117 to 0.667 probes and ships, 0 a building; a picture, as the
+	# camera probe, drawn at its z)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
-		var y: float = e[5] - GAME_Z
+		var f := 0.0
+		if objects_ok and not TNObjects.is_sprite(objects.ref_for(e[0], e[1])):
+			f = objects.draw_offset(e[0], e[1])
+		var y: float = e[5] - f
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):

@@ -124,6 +124,7 @@ var mission_tag := ""         # the mission's file (the pirates' arms in the map
 var draw_distance := OS.get_environment("TN_DRAW_DISTANCE") == "1"   # live: hide what the game does not draw
 var live_drawn := PackedByteArray()  # the bridge's DRAW bits (entity index), empty: none received
 var live_sizes := {}          # game entity index -> its soldier's bone lengths (the bridge's SLEN, _live_size)
+var live_refs := {}           # live: game index -> [handedness, the 5 chains' limb reference vectors (right, up, fwd)]
 var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
 var live_fx := {}             # game entity index -> glowing sprite: shots (class 5) and their sparks (class 6)
@@ -1624,7 +1625,7 @@ func _add_soldier(holder: Node3D, suit: int, arms := 0) -> float:
 		# the ground (0.25 for the whole suit: one just behind a wall showed through it)
 		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 5 else 0.0)
 		holder.add_child(seg)
-		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2])])
+		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2]), int(sg[4])])
 	holder.set_meta("soldier", parts)
 	holder.set_meta("suit", suit)
 	holder.set_meta("arms", arms)
@@ -1645,6 +1646,47 @@ func _facing(left: Vector3, right: Vector3) -> Vector3:
 	return Vector3(f.z, 0.0, f.x)
 
 
+# The views the game's limb drawer 0x2F6C50 picks for a suit's limbs (live: the bridge's reference vectors, 'refs'
+# meta, taken once): n = (eye -> joint a) x bone, normalized, X = asin(n . R) through its 64-step table (0x30FB60),
+# R the reference vector of the limb's chain (skeleton byte 2; the suit's record +0x26F, 12 bytes a chain);
+# (eye -> joint a) . R > 0: 90 deg - X, else 270 deg + X, in 16 views rounded; a left limb (flags bit 0) takes
+# (16 - v) & 15 mirrored, a 9-view torso 16 - v mirrored past 8. Worked out in the suit's own frame (the bridge's
+# (right, up, forward), a turn of the game's: the same cross products; refs[0] = -1 when it is upside down).
+# {limb node: Vector2(view, 1 or -1 mirrored)}, empty without refs.
+func _game_views(holder: Node3D, p: Array) -> Dictionary:
+	var out := {}
+	var refs: Array = holder.get_meta("refs", [])
+	holder.remove_meta("refs")
+	var cam := get_viewport().get_camera_3d()
+	if refs.size() != 6 or cam == null:
+		return out
+	var e := _node_axes(holder.global_transform.affine_inverse() * cam.global_position)
+	e.y /= SUIT_SQUASH
+	var hand := -float(refs[0])
+	for part in holder.get_meta("soldier"):
+		if part[6] >= 5:
+			continue
+		var a: Vector3 = p[part[1]]
+		var v := a - e
+		var nn := v.cross((p[part[2]] as Vector3) - a)
+		var r: Vector3 = refs[1 + part[6]]
+		var c := 0.0 if nn.length() < 1e-6 else hand * nn.normalized().dot(r)
+		var q := asin(floorf(clampf(c, -1.0, 1.0) * 64.0) / 64.0) / (PI / 2.0)
+		var psi := 4.0 - 4.0 * q if v.dot(r) > 0.0 else 12.0 + 4.0 * q
+		var vw := int(floorf(psi + 0.5)) & 15
+		var f := 1.0
+		var seg: MeshInstance3D = part[0]
+		if float(seg.get_instance_shader_parameter("mirror")) > 0.5:
+			vw = (16 - vw) & 15
+			f = -1.0
+		var mat := seg.material_override as ShaderMaterial
+		if mat != null and int(mat.get_shader_parameter("view_count")) < 16 and vw > 8:
+			vw = 16 - vw
+			f = -f
+		out[seg] = Vector2(vw, f)
+	return out
+
+
 # Puts a soldier's limbs on its 16 joints, (right, up, forward) from the ground under it: its pose at load, then
 # in live mode the game's own joints every frame (walking, arms, aiming). Returns the highest joint.
 func _pose_soldier(holder: Node3D, p: Array) -> float:
@@ -1661,6 +1703,9 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 	# a leg hanging down faces forward, a foot (the same leg turned forward at the ankle) faces up
 	var r_hips := _node_axes(p[7] - p[6])
 	var r_top := _node_axes(p[11] - p[10])
+	# live, a pose the game drew: each limb's view picked as the game does, from its chain's reference vector
+	# (_game_views); the suit's own steps and the map viewer: from the limb's front below (limb.gdshader)
+	var gv := _game_views(holder, p)
 	for part in holder.get_meta("soldier"):
 		var a: Vector3 = p[part[1]]
 		var b: Vector3 = p[part[2]]
@@ -1678,6 +1723,7 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 		var seg: MeshInstance3D = part[0]
 		# across the bone: the game's fixed 1/256 unit a sprite pixel (limb.gdshader), not the bone's scale
 		seg.transform = Transform3D(Basis(xn * LIMB_WPX, yn * sc, xn.cross(yn) * LIMB_WPX), ga)
+		seg.set_instance_shader_parameter("game_view", gv.get(part[0], Vector2(-1.0, 1.0)))
 		seg.extra_cull_margin = maxf(part[4] * LIMB_WPX, part[3] * sc)
 		top = maxf(top, maxf(ga.y, gb.y))
 	return top
@@ -4044,6 +4090,17 @@ func _live_units(pk: PackedByteArray) -> void:
 				body = pk.decode_s32(tail)
 				if pk.size() >= tail + 8:
 					_live_alarm(pk.decode_s32(tail + 4) != 0)   # (after the body: the alarm, newer bridges)
+				live_refs.clear()
+				if pk.size() >= tail + 12:                # (then the suits' limb reference vectors: _game_views)
+					var o := tail + 12
+					for k in pk.decode_s32(tail + 8):
+						if o + 68 > pk.size():
+							break
+						var rv := [pk.decode_float(o + 4)]
+						for c in 5:
+							rv.append(Vector3(pk.decode_float(o + 8 + 12 * c), pk.decode_float(o + 12 + 12 * c), pk.decode_float(o + 16 + 12 * c)))
+						live_refs[pk.decode_s32(o)] = rv
+						o += 68
 	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
 	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
 	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
@@ -4191,6 +4248,8 @@ func _live_units(pk: PackedByteArray) -> void:
 					node.set_meta("jt0", now_ms)            # its poses again after a while without (GAIT_BACK)
 				node.set_meta("jt", now_ms)
 				if not _gait_wanted(node, now_ms):
+					if live_refs.has(idx):
+						node.set_meta("refs", live_refs[idx])
 					_pose_suit(node, joints[idx], false)
 			if not node.has_meta("corpse") and not node.has_meta("gait"):
 				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits

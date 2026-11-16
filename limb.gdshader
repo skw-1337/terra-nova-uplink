@@ -30,6 +30,8 @@ uniform float pull = 0.25;        // drawn this much nearer the camera: the game
 instance uniform float deep = 1.0;   // < 1: on the map's darkest light level, half the sun (viewer.gd _apply_deep)
 instance uniform float spin = -1.0;  // >= 0: a fixed angle on the screen (radians; a piece of a burst suit lying
                                      // on the ground, drawn turned like the game's) instead of following the bone
+// live: the view the game picks for this limb (viewer.gd _game_views: x the view, y -1 when drawn mirrored), x < 0: none
+instance uniform vec2 game_view = vec2(-1.0, 1.0);
 instance uniform float mirror = 0.0; // 1: segment flag bit 0, a left limb drawn from the right one's sprites: the game
                                      // takes the view (16 - v) & 15 and mirrors it (no change on the 9-view torsos)
 
@@ -64,7 +66,10 @@ void vertex() {
 		ang = -ang;
 	}
 	flip = 1.0;
-	if (view_count >= 16) {
+	if (game_view.x >= 0.0) {
+		layer = min(int(game_view.x), view_count - 1);
+		flip = game_view.y;
+	} else if (view_count >= 16) {
 		layer = int(mod(round(8.0 - ang / (TAU / 16.0)), 16.0));
 	} else {
 		layer = clamp(int(round(8.0 - abs(ang) / (PI / 8.0))), 0, view_count - 1);

@@ -143,7 +143,7 @@ func skeleton(suit: int) -> Array:
 	for k in d[1]:
 		var o := 0x14 + 16 * k
 		if o + 6 <= d.size():
-			out.append([d[o], d[o + 1], d.decode_u16(o + 4), d[o + 3]])
+			out.append([d[o], d[o + 1], d.decode_u16(o + 4), d[o + 3], d[o + 2]])   # joint a, b, part, flags, chain
 	return out
 
 

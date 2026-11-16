@@ -2008,6 +2008,7 @@ while True:
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
     # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds
     joints = []
+    refs = []
     figees = []                                   # armures que le jeu n'anime pas (loin) : pas de pose (voir MARCHE_LOIN)
     animees = {}
     tab_j, lus = articulations(tab)
@@ -2063,6 +2064,12 @@ while True:
         sol = min(w[2] * sg for w in q[:4])
         pose = [c for w in q for c in (w[0] * dr[0] + w[1] * dr[1], w[2] * sg - sol, w[0] * av[0] + w[1] * av[1])]
         joints.append(struct.pack('<if48f', i, sol * sg, *pose))
+        # the limb drawer's reference vector of each of its 5 chains (record +0x26F, 12 bytes a chain: 0x2F7798 hands
+        # skeleton +0x10 + 12 chain to 0x2F6C50, which picks each limb's view from it), in the same frame
+        rv = struct.unpack('<15i', g.read(SOLDATS + nf * 0x582 + 0x26F, 60))
+        refs.append(struct.pack('<if15f', i, -sg, *[c for k in range(5) for c in (
+            (rv[3 * k] * dr[0] + rv[3 * k + 1] * dr[1]) / 65536, rv[3 * k + 2] * sg / 65536,
+            (rv[3 * k] * av[0] + rv[3 * k + 1] * av[1]) / 65536)]))
         if i in figees:
             figees.remove(i)
             if i != pid:                              # (la pose figee du joueur n'apprend rien)
@@ -2195,7 +2202,7 @@ while True:
     alarm = g.read(ALARME, 1)[0] if ALARME else 0
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid) +
-             struct.pack('<i', alarm), ('127.0.0.1', 47821))
+             struct.pack('<i', alarm) + struct.pack('<i', len(refs)) + b''.join(refs), ('127.0.0.1', 47821))
     if guest: guest.step(body, joints, arts, cam, vue if sonde else pid, alarm)   # (cam: what he sees with no suit)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()

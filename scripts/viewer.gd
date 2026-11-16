@@ -424,7 +424,7 @@ func _build_scene() -> void:
 	sky.sky_material = sm
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.35
+	env.ambient_light_energy = VIEW_AMBIENT
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.7, 0.76, 0.84)
 	env.fog_density = 0.0005
@@ -435,7 +435,7 @@ func _build_scene() -> void:
 	add_child(we)
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = DEFAULT_SUN
-	sun.light_energy = 1.0
+	sun.light_energy = VIEW_LIGHT
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 250.0
 	add_child(sun)
@@ -595,10 +595,14 @@ func _load(index: int) -> void:
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
+	map_dif = m.get("dif", DEFAULT_DIF)
+	map_amb = m.get("amb", DEFAULT_AMB)
 	if live:
 		planet_look(m["planet"], mis.get("sky", ""))
-	else:
-		_ground_look(1.0)
+	else:                                     # the map's own sun and ambient (res 82), against the pair the look was
+		sun.light_energy = VIEW_LIGHT * map_dif / DEFAULT_DIF          # tuned on (36 maps of 55 have it)
+		env.ambient_light_energy = VIEW_AMBIENT * map_amb / DEFAULT_AMB
+		_ground_look(VIEW_LIGHT, VIEW_AMBIENT)
 	var nveg := _add_vegetation(m)
 	var counts := {}
 	live_nodes.clear()
@@ -739,10 +743,16 @@ func _sprite_lit(ref: Vector2i, sp: Dictionary, c: Color) -> StandardMaterial3D:
 # look's base sun (not the map's own diffuse light: the levels hold it)
 const GROUND_SUN_REF := 0.845
 var ground_light := Color(1, 1, 1)
+const VIEW_LIGHT := 1.0                  # the map viewer's sun and ambient
+const VIEW_AMBIENT := 0.35
+const DEFAULT_DIF := 46000.0 / 65536.0   # the usual pair of res 82 (diffuse, ambient once clamped)
+const DEFAULT_AMB := 19536.0 / 65536.0
+var map_dif := DEFAULT_DIF
+var map_amb := DEFAULT_AMB
 
 
-func _ground_look(base_light: float) -> void:
-	var amb := env.ambient_light_energy * env.ambient_light_sky_contribution
+func _ground_look(base_light: float, base_ambient: float) -> void:
+	var amb := base_ambient
 	var c := sun.light_color * base_light * GROUND_SUN_REF
 	ground_light = Color(c.r + sky_haze.r * amb, c.g + sky_haze.g * amb, c.b + sky_haze.b * amb)
 	for sm in ground_mats:
@@ -1063,18 +1073,23 @@ func _is_modern() -> bool:
 
 
 # The planet's ambiance (PLANET_LOOK) over the live look, once per map, after its sky (whose haze the fog starts from).
-# Also called by the lab, for the map viewer.
+# Also called by the lab, for the map viewer. The sun's and the ambient's strength: the planet's, tuned on the maps
+# that have the usual pair (DEFAULT_DIF / DEFAULT_AMB), scaled by the map's own (map_dif, map_amb: res 82). The night
+# planet and the storm sky take planet 0's: their darkness is in their maps' pair.
 func planet_look(planet: String, sky_file: String) -> void:
 	var a: Dictionary = PLANET_LOOK.get(sky_file.get_file().to_upper(), PLANET_LOOK.get(planet.to_upper(), {}))
+	var base: Dictionary = a
+	if sky_file.get_file().to_upper() == "SKY0S.RES" or planet.to_upper() == "RESPLNT4.RES":
+		base = PLANET_LOOK["RESPLNT0.RES"]
 	var fog: Array = a.get("fog", [LIVE_FOG_BEGIN, LIVE_FOG_END, LIVE_FOG_MAX])
 	env.fog_depth_begin = fog[0]
 	env.fog_depth_end = fog[1]
 	env.fog_density = fog[2]
 	env.fog_light_color = env.fog_light_color.lerp(a.get("tint", Color.WHITE), a.get("tint_mix", 0.0))
 	sun.light_color = a.get("sun", Color.WHITE)
-	sun.light_energy = a.get("light", LIVE_LIGHT)
-	env.ambient_light_sky_contribution = a.get("ambient", LIVE_AMBIENT)
-	_ground_look(a.get("light", LIVE_LIGHT))
+	sun.light_energy = base.get("light", LIVE_LIGHT) * map_dif / DEFAULT_DIF
+	env.ambient_light_sky_contribution = base.get("ambient", LIVE_AMBIENT) * map_amb / DEFAULT_AMB
+	_ground_look(base.get("light", LIVE_LIGHT), env.ambient_light_energy * base.get("ambient", LIVE_AMBIENT))
 	env.adjustment_saturation = a.get("sat", LIVE_SATURATION)
 	env.adjustment_contrast = a.get("contrast", 1.0)
 	env.adjustment_brightness = a.get("bright", 1.0)

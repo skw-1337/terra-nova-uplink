@@ -268,14 +268,22 @@ func load_map(path: String, mission_file: String) -> Dictionary:
 				items.append({"cls": f[0], "sub": f[1], "ox": f.decode_s32(8) / 65536.0, "oy": f.decode_s32(12) / 65536.0})
 		veg_sets.append(items)
 	var veg_map: PackedByteArray = r.data(83)
-	# resource 82: direction of the light (u16 azimuth, u16 elevation, 1/65536 turn), where the
-	# engine also draws the sky's moon
+	# resource 82: the map's light (0x29E5FC): u16 azimuth, u16 elevation (1/65536 turn), where the engine also draws
+	# the sky's moon; s32 16.16 diffuse, s32 16.16 ambient (the ambient lowered to 1 - diffuse when they add up to
+	# more); a last word nobody reads. The ground's levels are baked with them; the game lights its models with them.
 	var light := Vector2(0.0, TAU / 8.0)
+	var dif := 46000.0 / 65536.0               # (the pair of 36 of the 55 maps, once clamped)
+	var amb := 19536.0 / 65536.0
 	var r82: PackedByteArray = r.data(82)
 	if r82.size() >= 4:
-		light = Vector2(r82.decode_u16(0) / 65536.0 * TAU, r82.decode_s16(2) / 65536.0 * TAU)
+		light = Vector2(r82.decode_u16(0) / 65536.0 * TAU, r82.decode_u16(2) / 65536.0 * TAU)
+	if r82.size() >= 12:
+		dif = r82.decode_s32(4) / 65536.0
+		amb = r82.decode_s32(8) / 65536.0
+		if r82.decode_s32(4) + r82.decode_s32(8) > 0x10000:
+			amb = 1.0 - dif
 	return {"planet": planet, "planet_data": pl, "detail": detail, "outer": outer,
-			"veg_map": veg_map, "veg_sets": veg_sets, "info": info, "light": light}
+			"veg_map": veg_map, "veg_sets": veg_sets, "info": info, "light": light, "dif": dif, "amb": amb}
 
 
 # Grid: heights, tile index per vertex (byte & 0x3F), fallback vertex colors, and the tile map

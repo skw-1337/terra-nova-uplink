@@ -24,7 +24,7 @@ Everything below was worked out for Uplink from the game files and from the game
 | MAPx.RES 86 | 513 × 513 × 3 bytes: ground type, s16 height (÷ 384 in game units) |
 | MAPx.RES 85 | 257 × 257 × 3 bytes, same format, step 4, offset 256 |
 | MAPx.RES 80 | planet file name (`resplntN.res`) |
-| MAPx.RES 82 | light: u16 azimuth, s16 elevation (1/65536 turn) — the engine also draws the sky's moon there; then 2 words not decoded |
+| MAPx.RES 82 | light: u16 azimuth, u16 elevation (1/65536 turn) — the engine also draws the sky's moon there; s32 16.16 diffuse, s32 16.16 ambient (lowered to 1 − diffuse when they add up to more than 1; the stored light levels are baked with them, the models are lit with them); a last u16 with no reader |
 | MAPx.RES 83 | vegetation map, 128 × 128 bytes stored column by column (index = x × 128 + y), 4 × 4-unit cells; value v > 0 → list 119 + v |
 | MAPx.RES 84 | 30 ground type names (16 bytes) |
 | MAPx.RES 120-149 | 30 vegetation lists (50-byte entries: class, type, X/Y offsets in 16.16, 0 to 4 inside the cell) |

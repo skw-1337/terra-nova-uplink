@@ -27,6 +27,18 @@ SHIFT = {0x2A, 0x36}              # Shift + a direction key: the game's directio
 JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: -math.pi / 2, 0x20: math.pi / 2}
 JUMP_V, JUMP_WAIT = (120, 80), 0xFA   # the game's one kick (flat, up) and its wait on the game clock (ms)
 BOUND_GATE = 0x3C8                # suit record: the game's Bound only while this (signed) is under 0x30000 (meaning unknown)
+# The game's Bound is tried on each press the game sees of a move key while Shift is down (0x276849), the key's
+# repeats included: a held key repeats as the PC keyboard does in DOSBox (typematic: after 0.5 s, 10.9 a second),
+# whatever Windows sends it. His window sends a press once, so his held move keys repeat here the same way. It leaps
+# only if 4 footsteps have gone by (0x441361: +1 at each plant of a foot, 0x27E5B8; back to 0 once the legs leave the
+# ground, 0x27FFDC) and while no foot swings (0x441359, from the contact test 0x27EDA0): a try now and then lands in
+# the short stance after a plant. Holding Shift + W, the host leaps once in 1.7 to 5.4 s (3.2 s on average, 0.15 of
+# the plants that pass the other gates). The game counts the player's feet only; the guest's are counted from his
+# suit's feet (state bytes FEET, 2 = planted: legs record suit +0xDE, foot n at +0x235 + n x 0x44 + 0x18, state at
+# +0x28). The game moves them only while his suit is drawn on the host's screen; else they stay planted and each
+# 0.29 s of walking (the stride, host and guest alike) counts as a footstep, with the stance after it as one game update
+REPEAT = (0.5, 1 / 10.9)
+FEET, STEPS, STRIDE, STILL, STANCE = (0x353, 0x397), 4, 290, 600, 16
 CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of these values = off the ground (0x27EDA0)
 # Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
 # of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
@@ -172,6 +184,10 @@ class Guest:
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
+        self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
+        # last repeat]), his footsteps, his feet's last states, his gamepad's A (pressed, last repeat)
+        self.feet_c, self.walk, self.stance, self.at = 0, 0, None, None   # feet not drawn: when they last moved, the
+        # walking time to the next footstep, the end of its stance (game clock), his last place and clock
         self.pending, self.clk, self.jet_n, self.jet_air = [0, 0, 0], None, None, None
         self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
@@ -384,9 +400,8 @@ class Guest:
         return not any(r[o] in v for o, v in CONTACT) and self.near_ground(e)
 
     def jump_ok(self):
-        """the game's Bound gates for his suit: on the ground (within its 0.25 band: kicks pressed fast no longer
-        carry him up), 250 game ms since the last one, suit +0x3C8 low (the game's count of 4 foot plants, kept for
-        the player only, is left out)"""
+        """the game's Bound gates for his suit: on the ground (no foot swinging, within its 0.25 band: kicks
+        pressed fast no longer carry him up), 250 game ms since the last one, 4 footsteps since, suit +0x3C8 low"""
         if not self.gid:
             return False
         s, c = self.suit(self.gid), self.clock()
@@ -394,13 +409,53 @@ class Guest:
             self.jump_clock = None                             # the clock went back: a new mission or a load
         if self.jump_clock is not None and not c > self.jump_clock:
             return False
-        return self.grounded(self.gid) and self.i32(s + BOUND_GATE) < 0x30000
+        if self.stance is None:
+            down = self.grounded(self.gid)
+        else:                                                  # (feet not drawn: the stance after each footstep)
+            down = c <= self.stance and self.near_ground(self.gid)
+        return self.steps >= STEPS and down and self.i32(s + BOUND_GATE) < 0x30000
+
+    def bound_tick(self):
+        """each tick: his footsteps (a foot planted since the last tick, near the ground; none counted and the count
+        back to 0 while the jets hold him up), then the repeats of his held move keys, each a Bound try with Shift"""
+        r = self.g.read(self.suit(self.gid) + FEET[0], FEET[1] - FEET[0] + 1)
+        feet, c = (r[0], r[-1]), self.clock()
+        here = struct.unpack('<2i', self.g.read(self.master + 0x25 * self.gid + 0x0F, 8))
+        if feet != self.feet or self.at is None or not 0 <= (c - self.feet_c) & 0xFFFFFFFF < 0x80000000:
+            self.feet_c = c
+        drawn = (c - self.feet_c) & 0xFFFFFFFF < STILL
+        if self.jet_air is not None:
+            self.steps, self.walk = 0, 0
+        elif drawn:
+            if self.feet is not None and self.near_ground(self.gid):
+                self.steps += sum(1 for a, b in zip(self.feet, feet) if b == 2 and a != 2)
+        elif self.at is not None:                              # his feet stand still: footsteps from his walking
+            dt = (c - self.at[1]) & 0xFFFFFFFF
+            if 0 < dt <= 100 and math.dist(here, self.at[0]) / 65536 > 0.3 * dt / 1000:
+                self.walk += dt
+                if self.walk >= STRIDE:
+                    self.walk -= STRIDE
+                    if self.near_ground(self.gid):
+                        self.steps += 1
+                        self.stance = c + STANCE
+        self.stance = None if drawn else (self.stance or 0)
+        self.feet, self.at = feet, (here, c)
+        now = time.time()
+        for sc, t in self.held.items():
+            if now - t[0] > REPEAT[0] and now - t[1] > REPEAT[1]:
+                t[1] = now
+                if self.shift:
+                    self.jump(JUMP_DIR[sc])
+        if self.pad_jump and self.rpad and now - self.pad_t[0] > REPEAT[0] and now - self.pad_t[1] > REPEAT[1]:
+            self.pad_t[1] = now                                # (his gamepad's A held: the same)
+            self.jump(self.pad_angle())
 
     def jump(self, angle):
         """the game's Bound toward the heading + angle: one kick of 120 flat, 80 up; it costs no energy"""
         if not self.jump_ok():
             return
         self.jump_clock = (self.clock() + JUMP_WAIT) & 0xFFFFFFFF
+        self.steps = 0                                         # (the game: its legs leave the ground)
         h = self.u16(self.master + 0x25 * self.gid + 0x1B) / 65536 * 2 * math.pi + angle
         self.kick(int(math.cos(h) * JUMP_V[0] * 65536), int(math.sin(h) * JUMP_V[0] * 65536), JUMP_V[1] << 16)
 
@@ -580,6 +635,7 @@ class Guest:
             g.write(G_ON, b'\x01')
             self.amax, self.state, self.taken_t = self.armour_max(gid), OK, time.time()
             self.pending, self.jet_n, self.jet_air = [0, 0, 0], None, None
+            self.steps, self.feet, self.stance, self.at, self.walk = 0, None, None, None, 0
             print('guest: entity %d' % gid, flush=True)
             self.tag.put(gid, self.name, self.face)
         else:
@@ -700,6 +756,7 @@ class Guest:
                       struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', seen or me, 1 if alarm else 0))
             return
         eg = M + self.gid * 0x25
+        self.bound_tick()
         k = lambda sc: 1 if sc in self.keys else 0
         fwd, side, fire = k(0x11) - k(0x1F), k(0x20) - k(0x1E), self.fire
         p = None if self.remote else pad()        # online: the guest's own window only
@@ -804,8 +861,12 @@ class Guest:
                     self.call_dropship()
                 if sc in SHIFT:
                     self.shift = bool(down)
-                elif sc in JUMP_DIR and down and active and self.shift:
-                    self.jump(JUMP_DIR[sc])
+                elif sc in JUMP_DIR and not down:
+                    self.held.pop(sc, None)
+                elif sc in JUMP_DIR and sc not in self.held:
+                    self.held[sc] = [time.time()] * 2
+                    if active and self.shift:
+                        self.jump(JUMP_DIR[sc])
                 if sc in KEYS:
                     (self.keys.add if down else self.keys.discard)(sc)
             elif pk[:1] == b'M' and len(pk) >= 5:
@@ -838,14 +899,19 @@ class Guest:
             elif pk[:1] == b'P' and len(pk) >= 6 and self.remote:   # online gamepad (coop_net.gd)
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
                 self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (bool(f & 1), bool(f & 8))
-                if f & 2 and not self.pad_jump and active:      # button A: jump where the left stick points
-                    self.jump(math.atan2(self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0)
+                if f & 2 and not self.pad_jump:                 # button A: jump where the left stick points
+                    self.pad_t = [time.time()] * 2
+                    if active:
+                        self.jump(self.pad_angle())
                 self.pad_jump = bool(f & 2)
                 if f & 4 and not self.pad_lock and active:
                     self.lock_req = True
                 self.pad_lock = bool(f & 4)
                 self.rpad_t = time.time()
         return turn
+
+    def pad_angle(self):
+        return math.atan2(self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0
 
     def smoke(self, clouds):
         """Smoke grenades' clouds (live_bridge.py fumees) for the guest's window: at most 40 particles a cloud. Local:

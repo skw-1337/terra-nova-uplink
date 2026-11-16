@@ -19,10 +19,15 @@ G_HIT = 0x46C200                  # 1v1 hit mailbox (TN+ Coop coop3): 1, +2 enti
 # or they pile up and the guest cannot fire any more
 PROJ, PROJ_N = 0x39BDF0, 0x1E
 HIT_R, HIT_Z = 0.9, (-0.2, 2.6)    # the host's body: radius, height from his feet
-G_JUMP, G_JV = 0x46C004, 0x46C120  # jump mailbox (TN+ Coop 1.2.2-coop2 and later): 1 = jump with speed G_JV (16.16)
-SHIFT = {0x2A, 0x36}              # Shift + a direction key: the game's directional jump
-JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: math.pi / 2, 0x20: -math.pi / 2}   # W S A D: angle from the heading
-HEAT = 0x3C8                      # suit record: the game jumps only while this is under 0x30000
+G_JUMP, G_JV = 0x46C004, 0x46C120  # jump mailbox (TN+ Coop 1.2.2-coop2 and later): 1 = add G_JV (16.16) to the body's
+                                  # speed (0x2F0CA5); one slot: written only once the cave has taken the last one
+SHIFT = {0x2A, 0x36}              # Shift + a direction key: the game's directional jump (Bound, 0x27681D)
+# W S A D: angle from the heading. The game's offsets: +0x4000 for C / Alt+Right (right), +0x8000 X / Down, +0xC000 Z /
+# Alt+Left (left); the guest's A / D walk left / right, his S is back
+JUMP_DIR = {0x11: 0.0, 0x1F: math.pi, 0x1E: -math.pi / 2, 0x20: math.pi / 2}
+JUMP_V, JUMP_WAIT = (120, 80), 0xFA   # the game's one kick (flat, up) and its wait on the game clock (ms)
+BOUND_GATE = 0x3C8                # suit record: the game's Bound only while this (signed) is under 0x30000 (meaning unknown)
+CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of these values = off the ground (0x27EDA0)
 # Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
 # of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 120.0   # range: 1.2 km (2.5 km picked targets out of sight)
@@ -32,10 +37,16 @@ LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A D, Space (network input is filtered)
-JET_ACC, JET_DRAIN = float(os.environ.get('TN_JET_ACC', '1600')), 1000   # Space held: the jets' push (speed units/s
-                                  # per s) and their energy cost per s, the host's (his 1250 last 1.25 s)
-JUMP_ACC = [float(v) for v in os.environ.get('TN_JUMP_ACC', '2000,4500').split(',')]   # a jump's push: flat, up
-JUMP_T, JUMP_COST = 0.3, 150      # for 0.3 s, and its energy
+# The jets (Space), as the game's 0x288EF0 / 0x288F78 for a suit: near the ground a kick of 150 up every 2nd game
+# update, unpaid; in the air free for 200 ms, then each update pays energy dt x 2^32 / ((f + 0x20000) / 3) (16.16, f =
+# 0x442439; 1.03 a ms) and fuel ((rating / 15 << 9) x dt >> 16) & 0xFF (halved if suit +0xD is 4, none in mission
+# 0x2F), none of either: no lift. No jets in mission 0x2E. The game's lift in the air (thrust into the body's +0x44,
+# 0x269CF4) only exists for the player's suit and how the body turns it into speed is not decoded: JET_ACC (speed
+# units/s per s) stands for it. Damage to the jets (sputter, 0x27DF14) is left out
+JET_ACC = float(os.environ.get('TN_JET_ACC', '1600'))
+JET_KICK, JET_FREE, AIR = 150, 200, 0x4000   # the ground kick, free airtime (ms), "near the ground" (0.25, 0x28927C)
+MISSION, NO_JETS, NO_FUEL, ENERGY_F = 0x359708, 0x2E, 0x2F, 0x442439
+J_RATING, J_FUEL, J_HALF = 0xA6, 0xAA, 0x0D   # suit record: jets' rating (word), fuel (word), dword 4 = half the fuel
 F8 = 0x42                     # next teammate
 DROPSHIP = 0x1C               # Enter: the game's "Call dropship" key, posted to the host's game (the mission's end)
 WEAPON_KEYS = {0x02: 0, 0x03: 1, 0x04: 2, 0x05: 3}   # 1-4: weapon slot (suit record +0xCE, the fire uses it)
@@ -45,8 +56,8 @@ SEL, SLOTS, SLOT_N = 0xCE, 0x45, 0xF                # selected slot, 4 weapon sl
 SLOT_READY, SUIT_B7, CLOCK = 0x0A, 0x07, 0x446AE8
 W_TWO, W_DELAY, W_N = 0x395111, 0x395124, 0x24
 HUD_PORT = 47832              # the guest window's coop_hud.gd: 'GHD' state, armour, max, entity (online: via 47841)
-PBA, PBA_N, ENERGY = 0x3A5608, 0x582, 0x88   # English exe: suit records, the energy word (shots draw from it)
-# the suit's power plant, 16.16 dwords: +0x86 the energy (+0x88 is its integer word), +0x8A its maximum (a hit on the
+PBA, PBA_N = 0x3A5608, 0x582     # English exe: suit records
+# the suit's power plant, 16.16 dwords: +0x86 the energy (shots draw from it), +0x8A its maximum (a hit on the
 # plant lowers it, 0x28b938); the game's panel bar is the one over the other (0x26d944)
 EN_CUR, EN_MAX = 0x86, 0x8A
 PARTS = [(0x15 + 7 * k, 0x17 + 7 * k) for k in range(4)]   # the armour: 4 parts (+0x14 + 7k: flag, current, max, current)
@@ -143,7 +154,8 @@ class Guest:
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
-        self.shift, self.jump_t, self.pad_jump, self.jet_t, self.burst = False, 0.0, False, 0.0, None
+        self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
+        self.pending, self.clk, self.jet_n, self.jet_z0, self.jet_air = [0, 0, 0], None, None, None, None
         self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
@@ -239,12 +251,12 @@ class Guest:
                     pilot = r[6]
             out.append(struct.pack('<HBB', e, max(0, min(100, self.armour(e) * 100 // full)), pilot))
         out = out[:3]
-        # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (1 s apart)
+        # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (the game's gates)
         slots = bytes(self.g.read(self.suit(self.gid) + SLOTS + SLOT_N * k, 1)[0] for k in range(4)) if self.gid else bytes(4)
         en = 0
         if self.gid:                                           # then his energy, % of the suit's max (+0x8A), as the game's panel bar
             en = self.energy_pct(self.gid)
-        return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if time.time() - self.jump_t >= 1.0 else 0, en])
+        return bytes([len(out)]) + b''.join(out) + slots + bytes([1 if self.jump_ok() else 0, en])
 
     def versus_hits(self, me):
         g, M = self.g, self.master
@@ -328,33 +340,97 @@ class Guest:
         print('guest: lock', pick or 'nothing', flush=True)
         return pick
 
-    def jump(self, angle):
-        """a jump toward the heading + angle: a short push (one impulse is lost on the ground), once a second, paid in
-        energy, not while the jets are hot"""
-        if not self.gid or time.time() - self.jump_t < 1.0 or self.energy(self.gid) < JUMP_COST:
-            return
-        if struct.unpack('<i', self.g.read(self.suit(self.gid) + HEAT, 4))[0] >= 0x30000:
-            return
-        self.jump_t = time.time()
-        self.g.write(self.suit(self.gid) + ENERGY, struct.pack('<h', self.energy(self.gid) - JUMP_COST))
-        h = self.u16(self.master + 0x25 * self.gid + 0x1B) / 65536 * 2 * math.pi + angle
-        self.burst = (math.cos(h) * JUMP_ACC[0], math.sin(h) * JUMP_ACC[0], JUMP_ACC[1], self.jump_t + JUMP_T)
+    def clock(self):
+        return struct.unpack('<I', self.g.read(CLOCK, 4))[0]
 
-    def push(self, dt, jets):
-        """this tick's push through the jump mailbox (it adds to the body's speed): a jump's burst, and the jets while
-        Space is held, paid in energy (too little left: nothing until it comes back, the host's jets sputter the same)"""
-        vx = vy = vz = 0.0
-        if self.burst and time.time() < self.burst[3]:
-            vx, vy, vz = (v * dt for v in self.burst[:3])
-        if jets:
-            cost = int(JET_DRAIN * dt)
-            en = self.energy(self.gid)
-            if en >= max(1, cost):
-                self.g.write(self.suit(self.gid) + ENERGY, struct.pack('<h', en - cost))
-                vz += JET_ACC * dt
-        if vx or vy or vz:
-            self.g.write(G_JV, struct.pack('<3i', int(vx * 65536), int(vy * 65536), int(vz * 65536)))
+    def grounded(self, s):
+        """the suit stands on something, as the game's 0x27EDA0 tells (suit bytes)"""
+        r = self.g.read(s, 0x398)
+        return not any(r[o] in v for o, v in CONTACT)
+
+    def jump_ok(self):
+        """the game's Bound gates for his suit: on the ground, 250 game ms since the last one, suit +0x3C8 low (the
+        game's count of 4 foot plants, kept for the player only, is left out)"""
+        if not self.gid:
+            return False
+        s, c = self.suit(self.gid), self.clock()
+        if self.jump_clock is not None and c < self.jump_clock - JUMP_WAIT:
+            self.jump_clock = None                             # the clock went back: a new mission or a load
+        if self.jump_clock is not None and not c > self.jump_clock:
+            return False
+        return self.grounded(s) and self.i32(s + BOUND_GATE) < 0x30000
+
+    def jump(self, angle):
+        """the game's Bound toward the heading + angle: one kick of 120 flat, 80 up; it costs no energy"""
+        if not self.jump_ok():
+            return
+        self.jump_clock = (self.clock() + JUMP_WAIT) & 0xFFFFFFFF
+        h = self.u16(self.master + 0x25 * self.gid + 0x1B) / 65536 * 2 * math.pi + angle
+        self.kick(int(math.cos(h) * JUMP_V[0] * 65536), int(math.sin(h) * JUMP_V[0] * 65536), JUMP_V[1] << 16)
+
+    def kick(self, vx, vy, vz):
+        """add a speed (16.16) to his body: through the mailbox once the cave has taken the last one, else added up
+        and sent on a later tick (never written over)"""
+        self.pending = [a + b for a, b in zip(self.pending, (vx, vy, vz))]
+        self.flush()
+
+    def flush(self):
+        if any(self.pending) and self.g.read(G_JUMP, 1)[0] == 0:
+            self.g.write(G_JV, struct.pack('<3i', *self.pending))
             self.g.write(G_JUMP, b'\x01')
+            self.pending = [0, 0, 0]
+
+    def push(self, jets):
+        """each tick: the jets while Space is held (counted in game updates: the clock moved), and what waits in the
+        mailbox"""
+        c = self.clock()
+        dt = 0 if self.clk is None else (c - self.clk) & 0xFFFFFFFF
+        if dt > 100:
+            dt = 0 if dt > 0x7FFFFFFF else 100                  # the clock went back (no update), or a long hitch
+        self.clk = c
+        if jets and self.gid and self.i32(MISSION) != NO_JETS:
+            self.jets(self.suit(self.gid), c, dt)
+        else:
+            self.jet_n = self.jet_air = None
+        self.flush()
+
+    def jets(self, s, c, dt):
+        if self.jet_n is None:
+            self.jet_n = 0                                     # pressed: this tick is the first update
+        elif dt:
+            self.jet_n += 1
+        else:
+            return                                             # no game update since the last tick
+        z = self.i32(self.master + 0x25 * self.gid + 0x17)
+        if not self.grounded(s):
+            self.jet_z0 = None
+        elif self.jet_z0 is None:
+            self.jet_z0 = z                                    # the ground under him (no height map in the bridge)
+        if self.jet_z0 is not None and z - self.jet_z0 <= AIR:  # near the ground: the kick, unpaid
+            self.jet_air = None
+            if self.jet_n % 2 == 0:
+                self.kick(0, 0, JET_KICK << 16)
+            return
+        if self.jet_air is None:
+            self.jet_air = c                                   # took off
+        r = self.g.read(s + J_RATING, 6)
+        fuel = struct.unpack_from('<H', r, J_FUEL - J_RATING)[0]
+        if fuel == 0:
+            return
+        if (c - self.jet_air) & 0xFFFFFFFF > JET_FREE:
+            cost = (dt << 32) // ((self.i32(ENERGY_F) + 0x20000) // 3)
+            pool = self.i32(s + EN_CUR)
+            if pool < cost:
+                return                                         # too little energy: nothing this update
+            burn = ((((struct.unpack_from('<H', r, 0)[0] // 15) << 9) * dt) >> 16) & 0xFF
+            if self.i32(s + J_HALF) == 4:
+                burn >>= 1
+            if self.i32(MISSION) == NO_FUEL:
+                burn = 0
+            self.g.write(s + EN_CUR, struct.pack('<i', pool - cost))
+            if burn:
+                self.g.write(s + J_FUEL, struct.pack('<H', max(0, fuel - burn)))
+        self.kick(0, 0, int(JET_ACC * dt / 1000 * 65536))
 
     def select_weapon(self, k):
         """weapon key k (slot 0-3) for his suit as the game does it for the player's (0x2760d1, 0x28ab1c): an odd
@@ -371,7 +447,7 @@ class Guest:
         t = typ(s)
         if s == r[SEL] or t == 0:
             return
-        ready = (struct.unpack('<I', g.read(CLOCK, 4))[0] + self.u16(W_DELAY + W_N * t)) & 0xFFFFFFFF
+        ready = (self.clock() + self.u16(W_DELAY + W_N * t)) & 0xFFFFFFFF
         a = R + SLOTS + SLOT_N * s + SLOT_READY
         if ready > struct.unpack('<I', g.read(a, 4))[0]:
             g.write(a, struct.pack('<I', ready))
@@ -398,9 +474,6 @@ class Guest:
     def armour_max(self, e):
         r = self.g.read(self.suit(e), 0x30)
         return max(1, sum(max(0, struct.unpack_from('<h', r, m)[0]) for _, m in PARTS))
-
-    def energy(self, e):
-        return struct.unpack('<h', self.g.read(self.suit(e) + ENERGY, 2))[0]
 
     def energy_pct(self, e):
         """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power
@@ -470,6 +543,7 @@ class Guest:
         if gid:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
             self.amax, self.state, self.taken_t = self.armour_max(gid), OK, time.time()
+            self.pending, self.jet_n, self.jet_z0, self.jet_air = [0, 0, 0], None, None, None
             print('guest: entity %d' % gid, flush=True)
             self.tag.put(gid, self.name, self.face)
         else:
@@ -610,9 +684,7 @@ class Guest:
         c = bytearray(0x28)
         struct.pack_into('<ii', c, 0, int(fwd * 0x10000), int(side * 0x10000))
         g.write(G_CTRL, bytes(c))
-        now = time.time()
-        self.push(min(0.1, now - self.jet_t), 0x39 in self.keys or bool(p and p.lt > 64) or pad_jets)   # Space / left trigger
-        self.jet_t = now
+        self.push(0x39 in self.keys or bool(p and p.lt > 64) or pad_jets)   # Space / left trigger
         gx, gy, gz = (self.i32(eg + o) / 65536 for o in (0x0F, 0x13, 0x17))
         gh = self.u16(eg + 0x1B) / 65536 * 2 * math.pi
         # aim: 30 units along the guest's view, or his locked target; held = a request every frame (the weapon's
@@ -728,7 +800,7 @@ class Guest:
                 lx, ly, rx, ry, f = struct.unpack('<bbbbB', pk[1:6])
                 self.rpad = tuple(max(-1.0, min(1.0, v / 127)) for v in (lx, ly, rx, ry)) + (bool(f & 1), bool(f & 8))
                 if f & 2 and not self.pad_jump and active:      # button A: jump where the left stick points
-                    self.jump(math.atan2(-self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0)
+                    self.jump(math.atan2(self.rpad[0], self.rpad[1]) if abs(self.rpad[0]) + abs(self.rpad[1]) > 0.3 else 0.0)
                 self.pad_jump = bool(f & 2)
                 if f & 4 and not self.pad_lock and active:
                     self.lock_req = True

@@ -49,7 +49,14 @@ _s = [[struct.unpack('<I', m.group(i))[0] for i in range(1, 6)] for m in re.find
     re.escape(bytes.fromhex('85d274')) + b'.' + re.escape(b'\xb8') + b'(....)' + re.escape(b'\xba') + b'(....)\xe8', code, re.S)]
 _s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == A_PID + 2 and v[3] == A_CAMPITCH - 0x16]
 A_DEATH = _s[0][1] if len(_s) == 1 else None
-print('vue finale : cap %s, tangage %s ; camera de mort %s' % tuple('%#x' % a if a else 'introuvable' for a in (A_SAVH, A_SAVP, A_DEATH)))
+# ... and the death camera's direction: the torso piece's velocity, 3 x i32, rewritten every frame by the burst
+# (its use in 0x28236c: mov edx, [vy] / mov eax, edx / imul edx / shrd eax, edx, 16 / mov edx, [vx])
+_s = [[struct.unpack('<I', m.group(i))[0] for i in (1, 2)] for m in re.finditer(
+    re.escape(b'\x8b\x15') + b'(....)' + re.escape(bytes.fromhex('89d0f7ea0facd0108b15')) + b'(....)', code, re.S)]
+_s = [v for v in _s if all(0x300000 <= a < 0x500000 for a in v) and v[0] == v[1] + 4]
+A_VEC = _s[0][1] if len(_s) == 1 else None
+if A_VEC is None: A_DEATH = None
+print('vue finale : cap %s, tangage %s ; camera de mort %s, vitesse %s' % tuple('%#x' % a if a else 'introuvable' for a in (A_SAVH, A_SAVP, A_DEATH, A_VEC)))
 # exe francais (GOG francise) ou anglais (Steam / GOG anglais) : memes routines, donnees decalees de 0xB0
 FR = A_MASTER == 0x3C32F0
 SOLDATS = 0x3A56B8 if FR else 0x3A5608   # fiches soldats, 0x582 octets
@@ -1654,6 +1661,34 @@ def tangage():
     return cam
 
 
+def camera_mort():
+    # The death camera: once the player's suit has burst, the game's main view rides its flying torso piece until the
+    # mission ends (~5 s; the dword stays set until the next mission loads). 0x2822f0: per axis P + (3 (P - Q)) / 5
+    # (idiv: toward zero) from the piece's two points P, Q; 0x28236c: heading atan2(vy, vx) + 180 deg, pitch
+    # -atan2(vz, horizontal) from its velocity; no eye, no head turn, no slope; [0x38FB1C] added to z. The shake (a
+    # hit) on top, as the game: its saved final camera when it is that view's within 0x800. None: not dead (or values
+    # that make no sense: the normal view)
+    if A_DEATH is None: return None
+    d = d32(A_DEATH) & 0xffffffff
+    if not d: return None
+    try:
+        P = struct.unpack('<3i', g.read(d, 12))
+        Q = struct.unpack('<3i', g.read(d + 12, 12))
+        v = struct.unpack('<3i', g.read(A_VEC, 12))
+    except BaseException:
+        return None
+    if not (all(abs(p - q) < 2 * 65536 for p, q in zip(P, Q)) and all(-256 * 65536 <= c < 768 * 65536 for c in P[:2])):
+        return None
+    c = [p + (abs(3 * (p - q)) // 5) * (1 if p >= q else -1) for p, q in zip(P, Q)]
+    h = (math.atan2(v[1], v[0]) + math.pi) % (2 * math.pi)
+    t = math.atan2(v[2], math.hypot(v[0], v[1]))         # (sent as the bridge's pitch: positive = up)
+    if A_SAVH is not None:
+        savh = u16(A_SAVH)
+        if abs(((savh - round(h / (2 * math.pi) * 65536) + 0x8000) & 0xffff) - 0x8000) <= 0x800:
+            h, t = savh / 65536 * 2 * math.pi, -s16(A_SAVP) / 65536 * 2 * math.pi
+    return (c[0] / 65536, c[1] / 65536, (c[2] + d32(OEIL)) / 65536, h, t)
+
+
 # The game left by its Exit: DOS is back (the edition's own text menu, "Press a number key", behind Uplink). Seen by
 # the BIOS video mode (0x449 of DOS's memory): text (3) for a good second after a graphics mode was seen (at the very
 # start the game's loader is still in text mode). The bridge stops then, and the launcher closes the game's window.
@@ -1919,11 +1954,14 @@ while True:
     # the main view's heading and pitch as the game drew them (its saved final camera: with the shake of a hit), when
     # the view is the player's own and not the death camera; a value off by more than the largest shake (0x800) is
     # one left from before (mission start, a reload): rebuilt then
-    if A_SAVH is not None and vue == pid and not (A_DEATH and d32(A_DEATH)):
+    mort = camera_mort() if vue == pid and not CAM else None
+    if A_SAVH is not None and vue == pid and not mort:
         savh = u16(A_SAVH)
         if abs(((savh - u16(e + 0x1B) - u16(A_HEADYAW) + 0x8000) & 0xffff) - 0x8000) <= 0x800:
             cam_h, cam_p = savh / 65536 * 2 * math.pi, -s16(A_SAVP) / 65536 * 2 * math.pi
     cam = (x + eye[0], y + eye[1], z + eye[2], cam_h, cam_p)
+    if mort:
+        cam = mort
     if sonde:
         # the drone's view as the game sets it (0x26952f): its entity's x, y, z, heading +0x1B and pitch +0x1D (positive
         # = down), nothing added (no eye, no ground slope: tangage()'s slope is the player's, frozen in this view)

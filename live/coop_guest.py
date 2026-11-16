@@ -217,24 +217,26 @@ class Guest:
 
     def squad_now(self, me):
         """the player's squad as the game keeps it: the living suits of the pilot records but the host's own, none of
-        the enemy side (a stale record), nearest the host first; his own suit included (F8 goes round them)"""
+        the enemy side (a stale record), in the records' order (the game's COMM panel; F8 goes round them in it: an
+        order by distance changed as they walked, and F8 went back and forth between two); his own suit included"""
         out = []
         for k in range(4):
             r = self.g.read(PILOTS + PILOT_N * k, 8)
             e = struct.unpack_from('<H', r, 2)[0]
             if (r[0] | r[1]) and e and e != me and e not in out and self.side(e) != 2 and self.alive(e):
                 out.append(e)
-        return sorted(out, key=lambda e: self.dist(me, e))
+        return out
 
     def enemies_now(self, me):
-        """versus: the living suits of the enemy side (no AI record: those without a pilot record), nearest first"""
+        """versus: the living suits of the enemy side (no AI record: those without a pilot record), in the game's
+        table order (a steady order for F8, as squad_now)"""
         friends = self.pilots()
         out = []
         for d, i in self.suits(me):
             sd = self.side(i)
             if (sd == 2 or (sd == 0 and i not in friends)) and self.alive(i):
                 out.append(i)
-        return out
+        return sorted(out)
 
     def squad_info(self, me):
         """the guest's COMM panel: the host first, then his other living teammates: entity, armour %, pilot (name and
@@ -532,12 +534,12 @@ class Guest:
             gid = struct.unpack('<H', self.g.read(coop_lobby.SQUAD + coop_lobby.SQUAD_N * self.lobby.col + 2, 2))[0]
             if gid and self.alive(gid):
                 return gid
-        live = self.squad                                      # (living, nearest the host first)
+        live = self.squad                                      # (living, in a steady order)
         if not live:
             return 0
         if after in live:
             return live[(live.index(after) + 1) % len(live)]
-        return live[0]
+        return min(live, key=lambda e: self.dist(me, e))       # a new suit: the one nearest the host
 
     def take(self, gid):
         g = self.g

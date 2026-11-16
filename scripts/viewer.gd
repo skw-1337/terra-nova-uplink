@@ -116,6 +116,7 @@ const GAME_Z := 0.12          # shots, smoke, flying lift: this much below the g
 var live := false
 var udp: PacketPeerUDP
 var live_seen := 0
+var live_units_seen := 0          # entity packets applied since the game came back to its 3D (_start_ready)
 var live_shot := ""
 var live_shot_frame := 60
 var live_nodes := []          # one node per mission entity, in file order
@@ -2992,8 +2993,13 @@ func _hud_update() -> void:
 			continue
 		if tag == "MIS":                                 # back in the game's 3D: another mission?
 			var mf := pk.slice(7).get_string_from_ascii().to_upper()
+		if tag == "FAD" and pk.size() >= 11:             # the game's own fade (its palette), see _menu_fade
+			game_fade = clampf(pk.decode_float(7), 0.0, 1.0)
+			game_fade_t = Time.get_ticks_msec()
+			continue
 			if not current.is_empty() and current["entry"]["file"].get_file().to_upper() != mf:
 				_load_by_label(mf)
+			live_mis_name = mf
 			continue
 		if tag == "PIN":                                 # the game holds its cursor: a map dragged (see play_hold)
 			if frame & 1:
@@ -3464,6 +3470,10 @@ func _set_menu_mode(on: bool) -> void:
 	menu_mode = on
 	if on:
 		menu_fresh = false                              # its picture: one taken from now on (the last one is an old screen)
+	if not on and live:
+		start_hold = true                               # (black until the mission is ready, _start_ready)
+		start_hold_t = Time.get_ticks_msec()
+		live_units_seen = 0
 		menu_mode_t = Time.get_ticks_msec()
 	if not play:
 		return
@@ -3630,6 +3640,15 @@ var menu_fresh := false
 var menu_mode_t := 0
 
 
+# The game's own fade to black (a mission that ends, the death screen: its palette, bridge 'FAD', 1 = as in play): the
+# black follows it over the whole window, and the 3D stays as it was (no removal, no unloading) until the game's
+# screen comes. The fade used to start only once the game had left its mission: the player saw its objects and its
+# map vanish first. Back in a mission: black until its map is loaded and its objects are placed (start_hold).
+var game_fade := 1.0
+var game_fade_t := 0
+var live_mis_name := ""
+var start_hold := false
+var start_hold_t := 0
 func _menu_fade() -> void:
 	if menu_rect == null:
 		return
@@ -3639,20 +3658,33 @@ func _menu_fade() -> void:
 	var step := get_process_delta_time() / MENU_FADE_S
 	if menu_mode:
 		menu_veil = move_toward(menu_veil, 1.0, step)        # to black first, then the screen out of it
+	var now := Time.get_ticks_msec()
+	if game_fade < 1.0 and now - game_fade_t > 2000:
+		game_fade = 1.0                                      # (no news: the bridge went away)
+	if start_hold and (now - start_hold_t > 4000 or _start_ready()):
+		start_hold = false
 		if menu_veil >= 1.0:
 			menu_fade = move_toward(menu_fade, want, step)
 	else:
 		menu_fade = move_toward(menu_fade, 0.0, step)        # the screen to black first, then the view out of it
-		if menu_fade <= 0.0:
+		if menu_fade <= 0.0 and not start_hold:
 			menu_veil = move_toward(menu_veil, 0.0, step)
 	menu_rect.visible = menu_fade > 0.0
 	(menu_rect.material as ShaderMaterial).set_shader_parameter("fade", menu_fade)   # (its shader writes COLOR: no modulate)
+		menu_veil = maxf(menu_veil, 1.0 - game_fade)         # the game's own fade, as it goes
 	menu_bg.visible = menu_veil > 0.0
 	menu_bg.modulate.a = menu_veil
 
 
 func _menu_place() -> void:
 	if menu_rect == null:
+# a mission back in the game's 3D is ready to be seen: its map loaded (the one the bridge names) and its objects placed
+func _start_ready() -> bool:
+	if current.is_empty() or live_units_seen < 2:
+		return false
+	return live_mis_name != "" and current["entry"]["file"].get_file().to_upper() == live_mis_name
+
+
 		return
 	_menu_fade()
 	var box := _menu_box()
@@ -3995,11 +4027,15 @@ func _live_update() -> void:
 		ev.physical_keycode = KEY_W
 		ev.pressed = live_seen == 100
 		Input.parse_input_event(ev)
-	if pk.size() >= 32 and not current.is_empty():
+	if pk.size() >= 32 and not current.is_empty() and game_fade < 0.7:
+		pass                                            # (the game fading out: its scene kept as it was; it empties
+		# its entities once black, so a third of the way is soon enough, and a short dim (a flash) stops nothing)
+	elif pk.size() >= 32 and not current.is_empty():
 		_live_units(pk)
 		_smooth_capture()
 	if live_shot != "" and live_seen == live_shot_frame:
 		_screenshot(live_shot)
+		live_units_seen += 1
 
 
 # The player's waypoint (a click on the cockpit's map; live_bridge.py 'WAYP', x = 0: none). The game draws it in its

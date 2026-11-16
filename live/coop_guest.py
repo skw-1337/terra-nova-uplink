@@ -84,6 +84,13 @@ PBA, PBA_N = 0x3A5608, 0x582     # English exe: suit records
 # plant lowers it, 0x28b938); the game's panel bar is the one over the other (0x26d944)
 EN_CUR, EN_MAX = 0x86, 0x8A
 PARTS = [(0x15 + 7 * k, 0x17 + 7 * k) for k in range(4)]   # the armour: 4 parts (+0x14 + 7k: flag, current, max, current)
+# the pilot's health, the red bar at the top of the helmet (manual p. 31: it only drops once a part of the suit is
+# breached): the bar's routine (0x2652a0) follows the suit's pointer +0x9C to a record, max at +1 and current at +3
+# (words); in a squadmate's suit record these are +0x32 / +0x34, what the armour indicator's middle reads (0x26355c)
+HEALTH_PTR, HEALTH_MAX, HEALTH_CUR = 0x9C, 0x32, 0x34
+# the armour indicator (RESHLMHI.RES 506, drawn by 0x2635c8): a level 0-6 for each part (0x26350c: (12 - 11 x lost /
+# max) / 2), in the picture's order front, left, right, back = the suit's parts 0, 1, 3, 2, then the pilot's (0x26355c)
+IND_RES, IND_PARTS, IND_EDGE = 506, (0, 1, 3, 2), 0x2A
 PILOTS, PILOT_N = 0x391E50, 0x32   # pilot records (English exe), 4: +0 in use, +2 entity (record 0: the player, then his squad)
 # a unit's side: entity byte +0x21 = its AI record (0: none), 0x3832F0 + 0x14E * a (French exe: +0xB0, as the master
 # table), byte +5 = 1 the player's side, 2 the enemy (0x24a6c7, 0x24a90c). The in-use byte +0 is not a test: 0 for the player
@@ -96,7 +103,7 @@ EYE_K, EYE_K_ELSE, J9, J8, SUIT_KIND = {0: 0x4D65, 1: 0x5D17, 2: 0x4771, 10: 0x5
 HEADYAW, HEADPITCH, SLOPE, SLOPE_OFF = 0x441355, 0x441357, 0x35AEB4, 0x35F544   # English exe: the main view's terms
 # The guest's cockpit (coop_hud.gd) is the host's game screen (320 x 400, palette indices + alpha, see live_bridge.py
 # send_hud) with what is the host's own emptied: his panels' contents, compass, bars, rear view, and anything drawn in
-# the 3D window away from its frame (crosshair, target box). 'GCK' + palette + zlib(index, alpha), every 10 s.
+# the 3D window that is not its frame (crosshair, armour indicator, target box). 'GCK' + palette + zlib(index, alpha).
 # The boxes are the game's own (measured on its screen: portraits at 18, 277 + 28 k, the weapon picture at 217, 264),
 # so that nothing of the host's shows around what the guest's window draws there.
 CLEAR = [((17, 277, 99, 380), 60, 255),      # COMM panel, ENTIRE SQUAD box included (the guest's squad)
@@ -197,7 +204,10 @@ class Guest:
         self.post_key, self.drop_t = None, 0.0                   # the bridge's key poster (DOSBox window)
         self.hud_src, self.tpl_t, self.taken_t = None, 0.0, 0.0   # the bridge's last game screen, for his cockpit
         # the Mission Outfitting lobby (his column, pilot, loadout)
-        self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, coop_lobby.find_data(g)), 0.0, []
+        self.data_dir = coop_lobby.find_data(g)
+        self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, self.data_dir), 0.0, []
+        self.comm, self.ind, self.ind_at = [], None, None      # his COMM rows' entities; the armour indicator's picture
+        # (False: none) and where the host's game draws it (his window draws his own there)
         self.anim = None
         try:
             from host_anim import HostAnim
@@ -285,6 +295,7 @@ class Guest:
                     pilot = r[6]
             out.append(struct.pack('<HBB', e, max(0, min(100, self.armour(e) * 100 // full)), pilot))
         out = out[:3]
+        self.comm = [struct.unpack_from('<H', r)[0] for r in out]
         # then his 4 weapon slots' types (the STATUS page) and whether a jump is allowed now (the game's gates)
         slots = bytes(self.g.read(self.suit(self.gid) + SLOTS + SLOT_N * k, 1)[0] for k in range(4)) if self.gid else bytes(4)
         en = 0
@@ -564,6 +575,35 @@ class Guest:
         r = self.g.read(self.suit(e), 0x30)
         return max(1, sum(max(0, struct.unpack_from('<h', r, m)[0]) for _, m in PARTS))
 
+    def health(self, e):
+        """the pilot's health in suit e as the game's red bar reads it (0x2652a0): (current, max)"""
+        s = self.suit(e)
+        p = struct.unpack('<I', self.g.read(s + HEALTH_PTR, 4))[0]
+        if 0x380000 <= p < 0x470000:
+            mx, cur = struct.unpack('<HH', self.g.read(p + 1, 4))
+        else:
+            mx, cur = struct.unpack('<HH', self.g.read(s + HEALTH_MAX, 4))
+        return (min(cur, mx), mx) if mx else (0, 0)
+
+    def levels(self, e):
+        """the armour indicator's five levels (0-6) for suit e, as the game works them out: front, left, right,
+        back, pilot"""
+        lvl = lambda cur, mx: 0 if mx <= 0 else max(0, min(6, (12 - (mx - max(0, min(cur, mx))) * 11 // mx) // 2))
+        r = self.g.read(self.suit(e), 0x36)
+        part = lambda k: struct.unpack_from('<hh', r, 0x15 + 7 * k)
+        return bytes([lvl(*part(k)) for k in IND_PARTS] + [lvl(*reversed(struct.unpack_from('<HH', r, HEALTH_MAX)))])
+
+    def hud_more(self):
+        """the end of the 'GHD' packet: his pilot's health (current, max), his armour indicator's levels and where
+        the game draws it (-1: not seen), then the pilot's health (%, 255: none) of each COMM row"""
+        cur, mx = self.health(self.gid) if self.gid else (0, 0)
+        lv = self.levels(self.gid) if self.gid else bytes(5)
+        hp = []
+        for e in self.comm[:3]:
+            c, m = self.health(e)
+            hp.append(c * 100 // m if m else 255)
+        return struct.pack('<HH', cur, mx) + lv + struct.pack('<hh', *(self.ind_at or (-1, -1))) + bytes(hp + [255] * (3 - len(hp)))
+
     def energy_pct(self, e):
         """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power
         plant damage lowers the max, and he changes suits)"""
@@ -674,24 +714,52 @@ class Guest:
         host = tuple(self.i32(self.master + 0x25 * me + o) / 65536 for o in (0x0F, 0x13, 0x17))
         pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head) + \
             struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
-            struct.pack('<3f', *host) + self.squad_info(me) + struct.pack('<H', me)   # the host's entity: his name follows his drawn suit
+            struct.pack('<3f', *host) + self.squad_info(me) + struct.pack('<H', me) + self.hud_more()   # (me: the host's
+        # entity, his name follows his drawn suit)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
             self.cockpit()
+
+    def indicator(self):
+        """the armour indicator's picture (palette indices, 42 x 21) from the game's files; None: not there"""
+        if self.ind is None:
+            self.ind = False
+            try:
+                import numpy as np, lgres
+                f = lgres.frames(lgres.load(os.path.join(self.data_dir, 'RESHLMHI.RES'))[IND_RES][2])[0]
+                w, h, row = struct.unpack_from('<HHH', f, 8)
+                if f[4] == 2 and len(f) >= 0x1C + row * (h - 1) + w:
+                    self.ind = np.frombuffer(f[0x1C:0x1C + row * h].ljust(row * h, b'\0'), np.uint8).reshape(h, row)[:, :w]
+            except Exception:
+                pass
+        return None if self.ind is False else self.ind
 
     def cockpit(self):
         src = self.hud_src() if self.hud_src else None
         if not src:
             return
         import numpy as np
-        scr, alpha, (fx0, fy0, fw, fh), pal = src
+        scr, alpha, (fx0, fy0, fw, fh), pal = src[:4]
         if fw < 100 or fh < 100:                               # the game's map or a menu: not the cockpit
             return
         self.tpl_t = time.time()
         scr, alpha = scr.copy(), alpha.copy()
         m = 16                                                 # the 3D window: only its frame stays
         alpha[fy0 + m:fy0 + fh - m, fx0 + m:fx0 + fw - m] = 0
+        # where the game draws the host's armour indicator: its dark outline, whole, in the window
+        ind = self.indicator()
+        if ind is not None and ind.shape[0] <= fh and ind.shape[1] <= fw:
+            h, w = ind.shape
+            dark = scr[fy0:fy0 + fh, fx0:fx0 + fw] == IND_EDGE
+            ok = np.ones((fh - h + 1, fw - w + 1), bool)
+            for y, x in zip(*np.nonzero(ind == IND_EDGE)):
+                ok &= dark[y:y + fh - h + 1, x:x + fw - w + 1]
+                if not ok.any():
+                    break
+            at = np.argwhere(ok)
+            if len(at) == 1:
+                self.ind_at = (fx0 + int(at[0][1]), fy0 + int(at[0][0]))
         for (x0, y0, x1, y1), c, a in CLEAR:
             scr[y0:y1, x0:x1] = c
             alpha[y0:y1, x0:x1] = a

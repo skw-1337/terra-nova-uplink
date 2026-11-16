@@ -1,10 +1,11 @@
 # Coop guest HUD (the second player's window, --coop-hud or --coop-guest). The host's live/coop_guest.py sends ~10
 # packets a second to 127.0.0.1:47832: 'GHD' + <BhhHBBH: state (0 playing, 1 suit destroyed: next teammate in 3 s,
 # 2 no teammate left: the host's view), armour, armour at pickup, entity, weapon slot (keys 1-4), weapon type, heading
-# (game units). And every 10 s 'GCK' + palette + zlib(index, alpha 320 x 400): the host's cockpit with his own panels
+# (game units), ... and at the end his pilot's health, his armour indicator's levels and place, the squad's pilots'
+# health (coop_guest.py hud_more). And every 15 s 'GCK' + palette + zlib(index, alpha 320 x 400): the host's cockpit with his own panels
 # emptied. With it the guest gets the game's cockpit filled with his own armour, weapon, compass and map, and the
-# host's name and Steam avatar in the COMM panel (set_mate, from coop_net.gd). Before the first cockpit: a plain
-# crosshair and armour bar. Online, the host window's coop_net.gd relays the packets over Steam and the guest's
+# host's name and Steam avatar in the COMM panel (set_mate, from coop_net.gd), the game's crosshair and its armour
+# indicator (in light blue). Before the first cockpit: a plain crosshair and armour bar. Online, the host window's coop_net.gd relays the packets over Steam and the guest's
 # coop_net.gd forwards them here. Nothing is drawn when no packet came for 2 s.
 extends CanvasLayer
 
@@ -24,8 +25,21 @@ const RIGHT_LEDS := [[165, 168, 0x83], [169, 172, 0x83], [173, 176, 0x84], [177,
 	[209, 212, 0x88], [213, 216, 0x88], [217, 220, 0x89], [221, 224, 0x89], [225, 228, 0x89], [229, 232, 0x8A],
 	[233, 236, 0x8A], [237, 240, 0x8A], [241, 244, 0x8B], [245, 247, 0x8B]]
 
-# the left top bar with its frame and tick rows (x 72-148, rows 26-37): the squad's armour bars in the COMM panel
+# the left top bar with its frame and tick rows (x 72-148, rows 26-37): the squad's bars in the COMM panel
 const BAR_SRC := Rect2(72, 26, 77, 12)
+# The guest's own colours. Energy: the game's green leds in orange, from its brightest (palette 0x83) to its dimmest
+# (0x8B), and its "E" (on the cockpit picture: x 156-163, rows 24-37). Armour: light blue, on the game's armour
+# indicator (RESHLMHI.RES 506: the game gives each part a level 0-6 and colours it green at 5-6, yellow at 3-4, red
+# at 1-2, table 0x35a998; here light, middle and deep blue) and in the COMM bars.
+const ENERGY_LIT := Color8(255, 165, 40)
+const ENERGY_DIM := Color8(170, 95, 25)
+const ENERGY_E := Rect2i(156, 24, 8, 14)
+const ARMOUR_LIT := Color8(135, 200, 255)
+const ARMOUR_DEEP := Color8(30, 70, 150)
+const INDICATOR := 506
+const INDICATOR_AT := Vector2i(211, 144)     # from the 3D window's corner, in the cockpit view (the host's says where)
+const CROSS := 505                            # the game's cursors: the first is the crosshair, its tip at 6, 10
+const CROSS_TIP := Vector2i(6, 10)
 
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
@@ -50,6 +64,15 @@ var lock_pos := Vector3.ZERO
 var host_pos := Vector3.ZERO           # the host's suit (Godot units): his name above it
 var guest_xy := Vector2.ZERO           # his own suit (game x, y): the map's centre
 var squad := []                        # COMM panel: [entity, armour %, pilot] (the host first)
+var squad_health := PackedByteArray()  # ... and each one's pilot's health, % (255 or none: not known)
+var health := -1                       # his pilot's health, current and max (-1: the host's files do not send it)
+var health_max := 1
+var levels := PackedByteArray()        # his armour indicator: front, left, right, back, pilot (0-6); empty: not sent
+var indicator_at := Vector2i(-1, -1)   # where the host's game draws it (-1: not seen)
+var indicator_tex := {}                # levels -> texture
+var indicator_idx := PackedByteArray() # its picture's palette indices (21 x 42)
+var cross_tex: Texture2D               # the game's crosshair (false: its files have none)
+var cross_tried := false
 var game_res = null                    # RESGAME.RES (pilot names, resource 364)
 var faces := {}                        # pilot -> portrait texture (RESHLMHI.RES 538)
 
@@ -271,6 +294,12 @@ func _process(delta: float) -> void:
 					energy = pk.decode_u8(so + 5)
 				if so + 8 <= pk.size():
 					host_ent = pk.decode_u16(so + 6)
+				if so + 24 <= pk.size():
+					health = pk.decode_u16(so + 8)
+					health_max = maxi(1, pk.decode_u16(so + 10))
+					levels = pk.slice(so + 12, so + 17)
+					indicator_at = Vector2i(pk.decode_s16(so + 17), pk.decode_s16(so + 19))
+					squad_health = pk.slice(so + 21, so + 24)
 			if pk.size() >= 52:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
@@ -332,6 +361,15 @@ func _cockpit(pk: PackedByteArray) -> void:
 		rgba[4 * i + 1] = pal[c + 1]
 		rgba[4 * i + 2] = pal[c + 2]
 		rgba[4 * i + 3] = raw[2 * i + 1]
+	for y in range(ENERGY_E.position.y, ENERGY_E.end.y):     # the energy's "E": its greens in the leds' orange
+		for x in range(ENERGY_E.position.x, ENERGY_E.end.x):
+			var i := 4 * (320 * y + x)
+			var gr := rgba[i + 1]
+			if gr >= 96 and rgba[i] * 2 < gr and rgba[i + 2] * 2 < gr:
+				var c := ENERGY_DIM.lerp(ENERGY_LIT, clampf((gr - 131.0) / 41.0, 0.0, 1.0))   # (its two greens: 131, 172)
+				rgba[i] = c.r8
+				rgba[i + 1] = c.g8
+				rgba[i + 2] = c.b8
 	cockpit.texture = ImageTexture.create_from_image(Image.create_from_data(320, 400, false, Image.FORMAT_RGBA8, rgba))
 	_update()
 
@@ -477,10 +515,10 @@ func _draw_panel() -> void:
 		return
 	var vp := get_parent()
 	var looking: bool = big_map or (vp != null and "look_off" in vp and vp.look_off.length() > 0.03)
-	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + win.size.y * 0.5 + 2.0)
-	for r in ([] if looking else [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]):   # free look: no crosshair (his aim stays ahead)
-		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
-		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))
+	if not big_map:
+		_draw_indicator()
+	if not looking:                                  # free look: no crosshair (his aim stays ahead)
+		_draw_cross()
 	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21)
 	var bearing := fposmod(360.0 - heading / 65536.0 * 360.0, 360.0)
 	var amber := Color(1.0, 0.8, 0.25)
@@ -495,13 +533,19 @@ func _draw_panel() -> void:
 			panel.draw_rect(_grect(x - 0.5, 11.0, x + 0.5, 16.0), Color(0.6, 0.6, 0.8))
 	panel.draw_rect(_grect(160.0, 6.0, 162.0, 8.0), amber)
 	panel.draw_rect(_grect(160.0, 20.0, 162.0, 22.0), amber)
-	# the top bars, lit in the game's own led cells and colours (its palette; the cockpit packet has them put out):
-	# armour on the left from its inner end, energy on the right from its inner end (the game's "E")
+	# the top bars, lit in the game's own led cells (the cockpit packet has them put out), each from its left end as
+	# the game fills them (0x2652f4, 0x26541c: the lit bar, then black from the value to the bar's end): the pilot's
+	# health on the left in the game's reds (its routine 0x2652a0: width x current / max, whole pixels), the energy on
+	# the right from its "E", in orange
 	var f := clampf(float(armour) / float(armour_max), 0.0, 1.0)
-	_draw_leds(LEFT_LEDS, f, true)
-	_draw_leds(RIGHT_LEDS, energy / 100.0, false)
+	var lw: int = LEFT_LEDS[LEFT_LEDS.size() - 1][1] - LEFT_LEDS[0][0]
+	var rw: int = RIGHT_LEDS[RIGHT_LEDS.size() - 1][1] - RIGHT_LEDS[0][0]
+	_draw_leds(LEFT_LEDS, 0, lw * clampi(health, 0, health_max) / health_max if health >= 0 else int(round(f * lw)), 0)
+	_draw_leds(RIGHT_LEDS, 0, int(round(clampf(energy / 100.0, 0.0, 1.0) * rw)), 1)
 	# COMM: his squad as the game lists it, in the game's rows: the host (Steam avatar, else his pilot's portrait),
-	# then his other teammates (their portraits and names from his game files), each with an armour bar
+	# then his other teammates (their portraits and names from his game files), each with one bar: the game's top
+	# health bar, filled from the left with the pilot's health in red (half the bar when whole), then the suit's
+	# armour in the indicator's light blue (the other half), the rest unlit
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
 	for i in rows.size():
 		var y0 := 277.0 + 28.0 * i
@@ -513,7 +557,8 @@ func _draw_panel() -> void:
 			panel.draw_rect(_grect(18.0, y0, 39.0, y0 + 27.0), Color(0.05, 0.05, 0.1))
 		var nm: String = mate_name if i == 0 else _pilot_name(who[2], who[0])
 		_text(nm.to_upper(), 42.0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
-		_draw_mini_bar(Rect2(42.0, y0 + 15.0, 55.0, 9.0), who[1] / 100.0)
+		var hp: float = squad_health[i] / 100.0 if i < squad_health.size() and squad_health[i] <= 100 else 1.0
+		_draw_mini_bar(Rect2(42.0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
 	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 58.0, 366.0, 8.0, Color(0.6, 0.65, 0.8), true)
 	if status_page:
 		_draw_status()
@@ -537,33 +582,107 @@ func _draw_panel() -> void:
 		c + Vector2(-u * 0.6, u * 0.6)]), Color(1, 1, 1))
 
 
-# one top bar: the share f of its pixels lit from its inner end (right end of the left bar, left end of the right one)
+# one top bar: its pixels from a to b (counted from its left end) lit, in the game's own led colours (kind 0), the
+# energy's orange (1) or the armour's light blue (2)
 # (dest: where the bar's source box BAR_SRC goes, in game units; none: in place, the top bar itself)
-func _draw_leds(cells: Array, f: float, from_right: bool, dest := Rect2()) -> void:
+func _draw_leds(cells: Array, a: int, b: int, kind: int, dest := Rect2()) -> void:
 	if hud_pal.is_empty():
 		return
 	var lo: int = cells[0][0]
-	var hi: int = cells[cells.size() - 1][1]
-	var n := int(round(clampf(f, 0.0, 1.0) * (hi - lo)))
-	var a := hi - n if from_right else lo
-	var b := hi if from_right else lo + n
 	var k := Vector2.ONE if dest.size == Vector2.ZERO else dest.size / BAR_SRC.size
 	var o := Vector2.ZERO if dest.size == Vector2.ZERO else dest.position - BAR_SRC.position * k
 	for c in cells:
-		var x0: int = maxi(c[0], a)
-		var x1: int = mini(c[1], b)
+		var x0: int = maxi(c[0], lo + a)
+		var x1: int = mini(c[1], lo + b)
 		if x1 > x0:
-			panel.draw_rect(_grect(o.x + x0 * k.x, o.y + 30.0 * k.y, o.x + x1 * k.x, o.y + 34.0 * k.y), hud_pal[c[2]])
+			var col: Color = hud_pal[c[2]]
+			if kind == 1:
+				col = ENERGY_LIT.lerp(ENERGY_DIM, clampf((c[2] - 0x83) / 8.0, 0.0, 1.0))
+			elif kind == 2:
+				col = ARMOUR_LIT
+			panel.draw_rect(_grect(o.x + x0 * k.x, o.y + 30.0 * k.y, o.x + x1 * k.x, o.y + 34.0 * k.y), col)
 
 
-# a squadmate's armour in the COMM panel: the game's own left top bar (its pixels from the cockpit picture, leds put
-# out there) scaled into dest, lit in the game's led colours for the share f
-func _draw_mini_bar(dest: Rect2, f: float) -> void:
+# a squadmate in the COMM panel: the game's own left top bar (its pixels from the cockpit picture, leds put out there)
+# scaled into dest, lit from the left: his pilot's health hp in the game's reds, then his armour in light blue
+func _draw_mini_bar(dest: Rect2, hp: float, arm: float) -> void:
 	if cockpit.texture == null:
 		return
 	var r := _grect(dest.position.x, dest.position.y, dest.end.x, dest.end.y)
 	panel.draw_texture_rect_region(cockpit.texture, r, BAR_SRC)
-	_draw_leds(LEFT_LEDS, f, true, dest)
+	var w: int = LEFT_LEDS[LEFT_LEDS.size() - 1][1] - LEFT_LEDS[0][0]
+	var n := int(round(clampf(hp, 0.0, 1.0) * w / 2.0))
+	_draw_leds(LEFT_LEDS, 0, n, 0, dest)
+	_draw_leds(LEFT_LEDS, n, n + int(round(clampf(arm, 0.0, 1.0) * w / 2.0)), 2, dest)
+
+
+func _helmet_frames(rid: int) -> Array:
+	var vp := get_parent()
+	if hl_res == null and vp and "data" in vp:
+		hl_res = LGRes.open(vp.data.data_dir().path_join("RESHLMHI.RES"))
+	return LGRes.frames(hl_res.data(rid)) if hl_res and hl_res.has(rid) else []
+
+
+# the game's crosshair (its cursor in the 3D view, from his game files, in the game's palette) where the game keeps it
+# in the look mode: its tip on the middle of the 3D window, 3 rows down (the bridge's centre()); that is where he aims
+func _draw_cross() -> void:
+	if not cross_tried and not hud_pal.is_empty():
+		cross_tried = true
+		var fr := _helmet_frames(CROSS)
+		var img: Image = TNObjects._bitmap(fr[0], hud_pal) if fr.size() > 0 else null
+		if img:
+			cross_tex = ImageTexture.create_from_image(img)
+	if cross_tex:
+		var x := int(win.position.x) + int(win.size.x) / 2 - CROSS_TIP.x
+		var y := int(win.position.y) + int(win.size.y) / 2 + 3 - CROSS_TIP.y
+		panel.draw_texture_rect(cross_tex, _grect(x, y, x + cross_tex.get_width(), y + cross_tex.get_height()), false)
+		return
+	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + win.size.y * 0.5 + 2.0)
+	for r in [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]:
+		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
+		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))
+
+
+# his suit's armour indicator as the game draws the host's (0x2635c8, 0x2634b8), where the host's is: the picture's
+# part colours 0xB0 + 16 k + ring (front, left, right, back; ring 0 the outer one) and 0xF0 (the pilot), a part at
+# level n keeps its n inner rings; its dark outline as it is; the levels' colours in blue
+func _draw_indicator() -> void:
+	if levels.size() < 5 or hud_pal.is_empty():
+		return
+	var key := levels.hex_encode()
+	if not indicator_tex.has(key):
+		if indicator_idx.is_empty():
+			var fr := _helmet_frames(INDICATOR)
+			indicator_idx = TNObjects._bitmap_idx(fr[0]) if fr.size() > 0 else PackedByteArray([0])
+			if fr.size() > 0 and indicator_idx.size() != fr[0].decode_u16(8) * fr[0].decode_u16(10):
+				indicator_idx = PackedByteArray([0])
+		var tex: Texture2D = null
+		if indicator_idx.size() > 1:
+			var w: int = _helmet_frames(INDICATOR)[0].decode_u16(8)
+			var rgba := PackedByteArray()
+			rgba.resize(indicator_idx.size() * 4)
+			for p in indicator_idx.size():
+				var c := indicator_idx[p]
+				var col := hud_pal[c]
+				var on := c != 0
+				if c >= 0xB0 and c <= 0xF0:
+					var part := mini((c - 0xB0) >> 4, 4)
+					var lv := mini(levels[part], 6)
+					on = lv > 0 and (part == 4 or (c & 15) >= 6 - lv)
+					col = ARMOUR_LIT if lv >= 5 else (ARMOUR_LIT.lerp(ARMOUR_DEEP, 0.5) if lv >= 3 else ARMOUR_DEEP)
+				rgba[4 * p] = col.r8
+				rgba[4 * p + 1] = col.g8
+				rgba[4 * p + 2] = col.b8
+				rgba[4 * p + 3] = 255 if on else 0
+			tex = ImageTexture.create_from_image(Image.create_from_data(w, indicator_idx.size() / w, false, Image.FORMAT_RGBA8, rgba))
+		if indicator_tex.size() > 64:
+			indicator_tex.clear()
+		indicator_tex[key] = tex
+	var t: Texture2D = indicator_tex[key]
+	if t == null:
+		return
+	var at := indicator_at if indicator_at.x >= 0 else Vector2i(win.position) + INDICATOR_AT
+	panel.draw_texture_rect(t, _grect(at.x, at.y, at.x + t.get_width(), at.y + t.get_height()), false)
 
 
 # the host's name over his suit (and how far he is)

@@ -35,6 +35,7 @@ func _initialize() -> void:
 		quit(2)
 		return
 	OS.set_environment("TN_GAME_DIR", sandbox)
+	OS.set_environment("TN_EDITOR", "1")
 	viewer = load("res://main.tscn").instantiate()
 	root.add_child(viewer)
 	_run.call_deferred()

@@ -6,6 +6,8 @@
 #   soldier (0x27D818): +27 pilot's health, +28 armour (its 4 parts), +29 energy, +32 jump jet fuel, +33 jump jet
 #     rating, all in % of the suit's own values (over 100: a tougher one); +34..+37 the 4 weapon slots
 #   vehicle, probe / craft, building (0x27DD64, 0x27C20C, 0x27D018): +27 armour %; weapons at +30 (and +31)
+# A weapon slot only offers what the game's own units of that class carry in that slot (its missions' records):
+# the game's player weapons (1 to 17) have names, the others are told by who carries them.
 # What is not decoded for sure is shown as it is in the file, and not edited here.
 extends PanelContainer
 
@@ -28,6 +30,7 @@ var raw: Label
 var note: Label
 var group_opt: OptionButton
 var weapon_names := {}           # id -> text
+var slot_ids := {}               # record offset -> the weapon ids offered there
 var fields := {}                 # tag -> its control
 
 
@@ -86,11 +89,13 @@ func _ready() -> void:
 	v.add_child(rm)
 
 
-# info: {"name", "kind": "mission's own" / "added", "groups": [[g, text]], "weapons": {id: text}, "note": String}
+# info: {"name", "kind": "mission's own" / "added", "groups": [[g, text]], "weapons": {id: text},
+# "slots": {record offset: [weapon ids offered]}, "note": String}
 func show_unit(r: PackedByteArray, info: Dictionary) -> void:
 	busy = true
 	rec = PackedByteArray(r).duplicate()
 	weapon_names = info.get("weapons", {})
+	slot_ids = info.get("slots", {})
 	title.text = str(info.get("name", ""))
 	sub.text = "%s  ·  class %d, type %d  ·  entity %d" % [info.get("kind", ""), rec[0], rec[1], rec.decode_u16(2)]
 	for c in body.get_children():
@@ -254,9 +259,7 @@ func _weapon(tag: String, t: String, off: int) -> void:
 	o.focus_mode = Control.FOCUS_NONE
 	o.fit_to_longest_item = false
 	o.clip_text = true
-	var ids := weapon_names.keys()
-	ids.sort()
-	for id in [0] + ids:
+	for id in [0] + slot_ids.get(off, []):           # (what the game's own units carry in this slot; none: 0)
 		o.add_item(_weapon_text(int(id)))
 		o.set_item_metadata(o.item_count - 1, int(id))
 	o.item_selected.connect(func(i): if not busy: _set_byte(off, int(o.get_item_metadata(i)), tag))

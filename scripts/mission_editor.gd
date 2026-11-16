@@ -92,6 +92,7 @@ var mission_files := {}              # mission file (upper case) -> its path
 var refs := {}                       # what this mission's script does with labels and groups (data/mission_refs.json)
 var all_refs = null
 var weapon_names := {}               # weapon id -> text (the properties panel)
+var slot_weapons := {}               # class * 256 + record offset -> {weapon id: true}: what the game's units carry there
 var next_uid := 1
 var zones := PackedByteArray()       # resource 176
 var groups := PackedStringArray()
@@ -850,6 +851,9 @@ func _build_catalog() -> void:
 					if not carried.has(rec[o]):
 						carried[rec[o]] = {}
 					carried[rec[o]][tn] = true
+					if not slot_weapons.has(rec[0] * 256 + o):
+						slot_weapons[rec[0] * 256 + o] = {}
+					slot_weapons[rec[0] * 256 + o][rec[o]] = true
 			if not have.has(key):
 				have[key] = catalog.size()
 				catalog.append({"cls": rec[0], "sub": rec[1], "name": tn, "kind": KINDS.get(rec[0], "Other"), "rec": rec,
@@ -871,9 +875,6 @@ func _build_catalog() -> void:
 			weapon_names[int(id)] = "%d  ·  %s" % [id, CoopHud.WEAPONS[int(id)]]
 		else:
 			weapon_names[int(id)] = "%d  ·  as carried by %s" % [id, t]
-	for id in range(1, CoopHud.WEAPONS.size()):
-		if not weapon_names.has(id):
-			weapon_names[id] = "%d  ·  %s" % [id, CoopHud.WEAPONS[id]]
 
 
 static func _rank(cls: int) -> int:
@@ -1584,9 +1585,19 @@ func _open_props(uid: int) -> void:
 		gl.append([g, _group_text(g)])
 	props_uid = uid
 	props.show_unit(r, {"name": viewer.data.type_name(r[0], r[1]), "kind": "added" if _is_added(i) else "the mission's own",
-		"groups": gl, "weapons": weapon_names, "note": _script_use(i, false)})
+		"groups": gl, "weapons": weapon_names, "slots": _slots_of(r[0]), "note": _script_use(i, false)})
 	props.visible = true
 	_capture(false)
+
+
+# record offset -> the weapons a unit of that class carries there in the game's own missions (only those are offered)
+func _slots_of(cls: int) -> Dictionary:
+	var out := {}
+	for o in Props.WEAPON_AT.get(cls, []):
+		var ids: Array = slot_weapons.get(cls * 256 + int(o), {}).keys()
+		ids.sort()
+		out[int(o)] = ids
+	return out
 
 
 func _close_props() -> void:

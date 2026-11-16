@@ -429,9 +429,10 @@ func _ready() -> void:
 		zones_on = false
 		panel.visible = false
 		status.visible = false
-	if not live:
-		editor = load("res://scripts/mission_editor.gd").new()
+	if not live and (OS.get_environment("TN_EDITOR") == "1" or "--editor" in args):
+		editor = load("res://scripts/mission_editor.gd").new()   # the mission editor: an option, off unless asked for
 		add_child(editor)
+		status.text += "   F6 or the EDIT MISSION button: mission editor"
 	if OS.get_environment("TN_LAB") != "" and not ("--coop-guest" in args or "--coop-hud" in args):
 		add_child(load("res://scripts/lab.gd").new())   # live graphics lab (lab.gd): only with the lab shortcut
 	if "--all" in args:                       # test: load every mission, then quit
@@ -542,7 +543,7 @@ func _build_ui() -> void:
 	status.anchor_bottom = 1.0
 	status.offset_left = 10
 	status.offset_top = -34
-	status.text = "Right mouse: look   WASD/ZQSD: move   Space/Ctrl: up/down   Shift: fast   Wheel: speed   Tab: panel   F2: labels   F3: script zones (yellow posts)   F4: vegetation   F6 or the EDIT MISSION button: mission editor"
+	status.text = "Right mouse: look   WASD/ZQSD: move   Space/Ctrl: up/down   Shift: fast   Wheel: speed   Tab: panel   F2: labels   F3: script zones (yellow posts)   F4: vegetation"
 	ui.add_child(status)
 
 

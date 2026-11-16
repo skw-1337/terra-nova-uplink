@@ -46,7 +46,10 @@ PBA, PBA_N, ENERGY = 0x3A5608, 0x582, 0x88   # English exe: suit records, the en
 # plant lowers it, 0x28b938); the game's panel bar is the one over the other (0x26d944)
 EN_CUR, EN_MAX = 0x86, 0x8A
 PARTS = [(0x15 + 7 * k, 0x17 + 7 * k) for k in range(4)]   # the armour: 4 parts (+0x14 + 7k: flag, current, max, current)
-SQUAD_R = 25.0                # suits this close to the player at mission start = his squad (the guest's choices)
+PILOTS, PILOT_N = 0x391E50, 0x32   # pilot records (English exe), 4: +0 in use, +2 entity (record 0: the player, then his squad)
+# a unit's side: entity byte +0x21 = its AI record (0: none), 0x3832F0 + 0x14E * a (French exe: +0xB0, as the master
+# table), byte +5 = 1 the player's side, 2 the enemy (0x24a6c7, 0x24a90c). The in-use byte +0 is not a test: 0 for the player
+AI_SIDE, AI_N, AI_MAX = 0x3832F5, 0x14E, 0x3C
 OK, DOWN, SPECTATE = 0, 1, 2
 # The guest's cockpit (coop_hud.gd) is the host's game screen (320 x 400, palette indices + alpha, see live_bridge.py
 # send_hud) with what is the host's own emptied: his panels' contents, compass, bars, rear view, and anything drawn in
@@ -162,17 +165,51 @@ class Guest:
                 out.add(struct.unpack_from('<H', r, 2)[0])
         return out
 
-    def suits(self, me, enemy=False):
+    def side(self, e):
+        """the unit's side as the game keeps it: 1 the player's, 2 the enemy, 0 unknown (no AI record)"""
+        a = self.g.read(self.master + 0x25 * e + 0x21, 1)[0]
+        if a == 0 or a >= AI_MAX:
+            return 0
+        return self.g.read(AI_SIDE + (self.master - 0x3C3240) + AI_N * a, 1)[0]
+
+    def dist(self, me, e):
+        """2D distance between two entities"""
+        mx, my = struct.unpack('<ii', self.g.read(self.master + 0x25 * me + 0x0F, 8))
+        x, y = struct.unpack('<ii', self.g.read(self.master + 0x25 * e + 0x0F, 8))
+        return math.hypot(x - mx, y - my) / 65536
+
+    def suits(self, me):
         """living suits but the player's, nearest first: [(distance, entity)]"""
         mx, my = struct.unpack('<ii', self.g.read(self.master + 0x25 * me + 0x0F, 8))
         tab = self.g.read(self.master, 0x25 * self.nent)
         out = []
         for i in range(1, self.nent):
             b = tab[0x25 * i:0x25 * i + 0x17]
-            if b[0] and b[1] == 1 and (enemy or b[2] < 8) and i != me:
+            if b[0] and b[1] == 1 and i != me:
                 x, y = struct.unpack_from('<ii', b, 0x0F)
                 out.append((math.hypot(x - mx, y - my) / 65536, i))
         return sorted(out)
+
+    def squad_now(self, me):
+        """the player's squad as the game keeps it: the living suits of the pilot records but the host's own, none of
+        the enemy side (a stale record), nearest the host first; his own suit included (F8 goes round them)"""
+        out = []
+        for k in range(4):
+            r = self.g.read(PILOTS + PILOT_N * k, 8)
+            e = struct.unpack_from('<H', r, 2)[0]
+            if (r[0] | r[1]) and e and e != me and e not in out and self.side(e) != 2 and self.alive(e):
+                out.append(e)
+        return sorted(out, key=lambda e: self.dist(me, e))
+
+    def enemies_now(self, me):
+        """versus: the living suits of the enemy side (no AI record: those without a pilot record), nearest first"""
+        friends = self.pilots()
+        out = []
+        for d, i in self.suits(me):
+            sd = self.side(i)
+            if (sd == 2 or (sd == 0 and i not in friends)) and self.alive(i):
+                out.append(i)
+        return out
 
     def squad_info(self, me):
         """the guest's COMM panel: the host first, then his other living teammates: entity, armour %, pilot (name and
@@ -266,6 +303,8 @@ class Guest:
         for i in range(1, self.nent):
             if i == self.gid or (i == me and not self.versus) or i in self.squad:
                 continue
+            if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
+                continue                                       # a suit of his own side without a pilot record
             t = self.target_pos(i)
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
@@ -339,7 +378,13 @@ class Guest:
         return e and self.g.read(self.master + 0x25 * e, 2) == b'\x01\x01' and self.armour(e) > 0
 
     def pick(self, me, after=0):
-        """a living suit of the player's squad: the nearest, or the next one after `after` (F8); TN_GUEST_ID wins"""
+        """a living suit of the player's squad (the game's pilot records; versus: of the enemy side): the nearest, or
+        the next one after `after` (F8); TN_GUEST_ID wins. The squad is read again each time (his COMM panel, the
+        lock's exclusions)"""
+        squad = self.enemies_now(me) if self.versus else self.squad_now(me)
+        if squad != self.squad:
+            print('guest: squad', squad, flush=True)
+        self.squad = squad
         if os.environ.get('TN_GUEST_ID'):
             gid = int(os.environ['TN_GUEST_ID'])
             return gid if self.alive(gid) else 0
@@ -347,21 +392,12 @@ class Guest:
             gid = struct.unpack('<H', self.g.read(coop_lobby.SQUAD + coop_lobby.SQUAD_N * self.lobby.col + 2, 2))[0]
             if gid and self.alive(gid):
                 return gid
-        near = self.suits(me, enemy=self.versus)
-        if not self.squad:                                     # mission start: the suits around the player
-            if self.versus:                                    # versus: every suit of the other side (no pilot record)
-                side = self.pilots()
-                self.squad = [i for d, i in near if i not in side]
-            else:
-                self.squad = [i for d, i in near if d < SQUAD_R] or [i for d, i in near[:1]]
-            if self.squad:
-                print('guest: squad', self.squad, flush=True)
-        live = [i for i in self.squad if self.alive(i)]
+        live = self.squad                                      # (living, nearest the host first)
         if not live:
             return 0
         if after in live:
             return live[(live.index(after) + 1) % len(live)]
-        return min(live, key=lambda i: next((d for d, j in near if j == i), 1e9))
+        return live[0]
 
     def take(self, gid):
         g = self.g

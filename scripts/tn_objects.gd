@@ -588,6 +588,20 @@ func sprite(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary
 	return out
 
 
+# A sprite's palette indices (R8, 0 = transparent), or null: the ground's burn pictures (viewer.gd _burn_pictures).
+func sprite_idx(ref: Vector2i) -> Image:
+	var fr := LGRes.frames(res.data(ref.x))
+	if not is_sprite(ref) or ref.y >= fr.size():
+		return null
+	var f: PackedByteArray = fr[ref.y]
+	var idx := _bitmap_idx(f)
+	var w := f.decode_u16(8)
+	var h := f.decode_u16(10)
+	if idx.size() < w * h or w == 0 or h == 0:
+		return null
+	return Image.create_from_data(w, h, false, Image.FORMAT_R8, idx.slice(0, w * h))
+
+
 # A sprite through each of the planet's 16 shade rows (TNData.shade_luts): layer k = file row k, as the game lights a
 # plant by swapping each texel's palette index through the row at its foot. null: not a sprite.
 func sprite_rows(ref: Vector2i, pal_key: String, luts: Array) -> Texture2DArray:

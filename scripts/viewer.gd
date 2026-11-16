@@ -135,7 +135,6 @@ var puff_mat: ShaderMaterial
 var puff_mesh: QuadMesh
 var veg_cells := {}           # vegetation cell (cx * 128 + cy) -> [[multimesh, instance]]: what to hide when it goes
 var veg_values := PackedByteArray()
-var scorch_decals := {}         # live mode: burnt ground vertex (y * 513 + x) -> its decal (destroyed tree, blast)
 var scorch_prev := PackedByteArray()
 var ground_mats := []        # ground materials of the map, for the sky they mirror (the water's too)
 var water_mats := []         # the water's (water.gdshader): plain in the infrared view
@@ -681,8 +680,7 @@ func _load(index: int) -> void:
 	live_extra.clear()
 	live_fx.clear()
 	live_piles.clear()
-	scorch_decals.clear()                     # (their nodes went with the old world)
-	scorch_prev = PackedByteArray()
+	scorch_prev = PackedByteArray()           # (the burns: on the new map's ground, _live_scorch)
 	anims.clear()
 	anim_seen.clear()
 	anim_mats.clear()                         # (their pictures are in the mission's palette)
@@ -4735,80 +4733,63 @@ func _live_vegetation(game_map: PackedByteArray) -> void:
 
 
 # Burnt ground: the game sets bit 0x40 of a vertex's tile where a tree was destroyed or a blast hit (its ground map
-# in memory, read by the bridge), and draws it as a black patch ~1.5 units wide (seen after a grenade). Here a soft
-# round dark blotch as a decal on the ground, turned at random (the burnt tree picture laid flat, used before, made
-# long tree-shaped streaks). Packet: count, then vertex indices (y * 513 + x, game y = Godot z).
-const SCORCH_WIDTH := 1.6
-const SCORCH_TINT := Color(0.13, 0.1, 0.08)
-var scorch_tex: ImageTexture
+# in memory, read by the bridge) and stamps one of its four burn pictures (RESTNOBJ 1164, pictures 1 to 4: black and
+# brown, ragged) over the whole ground square of the burnt point (its routine 0x2AC650), lit and hazed with the ground.
+# Drawn so here, by the ground's shader (burn_map: one texel per point, 1 + its picture; burn_idx: the pictures' palette
+# indices), through the same light and haze rows as the tiles. (They were decals: on a ground drawn in its own colours
+# (emission) they no longer showed, and they painted their brown and orange on whatever stood on them, a stump, a
+# soldier, a corpse.) Packet: count, then vertex indices (y * 513 + x, game y = Godot z).
+var burn_img: Image
+var burn_tex: ImageTexture
+var burn_pics: Texture2DArray
 
 
-func _scorch_texture() -> ImageTexture:
-	if scorch_tex != null:
-		return scorch_tex
-	var n := 64
-	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
-	var noise := FastNoiseLite.new()
-	noise.frequency = 0.12
-	for y in n:
-		for x in n:
-			var d := Vector2(x - n / 2.0 + 0.5, y - n / 2.0 + 0.5).length() / (n / 2.0)
-			var edge := 0.72 + 0.3 * noise.get_noise_2d(x, y)          # a ragged rim
-			var a := clampf((edge - d) / 0.08, 0.0, 1.0)
-			var g := 0.6 + 0.4 * noise.get_noise_2d(x * 3.0 + 100.0, y * 3.0)
-			img.set_pixel(x, y, Color(g, g, g, a))
-	img.generate_mipmaps()
-	scorch_tex = ImageTexture.create_from_image(img)
-	return scorch_tex
-
-
-var scorch_game := {}             # the game's burn pictures: "palette/k" -> texture (null: not in the files)
-
-
-func _scorch_game(k: int) -> Texture2D:
-	var key := "%s/%d" % [pal_key, k]
-	if not scorch_game.has(key):
-		var sp: Dictionary = objects.sprite(Vector2i(1164, 1 + k), pal, pal_key) if objects_ok else {}
-		scorch_game[key] = sp.get("texture")
-	return scorch_game[key]
+func _burn_pictures() -> Texture2DArray:
+	if burn_pics != null or not objects_ok:
+		return burn_pics
+	var imgs: Array[Image] = []
+	for k in 4:
+		var im: Image = objects.sprite_idx(Vector2i(1164, 1 + k))
+		if im == null:
+			return null
+		im.resize(64, 64, Image.INTERPOLATE_NEAREST)
+		imgs.append(im)
+	burn_pics = Texture2DArray.new()
+	burn_pics.create_from_images(imgs)
+	return burn_pics
 
 
 func _live_scorch(pk: PackedByteArray) -> void:
 	if current.is_empty() or pk == scorch_prev:
 		return
 	scorch_prev = pk
-	var now := {}
+	var pics := _burn_pictures()
+	if pics == null:
+		return
+	if burn_img == null:
+		burn_img = Image.create(513, 513, false, Image.FORMAT_R8)
+	burn_img.fill(Color(0, 0, 0))
 	var n := mini(pk.decode_u32(0), (pk.size() - 4) / 4)
 	for k in n:
-		now[pk.decode_u32(4 + 4 * k)] = true
-	for v in scorch_decals.keys():
-		if not now.has(v):
-			scorch_decals[v].queue_free()
-			scorch_decals.erase(v)
-	var m: Dictionary = current["map"]
-	for v in now:
-		if scorch_decals.has(v):
-			continue
-		var x := float(v % 513)
-		var y := float(v / 513)
-		var dc := Decal.new()
-		# the game stamps one of its four burn pictures (RESTNOBJ 1164, pictures 1 to 4) over the whole ground square
-		# of the burnt point (its routine 0x2AC650): black and brown, ragged, one unit wide. Before: a round grey
-		# stain of Uplink's own, 1.6 wide, centred on the point
-		var burn: Texture2D = _scorch_game(v % 4)
-		if burn != null:
-			dc.texture_albedo = burn
-			dc.size = Vector3(1.0, 1.2, 1.0)
-			dc.position = Vector3(x + 0.5, TNData.height_at(m, x + 0.5, y + 0.5) + 0.3, y + 0.5)
-		else:
-			dc.texture_albedo = _scorch_texture()
-			dc.size = Vector3(SCORCH_WIDTH, 1.2, SCORCH_WIDTH)
-			dc.modulate = SCORCH_TINT
-			dc.position = Vector3(x, TNData.height_at(m, x, y) + 0.3, y)
-			dc.rotation.y = float((v * 2654435761) % 6283) / 1000.0
-		dc.cull_mask = 1
-		world.add_child(dc)
-		scorch_decals[v] = dc
+		var v := pk.decode_u32(4 + 4 * k)
+		if v < 513 * 513:
+			burn_img.set_pixel(v % 513, v / 513, Color8(1 + v % 4, 0, 0))
+	if burn_tex == null:
+		burn_tex = ImageTexture.create_from_image(burn_img)
+	else:
+		burn_tex.update(burn_img)
+	var fp: PackedColorArray = (current["map"]["planet_data"] as Dictionary).get("palette", PackedColorArray())
+	for sm in ground_mats:
+		if (sm as ShaderMaterial).shader != GROUND or float((sm as ShaderMaterial).get_shader_parameter("grid_n")) != 513.0:
+			continue                                    # (the detailed map only: the outer grid's points are 4 apart)
+		if (sm as ShaderMaterial).get_shader_parameter("burn_pal") == null and fp.size() >= 256:
+			var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
+			for i in 256:
+				pimg.set_pixel(i, 0, fp[i])
+			(sm as ShaderMaterial).set_shader_parameter("burn_pal", ImageTexture.create_from_image(pimg))
+		(sm as ShaderMaterial).set_shader_parameter("burn_map", burn_tex)
+		(sm as ShaderMaterial).set_shader_parameter("burn_idx", pics)
+		(sm as ShaderMaterial).set_shader_parameter("has_burn", n > 0)
 
 
 # Shots (class 5) and their effects (class 6), which the game keeps a fraction of a second in its entity table, at

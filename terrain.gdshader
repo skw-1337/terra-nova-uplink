@@ -31,6 +31,14 @@ uniform bool has_haze_lut = false;
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of tables 59, 60, 61, 62
 uniform bool has_ir = false;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
+// burnt ground (live: a tree destroyed, a blast): the game stamps one of its 4 burn pictures over the whole square of a
+// burnt point, as part of the ground (lit and hazed with it). burn_map: one texel per point, 0 or 1 + its picture;
+// burn_idx: the pictures' palette indices (0 = the ground shows through); burn_pal: the planet's palette (viewer.gd
+// _live_scorch)
+uniform bool has_burn = false;
+uniform sampler2D burn_map : filter_nearest, repeat_disable;
+uniform sampler2DArray burn_idx : filter_nearest, repeat_disable;
+uniform sampler2D burn_pal : filter_nearest, repeat_disable;
 // the share of haze in each row of the skies' haze tables (SKY 150) on the planets' ground colours, sRGB, towards
 // row 15 (the mean of SKY0-4 on their planets: live10 rows.py)
 const float ROW_SHARE[16] = {0.0, 0.0, 0.03, 0.09, 0.14, 0.19, 0.24, 0.30, 0.36, 0.45, 0.51, 0.58, 0.68, 0.78, 0.87, 1.0};
@@ -186,6 +194,23 @@ float ground_fine(vec2 p, vec3 c) {
 	return f;
 }
 
+// the burn picture's palette index at grid position q (0: none there)
+int burn_at(vec2 q) {
+	if (!has_burn) {
+		return 0;
+	}
+	vec2 cell = floor(q);
+	if (cell.x < 0.0 || cell.y < 0.0 || cell.x > grid_n - 2.0 || cell.y > grid_n - 2.0) {
+		return 0;
+	}
+	int k = int(texelFetch(burn_map, ivec2(cell), 0).r * 255.0 + 0.5);
+	if (k == 0) {
+		return 0;
+	}
+	ivec2 tx = clamp(ivec2(floor(fract(q) * 64.0)), ivec2(0), ivec2(63));
+	return int(texelFetch(burn_idx, ivec3(tx, k - 1), 0).r * 255.0 + 0.5);
+}
+
 varying vec2 g;
 varying vec3 wpos;
 varying float vlight;
@@ -294,6 +319,10 @@ void fragment() {
 			}
 			ivec2 tx = clamp(ivec2(floor(uv * float(sz))), ivec2(0), ivec2(sz - 1));
 			int i0 = int(texelFetch(tiles_idx, ivec3(tx, tile), lod).r * 255.0 + 0.5);
+			int bi = burn_at(q);
+			if (bi != 0) {
+				i0 = bi;                  // (a burnt square: the burn picture's texel, through the same rows)
+			}
 			if (ir) {                     // infrared: table 59 of the hazed texel, no light row (0x2B5643, remap loop)
 				int ih = int(texelFetch(haze_lut_idx, ivec2(i0, lv), 0).r * 255.0 + 0.5);
 				acc += texelFetch(ir_lut, ivec2(ih, 0), 0).rgb;
@@ -317,6 +346,11 @@ void fragment() {
 		// only added noise that shimmered as the view moved)
 		float tpp = max(length(dFdx(g)), length(dFdy(g))) * 64.0;
 		col = cells_blend(g, dx, dy, wpos, loff);       // cells blended
+		int bi = burn_at(g);
+		if (bi != 0) {                       // a burnt square: the burn picture's colour, lit by the same row
+			int bl = per_index ? int(texelFetch(shade_idx, ivec2(bi, frow), 0).r * 255.0 + 0.5) : bi;
+			col = tn_haze_linear(texelFetch(burn_pal, ivec2(bl, 0), 0).rgb);
+		}
 		// grain: the same tile 4 times finer modulates the brightness up close (grass blades, dirt streaks); its mips
 		// fade it to nothing further away, so it does not shimmer
 		vec3 fine = modern ? textureGrad(tiles_wrap, vec3(uv * 4.0, tile), du * 4.0, dv * 4.0).rgb   // wrapped: no seams

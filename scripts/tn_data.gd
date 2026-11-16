@@ -760,6 +760,10 @@ func _read_planet(path: String) -> Dictionary:
 	var luts := shade_luts(out["shade_rows"], fp)
 	out["shade_luts"] = luts
 	out["tiles_lit"] = lit_tiles(raw, count, luts) if luts.size() == 16 else null
+	out["tiles_idx"] = index_tiles(raw, count)
+	var t53: PackedByteArray = out["shade_rows"]
+	out["shade_idx"] = ImageTexture.create_from_image(Image.create_from_data(256, 16, false, Image.FORMAT_R8,
+			t53.slice(0, 4096))) if t53.size() >= 4096 else null
 	_read_water(r, raw, count, fp, out)
 	return out
 
@@ -794,6 +798,29 @@ static func lit_tile(p: PackedByteArray, lut: PackedByteArray) -> Image:
 	var img := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, rgb)
 	img.generate_mipmaps()
 	return img
+
+
+# A tile's palette indices (4096) as an R8 image whose smaller levels pick texels (as the game's 16 x 16 copies of its
+# tiles do), not averages of indices: terrain.gdshader reads them with texelFetch.
+static func index_tile(p: PackedByteArray) -> Image:
+	var img := Image.create_from_data(64, 64, false, Image.FORMAT_R8, p)
+	var data := p.duplicate()
+	var s := 32
+	while s >= 1:
+		var lv := img.duplicate() as Image
+		lv.resize(s, s, Image.INTERPOLATE_NEAREST)
+		data.append_array(lv.get_data())
+		s /= 2
+	return Image.create_from_data(64, 64, true, Image.FORMAT_R8, data)
+
+
+static func index_tiles(raw: PackedByteArray, count: int) -> Texture2DArray:
+	var imgs: Array[Image] = []
+	for t in count:
+		imgs.append(index_tile(raw.slice(t * 4096, t * 4096 + 4096)))
+	var arr := Texture2DArray.new()
+	arr.create_from_images(imgs)
+	return arr
 
 
 # The ground's tiles as the game draws them at each light row: layer k x count + tile = the tile through file row k

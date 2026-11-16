@@ -435,6 +435,7 @@ func load_sky(path: String, pal: PackedColorArray) -> Dictionary:
 			acc += Vector3(c.r, c.g, c.b)
 		acc /= 102.0
 		out["haze"] = Color(acc.x, acc.y, acc.z)
+		out["haze_rows"] = t150.slice(0, 4096)      # (live, old school: the ground hazed through them, as the game)
 	var textures := {}
 	for k in range(0x20, lay.size() - 7, 12):
 		if lay.decode_u16(k + 6) != 152:

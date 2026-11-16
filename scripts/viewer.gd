@@ -139,6 +139,7 @@ var scorch_prev := PackedByteArray()
 var ground_mats := []        # ground materials of the map, for the sky they mirror (the water's too)
 var water_mats := []         # the water's (water.gdshader): plain in the infrared view
 var sky_clouds: Texture2D
+var sky_haze_lut: ImageTexture = null    # the sky's haze rows (SKY 150) as colours: 256 indices x 16 levels
 var sky_haze := Color(0.7, 0.76, 0.84)
 var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the horizon)
 var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light direction)
@@ -607,6 +608,7 @@ func _load(index: int) -> void:
 	snow_pl = pl                          # (the game's snow on its tiles: _live_tiles)
 	snow_tex = null
 	snow_lit = null
+	snow_idx = null
 	snow_raw.clear()
 	snow_mats.clear()
 	if pl["ok"]:                          # real ground textures (else: average colors)
@@ -1116,6 +1118,9 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 		sm.set_shader_parameter("tiles_lit_soft", pl["tiles_lit"])
 		sm.set_shader_parameter("tile_count", float(pl["count"]))
 		sm.set_shader_parameter("per_index", true)
+	if pl.get("tiles_idx") != null and pl.get("shade_idx") != null:   # (live, old school: _sky_to adds the haze rows)
+		sm.set_shader_parameter("tiles_idx", pl["tiles_idx"])
+		sm.set_shader_parameter("shade_idx", pl["shade_idx"])
 	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
 	sm.set_shader_parameter("origin", origin)
@@ -1183,6 +1188,9 @@ func _box_blur(src: PackedFloat32Array, n: int, r: int) -> PackedFloat32Array:
 # The sky's clouds and haze to a material that mirrors them (water plane, water tiles of the ground).
 func _sky_to(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("has_clouds", sky_clouds != null)
+	sm.set_shader_parameter("has_haze_lut", sky_haze_lut != null)
+	if sky_haze_lut != null:
+		sm.set_shader_parameter("haze_lut", sky_haze_lut)
 	if sky_clouds != null:
 		sm.set_shader_parameter("clouds", sky_clouds)
 	sm.set_shader_parameter("haze", Vector3(sky_haze.r, sky_haze.g, sky_haze.b))
@@ -2503,6 +2511,17 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
+	sky_haze_lut = null
+	var t150: PackedByteArray = sk.get("haze_rows", PackedByteArray())
+	if t150.size() >= 4096 and pal.size() >= 256:      # the colour of each palette index at each haze level
+		var rgb := PackedByteArray()
+		rgb.resize(4096 * 3)
+		for i in 4096:
+			var c: Color = pal[t150[i]]
+			rgb[3 * i] = c.r8
+			rgb[3 * i + 1] = c.g8
+			rgb[3 * i + 2] = c.b8
+		sky_haze_lut = ImageTexture.create_from_image(Image.create_from_data(256, 16, false, Image.FORMAT_RGB8, rgb))
 	for sm in ground_mats + [mats["water"]]:
 		_sky_to(sm)
 	_apply_look()
@@ -5547,6 +5566,7 @@ var snow_pl := {}                               # the map's planet (tn_data _rea
 var snow_mats := []                             # the ground's materials (detail and outer maps)
 var snow_tex: Texture2DArray = null             # its tiles as the game holds them (null: the planet's own)
 var snow_lit: Texture2DArray = null             # the same through the shade rows (TNData.lit_tiles)
+var snow_idx: Texture2DArray = null             # and as palette indices (TNData.index_tiles)
 var snow_raw := {}                              # tile -> the palette indices last laid on snow_tex
 
 
@@ -5589,6 +5609,15 @@ func _live_tiles(q: PackedByteArray) -> void:
 				for sm in snow_mats:
 					for u in ["tiles_lit", "tiles_lit_soft"]:
 						(sm as ShaderMaterial).set_shader_parameter(u, snow_lit)
+			if snow_pl.get("tiles_idx") != null:
+				var it: Texture2DArray = snow_pl["tiles_idx"]
+				var iimgs: Array[Image] = []
+				for i in it.get_layers():
+					iimgs.append(it.get_layer_data(i))
+				snow_idx = Texture2DArray.new()
+				snow_idx.create_from_images(iimgs)
+				for sm in snow_mats:
+					(sm as ShaderMaterial).set_shader_parameter("tiles_idx", snow_idx)
 		var rgb := PackedByteArray()
 		rgb.resize(4096 * 3)
 		for i in 4096:
@@ -5599,6 +5628,8 @@ func _live_tiles(q: PackedByteArray) -> void:
 		var img := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, rgb)
 		img.generate_mipmaps()
 		snow_tex.update_layer(img, t)
+		if snow_idx != null:
+			snow_idx.update_layer(TNData.index_tile(p), t)
 		if snow_lit != null:
 			var luts: Array = snow_pl["shade_luts"]
 			for row in luts.size():

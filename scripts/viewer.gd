@@ -608,8 +608,11 @@ func _load(index: int) -> void:
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
-	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	haze_k = mis.get("haze_k", 99)
+	mis_params = mis.get("params", {})
+	cloud_base = Vector2.ZERO
+	cloud_set = Vector2(-1.0, -1.0)
+	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	map_dif = m.get("dif", DEFAULT_DIF)
 	map_amb = m.get("amb", DEFAULT_AMB)
 	if live:
@@ -1146,6 +1149,88 @@ func _haze_fog(k: float) -> void:
 	env.fog_depth_end = 20.0 + 300.0 * k / 99.0
 	env.fog_depth_curve = LIVE_FOG_CURVE
 	env.fog_density = LIVE_FOG_MAX
+
+
+# The cloud ceiling (mission resource 178): a plane at cloud_h, 1 texel a unit, seen from the eye (0x2A7222:
+# cloud_h - 8 x the eye's height): the shaders' texels per unit of slope, 44 at MISS30's start (1080, eye 6.18). The
+# wind moves it (live: the game's own offset, SKYO; the viewer: from the mission's wind); the desert missions' clouds
+# also ripple and sway in a circle of 30 texels (0x2A6F38). At most 10 times a second (a sky's change redraws its light).
+var mis_params := {}
+var cloud_base := Vector2.ZERO         # texels (column, row)
+var cloud_set := Vector2(-1.0, -1.0)   # (cloud_px, time) last set
+var cloud_sway := 0                    # live: the game's sway phase
+var cloud_live_t := 0
+var ripple_img: Image
+var ripple_tex: ImageTexture
+const CLOUD_REF := 1030.56             # 1080 - 8 x 6.18
+const TICK_HZ := 280.0                 # the game's clock (not measured: the map viewer's wind and ripple speed)
+var ripple_sin := PackedInt32Array()
+
+
+func _clouds_update() -> void:
+	if mis_params.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - cloud_set.y < 0.1:
+		return
+	var dt := now - cloud_set.y if cloud_set.y > 0.0 else 0.0
+	var mats_c: Array = ground_mats + [mats["water"]]
+	if env.sky.sky_material is ShaderMaterial:
+		mats_c.append(env.sky.sky_material)
+	var px := 44.0 * maxf(64.0, float(mis_params["cloud_h"]) - 8.0 * camera.position.y) / CLOUD_REF
+	var ticks := now * TICK_HZ
+	if live:
+		ticks = cloud_sway / 193.0
+	else:
+		var a: float = mis_params["wind_angle"]
+		cloud_base += float(mis_params["wind_speed"]) / 65536.0 * dt * TICK_HZ * Vector2(cos(a), sin(a))
+		cloud_base = Vector2(fposmod(cloud_base.x, 256.0), fposmod(cloud_base.y, 256.0))
+	var off := cloud_base
+	var desert: bool = mis_params["desert"]
+	if desert:
+		var phi := (floorf(193.0 * ticks) / 256.0) / 65536.0 * TAU
+		off += Vector2(30.0 * sin(phi), 30.0 * cos(phi))
+		_ripple_tables(ticks)
+	for sm in mats_c:
+		sm.set_shader_parameter("cloud_px", px)
+		sm.set_shader_parameter("cloud_off", off)
+		sm.set_shader_parameter("has_ripple", desert)
+		if desert:
+			sm.set_shader_parameter("ripple", ripple_tex)
+	cloud_set = Vector2(px, now)
+
+
+# The two 256-entry tables of the desert clouds (0x2A6F38): two waves each (1 and 3 periods over the table, 6144 and
+# 1536 x the game's biased sine S[k] = int((sin(2 pi k / 1024) 65536 + 65536) / 513), / 65536), their phases V x
+# ticks / 65536 index units: 1797 and 16384 (columns, 0x425200), 2615 and 14099 (rows, 0x425300).
+static func ripple_table(ticks: float, v1: int, v2: int, sn: PackedInt32Array) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(256)
+	var p1 := int(floorf(v1 * ticks / 65536.0))
+	var p2 := int(floorf(v2 * ticks / 65536.0))
+	for i in 256:
+		out[i] = ((6144 * sn[(4 * i + p1) & 1023]) >> 16) + ((1536 * sn[(12 * i + p2) & 1023]) >> 16)
+	return out
+
+
+static func ripple_sine() -> PackedInt32Array:
+	var sn := PackedInt32Array()
+	sn.resize(1024)
+	for k in 1024:
+		sn[k] = int((sin(TAU * k / 1024.0) * 65536.0 + 65536.0) / 513.0)
+	return sn
+
+
+func _ripple_tables(ticks: float) -> void:
+	if ripple_sin.is_empty():
+		ripple_sin = ripple_sine()
+	var d := ripple_table(ticks, 1797, 16384, ripple_sin) + ripple_table(ticks, 2615, 14099, ripple_sin)
+	if ripple_img == null:
+		ripple_img = Image.create_from_data(256, 2, false, Image.FORMAT_R8, d)
+		ripple_tex = ImageTexture.create_from_image(ripple_img)
+	else:
+		ripple_img.set_data(256, 2, false, Image.FORMAT_R8, d)
+		ripple_tex.update(ripple_img)
 
 
 func _apply_look() -> void:
@@ -2045,6 +2130,8 @@ func _set_sky(path: String, light: Vector2) -> void:
 	mat.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	if sk.get("light") != null:                         # the clouds lighten towards the horizon
 		var lt: Color = sk["light"]
+		if int(mis_params.get("weather_kind", 0)) == 2 and pal.size() > 0x20:
+			lt = pal[0x20]                              # rain (0x2A7085): its far band in greys 0x20.. (not 0xA2..)
 		mat.set_shader_parameter("light", Vector3(lt.r, lt.g, lt.b))
 		sky_light = lt
 	else:
@@ -3284,12 +3371,11 @@ func _live_update() -> void:
 			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "WAYP":
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
-		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
-			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
-				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
-						Vector2(q.decode_float(4), q.decode_float(8)))
-			for sm in ground_mats + [mats["water"]]:          # the water mirrors the same clouds
-				sm.set_shader_parameter("cloud_off", Vector2(q.decode_float(4), q.decode_float(8)))
+		elif q.size() >= 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
+			cloud_base = Vector2(q.decode_float(4), q.decode_float(8))   # the game's wind offset of its clouds
+			if q.size() >= 16:
+				cloud_sway = q.decode_u32(12)            # its cloud sway's phase ([0x427DB0], +193 a tick)
+			cloud_live_t = Time.get_ticks_msec()
 		else:
 			pk = q
 	if pk.size() < 24:
@@ -5155,6 +5241,7 @@ func _process(delta: float) -> void:
 		if vsz.y > 0:
 			hd_movie_box.ratio = vsz.x / vsz.y           # the video at its own proportions, black around
 	_sync_sun_half()
+	_clouds_update()
 	sky_root.position = camera.position
 	if live:
 		_live_update()

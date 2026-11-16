@@ -226,7 +226,27 @@ func load_mission(path: String) -> Dictionary:
 	var haze_s := r178.decode_s16(0x10) if r178.size() >= 0x12 else 256
 	var haze_k := maxi(1, (haze_s * 25558) >> 16)
 	return {"map": LGRes.text(r.data(170)), "groups": groups, "zones": zones, "entities": ents,
-			"sky": sky, "haze_k": haze_k}
+			"sky": sky, "haze_k": haze_k, "params": mission_params(r178)}
+
+
+# The rest of mission resource 178, as the game's loader leaves it (0x2C9C6C: 0x3B bytes zeroed, then the resource:
+# the 27-byte ones read 0 from +0x1B). Temperature and gravity are not drawn; +0x11, +0x12, +0x19, +0x25 have no reader.
+static func mission_params(r178: PackedByteArray) -> Dictionary:
+	var b := PackedByteArray()
+	b.resize(0x3B)
+	for i in mini(r178.size(), 0x3B):
+		b[i] = r178[i]
+	var ch := b.decode_s16(0x23)
+	return {
+		"fog_scale": b.decode_s16(0x10) if r178.size() >= 0x12 else 256,
+		"temp_k": maxi(174, b.decode_u16(0x13)) if r178.size() >= 0x15 else 293,
+		"gravity": b.decode_s32(0x15) / 65536.0 if r178.size() >= 0x19 else 1.0,
+		"desert": b.decode_u16(0x1B) != 0,                  # the 6 SKY2 desert missions: rippling clouds
+		"wind_angle": b.decode_u16(0x1D) / 65536.0 * TAU,
+		"wind_speed": b.decode_u32(0x1F),                  # 16.16 texels a tick
+		"cloud_h": ch if ch != 0 else 1024,                # the cloud ceiling's height (0x2A7222; 0: 1024)
+		"weather_kind": b[0x27],                           # 0 none, 1 snow, 2 rain
+		"weather_amount": b.decode_u32(0x28)}
 
 
 # Map file -> heights, ground tiles (detail + outer grid), planet textures.

@@ -25,10 +25,12 @@ const SKY_DISTANCE := 2400.0             # sky sprites: far away, following the 
 const SKY_PIXEL := 0.0024                # their angular size per image pixel (radians)
 const DEFAULT_SUN := Vector3(-52, -35, 0)
 const SMOKE_WIDTH := 1.4                # world width of a smoke column
+const FUMEE_COLUMN := false             # the "Fumee" objects (4/61) as a looping smoke column (not the game's: it
+                                        # deletes them at load, see tn_objects.gd SMOKE_TYPE); the owner's choice
 const POSES_FILE := "res://data/soldier_poses.json"   # real poses read from the running game
 # Standing pose computed by the game for a Hog scout (suit 4), read in a RAM snapshot:
 # joints (right, up, forward) in world units, ground at 0. Other suits get the same joint
-# directions with their own bone lengths (sprite pixel length / 256 x 1.09, the scout's own size).
+# directions with their own bone lengths (sprite pixel length / 256 x the game's size factor, _part_scale).
 const TEMPLATE_POSE := [Vector3(-0.0378, 0.0, 0.0329), Vector3(0.0378, 0.0, 0.0329),
 		Vector3(-0.0279, 0.0422, -0.0169), Vector3(0.0279, 0.0422, -0.0169),
 		Vector3(-0.0203, 0.1445, 0.0034), Vector3(0.0388, 0.1445, 0.0035),
@@ -37,7 +39,13 @@ const TEMPLATE_POSE := [Vector3(-0.0378, 0.0, 0.0329), Vector3(0.0378, 0.0, 0.03
 		Vector3(-0.0695, 0.322, 0.061), Vector3(0.0932, 0.3227, 0.0609),
 		Vector3(-0.0714, 0.3061, 0.1374), Vector3(0.111, 0.3112, 0.136)]
 const TEMPLATE_SUIT := 4
-const BODY_SCALE := 1.09
+# A soldier's size (0x27F00C, 0x2817B0): v = 6 + (r1 + r2 + r3) / 4 (r: 0..15, mean 11.25), 11 for the clones (suits 6-8);
+# the squad's from a table by character. d = v + the suit's offset - 8: legs (thigh, shin) x (1 + d / 64), arms and
+# torso x (1 + d / 128), feet as they are. Standing, the game's legs reach 0.9 x thigh + shin (its field +0x2ED).
+const SIZE_OFFSET := {4: 10, 2: 5, 5: 5, 3: 2, 1: -2}
+const SIZE_MEAN := 11.25
+const SIZE_CLONE := 11.0
+const LEG_STAND := 0.9
 const CFG := "user://viewer.cfg"
 
 var data = TNData.new()
@@ -104,6 +112,11 @@ var live_shot := ""
 var live_shot_frame := 60
 var live_nodes := []          # one node per mission entity, in file order
 var live_off := -1            # game entity table index of the first mission entity
+var mission_tag := ""         # the mission's file (the pirates' arms in the map viewer, _pirate_arms)
+var draw_distance := OS.get_environment("TN_DRAW_DISTANCE") == "1"   # live: hide what the game does not draw
+var live_drawn := PackedByteArray()  # the bridge's DRAW bits (entity index), empty: none received
+var live_sizes := {}          # game entity index -> its soldier's bone lengths (the bridge's SLEN, _live_size)
+var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
 var live_fx := {}             # game entity index -> glowing sprite: shots (class 5) and their sparks (class 6)
 var live_piles := {}          # game entity index -> pile of armour pieces of a burst suit (6/33)
@@ -126,7 +139,6 @@ var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light 
 # off-centre like the game's, whose view looks 2 rows under the middle of its 3D window (_view_row)
 const HUD_PORT := 47823
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
-const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
 const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
 # live mode: the game's haze (0x2B4E8C), one curve for every planet: level 0 up to 20 units, then
@@ -612,6 +624,7 @@ func _load(index: int) -> void:
 	mis_params = mis.get("params", {})
 	cloud_base = Vector2.ZERO
 	cloud_set = Vector2(-1.0, -1.0)
+	_limb_light(m)
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	map_dif = m.get("dif", DEFAULT_DIF)
 	map_amb = m.get("amb", DEFAULT_AMB)
@@ -625,6 +638,10 @@ func _load(index: int) -> void:
 	var counts := {}
 	live_nodes.clear()
 	live_off = -1
+	live_alarm = false                        # (cleared by the game at each mission start)
+	live_sizes.clear()
+	live_drawn = PackedByteArray()            # (the last mission's DRAW bits)
+	mission_tag = String(entry["file"]).get_file().to_upper()
 	live_extra.clear()
 	live_fx.clear()
 	live_piles.clear()
@@ -861,13 +878,23 @@ func _placeholder(shape: String) -> Mesh:
 	return out
 
 
-# Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground. narrow: its width
-# alone (TN_SPRITES_HD720)
+# Sprite (tree, bush, rock, probe): upright quad turning to face the camera, standing on the node's point (its
+# bottom middle), or, for a frame with an anchor, that pixel on the point (the game's rule, 0x29BF41: either word
+# non-zero, both used; the probes' discs are centred so). narrow: its width alone (TN_SPRITES_HD720)
 func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0, narrow: float = 1.0) -> QuadMesh:
 	var q := QuadMesh.new()
 	q.size = Vector2(width * narrow, width * sp["aspect"] * tall)
 	q.center_offset = Vector3(0, q.size.y * 0.5, 0)
+	if _sprite_anchored(sp):
+		var an: Vector2 = sp["anchor"]
+		var px: Vector2 = sp["px"]
+		q.center_offset = Vector3(q.size.x * (0.5 - an.x / px.x), q.size.y * (an.y / px.y - 0.5), 0)
 	return q
+
+
+static func _sprite_anchored(sp: Dictionary) -> bool:
+	var px: Vector2 = sp.get("px", Vector2.ZERO)
+	return sp.get("anchor", Vector2.ZERO) != Vector2.ZERO and px.x > 0.0 and px.y > 0.0
 
 
 func _sprite_mat(key: Vector2i, sp: Dictionary) -> StandardMaterial3D:
@@ -1264,41 +1291,55 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	var soldier := false
 	if cls == 1 and objects_ok:
 		var suit := TNObjects.suit_of(sub)
-		top = _add_mech(mi) if suit == TNObjects.MECH_SUIT else _add_soldier(mi, suit)   # parts = children
+		top = _add_mech(mi) if suit == TNObjects.MECH_SUIT else _add_soldier(mi, suit, _pirate_arms(suit, x, y))
 		soldier = top > 0.0
-	if cls == 4 and sub == TNObjects.SMOKE_TYPE and objects_ok:
-		var sm: Dictionary = objects.smoke_anim(pal, pal_key)
+	# "Fumee" (4/61): the game deletes it right after loading it (one puff of 1186, 0.9 s): nothing to draw. The old
+	# smoke column (looping for ever) is kept behind FUMEE_COLUMN, at the game's 14 frames a second
+	var fumee := cls == 4 and sub == TNObjects.SMOKE_TYPE and objects_ok
+	if fumee:
+		mi.visible = false
+	if fumee and FUMEE_COLUMN:
+		var sm: Dictionary = objects.anim(TNObjects.SMOKE_ANIM, pal, pal_key)
 		if not sm.is_empty():
+			mi.visible = true
 			var q := QuadMesh.new()
-			q.size = Vector2(SMOKE_WIDTH, SMOKE_WIDTH * sm["aspect"])
+			q.size = Vector2(SMOKE_WIDTH, SMOKE_WIDTH * sm["size"].y / sm["size"].x)
 			q.center_offset = Vector3(0, q.size.y * 0.5, 0)
 			mi.mesh = q
 			var smat := ShaderMaterial.new()
 			smat.shader = SMOKE
 			smat.set_shader_parameter("frames", sm["tex"])
 			smat.set_shader_parameter("frame_count", sm["frames"])
+			smat.set_shader_parameter("fps", 1000.0 / float(objects.fx_def(15).get("ms", 71)))
 			mi.material_override = smat
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			mi.extra_cull_margin = SMOKE_WIDTH
 			top = q.size.y
-	if soldier or mi.mesh != null:
+	if soldier or mi.mesh != null or fumee:
 		pass
 	elif TNObjects.is_model(ref):
-		var md: Dictionary = objects.model(ref, pal, pal_key)
+		# lamps (types 56 / 57): their colour and full brightness (tn_objects.gd LAMP_TYPES); 57 waits for the alarm
+		var lamp := TNObjects.lamp_state(cls, sub, live_alarm)
+		var md: Dictionary = objects.model(ref, pal, pal_key, PackedByteArray(), lamp)
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
 			top = md["height"]
 			if md["params"] > 0:
 				mi.set_meta("art_ref", ref)              # articulated parts: posed by the live game (_live_arts)
+			if lamp != TNObjects.LAMP_NONE:
+				mi.set_meta("lamp", [ref, cls, sub])
+				mi.add_to_group("lamps")
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
 			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL, sprite_hd)
 			mi.mesh = q
+			if _sprite_anchored(sp):
+				mi.set_meta("anchored", true)          # its anchor on the game's point itself (_live_place)
 			mi.material_override = _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
-	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
+	if mi.mesh == null and not soldier and not fumee:   # nothing usable in the data (e.g. the biped mech)
 		var box := BoxMesh.new()
 		match cls:
 			0:
@@ -1341,33 +1382,79 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	return mi
 
 
+const PIRATE_SUIT := 9
+const CAPTAIN_SUIT := 10
+const CAPTAIN_ARM := 12605.0 / 32768.0    # the game's odds for each arm (rand 0..0x7FFF mod 13 < 5)
+
+
+# The map viewer cannot know which pirates the game gives captain arms (its random draws at mission start, seeded 0,
+# depend on every draw before): each arm drawn with the game's odds from the mission and the place, the same at each
+# load. Live, the bridge's ARMS packet tells the real ones (_live_arms).
+func _pirate_arms(suit: int, x: float, y: float) -> int:
+	if suit != PIRATE_SUIT:
+		return 0
+	var h := hash("%s/%.3f/%.3f" % [mission_tag, x, y])
+	var out := 0
+	if float(h & 0x7FFF) / 32768.0 < CAPTAIN_ARM:
+		out |= 1
+	if float((h >> 15) & 0x7FFF) / 32768.0 < CAPTAIN_ARM:
+		out |= 2
+	return out
+
+
+# A pirate whose arms the game drew otherwise than the viewer's guess: built again.
+func _live_arms(idx: int, arms: int) -> void:
+	var node := _live_node(idx)
+	if node == null or not node.has_meta("soldier") or node.has_meta("corpse") or int(node.get_meta("suit", -1)) != PIRATE_SUIT:
+		return
+	if int(node.get_meta("arms", 0)) == arms:
+		return
+	for part in node.get_meta("soldier"):
+		(part[0] as Node).queue_free()
+	_add_soldier(node, PIRATE_SUIT, arms)
+	node.remove_meta("size")                     # (its standing lengths were reset: its own sizes put back, SLEN)
+
+
+const LIMB_WPX := 1.0 / 256.0   # a limb sprite's pixel across its bone, in world units (the game's part +4 = 256)
 const LIMB_PULL := 0.05          # a standing suit's feet and shins drawn this much nearer the camera (_add_soldier)
 
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
 # Joints of skeletons 884 / 885: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 pelvis, 9 neck,
 # 10/11 shoulders, 12/13 elbows, 14/15 hands. Returns the suit height (0 when it has no sprites).
-func _add_soldier(holder: Node3D, suit: int) -> float:
+# arms: a pirate's (suit 9) captain arms, bit 0 the right one (segments 3, 4), bit 1 the left (9, 10): the game draws
+# each, at the pirate's creation, with the captain's sprites (suit 10) 5 times in 13 (0x27F150).
+func _add_soldier(holder: Node3D, suit: int, arms := 0) -> float:
 	var segs: Array = objects.skeleton(suit)
-	var limbs := {}
-	for sg in segs:
-		var ld: Dictionary = objects.limb(suit, sg[2], pal, pal_key)
+	var limbs := {}                                    # segment index -> its limb
+	var lsuit := {}                                    # segment index -> the suit its sprites come from
+	for k in segs.size():
+		var sg: Array = segs[k]
+		var es := suit
+		if suit == PIRATE_SUIT and ((k in [3, 4] and arms & 1) or (k in [9, 10] and arms & 2)):
+			es = CAPTAIN_SUIT
+		var ld: Dictionary = objects.limb(es, sg[2], pal, pal_key)
 		if ld.is_empty():
 			return 0.0
-		limbs[sg[2]] = ld
+		limbs[k] = ld
+		lsuit[k] = es
 	var p := _soldier_pose(suit, segs, limbs)
 	var parts := []
-	for sg in segs:
-		var ld: Dictionary = limbs[sg[2]]
+	for k in segs.size():
+		var sg: Array = segs[k]
+		var ld: Dictionary = limbs[k]
 		var seg := MeshInstance3D.new()
 		seg.mesh = _limb_quad(ld)
-		seg.material_override = _limb_mat(suit, sg[2], ld)
+		seg.material_override = _limb_mat(lsuit[k], sg[2], ld)
+		# a left limb: the right one's sprite, mirrored (per instance: both sides share the material)
+		seg.set_instance_shader_parameter("mirror", 1.0 if int(sg[3]) & 1 else 0.0)
 		# drawn nearer the camera than they are (limb.gdshader pull): the feet and shins only, a sole reaching under
 		# the ground (0.25 for the whole suit: one just behind a wall showed through it)
 		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 5 else 0.0)
 		holder.add_child(seg)
-		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x)])
+		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2])])
 	holder.set_meta("soldier", parts)
 	holder.set_meta("suit", suit)
+	holder.set_meta("arms", arms)
 	holder.set_meta("leg_rest", [p[6].distance_to(p[4]), p[4].distance_to(p[2]), p[7].distance_to(p[5]),
 			p[5].distance_to(p[3])])          # thighs and shins standing (see _leg_lengths)
 	holder.set_meta("stand", p)              # and its arms (_arms_back)
@@ -1394,7 +1481,7 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 	# last guard: a bone far longer than its limb (joints the game left where it last drew the suit) is not drawn, the
 	# suit keeps its previous pose (each sprite is scaled by its bone: such a limb came out several times too big)
 	for part in holder.get_meta("soldier"):
-		if (p[part[2]] - p[part[1]]).length() > 1.6 * float(part[3]) / 256.0 * BODY_SCALE:
+		if (p[part[2]] - p[part[1]]).length() > 1.6 * float(part[3]) / 256.0 * float(part[5]):
 			return -1.0
 	# the body's right, which sets each limb's front (the views turn around the bone): the hips' line for the legs
 	# and feet, the shoulders' for the torso and arms (joints 6 / 7 hips, 10 / 11 shoulders). Front = right x bone:
@@ -1416,8 +1503,9 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 		side = side.normalized()
 		var xn := side.cross(yn).normalized()
 		var seg: MeshInstance3D = part[0]
-		seg.transform = Transform3D(Basis(xn * sc, yn * sc, xn.cross(yn) * sc), ga)
-		seg.extra_cull_margin = part[4] * sc
+		# across the bone: the game's fixed 1/256 unit a sprite pixel (limb.gdshader), not the bone's scale
+		seg.transform = Transform3D(Basis(xn * LIMB_WPX, yn * sc, xn.cross(yn) * LIMB_WPX), ga)
+		seg.extra_cull_margin = maxf(part[4] * LIMB_WPX, part[3] * sc)
 		top = maxf(top, maxf(ga.y, gb.y))
 	return top
 
@@ -1500,12 +1588,36 @@ const WALK_EASE := 8.0                         # the upper body's swing eased (r
 const POSE_FADE := 250.0                       # ms: from the game's pose to its own steps and back
 
 
-func _arms_off(p: Array, stand: Array) -> bool:
-	for b in ARM_BONES:
-		var l0: float = (stand[b[0]] as Vector3).distance_to(stand[b[1]])
+func _arms_off(p: Array, stand: Array, rest: Array = []) -> bool:
+	for i in ARM_BONES.size():
+		var b: Array = ARM_BONES[i]
+		var l0: float = rest[i] if i < rest.size() else (stand[b[0]] as Vector3).distance_to(stand[b[1]])
 		if l0 > 0.0 and absf((p[b[0]] as Vector3).distance_to(p[b[1]]) / l0 - 1.0) > ARM_TOL:
 			return true
 	return false
+
+
+# A soldier's own bone lengths, read by the bridge in its game record (thigh, shin, upper arm, forearm, torso, reach):
+# its legs at rest stand 0.9 x thigh + shin (= reach, as the game's hip to ankle shows), its arms and the neck to
+# shoulders as the game has them (_arms_off); its feet stay at their file length.
+func _live_size(node: Node3D, sz: Array) -> void:
+	node.set_meta("size", sz)
+	if node.has_meta("corpse") or not node.has_meta("stand"):
+		return
+	var th: float = LEG_STAND * float(sz[0])
+	var sh: float = LEG_STAND * float(sz[1])
+	node.set_meta("leg_rest", [th, sh, th, sh])
+	var stand: Array = node.get_meta("stand")
+	var k_torso: float = float(sz[4]) / maxf((stand[8] as Vector3).distance_to(stand[9]), 0.001)
+	var rest := []
+	for b in ARM_BONES:
+		if b in [[10, 12], [11, 13]]:
+			rest.append(float(sz[2]))
+		elif b in [[12, 14], [13, 15]]:
+			rest.append(float(sz[3]))
+		else:
+			rest.append((stand[b[0]] as Vector3).distance_to(stand[b[1]]) * k_torso)
+	node.set_meta("arm_rest", rest)
 
 
 func _gait_wanted(node: Node3D, now: int) -> bool:
@@ -1768,6 +1880,20 @@ func _node_axes(v: Vector3) -> Vector3:
 var captured_poses = null
 
 
+# A suit's standing bone length for a part, x its pixels / 256: the game's size rule (SIZE_OFFSET) for a soldier of the
+# mean size (the game draws each one's at random: not reproducible), the legs as they stand (LEG_STAND).
+static func _part_scale(suit: int, part: int) -> float:
+	var v := SIZE_CLONE if suit in [6, 7, 8] else SIZE_MEAN
+	var d: float = v + SIZE_OFFSET.get(suit, 0) - 8.0
+	match part:
+		0:
+			return 1.0
+		1, 2:
+			return LEG_STAND * (1.0 + d / 64.0)
+		_:
+			return 1.0 + d / 128.0
+
+
 # The pose captured in the game for this suit when there is one (data/soldier_poses.json, written
 # by _MODS/re/poses.py), else the template pose rebuilt with this suit's bone lengths.
 func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
@@ -1787,13 +1913,17 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 	var t: Array[Vector3] = []
 	for v in TEMPLATE_POSE:
 		t.append(v)
-	var length := func(part: int) -> float:
-		return limbs[part]["len"] / 256.0 * BODY_SCALE if limbs.has(part) else 0.08
+	var length := func(k: int) -> float:              # segment k's bone (limbs by segment)
+		return limbs[k]["len"] / 256.0 * _part_scale(suit, segs[k][2]) if limbs.has(k) else 0.08
+	var torso := -1
+	for k in segs.size():
+		if segs[k][2] == 5:
+			torso = k
 	# free joints (pelvis, hips, shoulders) keep their place relative to the pelvis / neck,
 	# scaled with the torso; every limb keeps its direction and takes this suit's length
-	var k_torso: float = length.call(5) / t[8].distance_to(t[9])
+	var k_torso: float = length.call(torso) / t[8].distance_to(t[9])
 	p[8] = t[8]
-	p[9] = p[8] + (t[9] - t[8]).normalized() * length.call(5)
+	p[9] = p[8] + (t[9] - t[8]).normalized() * length.call(torso)
 	for i in 2:
 		p[6 + i] = p[8] + (t[6 + i] - t[8]) * k_torso
 		p[10 + i] = p[9] + (t[10 + i] - t[9]) * k_torso
@@ -1801,11 +1931,11 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 		for c in range(1, chain.size()):
 			var a: int = chain[c - 1]
 			var b: int = chain[c]
-			var part := -1
-			for sg in segs:
-				if (sg[0] == a and sg[1] == b) or (sg[0] == b and sg[1] == a):
-					part = sg[2]
-			p[b] = p[a] + (t[b] - t[a]).normalized() * length.call(part)
+			var seg_k := -1
+			for k in segs.size():
+				if (segs[k][0] == a and segs[k][1] == b) or (segs[k][0] == b and segs[k][1] == a):
+					seg_k = k
+			p[b] = p[a] + (t[b] - t[a]).normalized() * length.call(seg_k)
 	var ground := minf(minf(p[0].y, p[1].y), minf(p[2].y, p[3].y))
 	for k in 16:
 		p[k].y -= ground
@@ -1813,23 +1943,42 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 
 
 # Biped mech (skeleton 886): legs and body are small 3D models (RESTNOBJ 877-883, "pbmb00-06"),
-# each hanging from its first joint with its y axis along the segment. Rest pose in world units.
-# Joints: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 body bottom, 9 body top.
+# each hanging from its first joint with its y axis along the segment. Joints: 0/1 toes, 2/3 ankles, 4/5 knees,
+# 6/7 hips, 8 body bottom, 9 body top.
+# Standing pose as the game builds it (0x281918, 0x281CBC) from the parts' heights h (header max y - min y), in 16.16:
+# shin = h(878) x 0.8, thigh = h(879) x 0.8, body = h(880) x 0.8, hips h(881) x 0.983 apart, ankle h(877) x 0.327 high,
+# toes 0x2E00 ahead of the ankle, hips (thigh + shin + ankle) x 0.8 high. The game keeps no knee at rest: put back by
+# the two bones, bent backwards as all its walking frames show them (bird legs).
 func _add_mech(holder: Node3D) -> float:
 	var segs: Array = objects.skeleton(TNObjects.MECH_SUIT)
 	var p: Array[Vector3] = []                     # (right, up, forward)
 	p.resize(16)
-	var ankle := 0.1
-	var knee_y := ankle + 0.39
-	var hip_y := knee_y + 0.28
+	var h := func(part: int, fallback: int) -> int:
+		var e: int = objects.mech_yext(part)
+		return e if e > 0 else fallback
+	var shin_i: int = (h.call(1, 0x7D2A) * 0xCCCC) >> 16
+	var thigh_i: int = (h.call(2, 0x601A) * 0xCCCC) >> 16
+	var body_i: int = (h.call(3, 0x68A4) * 0xCCCC) >> 16
+	var hipw_i: int = (h.call(4, 0x6723) * 0xFB9F) >> 16
+	var ankle_i: int = (h.call(0, 0x6723) * 0x539C) >> 16
+	var hip_i: int = ((thigh_i + shin_i + ankle_i) * 0xCCCC) >> 16
+	var shin := shin_i / 65536.0
+	var thigh := thigh_i / 65536.0
+	var ankle := ankle_i / 65536.0
+	var hip_y := hip_i / 65536.0
+	var half := hipw_i / 131072.0
+	var toe := 0x2E00 / 65536.0
+	var d := hip_y - ankle                         # the knee: two bones from hip to ankle, behind their line
+	var a := (d * d + thigh * thigh - shin * shin) / (2.0 * d)
+	var back := sqrt(maxf(thigh * thigh - a * a, 0.0))
 	for i in 2:
 		var side := -1.0 if i == 0 else 1.0
-		p[i] = Vector3(side * 0.3, 0.0, 0.24)
-		p[2 + i] = Vector3(side * 0.3, ankle, 0.0)
-		p[4 + i] = Vector3(side * 0.3, knee_y, 0.04)
-		p[6 + i] = Vector3(side * 0.3, hip_y, 0.0)
-	p[9] = Vector3(0.0, hip_y + 0.3, 0.0)
-	p[8] = Vector3(0.0, hip_y - 0.08, 0.0)
+		p[i] = Vector3(side * half, 0.0, toe)
+		p[2 + i] = Vector3(side * half, ankle, 0.0)
+		p[4 + i] = Vector3(side * half, hip_y - a, -back)
+		p[6 + i] = Vector3(side * half, hip_y, 0.0)
+	p[8] = Vector3(0.0, hip_y, 0.0)
+	p[9] = Vector3(0.0, hip_y + body_i / 65536.0, 0.0)
 	var parts := []
 	for sg in segs:
 		var md: Dictionary = objects.model(Vector2i(877 + sg[2], 0), pal, pal_key)
@@ -1899,9 +2048,59 @@ func _limb_mat(suit: int, part: int, ld: Dictionary, shade := -1.0) -> ShaderMat
 	sm.shader = LIMB
 	sm.set_shader_parameter("views", ld["tex"])
 	sm.set_shader_parameter("view_count", ld["views"])
-	sm.set_shader_parameter("shade", shade if shade >= 0.0 else (LIVE_SUIT_SHADE if live else 1.0))
+	sm.set_shader_parameter("shade", shade if shade >= 0.0 else 1.0)
+	if shade < 0.0:                                 # a standing suit: lit like the game's (_limb_light)
+		sm.set_meta("lit", true)
+		_limb_light_set(sm)
 	mats[k] = sm
 	return sm
+
+
+# The game's light on the standing suits (limb.gdshader lit), for the map: its light direction without the sky's
+# azimuth offset (the game's own model light vector, 0x36244F), ambient (amb + 1) / 2 and diffuse from resource 82,
+# and the planet's shade rows (resource 53) as colour gains, weighted by how often each colour shows on the limbs
+# (linear light: the textures are). The infrared view: unlit (the game swaps its palette remap, no light per limb).
+var limb_light := {}
+
+
+func _limb_light(m: Dictionary) -> void:
+	var light: Vector2 = m.get("light", Vector2(0.0, TAU / 8.0))
+	var dir := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
+	var rows := PackedVector3Array()
+	rows.resize(16)
+	rows.fill(Vector3.ONE)
+	var sr: PackedByteArray = (m.get("planet_data", {}) as Dictionary).get("shade_rows", PackedByteArray())
+	if sr.size() >= 16 * 256 and objects_ok:
+		var hist := objects.limb_histogram()
+		var lin := PackedVector3Array()
+		lin.resize(256)
+		for i in 256:
+			var c := (pal[i] as Color).srgb_to_linear()
+			lin[i] = Vector3(c.r, c.g, c.b)
+		var base := Vector3.ZERO
+		for i in 256:
+			base += lin[i] * hist[i]
+		for r in 15:
+			var fo := 256 * (15 - r)                 # the game's row r = file row 15 - r
+			var acc := Vector3.ZERO
+			for i in 256:
+				acc += lin[sr[fo + i]] * hist[i]
+			rows[r] = Vector3(acc.x / maxf(base.x, 1e-6), acc.y / maxf(base.y, 1e-6), acc.z / maxf(base.z, 1e-6))
+	limb_light = {"dir": dir, "amb": (float(m.get("light_amb", 0.3)) + 1.0) * 0.5, "dif": float(m.get("light_dif", 0.7)),
+			"rows": rows}
+	for k in mats:
+		if mats[k] is ShaderMaterial and (mats[k] as ShaderMaterial).has_meta("lit"):
+			_limb_light_set(mats[k])
+
+
+func _limb_light_set(sm: ShaderMaterial) -> void:
+	if limb_light.is_empty():
+		return
+	sm.set_shader_parameter("lit", not ir_on)
+	sm.set_shader_parameter("light_dir", limb_light["dir"])
+	sm.set_shader_parameter("light_amb", limb_light["amb"])
+	sm.set_shader_parameter("light_dif", limb_light["dif"])
+	sm.set_shader_parameter("light_rows", limb_light["rows"])
 
 
 func _add_zone(m: Dictionary, z: Dictionary) -> void:
@@ -3365,8 +3564,22 @@ func _live_update() -> void:
 			_live_vegetation(q.slice(4))
 		elif q.size() >= 8 and q.slice(0, 4).get_string_from_ascii() == "SCOR":
 			_live_scorch(q.slice(4))
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "DRAW" and q.size() == 6 + (q.decode_u16(4) + 7) / 8:
+			live_drawn = q.slice(6)
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "SLEN" and q.size() == 6 + 28 * q.decode_u16(4):
+			for k in q.decode_u16(4):
+				var o := 6 + 28 * k
+				live_sizes[q.decode_s32(o)] = [q.decode_float(o + 4), q.decode_float(o + 8), q.decode_float(o + 12),
+						q.decode_float(o + 16), q.decode_float(o + 20), q.decode_float(o + 24)]
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "ARMS" and q.size() == 6 + 5 * q.decode_u16(4):
+			for k in q.decode_u16(4):
+				_live_arms(q.decode_s32(6 + 5 * k), q[10 + 5 * k])
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
-			ir_on = q[4] == 1                               # the game's infrared view (key I)
+			if ir_on != (q[4] == 1):
+				ir_on = q[4] == 1                           # the game's infrared view (key I)
+				for k in mats:                              # (the suits: unlit in it, _limb_light)
+					if mats[k] is ShaderMaterial and (mats[k] as ShaderMaterial).has_meta("lit"):
+						_limb_light_set(mats[k])
 			var old := oldschool_rect != null and oldschool_rect.visible
 			if ir_rect != null:
 				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
@@ -3547,6 +3760,8 @@ func _live_units(pk: PackedByteArray) -> void:
 			tail += 4 + 8 * pk.decode_s32(tail)
 			if pk.size() >= tail + 4:
 				body = pk.decode_s32(tail)
+				if pk.size() >= tail + 8:
+					_live_alarm(pk.decode_s32(tail + 4) != 0)   # (after the body: the alarm, newer bridges)
 	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
 	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
 	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
@@ -3661,6 +3876,21 @@ func _live_units(pk: PackedByteArray) -> void:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
 		if live_extra.has(idx):
 			_live_place(live_extra[idx], e, m)
+	if draw_distance and not live_drawn.is_empty() and not free_look:
+		# as in the game (its distances per type, see the bridge's DRAW): hidden, not freed (a suit keeps its steps)
+		for idx in ents:
+			if idx >> 3 >= live_drawn.size() or live_drawn[idx >> 3] & (1 << (idx & 7)) or idx == body:
+				continue
+			for hid in [_live_node(idx), live_fx.get(idx), live_piles.get(idx)]:
+				if hid != null and is_instance_valid(hid):
+					hid.visible = false
+	for idx in live_sizes:                             # each soldier's own lengths (the bridge's SLEN): for the game's
+		var se = ents.get(idx)                         # poses and for its own steps alike (_gait: the far ones, the
+		if se == null or se[0] != 1:                   # player's own body)
+			continue
+		var sn := _live_node(idx)
+		if sn != null and sn.has_meta("soldier") and sn.get_meta("size", []) != live_sizes[idx]:
+			_live_size(sn, live_sizes[idx])
 	for idx in joints:                                 # soldiers the game draws: its own animation
 		var node: Node3D = live_extra.get(idx)
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
@@ -3670,7 +3900,7 @@ func _live_units(pk: PackedByteArray) -> void:
 			if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
 				node.set_meta("jt0", now_ms)                # its poses again after a while without (GAIT_BACK)
 			node.set_meta("jt", now_ms)
-			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand")):
+			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand"), node.get_meta("arm_rest", [])):
 				node.set_meta("stale_t", now_ms)            # a half-frozen pose: it walks on its own steps
 			if not _gait_wanted(node, now_ms):
 				_pose_suit(node, joints[idx], false)
@@ -3834,7 +4064,23 @@ func _live_arts(pk: PackedByteArray, at: int) -> void:
 		if mi.get_meta("art_pose", PackedByteArray()) == pr:
 			continue
 		mi.set_meta("art_pose", pr)
-		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr)
+		var lp: Array = mi.get_meta("lamp", [])
+		var lamp := TNObjects.lamp_state(lp[1], lp[2], live_alarm) if not lp.is_empty() else TNObjects.LAMP_NONE
+		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr, lamp)
+		if not md.is_empty():
+			mi.mesh = md["mesh"]
+
+
+# The alarm went on (it stays on until the next mission): the type-57 lamps light up, as the game's 0x29B4D0 sees it.
+func _live_alarm(on: bool) -> void:
+	if on == live_alarm:
+		return
+	live_alarm = on
+	for n in get_tree().get_nodes_in_group("lamps"):
+		var mi := n as MeshInstance3D
+		var lp: Array = mi.get_meta("lamp")
+		var md: Dictionary = objects.model(lp[0], pal, pal_key, mi.get_meta("art_pose", PackedByteArray()),
+				TNObjects.lamp_state(lp[1], lp[2], on))
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
 
@@ -4526,11 +4772,11 @@ const HAZE_WIDTH := 0.24                         # a thermal disruptor's haze (1
 # how much of its veil a kind lays: a railgun's 64 particles a system pile up into a white bar at the veil's own
 # strength, where the game shows a faint pale streak (seen side by side)
 const PART_THIN := {10: 0.25}
-# the game's translucency tables (its "colours" 248 to 254): the grey each one lays over the picture, and how much
-# (fitted on the tables themselves, read in the game's memory: 248 a thin white veil ... 253 nearly black)
-const PART_TINT := {248: Color(0.945, 0.945, 0.945, 0.16), 249: Color(0.82, 0.82, 0.82, 0.31), 250: Color(0.68, 0.68, 0.68, 0.45),
-		251: Color(0.49, 0.49, 0.49, 0.31), 252: Color(0.38, 0.38, 0.38, 0.39), 253: Color(0.08, 0.08, 0.08, 0.55),
-		254: Color(0.09, 0.09, 0.09, 0.32)}
+# the particles' translucency tables (their "colours" 248 to 255, [0x423230] + 4 c, built at 0x28D4E8): the grey each
+# one lays over the picture, and how much (as the code builds them: 248 a thin white veil ... 253 nearly black)
+const PART_TINT := {248: Color(0.882, 0.882, 0.882, 0.200), 249: Color(0.813, 0.813, 0.813, 0.304),
+		250: Color(0.682, 0.682, 0.682, 0.414), 251: Color(0.506, 0.506, 0.506, 0.349), 252: Color(0.394, 0.394, 0.394, 0.398),
+		253: Color(0.098, 0.098, 0.098, 0.561), 254: Color(0.138, 0.138, 0.138, 0.340), 255: Color(0.050, 0.050, 0.050, 0.316)}
 var part_mode := false                          # the bridge sends the particles (an older one: the dots, as before)
 var part_node: MultiMeshInstance3D = null       # dots and see-through discs
 var haze_node: MultiMeshInstance3D = null       # the thermal disruptor's
@@ -5241,6 +5487,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 	# (no extra lift: a probe hovers by itself)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
 		var y: float = e[5] - GAME_Z
+		if node.has_meta("anchored"):                 # a probe's disc: the game projects its anchor at the point
+			y = e[5]
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):

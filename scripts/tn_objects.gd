@@ -4,7 +4,7 @@
 # A model is a program for the Looking Glass 3D interpreter (the same family as System Shock's):
 # header (name, bounding box, counts, texture list), then bytecode that defines points, relative
 # points, BSP nodes, articulated sub-objects and polygons (flat, textured or wireframe).
-# Opcode sizes were read from the game's own interpreter (jump table at 0x36069c in __FF.EXE).
+# Opcode sizes were read from the game's own interpreter (jump table at 0x3605F4 in the English exe, 0x36069C French).
 extends RefCounted
 
 const LGRes = preload("res://scripts/lgres.gd")
@@ -15,8 +15,13 @@ const TABLES := {0: [1371, 2], 2: [1372, 1], 3: [1373, 1], 4: [1374, 2]}
 const MODELS := Vector2i(1343, 1362)       # compound resources holding the models
 const SPRITES := Vector2i(1160, 1195)      # sprite / animation bitmaps
 const PROPS := 1364                        # + class: footprint and size of each object type
-# lamp polygons take their color from the object at run time (blinking alarm light)
-const RUNTIME_COLOR := Color(0.95, 0.25, 0.15)
+# Lamps: the lamp model's 7 polygons take their colour at run time (slot 2 of the byte table 0x3617F8): the game's
+# routine 0x29B4D0 writes 0x4B there for an object of type 56, and for type 57 once the alarm is on (0 before: black).
+# Such an object is then drawn full-bright (ambient 1, no diffuse: its palette colours as they are, shade row 16),
+# whatever its class (also the research buildings 4/56 and 4/57). Nothing blinks.
+const LAMP_TYPES := [56, 57]
+const LAMP_COLOR := 0x4B
+enum {LAMP_NONE = -1, LAMP_OFF = 0, LAMP_ON = 1}
 
 var res                 # RESTNOBJ.RES
 var tex_ref := {}       # global texture index -> Vector2i(resource, frame), from RESMAP.RES 1440
@@ -74,7 +79,7 @@ func sprite_width(cls: int, sub: int) -> float:
 # 4 forearm, 5 torso, 6 other forearm); a part holds 16 views of the limb seen from all around
 # (torso: 9, back to front) and every view marks where the two joints are. Skeletons: 884 (most
 # suits), 885 (clones, pirates), 886 (biped mech, whose parts are 3D models).
-# Soldier type -> suit: table at 0x395CA5 in __FF.EXE (one byte every 70).
+# Soldier type -> suit: table at 0x395BF5 English exe / 0x395CA5 French (one byte every 70).
 const SUIT_OF_TYPE := [0, 1, 2, 4, 3, 5, 6, 7, 8, 11, 9, 10, 5, 1, 0, 1, 2, 9]
 const MECH_SUIT := 11
 const MECH_PARTS := Vector2i(877, 883)     # its legs and body: 3D models
@@ -84,7 +89,9 @@ static func suit_of(sub: int) -> int:
 	return SUIT_OF_TYPE[sub % SUIT_OF_TYPE.size()]
 
 
-# Segments of a suit's skeleton: [joint a, joint b, part]; the part's first view marker is joint a.
+# Segments of a suit's skeleton: [joint a, joint b, part, flags]; the part's first view marker is joint a.
+# Flags bit 0: the game draws the part mirrored, its view taken from the other side (the left limbs share the right
+# ones' sprites; drawer 0x2F6C50). Bit 0x10: not drawn (never set in the data).
 func skeleton(suit: int) -> Array:
 	var rid := 886 if suit == MECH_SUIT else (885 if suit in [6, 7, 9] else 884)
 	var d: PackedByteArray = res.data(rid)
@@ -94,8 +101,18 @@ func skeleton(suit: int) -> Array:
 	for k in d[1]:
 		var o := 0x14 + 16 * k
 		if o + 6 <= d.size():
-			out.append([d[o], d[o + 1], d.decode_u16(o + 4)])
+			out.append([d[o], d[o + 1], d.decode_u16(o + 4), d[o + 3]])
 	return out
+
+
+# A mech part's height in its model header (16.16, max y - min y; frame 0 of RESTNOBJ 877 + part), -1 if missing:
+# the game sizes the mech's skeleton from them (0x281918).
+func mech_yext(part: int) -> int:
+	var fr := LGRes.frames(res.data(MECH_PARTS.x + part))
+	if fr.is_empty() or (fr[0] as PackedByteArray).size() < 0x20:
+		return -1
+	var f: PackedByteArray = fr[0]
+	return f.decode_s32(0x0C) - f.decode_s32(0x18)
 
 
 # One limb: its views in a texture array, every view placed so that joint a sits at the same
@@ -145,10 +162,44 @@ func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dicti
 	return out
 
 
+# How often each palette index shows on the suits' limb sprites (all suits, parts and views; colour 0 left out):
+# the weights of the shade rows' colour gains (viewer.gd _limb_light).
+var limb_hist_cache := PackedFloat32Array()
+
+
+func limb_histogram() -> PackedFloat32Array:
+	if not limb_hist_cache.is_empty():
+		return limb_hist_cache
+	var hist := PackedFloat32Array()
+	hist.resize(256)
+	var suits := {}
+	for su in SUIT_OF_TYPE:
+		if su != MECH_SUIT:
+			suits[su] = true
+	for suit in suits:
+		for part in 7:
+			if not res.has(800 + 7 * suit + part):
+				continue
+			var fr := LGRes.frames(res.data(800 + 7 * suit + part))
+			if fr.is_empty() or fr[0].size() <= 13:
+				continue
+			var f: PackedByteArray = fr[0]
+			for v in f[0]:
+				var o := f.decode_u32(13 + 4 * v)
+				if o + 0x1c > f.size() or not (f[o + 4] == 2 or f[o + 4] == 4):
+					break
+				for c in _bitmap_idx(f.slice(o), 0x20):
+					hist[c] += 1.0
+	hist[0] = 0.0
+	limb_hist_cache = hist
+	return hist
+
+
 # ------------------------------------------------------------------ effects
-# Translucent animations (bitmap type 5): 248 = thin smoke, 249 = dense smoke, both drawn by the
-# game through its translucency tables. 1186 = rising smoke column (13 frames), used for the
-# "Fumee" objects (buildings type 61, whose model entry is only an editor placeholder).
+# Translucent animations (bitmap type 5): 248 = dense, bright veil, 249 = thinner, darker one, both drawn by the
+# game through its translucency tables (BITMAP_VEILS). 1186 = rising smoke column (13 frames), effect 15 (played
+# once). The "Fumee" objects (buildings type 61, whose model entry is only an editor placeholder) are not drawn: the
+# game removes them right after loading them (0x2C9B20 -> 0x2894A0), after one short puff (viewer.gd FUMEE_COLUMN).
 const SMOKE_ANIM := 1186
 const SMOKE_TYPE := 61
 
@@ -186,12 +237,11 @@ func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
 	return out
 
 
-# A translucent bitmap (type 5, not compressed): its pixels 248 to 254 are not colours but the game's veils, each a
-# table that blends what is behind it with a grey (fitted on the tables read in the game's memory: 248 lays 16 % of
-# near white, 249 31 % of light grey ... 253 55 % of near black).
-const SOFT_VEILS := {248: Color(0.945, 0.945, 0.945, 0.16), 249: Color(0.82, 0.82, 0.82, 0.31), 250: Color(0.68, 0.68, 0.68, 0.45),
-		251: Color(0.49, 0.49, 0.49, 0.31), 252: Color(0.38, 0.38, 0.38, 0.39), 253: Color(0.08, 0.08, 0.08, 0.55),
-		254: Color(0.09, 0.09, 0.09, 0.32)}
+# A translucent bitmap (type 5, not compressed): its pixels 248 and 249 are not colours but the game's two bitmap
+# veils (tables at [0x360478] + 4 c, built at 0x261933 by 0x2F1C64): 248 = 120 + 0.469 x what is behind (colour 240 at
+# opacity 1/2), 249 = 56 + 0.656 x behind (colour 224 at 1/4); as a grey laid at an opacity. Any other pixel is drawn
+# as its palette colour, opaque and unlit (span routine 0x3328C2).
+const BITMAP_VEILS := {248: Color(0.886, 0.886, 0.886, 0.531), 249: Color(0.639, 0.639, 0.639, 0.344)}
 static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
 	if f.size() < 0x1c:
 		return null
@@ -204,11 +254,11 @@ static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
 	for y in h:
 		for x in w:
 			var v := f[0x1c + y * row + x]
-			if SOFT_VEILS.has(v):
-				img.set_pixel(x, y, SOFT_VEILS[v])
+			if BITMAP_VEILS.has(v):
+				img.set_pixel(x, y, BITMAP_VEILS[v])
 			elif v != 0:
 				var c: Color = pal[v]
-				img.set_pixel(x, y, Color(c.r, c.g, c.b, 0.85))
+				img.set_pixel(x, y, Color(c.r, c.g, c.b, 1.0))
 	return img
 
 
@@ -239,6 +289,8 @@ func fx_def(typ: int) -> Dictionary:
 	return fx_defs.get(typ, {})
 
 
+# 1186 as the texture of Uplink's own smoke puffs (viewer.gd _spawn_puff: trails, burning trees, grenades), in its
+# own colours (tuned with the puffs' tint): not the game's drawing of 1186 (anim, BITMAP_VEILS).
 func smoke_anim(pal: PackedColorArray, pal_key: String) -> Dictionary:
 	var key := "smoke/%s" % pal_key
 	if tex_cache.has(key):
@@ -422,20 +474,30 @@ func model_name(ref: Vector2i) -> String:
 # {"mesh": ArrayMesh, "name": String, "height": float}, or {} when the ref is not a model.
 # Mesh axes: the model's forward axis is +X (heading 0 = east), up is +Y; turn the node by
 # rotation.y = -heading.
-func model(ref: Vector2i, pal: PackedColorArray, pal_key: String, params := PackedByteArray()) -> Dictionary:
-	var key := "%d/%d/%s/%s" % [ref.x, ref.y, pal_key, params.hex_encode()]
+# lamp: LAMP_NONE (not a lamp object: run-time colours lit as the lamp's), LAMP_OFF (type 57 before the alarm) or
+# LAMP_ON (full-bright, run-time colours = palette 0x4B), see lamp_state.
+func model(ref: Vector2i, pal: PackedColorArray, pal_key: String, params := PackedByteArray(), lamp := LAMP_NONE) -> Dictionary:
+	var key := "%d/%d/%s/%s/%d" % [ref.x, ref.y, pal_key, params.hex_encode(), lamp]
 	if model_cache.has(key):
 		return model_cache[key]
 	var out := {}
 	if is_model(ref) or (ref.x >= MECH_PARTS.x and ref.x <= MECH_PARTS.y):
 		var fr := LGRes.frames(res.data(ref.x))
 		if ref.y < fr.size():
-			out = _build(fr[ref.y], pal, pal_key, params)
+			out = _build(fr[ref.y], pal, pal_key, params, lamp)
 	model_cache[key] = out
 	return out
 
 
-# Sprite as a texture + height / width ratio, or {}.
+# The lamp state of a model object (any class but the soldiers): type 56 always on, type 57 on once the alarm is.
+static func lamp_state(cls: int, sub: int, alarm: bool) -> int:
+	if cls == 1 or not sub in LAMP_TYPES:
+		return LAMP_NONE
+	return LAMP_ON if sub == 56 or alarm else LAMP_OFF
+
+
+# Sprite as a texture + height / width ratio, or {}. Also its anchor (frame +16 / +18, signed: the pixel the game puts
+# on the object's point, 0 / 0 = bottom middle) and its size in pixels.
 func sprite(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary:
 	var key := "s%d/%d/%s" % [ref.x, ref.y, pal_key]
 	if tex_cache.has(key):
@@ -447,7 +509,9 @@ func sprite(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary
 		if img != null:
 			var aspect := float(img.get_height()) / img.get_width()
 			img.generate_mipmaps()
-			out = {"texture": ImageTexture.create_from_image(img), "aspect": aspect}
+			var f: PackedByteArray = fr[ref.y]
+			out = {"texture": ImageTexture.create_from_image(img), "aspect": aspect,
+					"anchor": Vector2(f.decode_s16(16), f.decode_s16(18)), "px": Vector2(img.get_width(), img.get_height())}
 	tex_cache[key] = out
 	return out
 
@@ -475,14 +539,32 @@ func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Text
 # LG bitmap (28-byte frame header, then pixels): type 2 = raw 8-bit, type 4 = run-length (RSD).
 # Color 0 is transparent (sprites; a model's texture is made opaque, _texture).
 static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x1c) -> Image:
-	if f.size() < data_at:
+	var idx := _bitmap_idx(f, data_at)
+	if idx.is_empty():
 		return null
+	var w := f.decode_u16(8)
+	var h := f.decode_u16(10)
+	var rgba := PackedByteArray()
+	rgba.resize(w * h * 4)
+	for p in w * h:
+		var c: Color = pal[idx[p]]
+		rgba[4 * p] = int(c.r8)
+		rgba[4 * p + 1] = int(c.g8)
+		rgba[4 * p + 2] = int(c.b8)
+		rgba[4 * p + 3] = 0 if idx[p] == 0 else 255
+	return Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+
+
+# The bitmap's palette indices, w * h (empty: not a bitmap).
+static func _bitmap_idx(f: PackedByteArray, data_at: int = 0x1c) -> PackedByteArray:
+	if f.size() < data_at:
+		return PackedByteArray()
 	var typ := f[4]
 	var w := f.decode_u16(8)
 	var h := f.decode_u16(10)
 	var row := f.decode_u16(12)
 	if w == 0 or h == 0:
-		return null
+		return PackedByteArray()
 	var idx := PackedByteArray()
 	idx.resize(w * h)
 	if typ == 2:
@@ -535,18 +617,10 @@ static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x
 						if o + k < n:
 							idx[o + k] = v3
 					o += cnt3
-	var rgba := PackedByteArray()
-	rgba.resize(w * h * 4)
-	for p in w * h:
-		var c: Color = pal[idx[p]]
-		rgba[4 * p] = int(c.r8)
-		rgba[4 * p + 1] = int(c.g8)
-		rgba[4 * p + 2] = int(c.b8)
-		rgba[4 * p + 3] = 0 if idx[p] == 0 else 255
-	return Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+	return idx
 
 
-func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params := PackedByteArray()) -> Dictionary:
+func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params := PackedByteArray(), lamp := LAMP_NONE) -> Dictionary:
 	if f.size() < 0x5e:
 		return {}
 	var d := Decoder.new()
@@ -563,6 +637,7 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 	d.run(code, Transform3D.IDENTITY, 0)
 	if d.polys.is_empty():
 		return {}
+	d.separate()
 	var mesh := ArrayMesh.new()
 	var groups := {}                             # slot (or -1 for flat colors) -> [poly]
 	for p in d.polys:
@@ -577,23 +652,27 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 		for p in groups[s]:
 			var v: PackedVector3Array = p[0]
 			var uv: PackedVector2Array = p[1]
+			var ns: PackedVector3Array = p[4]
 			var col := Color.WHITE
 			if s < 0:
 				var ci: int = p[3]
-				col = pal[ci & 0xFF] if ci >= 0 else RUNTIME_COLOR
+				col = pal[ci & 0xFF] if ci >= 0 else (Color.BLACK if lamp == LAMP_OFF else pal[LAMP_COLOR])
 			for k in range(1, v.size() - 1):
 				for j in [0, k, k + 1]:
 					if s >= 0:
 						st.set_uv(uv[j])
 					else:
 						st.set_color(col)
+					var n: Vector3 = ns[j]
+					st.set_normal(Vector3(n.z, -n.y, n.x))   # the game's normals: flat faces, not averaged
 					var q: Vector3 = v[j]
 					top = maxf(top, -q.y)
 					st.add_vertex(Vector3(q.z, -q.y, q.x))
-		st.generate_normals()
 		var mat := StandardMaterial3D.new()
 		mat.roughness = 1.0
 		mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+		if lamp == LAMP_ON:                          # full-bright: its colours as they are, on every face
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
 		if s < 0:
 			mat.vertex_color_use_as_albedo = true
@@ -635,9 +714,14 @@ class Decoder:
 	const ART_SIGN := 1.0   # the way a part turns for a growing angle (checked on the dropship's door)
 	var pts := {}           # point index -> position (model space, y down)
 	var uv := {}            # point index -> Vector2
-	var polys := []         # [PackedVector3Array, PackedVector2Array, texture slot or -1, color]
+	var polys := []         # [PackedVector3Array, PackedVector2Array, texture slot or -1, color, normals, mode]
 	var lines := []         # [a, b, color]
 	var color := 0
+	var mode := 0           # shading mode (op 0x31): 1 = one shade per polygon from its stored normal, 2 = per point
+	var part := 0           # the rigid part being walked (a new one under each 0x10-0x12 / 0x28 / 0x29)
+	var parts := 0
+	var path := []          # the BSP nodes (op 6) above: [pc, 0 / 1 for its first / second branch]
+	var vn := {}            # point index -> normal given by op 0x34 (smooth shading, mode 2)
 
 	func v3(o: int) -> Vector3:
 		return Vector3(f.decode_s32(o), f.decode_s32(o + 4), f.decode_s32(o + 8)) / 65536.0
@@ -651,22 +735,196 @@ class Decoder:
 	# nrm: the polygon's stored normal, when it has one. The game decides visibility with it, not
 	# with the vertex order, so mirrored parts (the mech's left foot) can be wound backwards: put
 	# them back in the order the rest of the data uses (clockwise seen from outside).
+	# Normals as the game shades: mode 1, the stored normal for the whole polygon (one shade per face, op 0x33 at
+	# 0x2F52E8); mode 2, each point's own from op 0x34. No stored normal (ops 0x04 / 0x26, unused by the models):
+	# the face's own.
 	func add_poly(idx: Array, uvs: PackedVector2Array, slot: int, col: int, nrm := Vector3.ZERO) -> void:
 		var v := PackedVector3Array()
 		for i in idx:
 			v.append(pt(i))
 		if v.size() < 3:
 			return
-		if nrm != Vector3.ZERO:
-			var nw := Vector3.ZERO                 # Newell normal of the vertex order
+		var nw := Vector3.ZERO                     # Newell normal of the vertex order
+		for k in v.size():
+			var a := v[k]
+			var b := v[(k + 1) % v.size()]
+			nw += Vector3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y))
+		var rev := nrm != Vector3.ZERO and nw.dot(nrm) > 0.0
+		if rev:
+			v.reverse()
+			uvs.reverse()
+		var face := nrm.normalized() if nrm != Vector3.ZERO else (-nw).normalized()
+		if face == Vector3.ZERO:
+			face = Vector3.UP
+		var ns := PackedVector3Array()
+		for i in idx:
+			ns.append(vn[i] if mode == 2 and vn.has(i) else face)
+		if rev:
+			ns.reverse()
+		polys.append([v, uvs, slot, col, ns, mode, polys.size(), part, path])
+
+	# The game paints a model's polygons in its program's order, no depth (op 0x33 draws at once, 0x2F52E8): a decal
+	# drawn after the plate under it wins, even in its plane. Here a depth buffer decides: two polygons of the same
+	# part in (nearly) the same plane and overlapping fought (a stone head's face: exactly coplanar; the harvester's
+	# plates, 0.0007 apart, from afar). The game's winner is pushed out along its normal to MIN_SEP in front: the later
+	# one, or under a BSP node that orders them by the view, the one in front (as the game shows it from most views).
+	const MIN_SEP := 0.005
+	const MAX_SHIFT := 0.01
+	const NEAR_PLANE := 0.003
+	const MIN_OVERLAP := 0.05
+
+	var sep_pairs := []     # [winner, loser] found by separate()
+	var sep_nrm := []
+
+	func separate(verify := false) -> Dictionary:
+		if verify:                                       # (tests: the pairs found, after the shifts)
+			var least := INF
+			for pr in sep_pairs:
+				least = minf(least, _sep(pr[0], pr[1], sep_nrm))
+			return {"pairs": sep_pairs.size(), "worst": least}
+		var n := polys.size()
+		var nrm := []
+		for p in polys:
+			var v: PackedVector3Array = p[0]
+			var nw := Vector3.ZERO
 			for k in v.size():
 				var a := v[k]
 				var b := v[(k + 1) % v.size()]
 				nw += Vector3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y))
-			if nw.dot(nrm) > 0.0:
-				v.reverse()
-				uvs.reverse()
-		polys.append([v, uvs, slot, col])
+			nrm.append((-nw).normalized())
+		var pairs := []                                  # [winner, loser]
+		for i in n:
+			var ni: Vector3 = nrm[i]
+			if ni == Vector3.ZERO:
+				continue
+			for j in range(i + 1, n):
+				var nj: Vector3 = nrm[j]
+				if polys[i][7] != polys[j][7] or ni.dot(nj) <= 0.999:
+					continue
+				if not _near_plane(polys[j][0], polys[i][0][0], ni) or not _near_plane(polys[i][0], polys[j][0][0], nj):
+					continue
+				var ov := _overlap(polys[i][0], polys[j][0], ni)
+				if ov < MIN_OVERLAP:
+					continue
+				var w := j                                 # drawn later
+				if _split(polys[i][8], polys[j][8]):        # their order follows the view: the one in front
+					w = i if _mean(polys[i][0], ni) > _mean(polys[j][0], ni) else j
+				pairs.append([w, i + j - w])
+		pairs.sort_custom(func(a, b): return polys[a[0]][6] < polys[b[0]][6])
+		sep_pairs = pairs
+		sep_nrm = nrm
+		var moved := {}                                  # polygon -> its total shift
+		for pass_n in 4:                                 # (a chain: a winner pushed past the one above it, again)
+			var changed := false
+			for pr in pairs:
+				var s := _sep(pr[0], pr[1], nrm)
+				if s >= MIN_SEP - 1e-6:
+					continue
+				var shift := minf(MIN_SEP - s, MAX_SHIFT - moved.get(pr[0], 0.0))
+				if shift <= 0.0:
+					continue
+				var v: PackedVector3Array = polys[pr[0]][0]
+				for k in v.size():
+					v[k] += nrm[pr[0]] * shift
+				polys[pr[0]][0] = v
+				moved[pr[0]] = moved.get(pr[0], 0.0) + shift
+				changed = true
+			if not changed:
+				break
+		var max_shift := 0.0
+		for k in moved:
+			max_shift = maxf(max_shift, moved[k])
+		return {"pairs": pairs.size(), "moved": moved.size(), "max_shift": max_shift}
+
+	static func _near_plane(v: PackedVector3Array, at: Vector3, n: Vector3) -> bool:
+		for q in v:
+			if absf(n.dot(q - at)) > NEAR_PLANE:
+				return false
+		return true
+
+	static func _mean(v: PackedVector3Array, n: Vector3) -> float:
+		var s := 0.0
+		for q in v:
+			s += n.dot(q)
+		return s / v.size()
+
+	# two BSP paths that part at a node (one under each branch)
+	static func _split(a: Array, b: Array) -> bool:
+		for x in a:
+			for y in b:
+				if x[0] == y[0] and x[1] != y[1]:
+					return true
+		return false
+
+	# how far the winner's plane stands in front of the loser's, the least over both polygons' points
+	func _sep(w: int, l: int, nrm: Array) -> float:
+		var nw: Vector3 = nrm[w]
+		var nl: Vector3 = nrm[l]
+		var vw: PackedVector3Array = polys[w][0]
+		var vl: PackedVector3Array = polys[l][0]
+		var s := INF
+		for q in vw:
+			s = minf(s, nl.dot(q - vl[0]))
+		for q in vl:
+			s = minf(s, nw.dot(vw[0] - q))
+		return s
+
+	# share of the smaller polygon covered by the other, both seen along n (convex clipping)
+	static func _overlap(a: PackedVector3Array, b: PackedVector3Array, n: Vector3) -> float:
+		var ax := 0 if absf(n.x) >= absf(n.y) and absf(n.x) >= absf(n.z) else (1 if absf(n.y) >= absf(n.z) else 2)
+		var pa := _flat(a, ax)
+		var pb := _flat(b, ax)
+		var area_a := absf(_area(pa))
+		var area_b := absf(_area(pb))
+		if area_a < 1e-10 or area_b < 1e-10:
+			return 0.0
+		var clip := _clip(pa, pb)
+		return absf(_area(clip)) / minf(area_a, area_b)
+
+	static func _flat(v: PackedVector3Array, drop: int) -> PackedVector2Array:
+		var out := PackedVector2Array()
+		for q in v:
+			out.append(Vector2(q.y, q.z) if drop == 0 else (Vector2(q.x, q.z) if drop == 1 else Vector2(q.x, q.y)))
+		if _area(out) < 0.0:
+			out.reverse()
+		return out
+
+	static func _area(p: PackedVector2Array) -> float:
+		var s := 0.0
+		for k in p.size():
+			s += p[k].cross(p[(k + 1) % p.size()])
+		return s * 0.5
+
+	# subject clipped by a convex counter-clockwise polygon (Sutherland-Hodgman)
+	static func _clip(subject: PackedVector2Array, by: PackedVector2Array) -> PackedVector2Array:
+		var out := subject
+		for k in by.size():
+			if out.is_empty():
+				break
+			var e0 := by[k]
+			var e1 := by[(k + 1) % by.size()]
+			var inp := out
+			out = PackedVector2Array()
+			for m in inp.size():
+				var c := inp[m]
+				var p := inp[(m + inp.size() - 1) % inp.size()]
+				var c_in := (e1 - e0).cross(c - e0) >= 0.0
+				var p_in := (e1 - e0).cross(p - e0) >= 0.0
+				if c_in:
+					if not p_in:
+						out.append(_cut(p, c, e0, e1))
+					out.append(c)
+				elif p_in:
+					out.append(_cut(p, c, e0, e1))
+		return out
+
+	static func _cut(p: Vector2, c: Vector2, e0: Vector2, e1: Vector2) -> Vector2:
+		var d := c - p
+		var e := e1 - e0
+		var den := d.cross(e)
+		if absf(den) < 1e-12:
+			return c
+		return p + d * ((e0 - p).cross(e) / den)
 
 	func run(pc: int, xf: Transform3D, depth: int) -> void:
 		if depth > 24:
@@ -701,8 +959,12 @@ class Decoder:
 				0x06:                              # BSP node: both sides, then continue
 					var a := f.decode_s32(pc + 0x1a)
 					var b := f.decode_s32(pc + 0x1e)
+					var above := path
+					path = above + [[pc, 0]]
 					run(pc + a, xf, depth + 1)
+					path = above + [[pc, 1]]
 					run(pc + b, xf, depth + 1)
+					path = above
 					pc += 0x22
 				0x07, 0x2e, 0x2f:
 					pc += 2
@@ -736,7 +998,11 @@ class Decoder:
 						ang = params.decode_u16(po) / 65536.0 * TAU
 					var axis: Vector3 = [Vector3.RIGHT, Vector3.BACK, Vector3.UP][op - 0x10]   # model x, z, y (y down)
 					var t2 := Transform3D(xf.basis * Basis(axis, ang * ART_SIGN), xf * v3(pc + 6))
+					var was := part
+					parts += 1
+					part = parts
 					run(target, t2, depth + 1)
+					part = was
 					pc += 0x14
 				0x14:                              # subroutine
 					run(pc + f.decode_s16(pc + 2), xf, depth + 1)
@@ -798,13 +1064,18 @@ class Decoder:
 							bs = bs * Basis(Vector3.RIGHT, params.decode_u16(pn) / 65536.0 * TAU * ART_SIGN)
 						else:
 							at -= (xf.basis * bs).x * (params.decode_s32(pn) / 65536.0)
+					var was2 := part
+					parts += 1
+					part = parts
 					run(pc + 0x34, Transform3D(xf.basis * bs, at), depth + 1)
+					part = was2
 					return
 				0x2a, 0x2c:
 					pc += 0x10
 				0x2b:
 					pc += 4 + 2 * f.decode_u16(pc + 2)
-				0x30, 0x31:
+				0x30, 0x31:                        # shading mode, global: kept into the sub-parts (0x2F58AA)
+					mode = f[pc + 2]
 					pc += 3
 				0x33:                              # polygon with its normal: flat / wire / textured
 					var skip := f.decode_s16(pc + 2)
@@ -814,7 +1085,7 @@ class Decoder:
 					for i in n33:
 						idx33.append(f.decode_u16(pc + 0x20 + 2 * i))
 					var last := f.decode_u16(pc + 0x20 + 2 * n33)
-					var col := (last & 0xFFF) if last & 0x8000 else -1
+					var col := (last & 0xFFF) if last & 0x8000 else -1 - (last & 0xFF)   # < 0: run-time colour slot
 					var nrm := xf.basis * v3(pc + 4)
 					if sub == 2:
 						var uv33 := PackedVector2Array()
@@ -833,6 +1104,8 @@ class Decoder:
 				0x34:                              # vertex normals for shading, 0xFFFF-terminated
 					pc += 2
 					while pc + 2 <= f.size() and f.decode_u16(pc) != 0xFFFF:
+						if pc + 0xE <= f.size():
+							vn[f.decode_u16(pc)] = (xf.basis * v3(pc + 2)).normalized()
 						pc += 0x1a
 					pc += 0x1a
 				_:

@@ -304,6 +304,14 @@ for _nom, _sig in (('ETAT VUES', rb'\x83\xec\x0c\x89\xd3\x8b\x15(....)\x83\x7a\x
 if len(METEO) != 4:
     print('meteo : signatures introuvables (neige non envoyee)', METEO)
     METEO = {}
+# The mission's alarm byte (EN 0x371174): set once when an enemy is alerted, cleared at each mission start. The lamps
+# of type 57 light up with it (routine 0x29B4D0). Found by its setter (cmp [a],1 / je / mov [a],1 / call ...) and its
+# getter (mov al,[a] / ret) right after; sent after the view's body (0 when not found)
+ALARME = [struct.unpack('<I', _m.group(1))[0] for _m in re.finditer(
+    rb'\x80\x3d(....)\x01\x74.\xc6\x05\1\x01\xe8....\x80\x3d....\x03\x72.\xe9....\x90\xa0\1\xc3', code, re.S)]
+ALARME = next((a for a in ALARME if 0x300000 <= a < 0x500000), None)
+if ALARME is None:
+    print('alarme : signature introuvable (lampes de type 57 laissees eteintes)')
 
 
 def meteo():
@@ -332,6 +340,79 @@ def meteo():
 # the gun on). The small ones were sent as clouds: the viewer made a thick screen of each, kept for 40 s, right in
 # front of the player's eyes (an M-B Cannon's shot: the whole view grey). Told apart once, when first seen.
 PETITES = {}
+
+
+# The game's draw distances (routine 0x2A0E54): an entity is drawn when max(|dx|, |dy|) (whole cells, floored) x k is
+# at most 4 x its type's distance, k = (half-angle of the main camera's view + 0x100) >> 11 (4 at the stock zoom). The
+# table: 9 rows of 128 bytes (class), loaded from RESTNOBJ 1376 + class at 0x2A0D70 (TN+ scales it): read in memory.
+# Sent as one bit per entity ('DRAW'); the viewer hides what the game does not draw when asked (TN_DRAW_DISTANCE=1).
+PORTEES = next((a for a in (struct.unpack('<I', _m.group(1))[0] for _m in re.finditer(
+    rb'\x31\xf6\x89\xf0\xbf(....)\x05\x60\x05\x00\x00', code, re.S)) if 0x300000 <= a < 0x500000), None)
+if PORTEES is None:
+    print('distances : signature introuvable (pas de DRAW)')
+portees_t, portees_tab = 0.0, b''
+
+
+def portee(tab, cx, cy, k, table):
+    """bitset of the entities the game draws, seen from (cx, cy) (16.16 ints) with the view factor k"""
+    bits = bytearray((NENT + 7) // 8)
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o]: continue
+        c, t = tab[o + 1], tab[o + 2]
+        x, y = struct.unpack_from('<ii', tab, o + 0x0F)
+        dx = (((x - cx + 0x80000000) & 0xFFFFFFFF) - 0x80000000) >> 16    # (int32 difference, floored)
+        dy = (((y - cy + 0x80000000) & 0xFFFFFFFF) - 0x80000000) >> 16
+        d = max(abs(dx), abs(dy))
+        if len(table) < 9 * 128: v = 1 << 20              # (no table: drawn whatever the distance)
+        else: v = table[c * 128 + t] if c < 9 and t < 128 else 127
+        if k == 0 or d * k <= 4 * v:
+            bits[i >> 3] |= 1 << (i & 7)
+    return bytes(bits)
+
+
+# Each soldier's own size (0x2817B0, from a random value or the squad's table): its bone lengths in its record
+# (SOLDATS + n * 0x582, 16.16): torso +0x2AB, upper arm +0x2BB, forearm +0x2BF, thigh +0x2C3, shin +0x2C7, and the
+# legs' reach +0x2ED (0.9 x thigh + shin). Not for the mech (suit 11: its own values there).
+taille_t = 0.0
+
+
+def tailles(tab):
+    """[(entity, (thigh, shin, upper arm, forearm, torso, reach))] of the soldiers (suits 0-10) in the table"""
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 1: continue
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        if nf > 200: continue
+        r = g.read(SOLDATS + nf * 0x582 + 0xDE, 0x214)
+        if struct.unpack_from('<I', r, 0)[0] > 10: continue
+        v = [struct.unpack_from('<i', r, a - 0xDE)[0] / 65536 for a in (0x2C3, 0x2C7, 0x2BB, 0x2BF, 0x2AB, 0x2ED)]
+        if all(0.03 <= x <= 0.6 for x in v):
+            out.append((i, tuple(v)))
+    return out
+
+
+# A pirate's arms (suit 9): at its creation the game draws each arm (5 times in 13) with the captain's sprites
+# (0x27F150): the high words of its segments' sprite references, +0x133 (right upper arm) and +0x193 (left), = 873
+# (RESTNOBJ 800 + 7 x 10 + 3) for a captain's arm, 866 otherwise. Bit 0 right, bit 1 left. Kept for the pirate's life.
+BRAS = {}
+
+
+def bras(tab):
+    """[(entity, mask)] of the pirates in the table"""
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 1: continue
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        if nf > 200: continue
+        r = g.read(SOLDATS + nf * 0x582 + 0xDE, 0xC0)
+        if struct.unpack_from('<I', r, 0)[0] != 9: continue
+        w1, w2 = (struct.unpack_from('<H', r, a - 0xDE)[0] for a in (0x135, 0x195))
+        if not (800 <= w1 <= 883 and 800 <= w2 <= 883): continue
+        out.append((i, (1 if w1 == 873 else 0) | (2 if w2 == 873 else 0)))
+    return out
 
 
 def petite(i, nf, n):
@@ -1683,6 +1764,16 @@ while True:
             if guest: guest.dust(pk)           # (the coop guest's window too)
         part_prev, part_t = bool(pts), time.time()
     body = []
+    if time.time() - taille_t > 1.0:           # each soldier's own bone lengths, every second (the viewer: SLEN)
+        taille_t = time.time()
+        tl = tailles(tab)
+        if tl:
+            s.sendto(b'SLEN' + struct.pack('<H', len(tl)) + b''.join(struct.pack('<i6f', i, *v) for i, v in tl),
+                     ('127.0.0.1', 47821))
+        ba = bras(tab)
+        if ba:
+            s.sendto(b'ARMS' + struct.pack('<H', len(ba)) + b''.join(struct.pack('<iB', i, m) for i, m in ba),
+                     ('127.0.0.1', 47821))
     if time.time() - corps_t > 0.5:
         corps_t = time.time()
         raw = g.read(CORPS, 200 * 0x14E)
@@ -1710,6 +1801,15 @@ while True:
     carte_hud = echange is not None and not sonde
     if sonde: vues.pop(3, None)                   # (the drone's panel shows one or the other)
     if echange is None: vues.pop(4, None)
+    if PORTEES:                               # what the game draws, every frame (its table re-read every 2 s)
+        if time.time() - portees_t > 2.0:
+            portees_t, portees_tab = time.time(), g.read(PORTEES, 9 * 128)
+            if not any(portees_tab): portees_tab = b''   # (not loaded yet: all drawn, not none, see portee)
+        ou = vue if sonde else pid
+        if 0 <= ou < NENT:
+            k = (u16(A_ZOOM + 0x18) + 0x100) >> 11 if A_ZOOM else 4
+            s.sendto(b'DRAW' + struct.pack('<H', NENT) + portee(tab, *struct.unpack_from('<ii', tab, 0x25 * ou + 0x0F), k,
+                     portees_tab), ('127.0.0.1', 47821))
     # animation des soldats : le jeu calcule a chaque image les 16 articulations de chaque armure affichee (fiche
     # soldat n = mot a +3 de l'entree, articulations a +0x1AF) ; envoyees dans le repere du soldat (droite, haut,
     # avant ; sol sous les pieds), comme les poses figees du visualiseur (poses.py), apres la hauteur de ses pieds
@@ -1878,7 +1978,8 @@ while True:
                struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
-             struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid), ('127.0.0.1', 47821))
+             struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid) +
+             struct.pack('<i', g.read(ALARME, 1)[0] if ALARME else 0), ('127.0.0.1', 47821))
     if guest: guest.step(body, joints, arts)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()

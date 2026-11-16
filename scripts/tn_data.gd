@@ -312,7 +312,8 @@ func load_map(path: String, mission_file: String) -> Dictionary:
 		if r82.decode_s32(4) + r82.decode_s32(8) > 0x10000:
 			amb = 1.0 - dif
 	return {"planet": planet, "planet_data": pl, "detail": detail, "outer": outer,
-			"veg_map": veg_map, "veg_sets": veg_sets, "info": info, "light": light, "dif": dif, "amb": amb}
+			"veg_map": veg_map, "veg_sets": veg_sets, "info": info, "light": light, "dif": dif, "amb": amb,
+			"light_dif": dif, "light_amb": amb}
 
 
 # Grid: heights, tile index per vertex (byte & 0x3F), fallback vertex colors, and the tile map
@@ -605,6 +606,44 @@ func full_palette(planet_pal: PackedByteArray) -> PackedColorArray:
 	return out
 
 
+# The game's infrared view (state byte 0x35ADE0 = 2): it puts the 55 colours of resource 66 at palette indices 176-230
+# (0x262A22) and draws through one of the planet's remap tables 59-62 (256 bytes, every entry in 176-230), unlit:
+# 59 the ground, the sky's sprites and a building's pieces; 60 the vegetation, the cloud layer and the recon aircraft;
+# 61 the other 3D models; 62 the soldiers, armour piles, particles, class-3 sprites and hot objects. Returns, per
+# table, the 256 colours an index then shows ({} when the planet file has none of it).
+static func ir_palettes(r) -> Dictionary:
+	var out := {}
+	if r == null or not r.has(66):
+		return out
+	var d: PackedByteArray = r.data(66)
+	var fr := LGRes.frames(d)
+	if fr.is_empty() or (fr[0] as PackedByteArray).size() < 0x1c:
+		return out
+	var at := (fr[0] as PackedByteArray).decode_u32(0x18)   # where the colours are, from the resource's start:
+	var f := d                                              # u16 first index, u16 count, then RGB
+	if at + 4 > f.size():
+		return out
+	var start := f.decode_u16(at)
+	var count := f.decode_u16(at + 2)
+	if at + 4 + 3 * count > f.size():
+		return out
+	var cols := PackedColorArray()
+	for i in count:
+		var k := at + 4 + 3 * i
+		cols.append(Color8(f[k], f[k + 1], f[k + 2]))
+	for t in [59, 60, 61, 62]:
+		if not r.has(t) or r.data(t).size() < 256:
+			continue
+		var tab: PackedByteArray = r.data(t)
+		var pal := PackedColorArray()
+		pal.resize(256)
+		for i in 256:
+			var j := tab[i] - start
+			pal[i] = cols[j] if j >= 0 and j < count else Color.BLACK
+		out[t] = pal
+	return out
+
+
 func _read_planet(path: String) -> Dictionary:
 	var out := {"ok": false, "count": 64, "tile_color": PackedColorArray(), "textures": null}
 	var fallback := PackedColorArray()
@@ -697,6 +736,10 @@ func _read_planet(path: String) -> Dictionary:
 			own[t] = m
 	out["ok"] = true
 	out["palette"] = full_palette(pal)
+	# resource 53: the planet's 16 shade rows (256 palette indices each; file row 0 ~ as they are, row 15 the darkest),
+	# the game's light table at 0x41C228 in reverse (its row k = file row 15 - k, from row 15 on file row 0)
+	out["shade_rows"] = r.data(53) if r.has(53) else PackedByteArray()
+	out["ir"] = ir_palettes(r)
 	# share of the tiles' pixels in colours 1-16: planet 3's ground is drawn with them (a pale teal to dark green
 	# ramp, its shading), so its 3D view uses them too (old school: their palette from 1, not 17)
 	out["base_share"] = float(base_n) / maxf(1.0, count * 4096.0)

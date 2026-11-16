@@ -1845,7 +1845,9 @@ while True:
         # l'exe anglais : cap de l'unite + reglage du panneau + visee), hauteur = z de l'unite + [0x38FB1C] + 0,1875
         cap_v = struct.unpack_from('<H', vp, 0xC)[0] / 65536 * 2 * math.pi
         tang_v = -struct.unpack_from('<h', vp, 0x16)[0] / 65536 * 2 * math.pi
-        vz += EYE - (d32(OEIL) / 65536 + 0.1875)  # meme oeil que la vue principale (EYE, ajuste sur le jeu)
+        # (the game puts every panel's view at the unit's z + [0x38FB1C] + 0.1875, whatever the suit: not at the
+        # main view's eye. The height is that constant, not vz - ez_: two reads taken at different moments)
+        haut_v = d32(OEIL) / 65536 + 0.1875
         panneau = (4 if tete else 2) if cible else (3 if tab[0x25 * vi + 1] == 3 else 1)
         zoom = 1.0 if panneau == 4 else d32(CAMS + (0xBA * 2 if panneau == 3 else 0)) / 65536
         if not 0.2 < zoom < 20: zoom = 1.0
@@ -1854,7 +1856,7 @@ while True:
         # son cap tel quel, il vise la cible et non l'avant du joueur)
         ex_, ey_, ez_ = (v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vi + 0x0F))
         ecap = struct.unpack_from('<H', tab, 0x25 * vi + 0x1B)[0] / 65536 * 2 * math.pi
-        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, vz - ez_, cap_v if panneau == 2 else cap_v - ecap, tang_v, zoom)
+        vues[panneau] = (time.time(), vi, vx - ex_, vy - ey_, haut_v, cap_v if panneau == 2 else cap_v - ecap, tang_v, zoom)
     # each view's panel: 0 left, 1 middle, 2 right (the player's own view, 4: in the panel that swapped with the HUD)
     ou = {1: 0, 2: 0, 3: 2, 4: 2 if echange is None else echange, 5: 0, 6: 1, 7: 2}
     sv = []
@@ -1867,8 +1869,9 @@ while True:
     autour = [k for k in range(3) if pmode[k] in (13, 14, 15)]
     cd = cadres() if sv or autour else []     # VUE : le panneau du bas le plus a gauche ; la sonde : le plus a droite
     cadre = lambda i: None if not cd else cd[0] if i == 0 else cd[-1] if i == 2 else (cd[1] if len(cd) >= 3 else None)
-    # the 360 view: the player's own eyes turned by each panel's heading (left, behind, right), his head with them
+    # the 360 view: the player's view turned by each panel's heading (left, behind, right), his head with them
     # (the game's routine 0x275260 again: the unit's heading + the panel's + the head's, and the main view's pitch;
+    # its height is every panel's, z + [0x38FB1C] + 0.1875, not the main view's eye;
     # the picture is then turned over, a mirror's: the viewer does it). Not in the full view (G: no cockpit, the
     # panels keep their mode and their frame, which then lies under the 3D window: the game draws none)
     if autour:
@@ -1876,7 +1879,7 @@ while True:
         for k in autour:
             c = cadre(k)
             if c is None or (fx0 <= (c[0] + c[2]) // 2 < fx0 + fw and fy0 <= (c[1] + c[3]) // 2 < fy0 + fh): continue
-            sv.append((5 + k, (0, pid, x, y, z + eye, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
+            sv.append((5 + k, (0, pid, x, y, z + d32(OEIL) / 65536 + 0.1875, head + struct.unpack_from('<H', pan, 0x28 + 32 * k)[0] / 65536 * 2 * math.pi, pitch, 1.0)))
     # each view in its panel's frame (the player's own view is sent as 8 when its panel is not the drone's, which has
     # its own buttons); none: said too, the viewer takes them off
     sv = [(8 if k == 4 and ou[4] != 2 else k, v, cadre(ou[k])) for k, v in sv]

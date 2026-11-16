@@ -31,6 +31,9 @@ uniform bool has_haze_lut = false;
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of tables 59, 60, 61, 62
 uniform bool has_ir = false;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
+// the share of haze in each row of the skies' haze tables (SKY 150) on the planets' ground colours, sRGB, towards
+// row 15 (the mean of SKY0-4 on their planets: live10 rows.py)
+const float ROW_SHARE[16] = {0.0, 0.0, 0.03, 0.09, 0.14, 0.19, 0.24, 0.30, 0.36, 0.45, 0.51, 0.58, 0.68, 0.78, 0.87, 1.0};
 
 
 // nearest up close: the game's texels, crisp like the original; mipmapped further away: no shimmering
@@ -246,36 +249,60 @@ void fragment() {
 	float loff = float(frow) * tile_count;
 	bool ir = tn_ir > 0.5 && has_ir;
 	if (game_colours && per_index && has_haze_lut && (!modern || ir)) {
-		vec2 cell = clamp(floor(g), vec2(0.0), vec2(grid_n - 2.0));
-		vec2 f = clamp(g - cell, 0.0, 0.99999);
-		vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
-		int tile = int(floor(t.r * 255.0 + 0.5));
-		int rot = int(floor(t.g * 255.0 + 0.5));
-		vec2 uv = f;
-		if (rot == 1) {
-			uv = vec2(f.y, 1.0 - f.x);
-		} else if (rot == 2) {
-			uv = 1.0 - f;
-		} else if (rot == 3) {
-			uv = vec2(1.0 - f.y, f.x);
-		}
-		// a level per texel per game pixel (the old school grid: about 2 window pixels a game pixel)
-		float tpp = max(length(dFdx(g)), length(dFdy(g))) * 64.0;
-		int lod = clamp(int(floor(log2(max(tpp * 2.0, 1.0)))), 0, 6);
-		int sz = 64 >> lod;
-		ivec2 tx = clamp(ivec2(floor(uv * float(sz))), ivec2(0), ivec2(sz - 1));
-		int i0 = int(texelFetch(tiles_idx, ivec3(tx, tile), lod).r * 255.0 + 0.5);
-		int i1 = int(texelFetch(shade_idx, ivec2(i0, frow), 0).r * 255.0 + 0.5);
-		int lv = 0;                       // the game's haze level (tn_haze.gdshaderinc), whole
+		// the haze row: the one whose share of haze is the modern look's at this distance (tn_haze: 0.70 at the far
+		// end), not the game's own level (its row 15 is all haze from 295 units on: the far hills a flat wall)
+		int lv = 0;
 		if (tn_haze_range.w > 0.5 && tn_haze_range.w < 1.5 && (CAMERA_VISIBLE_LAYERS & (1u << 16u)) != 0u) {
 			vec2 dd = abs(wpos.xz - CAMERA_POSITION_WORLD.xz);
-			lv = clamp(int(floor(16.0 * (1.0 - exp(-max(max(dd.x, dd.y) - 20.0, 0.0) / tn_haze_range.x)))), 0, 15);
+			float l = clamp(16.0 * (1.0 - exp(-max(max(dd.x, dd.y) - 20.0, 0.0) / tn_haze_range.x)) - 0.5, 0.0, 15.0);
+			float a = (tn_haze_range.y + tn_haze_range.z * l) * l;
+			for (int k = 1; k < 16; k++) {
+				if (ROW_SHARE[k] - 0.5 * (ROW_SHARE[k] - ROW_SHARE[k - 1]) <= a) {
+					lv = k;
+				}
+			}
 		}
-		vec3 c = tn_game_colour(texelFetch(haze_lut, ivec2(i1, lv), 0).rgb);
-		if (ir) {                         // infrared: table 59 of the hazed texel, no light row (0x2B5643, remap loop)
-			int ih = int(texelFetch(haze_lut_idx, ivec2(i0, lv), 0).r * 255.0 + 0.5);
-			c = tn_game_colour(texelFetch(ir_lut, ivec2(ih, 0), 0).rgb);
+		// the texels this pixel covers (an old school pixel: about 2 window pixels): its level from the footprint's
+		// narrow side, up to 4 texels along its long side, their palette colours averaged (one level from its long side,
+		// as before, made the far ground one flat colour per cell at a grazing angle: the far hills simplified)
+		vec2 ex = dFdx(g) * 128.0;
+		vec2 ey = dFdy(g) * 128.0;
+		float lx = length(ex);
+		float ly = length(ey);
+		vec2 major = lx > ly ? dFdx(g) : dFdy(g);
+		float n = clamp(ceil(max(lx, ly) / max(min(lx, ly), 1e-6)), 1.0, 4.0);
+		int lod = clamp(int(floor(log2(max(max(lx, ly) / n, 1.0)))), 0, 6);
+		int sz = 64 >> lod;
+		vec3 acc = vec3(0.0);
+		for (int s = 0; s < 4; s++) {
+			if (float(s) >= n) {
+				break;
+			}
+			vec2 q = g + major * ((float(s) + 0.5) / n - 0.5);
+			vec2 cell = clamp(floor(q), vec2(0.0), vec2(grid_n - 2.0));
+			vec2 f = clamp(q - cell, 0.0, 0.99999);
+			vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
+			int tile = int(floor(t.r * 255.0 + 0.5));
+			int rot = int(floor(t.g * 255.0 + 0.5));
+			vec2 uv = f;
+			if (rot == 1) {
+				uv = vec2(f.y, 1.0 - f.x);
+			} else if (rot == 2) {
+				uv = 1.0 - f;
+			} else if (rot == 3) {
+				uv = vec2(1.0 - f.y, f.x);
+			}
+			ivec2 tx = clamp(ivec2(floor(uv * float(sz))), ivec2(0), ivec2(sz - 1));
+			int i0 = int(texelFetch(tiles_idx, ivec3(tx, tile), lod).r * 255.0 + 0.5);
+			if (ir) {                     // infrared: table 59 of the hazed texel, no light row (0x2B5643, remap loop)
+				int ih = int(texelFetch(haze_lut_idx, ivec2(i0, lv), 0).r * 255.0 + 0.5);
+				acc += texelFetch(ir_lut, ivec2(ih, 0), 0).rgb;
+			} else {
+				int i1 = int(texelFetch(shade_idx, ivec2(i0, frow), 0).r * 255.0 + 0.5);
+				acc += texelFetch(haze_lut, ivec2(i1, lv), 0).rgb;
+			}
 		}
+		vec3 c = tn_game_colour(acc / n);
 		ROUGHNESS = 1.0;
 		EMISSION = c;
 		ALBEDO = c * shadow_dark;         // what an object's shadow takes away (light())

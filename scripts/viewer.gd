@@ -812,11 +812,22 @@ func _placeholder(shape: String) -> Mesh:
 
 
 # Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground.
+# A sprite's quad, standing on the node's point (its bottom middle), or, for a frame with an anchor, that pixel on
+# the point (the game's rule, 0x29BF41: either word non-zero, both used; the probes' discs are centred so)
 func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0) -> QuadMesh:
 	var q := QuadMesh.new()
 	q.size = Vector2(width, width * sp["aspect"] * tall)
 	q.center_offset = Vector3(0, q.size.y * 0.5, 0)
+	if _sprite_anchored(sp):
+		var an: Vector2 = sp["anchor"]
+		var px: Vector2 = sp["px"]
+		q.center_offset = Vector3(q.size.x * (0.5 - an.x / px.x), q.size.y * (an.y / px.y - 0.5), 0)
 	return q
+
+
+static func _sprite_anchored(sp: Dictionary) -> bool:
+	var px: Vector2 = sp.get("px", Vector2.ZERO)
+	return sp.get("anchor", Vector2.ZERO) != Vector2.ZERO and px.x > 0.0 and px.y > 0.0
 
 
 func _sprite_mat(key: Vector2i, sp: Dictionary) -> StandardMaterial3D:
@@ -1158,6 +1169,8 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		if not sp.is_empty():
 			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL)
 			mi.mesh = q
+			if _sprite_anchored(sp):
+				mi.set_meta("anchored", true)          # its anchor on the game's point itself (_live_place)
 			mi.material_override = _sprite_mat(ref, sp)
 			if live and cls == 0:                   # a plant or rock placed as an object: lit like the vegetation
 				var sun_dir := sun.global_transform.basis.z.normalized()
@@ -5256,6 +5269,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 	# (no extra lift: a probe hovers by itself)
 	if (e[0] >= 1 and e[0] <= 3) or (e[0] == 4 and not node.has_meta("mission")):
 		var y: float = e[5] - GAME_Z
+		if node.has_meta("anchored"):                 # a probe's disc: the game projects its anchor at the point
+			y = e[5]
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):

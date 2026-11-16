@@ -490,7 +490,8 @@ static func lamp_state(cls: int, sub: int, alarm: bool) -> int:
 	return LAMP_ON if sub == 56 or alarm else LAMP_OFF
 
 
-# Sprite as a texture + height / width ratio, or {}.
+# Sprite as a texture + height / width ratio, or {}. Also its anchor (frame +16 / +18, signed: the pixel the game puts
+# on the object's point, 0 / 0 = bottom middle) and its size in pixels.
 func sprite(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary:
 	var key := "s%d/%d/%s" % [ref.x, ref.y, pal_key]
 	if tex_cache.has(key):
@@ -502,7 +503,9 @@ func sprite(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary
 		if img != null:
 			var aspect := float(img.get_height()) / img.get_width()
 			img.generate_mipmaps()
-			out = {"texture": ImageTexture.create_from_image(img), "aspect": aspect}
+			var f: PackedByteArray = fr[ref.y]
+			out = {"texture": ImageTexture.create_from_image(img), "aspect": aspect,
+					"anchor": Vector2(f.decode_s16(16), f.decode_s16(18)), "px": Vector2(img.get_width(), img.get_height())}
 	tex_cache[key] = out
 	return out
 

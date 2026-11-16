@@ -272,16 +272,33 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "") -> Dict
 	tiles.resize(n * n)
 	var tile_color: PackedColorArray = pl["tile_color"]
 	var count: int = pl["count"]
+	# Map point, 3 bytes (layout given by joerg on TTLG, checked on the game's maps): byte 0 = tile (bits 5:0),
+	# burned (bit 6), shadow bit 0 (bit 7); byte 1 = shadow bits 2:1 (bits 1:0), quarter turns of the tile
+	# (bits 3:2), height bits 3:0 (bits 7:4); byte 2 = height bits 11:4 (12 bits, signed).
+	var turns := PackedByteArray()
+	turns.resize(n * n)
 	for i in n * n:
 		var t := d[3 * i] & 0x3F
 		if t >= count:
 			t = 0
-		h[i] = d.decode_s16(3 * i + 1) * HEIGHT_SCALE
+		if STORED_TURNS:
+			h[i] = (d.decode_s16(3 * i + 1) & ~0xF) * HEIGHT_SCALE      # the low 4 bits are not height
+			turns[i] = (d[3 * i + 1] >> 2) & 3
+		else:
+			h[i] = d.decode_s16(3 * i + 1) * HEIGHT_SCALE
 		tiles[i] = t
 		col[i] = tile_color[t]
 	var grid := {"n": n, "h": h, "col": col, "tile": tiles}
 	if pl["ok"]:
-		grid["tilemap"] = _tilemap(tiles, n, pl, key)
+		if STORED_TURNS:                 # R = tile, G = quarter turns, as the map stores them
+			var out := PackedByteArray()
+			out.resize(n * n * 2)
+			for i in n * n:
+				out[2 * i] = tiles[i]
+				out[2 * i + 1] = turns[i]
+			grid["tilemap"] = Image.create_from_data(n, n, false, Image.FORMAT_RG8, out)
+		else:
+			grid["tilemap"] = _tilemap(tiles, n, pl, key)
 	return grid
 
 
@@ -295,6 +312,7 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "") -> Dict
 #     keep the turn whose edges best continue the neighbours' edge colors.
 # The result is cached per map file in user://tilemaps.
 const TILEMAP_VERSION := 5
+const STORED_TURNS := true       # TEST (2026-11-16): tile turns and 12-bit heights read from the map; false = the guess below
 const NB8 := [Vector2i(0, -1), Vector2i(1, -1), Vector2i(1, 0), Vector2i(1, 1), Vector2i(0, 1),
 		Vector2i(-1, 1), Vector2i(-1, 0), Vector2i(-1, -1)]   # N NE E SE S SW W NW
 const SIDE_DX := [0, 1, 0, -1]                                  # N E S W

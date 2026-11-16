@@ -103,7 +103,9 @@ vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, out float wat) {
 		dy = vec2(-dy.y, dy.x);
 	}
 	wat = texture(water_tiles, vec2((tile + 0.5) / 64.0, 0.5)).r;
-	return textureGrad(tiles_wrap, vec3(uv, tile), dx, dy).rgb;
+	// clamped, not wrapped: uv stays in 0..1 (mirrored above), and a wrapping filter mixed the tile's opposite edge
+	// into its border texels (a thin light line along the cells of two-material tiles)
+	return textureGrad(tiles_soft, vec3(uv, tile), dx, dy).rgb;
 }
 
 uniform float blend_width = 0.3;      // blend between two cells (share of a cell each side)

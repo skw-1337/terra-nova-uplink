@@ -49,10 +49,14 @@ func setup(data_dir: String) -> bool:
 	return true
 
 
-# World width of a type's sprite. The engine scales every sprite to twice the collision radius of
-# its type (property frame: u16 shape kind, u16 index of the radius / height entry, then 8-byte
-# entries) and derives the height from the bitmap's proportions. Default 1/6 (probes).
+# World width of a type's sprite (0x29AF44): twice the collision radius of its type (property frame: u16 shape kind
+# 2 or 3, u16 index of the radius / height entry, then 8-byte entries); the height follows from the bitmap's
+# proportions. Class 5 (shots, 0x29AE52): a fixed 1/12, already the whole width; any other shape: 1/12 too (the game
+# would draw it 0 wide and log "wrong shape image"). The game then draws it with its plain focal, the world with 1.1 x
+# that: see viewer.gd SPRITE_SCALE.
 func sprite_width(cls: int, sub: int) -> float:
+	if cls == 5:
+		return 1.0 / 12.0
 	var arr: Array = props.get(cls, [])
 	if sub < arr.size():
 		var f: PackedByteArray = arr[sub]
@@ -60,7 +64,7 @@ func sprite_width(cls: int, sub: int) -> float:
 			var kind := f.decode_u16(0)
 			var e := 4 + 8 * f.decode_u16(2)
 			if (kind == 2 or kind == 3) and e + 4 <= f.size():
-				return f.decode_s32(e) / 65536.0         # measured against the game: its sprite is as wide as this radius
+				return 2.0 * f.decode_s32(e) / 65536.0
 	return 1.0 / 12.0
 
 

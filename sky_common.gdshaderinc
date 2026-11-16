@@ -2,13 +2,28 @@
 // ground so that what the water mirrors is the sky above it: the game's cloud texture filtered smoothly on a curved
 // ceiling (it no longer stretches into endless streaks towards the horizon), a second, larger layer of the same
 // texture against its tiling, fading into the haze low on the horizon, and the sun's glow.
+// The desert missions' rippling clouds (0x2A6F38, span loop 0x2B2810): each texel row shifts its columns by a table
+// entry (0x425200: row 0 of ripple) and each column its rows (0x425300: row 1), 0..28 texels, rebuilt every frame
+// (viewer.gd _clouds_update); the lookups use the coordinates before the shift.
+uniform sampler2D ripple : filter_nearest, repeat_enable;
+uniform bool has_ripple = false;
+
+vec2 tn_ripple(vec2 t) {
+	if (!has_ripple) {
+		return t;
+	}
+	float ta = texelFetch(ripple, ivec2(int(mod(floor(t.y), 256.0)), 0), 0).r * 255.0;
+	float tb = texelFetch(ripple, ivec2(int(mod(floor(t.x), 256.0)), 1), 0).r * 255.0;
+	return t + vec2(ta, tb);
+}
+
 vec3 tn_sky(vec3 d, vec3 eye, sampler2D tex, bool has_clouds, vec3 light, vec3 haze, float cloud_px, float cloud_par,
 		vec2 cloud_off, vec3 sun) {
 	vec3 horizon = mix(light, haze, 0.35);
 	vec3 col = horizon;
 	if (has_clouds) {
 		float y = max(d.y, 0.0);
-		vec2 t = vec2(d.z, d.x) / (y + 0.12) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off;
+		vec2 t = tn_ripple(vec2(d.z, d.x) / (y + 0.12) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off);
 		vec3 c = texture(tex, t / 256.0).rgb;
 		float big = dot(texture(tex, t / 704.0 + vec2(0.37, 0.61)).rgb, vec3(0.3, 0.59, 0.11));
 		c *= 0.82 + 0.36 * big;                                   // the larger layer only shades it: no tiling

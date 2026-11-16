@@ -14,7 +14,7 @@ uniform sampler2D stars : source_color, filter_nearest, repeat_enable;
 uniform bool has_stars = false;
 uniform vec3 haze : source_color = vec3(0.7, 0.76, 0.84);
 uniform vec3 light : source_color = vec3(0.91, 0.94, 0.97);   // the lightest cloud colour (the horizon)
-uniform float cloud_px = 44.0;             // texels per unit of slope
+uniform float cloud_px = 44.0;             // texels per unit of slope (the ceiling's height over the eye: viewer.gd)
 uniform float cloud_par = 1.0;             // texels per world unit the camera moves
 uniform vec2 cloud_off = vec2(0.0);        // texels (column, row): the game's wind offset
 uniform float desat = 1.0;                 // live mode: undoes the view's saturation boost (the game's own colours)
@@ -39,7 +39,7 @@ vec3 planet_sky(vec3 d, vec3 eye, vec3 sun) {
 	vec3 atmos = mix(horizon, zenith, pow(y, 0.5));
 	float s = max(dot(d, sun), 0.0);
 	atmos += vec3(1.0, 0.85, 0.65) * 0.12 * pow(s, 3.0) * (1.0 - y);     // the air lighter and warmer towards the sun
-	vec2 t = vec2(d.z, d.x) / (y + 0.12) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off;
+	vec2 t = tn_ripple(vec2(d.z, d.x) / (y + 0.12) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off);
 	vec3 c = texture(clouds_soft, t / 256.0).rgb;
 	float l = dot(c, vec3(0.3, 0.59, 0.11));
 	float la = dot(avg, vec3(0.3, 0.59, 0.11));

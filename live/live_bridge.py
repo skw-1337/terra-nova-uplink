@@ -6,6 +6,7 @@
 #   --live et le pilote jusqu'a sa fermeture.   (TNRE_PID = DOSBox du jeu s'il y en a plusieurs)
 import math, os, re, select, socket, struct, sys, threading, time, zlib
 import tnre
+import hazing
 
 g = tnre.Guest()
 arg = lambda k, d: float(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else d
@@ -201,8 +202,12 @@ SOL_PTRS = (0x36F5BA, 0x36FDC2) if FR else (0x36F50A, 0x36FD12)
 BRULE = re.compile(b'[' + bytes([0x40]) + b'-' + bytes([0x7f]) + bytes([0xc0]) + b'-' + bytes([0xff]) + b']', re.S)
 brule_prev, brule_t, brule_sent = None, 0.0, 0.0
 # nuages : decalage de la texture du ciel (texels 16.16, u puis v), qui avance avec le vent ; la position du joueur
-# s'y ajoute a l'affichage (plafond a 44 unites au-dessus de l'oeil, 1 texel par unite)
+# s'y ajoute a l'affichage (plafond a la hauteur de la mission, 1 texel par unite) ; 0xC plus bas, la phase du
+# balancement des nuages du desert (+193 par tic)
 NUAGES = 0x427E6C if FR else 0x427DBC
+# the game's haze table (hazing.py): the k it is drawn with goes to the viewer's fog ('HAZE' + k f32, each second)
+BRUME = hazing.table_address(code, 0x200000)
+brume_t = 0.0
 # vue infrarouge du jeu (touche I) : 1 = IR (0x38A3FE dans l'exe francais, retrouve sur l'image ; anglais suppose a
 # -0xB0 comme la camera principale voisine, pas verifie)
 INFRA = 0x38A3FE if FR else 0x38A34E
@@ -1907,9 +1912,15 @@ while True:
                 print('curseur :', repr(ex), file=sys.stderr, flush=True)
     if time.time() - nuages_t > 0.1:
         nuages_t = time.time()
-        s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))), ('127.0.0.1', 47821))
+        s.sendto(b'SKYO' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(NUAGES, 8)))) + g.read(NUAGES - 0xC, 4),
+                 ('127.0.0.1', 47821))         # (+ the desert clouds' sway phase, +193 a tick)
         s.sendto(b'IRVW' + bytes([1 if g.read(INFRA, 1)[0] == 1 else 0]), ('127.0.0.1', 47821))
         s.sendto(b'WAYP' + struct.pack('<2f', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8)))), ('127.0.0.1', 47821))
+        if BRUME and time.time() - brume_t > 1.0:
+            brume_t = time.time()
+            hk = hazing.radius(g.read(BRUME, 1024))
+            if hk:
+                s.sendto(b'HAZE' + struct.pack('<f', hk), ('127.0.0.1', 47821))
         if METEO:                             # neige / pluie : 16 octets, 10 fois par seconde
             wthr = meteo()
             s.sendto(wthr, ('127.0.0.1', 47821))

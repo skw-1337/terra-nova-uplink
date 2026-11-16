@@ -68,6 +68,7 @@ const SUB_EASE := 0.2             # side view cameras: share of the way to the n
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
 const FX_LAYER := 1 << 1          # shots and effects: seen by every view, left alone by the ground's burn marks (decals)
+const DEEP_LAYER := 1 << 17       # models on the map's darkest light level: lit by sun_half, not by the sun (_apply_deep)
 var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
@@ -114,7 +115,8 @@ var veg_cells := {}           # vegetation cell (cx * 128 + cy) -> [[multimesh, 
 var veg_values := PackedByteArray()
 var scorch_decals := {}         # live mode: burnt ground vertex (y * 513 + x) -> its decal (destroyed tree, blast)
 var scorch_prev := PackedByteArray()
-var ground_mats := []        # ground materials of the map, for the sky they mirror
+var ground_mats := []        # ground materials of the map, for the sky they mirror (the water's too)
+var water_mats := []         # the water's (water.gdshader): plain in the infrared view
 var sky_clouds: Texture2D
 var sky_haze := Color(0.7, 0.76, 0.84)
 var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the horizon)
@@ -123,33 +125,37 @@ var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light 
 # 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
 # off-centre like the game's, whose view looks 2 rows under the middle of its 3D window (_view_row)
 const HUD_PORT := 47823
-const SUN_AZ_OFFSET := 315.0  # see _set_sky
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
 const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
 const LIVE_AMBIENT := 0.28     # darker (measured on the same view against the running game)
-const LIVE_FOG_BEGIN := 35.0    # live mode: a light depth fog from here to there (game units): the far hills fade
-const LIVE_FOG_END := 320.0     # into the sky's colour (aerial perspective), the map looks deeper and bigger
-const LIVE_FOG_MAX := 0.65      # (never a wall: 65 % at the most)
+# live mode: the game's haze (0x2B4E8C), one curve for every planet: level 0 up to 20 units, then
+# min(15, 16 (1 - exp(-(d - 20) / k))), k = the mission's haze radius (99 in most). Godot's depth fog
+# pow(smoothstep(begin, end, d), 0.4) follows it within 0.01 with begin 20 + 16 k / 99, end 20 + 300 k / 99; its
+# level 15 is not a wall (0.66-0.80 of the way to the haze colour in the SKY tables): LIVE_FOG_MAX
+const LIVE_FOG_BEGIN := 36.0
+const LIVE_FOG_END := 320.0
+const LIVE_FOG_MAX := 0.72
+const LIVE_FOG_CURVE := 0.4
 const LIVE_SHADOW := 70.0       # live mode: the objects' shadows up to there (the ground casts none)
 const LIVE_SATURATION := 1.4    # the 3D's colours (the sky and the water take it back: their "desat")
 const LIVE_SKY := 1.0          # its sky as is (1.5 was brighter than the game once the bloom was off)
 # live mode: each planet's ambiance over that look (its RESPLNTn file; a storm sky, SKY0S, changes its planet's):
-# depth fog (begin, end, its most), its colour (the sky's haze mixed with a tint), the sun's colour and light, the
+# the fog's colour (the sky's haze mixed with a tint), the sun's colour and light, the
 # sky's share of the ambient light, saturation, contrast, brightness; sparkle: snow crystals catching the light
 const PLANET_LOOK := {
-	"RESPLNT0.RES": {"fog": [35.0, 320.0, 0.6], "tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
+	"RESPLNT0.RES": {"tint": Color(0.78, 0.84, 0.92), "tint_mix": 0.25,       # temperate
 		"sun": Color(1.0, 0.94, 0.82), "light": 0.82, "ambient": 0.3, "sat": 1.45, "contrast": 1.03},
-	"RESPLNT1.RES": {"fog": [15.0, 180.0, 0.8], "tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.5,        # ice
+	"RESPLNT1.RES": {"tint": Color(0.80, 0.86, 0.95), "tint_mix": 0.5,        # ice
 		"sun": Color(0.86, 0.93, 1.0), "light": 0.8, "ambient": 0.4, "sat": 1.2, "contrast": 1.08, "sparkle": 1.2},
-	"RESPLNT2.RES": {"fog": [20.0, 260.0, 0.75], "tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
+	"RESPLNT2.RES": {"tint": Color(0.86, 0.62, 0.42), "tint_mix": 0.6,       # desert
 		"sun": Color(1.0, 0.87, 0.68), "light": 0.95, "ambient": 0.24, "sat": 1.3, "contrast": 1.1},
-	"RESPLNT3.RES": {"fog": [25.0, 240.0, 0.7], "tint": Color(0.1, 0.12, 0.1), "tint_mix": 0.6,          # meteor:
+	"RESPLNT3.RES": {"tint": Color(0.1, 0.12, 0.1), "tint_mix": 0.6,          # meteor:
 		"sun": Color(0.82, 1.0, 0.84), "light": 0.62, "ambient": 0.2, "sat": 1.3, "contrast": 1.08},       # dark teal
 
-	"RESPLNT4.RES": {"fog": [25.0, 250.0, 0.7], "tint": Color(0.18, 0.24, 0.36), "tint_mix": 0.6,        # night
+	"RESPLNT4.RES": {"tint": Color(0.18, 0.24, 0.36), "tint_mix": 0.6,        # night
 		"sun": Color(0.62, 0.74, 1.0), "light": 0.42, "ambient": 0.1, "sat": 1.0, "contrast": 1.12, "bright": 0.72},
-	"SKY0S.RES": {"fog": [20.0, 220.0, 0.78], "tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
+	"SKY0S.RES": {"tint": Color(0.52, 0.56, 0.6), "tint_mix": 0.55,          # storm
 		"sun": Color(0.82, 0.86, 0.92), "light": 0.5, "ambient": 0.36, "sat": 1.15, "contrast": 0.98},
 }
 const VIEW_DROP := 2.0           # rows of the game's screen from the middle of its 3D window to where the view looks
@@ -309,9 +315,9 @@ func _ready() -> void:
 		# ground's light is mostly the sky's ambient, which only its sky contribution scales (not its energy), and
 		# the blurred sky reflection Godot adds to every surface: off
 		sun.light_energy = LIVE_LIGHT
-		# shadows: trees, objects, suits (the player's too, see _shadow_twin) and the hills cast them (the game leaves
-		# its hills lit: without theirs, a suit's shadow lay on a slope the hill should have darkened). Sharper near
-		# the eye: 8192 atlas, splits at 4, 14, 35 units
+		# shadows: trees, objects, suits (the player's too, see _shadow_twin) cast them; the hills do not (their shade
+		# is in the map's light levels, which the ground is drawn with). Sharper near the eye: 8192 atlas, splits at
+		# 4, 14, 35 units
 		sun.shadow_enabled = true
 		sun.directional_shadow_max_distance = LIVE_SHADOW
 		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
@@ -334,7 +340,7 @@ func _ready() -> void:
 		env.fog_depth_begin = LIVE_FOG_BEGIN
 		env.fog_depth_end = LIVE_FOG_END
 		env.fog_density = LIVE_FOG_MAX
-		env.fog_depth_curve = 1.2
+		env.fog_depth_curve = LIVE_FOG_CURVE
 		env.fog_aerial_perspective = 0.7
 		env.fog_sun_scatter = 0.1
 		env.fog_sky_affect = 0.0
@@ -425,7 +431,7 @@ func _build_scene() -> void:
 	sky.sky_material = sm
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.35
+	env.ambient_light_energy = VIEW_AMBIENT
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.7, 0.76, 0.84)
 	env.fog_density = 0.0005
@@ -436,10 +442,16 @@ func _build_scene() -> void:
 	add_child(we)
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = DEFAULT_SUN
-	sun.light_energy = 1.0
+	sun.light_energy = VIEW_LIGHT
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 250.0
 	add_child(sun)
+	sun_half = DirectionalLight3D.new()            # (no shadows of its own: a second shadow map would halve the sun's)
+	sun_half.light_cull_mask = DEEP_LAYER
+	sun_half.visible = deep_shade
+	add_child(sun_half)
+	if deep_shade:
+		sun.light_cull_mask = 0xFFFFF & ~DEEP_LAYER
 	world = Node3D.new()
 	add_child(world)
 	sky_root = Node3D.new()
@@ -566,37 +578,49 @@ func _load(index: int) -> void:
 		c.queue_free()
 	var pl: Dictionary = m["planet_data"]
 	ground_mats.clear()
+	water_mats.clear()
 	var det_mat: Material = mats["terrain"]
 	var out_mat: Material = mats["terrain"]
 	if pl["ok"]:                          # real ground textures (else: average colors)
-		var flat := _flat_tiles([m["detail"], m["outer"]])
-		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0, flat)
+		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0)
 		if not m["outer"].is_empty():
-			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0, flat)
+			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0)
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
-	if live:                                  # the hills' shadows (both sides: no light through a thin crest)
-		for gi in world.find_children("*", "GeometryInstance3D", true, false):
-			if gi.material_override == det_mat or gi.material_override == out_mat:
-				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_DOUBLE_SIDED
-	var wl := Terrain.water_level(m["detail"])
-	if not is_nan(wl):
-		var plane := MeshInstance3D.new()
-		var pm := PlaneMesh.new()
-		pm.size = Vector2(1024, 1024)
-		plane.mesh = pm
-		plane.material_override = mats["water"]
-		plane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		plane.position = Vector3(256, wl - 0.05, 256)     # under the water tiles: 0.12 above them it rose up the
-		# river banks, wider than the game's river (its tiles, with their own far colour, are the game's water)
-		world.add_child(plane)
+	# the hills cast no shadow: the map's light levels already hold them (the ground is drawn with them, see
+	# terrain.gdshader), and the game shades no object behind a hill
+	for gi in world.find_children("*", "GeometryInstance3D", true, false):
+		if gi.material_override == det_mat or gi.material_override == out_mat:
+			gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if pl["ok"] and pl.get("water_mask") != null:    # the water, over its tiles (water.gdshader)
+		var tint: Color = pl["water_tint"]
+		if entry["file"].get_file().to_upper() == "MISS2.RES":
+			tint = Color8(128, 128, 128)              # (the game's mission 2: a grey tint, 0x2A83BC)
+		for gi in [[m["detail"], 1.0, Vector2(0, 0), Rect2i()], [m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128)]]:
+			var grid: Dictionary = gi[0]
+			if grid.is_empty():
+				continue
+			var only := _water_cells(grid, pl["water"])
+			if only.is_empty():
+				continue
+			Terrain.build(world, grid, gi[1], gi[2], gi[3], _water_mat(pl, grid, gi[2], gi[1], tint), only)
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
+	haze_k = mis.get("haze_k", 99)
+	mis_params = mis.get("params", {})
+	cloud_base = Vector2.ZERO
+	cloud_set = Vector2(-1.0, -1.0)
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
+	map_dif = m.get("dif", DEFAULT_DIF)
+	map_amb = m.get("amb", DEFAULT_AMB)
 	if live:
 		planet_look(m["planet"], mis.get("sky", ""))
+	else:                                     # the map's own sun and ambient (res 82), against the pair the look was
+		sun.light_energy = VIEW_LIGHT * map_dif / DEFAULT_DIF          # tuned on (36 maps of 55 have it)
+		env.ambient_light_energy = VIEW_AMBIENT * map_amb / DEFAULT_AMB
+		_ground_look(VIEW_LIGHT, VIEW_AMBIENT)
 	var nveg := _add_vegetation(m)
 	var counts := {}
 	live_nodes.clear()
@@ -611,12 +635,14 @@ func _load(index: int) -> void:
 	anim_mats.clear()                         # (their pictures are in the mission's palette)
 	smoke_pending.clear()
 	for e in mis["entities"]:
-		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"]))
+		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"],
+				e.get("team", 0), e.get("pitch", 0.0)))
 		live_nodes[-1].set_meta("mission", true)       # placed from the file: buildings stay on the ground
 		counts[e["cls"]] = counts.get(e["cls"], 0) + 1
 	for z in mis["zones"]:
 		_add_zone(m, z)
 	current = {"map": m, "mission": mis, "entry": entry}
+	_sync_sun_half()
 	_place_camera(m, mis)
 	info.text = "%s\nmap %s (%s), %d objects, %d named zones, %d plants%s\nloaded in %.1f s" % [
 		entry["label"], mis["map"], m["planet"], mis["entities"].size(), mis["zones"].size(), nveg, note,
@@ -652,9 +678,6 @@ func _add_vegetation(m: Dictionary) -> int:
 				n += 1
 	veg_cells.clear()
 	veg_values = vmap.duplicate()
-	var sun_dir := sun.global_transform.basis.z.normalized()     # towards the sun (the planet's, set before)
-	var flat := VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0)
-	sprite_gain = _sprite_gain(sun_dir)
 	for key in groups:                # key = (class, type)
 		var mesh: Mesh = null
 		var mat: Material = null
@@ -665,7 +688,7 @@ func _add_vegetation(m: Dictionary) -> int:
 		if TNObjects.is_sprite(ref):
 			var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 			if not sp.is_empty():
-				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL)
+				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL, sprite_hd)
 				mat = _sprite_mat(ref, sp)
 				shadow = _sprite_shadow_mat(ref, sp)
 		elif TNObjects.is_model(ref):
@@ -680,7 +703,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			mat = mats["rock"] if shape == "rock" else mats["tree"]
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		var lit := live and mat is StandardMaterial3D
+		var lit := mat is StandardMaterial3D        # sprites: the light of the ground at their foot
 		mm.use_colors = lit                   # (before the count)
 		mm.mesh = mesh
 		var trs: Array = groups[key]
@@ -688,8 +711,8 @@ func _add_vegetation(m: Dictionary) -> int:
 		for i in trs.size():
 			mm.set_instance_transform(i, trs[i][0])
 			if lit:
-				var k := _veg_light(m, trs[i][0].origin, sun_dir, flat)
-				mm.set_instance_color(i, Color(k, k, k))
+				var o: Vector3 = trs[i][0].origin
+				mm.set_instance_color(i, _foot_light(m, o.x, o.z))
 			var cell: int = trs[i][1]
 			if not veg_cells.has(cell):
 				veg_cells[cell] = []
@@ -715,53 +738,92 @@ func _add_vegetation(m: Dictionary) -> int:
 	return n
 
 
-# Live mode: the plants are sprites drawn unlit (the game draws them so) on a ground Godot lights: on a slope turned
-# away from the sun the ground went dark and they stayed bright. Each one takes the light of the ground at its foot,
-# its slope's towards the sun against flat ground's (VEG_AMBIENT of it does not come from the sun), within VEG_LIGHT
-const VEG_AMBIENT := 0.25
-const VEG_LIGHT := Vector2(0.3, 1.1)
+# Sprites (plants, rocks, probes) take the light of the ground at their foot, as the game draws them (0x29B039 ->
+# 0x294B18: twice the light level there, on the ground's triangles, floored; that row of the planet's light table)
+func _foot_light(m: Dictionary, x: float, y: float) -> Color:
+	var rows: PackedFloat32Array = m["planet_data"].get("rows", PackedFloat32Array())
+	var k := rows[clampi(TNData.level2_at(m, x, y), 0, 15)] if rows.size() == 16 else 1.0
+	return Color(ground_light.r * k, ground_light.g * k, ground_light.b * k)
 
 
-# (a sprite object: its own copy of the sprite's material at that light, one per twentieth of light)
-func _sprite_lit(ref: Vector2i, sp: Dictionary, k: float) -> StandardMaterial3D:
-	var key := "sprite%s/lit%d" % [ref, roundi(k * 20.0)]
+# (a sprite object: its own copy of the sprite's material at that light)
+func _sprite_lit(ref: Vector2i, sp: Dictionary, c: Color) -> StandardMaterial3D:
+	var q := Color(roundi(c.r * 40.0) / 40.0, roundi(c.g * 40.0) / 40.0, roundi(c.b * 40.0) / 40.0)
+	var key := "sprite%s/lit%s" % [ref, q.to_html(false)]
 	if not mats.has(key):
 		var sm := _sprite_mat(ref, sp).duplicate() as StandardMaterial3D
 		sm.vertex_color_use_as_albedo = false
-		var l := roundi(k * 20.0) / 20.0
-		sm.albedo_color = Color(l, l, l)                 # (alpha untouched: the sprite's cut-out)
+		sm.albedo_color = q                              # (alpha untouched: the sprite's cut-out)
 		mats[key] = sm
 	return mats[key]
 
 
-func _veg_light(m: Dictionary, p: Vector3, sun_dir: Vector3, flat: float) -> float:
-	var nrm := Vector3(TNData.height_at(m, p.x - 0.6, p.z) - TNData.height_at(m, p.x + 0.6, p.z), 1.2,
-			TNData.height_at(m, p.x, p.z - 0.6) - TNData.height_at(m, p.x, p.z + 0.6)).normalized()
-	return clampf((VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(nrm.dot(sun_dir), 0.0)) / flat, VEG_LIGHT.x, VEG_LIGHT.y) * sprite_gain
+# The ground at full light (light level 0), the colour terrain.gdshader draws it with: what flat ground took from the
+# sun and the sky under the high sun of the map the look was tuned on (MAP30, 57.7 deg: GROUND_SUN_REF), from the
+# look's base sun (not the map's own diffuse light: the levels hold it)
+const GROUND_SUN_REF := 0.845
+var ground_light := Color(1, 1, 1)
+const VIEW_LIGHT := 1.0                  # the map viewer's sun and ambient
+const VIEW_AMBIENT := 0.35
+const DEFAULT_DIF := 46000.0 / 65536.0   # the usual pair of res 82 (diffuse, ambient once clamped)
+const DEFAULT_AMB := 19536.0 / 65536.0
+var map_dif := DEFAULT_DIF
+var map_amb := DEFAULT_AMB
 
 
-# ... and as bright as flat ground there is lit: the sun's or the moon's light (energy, colour, height) and the
-# sky's share of the ambient, against the planet they were matched with (Panama, temperate, sun at 34 deg:
-# SPRITE_LIGHT_REF); never brighter. At night they stayed as bright as at noon on a dark ground
-const SPRITE_LIGHT_REF := 0.53
-var sprite_gain := 1.0
+# An object on the map's darkest stored light level (all its triangle's corners at it: 0x294B18 gives twice the map's
+# highest level, 0x294900) is lit with half the sun and no shine (0x29B645 -> 0x29E544); a suit there also loses the
+# ambient lift the game gives them (0x29C9B3: (amb + 1) / 2 -> amb). On the 10 maps stored at level 0 everywhere,
+# every model. Off unless TN_DEEP_SHADE=1 (not yet compared with the running game).
+var deep_shade := OS.get_environment("TN_DEEP_SHADE") == "1"
+var sun_half: DirectionalLight3D
 
 
-func _sprite_gain(sun_dir: Vector3) -> float:
-	var c := sun.light_color
-	var direct := sun.light_energy * (0.3 * c.r + 0.59 * c.g + 0.11 * c.b) * maxf(sun_dir.y, 0.05)
-	var ambient := env.ambient_light_sky_contribution * env.ambient_light_energy * \
-			(0.3 * sky_light.r + 0.59 * sky_light.g + 0.11 * sky_light.b)
-	var l := direct + ambient
-	return clampf(l / SPRITE_LIGHT_REF, 0.25, 1.0)
+func _apply_deep(node: Node3D, m: Dictionary, x: float, y: float) -> void:
+	if not deep_shade or m.is_empty():
+		return
+	var deep: bool = TNData.level2_at(m, x, y) == 2 * int(m["detail"].get("level_max", 0))
+	if node.get_meta("deep", false) == deep and node.has_meta("deep"):
+		return
+	node.set_meta("deep", deep)
+	var dif := map_dif
+	var amb := map_amb
+	var r := (amb + dif / 4.0) / ((amb + 1.0) / 2.0 + dif / 2.0)   # a suit: deep against normal, at N.L = 0.5
+	var stack: Array = [node]
+	while not stack.is_empty():
+		var nd = stack.pop_back()
+		stack.append_array(nd.get_children())
+		if nd.has_meta("shadow_twin") or nd is Label3D or not (nd is GeometryInstance3D):
+			continue
+		if node.has_meta("soldier") or node.has_meta("suit"):
+			(nd as GeometryInstance3D).set_instance_shader_parameter("deep", r if deep else 1.0)
+		elif (nd as VisualInstance3D).layers == 1 or (nd as VisualInstance3D).layers == DEEP_LAYER:
+			(nd as VisualInstance3D).layers = DEEP_LAYER if deep else 1
 
 
-# The game draws its plant and rock sprites a little wider than their radius and taller than their picture's
-# proportions: a decor rock seen at 1.5 and 5 units, 1.2 x and 1.5 x; trees and bushes side by side with the game
-# (21/10/2026, MISS37, same moment and view): fir 1.5 x wider and 1.8-1.9 x taller, bush 1.2 x and 1.7 x (drawn at
-# 1 x and 1 x before, units looked oversized next to them)
-const SPRITE_SCALE := 1.2
-const SPRITE_TALL := 1.5
+func _sync_sun_half() -> void:
+	if sun_half == null or not deep_shade:
+		return
+	sun_half.global_transform = sun.global_transform
+	sun_half.light_color = sun.light_color
+	sun_half.light_energy = 0.5 * sun.light_energy
+
+
+func _ground_look(base_light: float, base_ambient: float) -> void:
+	var amb := base_ambient
+	var c := sun.light_color * base_light * GROUND_SUN_REF
+	ground_light = Color(c.r + sky_haze.r * amb, c.g + sky_haze.g * amb, c.b + sky_haze.b * amb)
+	for sm in ground_mats:
+		sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
+
+
+# The game projects its world with 1.1 x the focal it draws its sprites with (camera matrix 0x29EB64 against the view's
+# focal 0x29EA84): a sprite looks like an object 1 / 1.1 as wide as its width (twice its radius, sprite_width), with
+# its bitmap's proportions. (The 21/10/2026 eye fit, 1.2 x radius by 1.5 x taller, matched Terra Nova Plus's HD720
+# view, whose focal across is too short: TN_SPRITES_HD720=1 brings that look back, 0.70 x as wide.)
+const SPRITE_SCALE := 1.0 / 1.1
+const SPRITE_TALL := 1.0
+var sprite_hd := 0.70 if OS.get_environment("TN_SPRITES_HD720") == "1" else 1.0
 
 
 # Simple stand-in shapes, standing on their base, when the game data has no sprite / model.
@@ -799,10 +861,11 @@ func _placeholder(shape: String) -> Mesh:
 	return out
 
 
-# Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground.
-func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0) -> QuadMesh:
+# Sprite (tree, bush, rock, probe): upright quad turning to face the camera, base on the ground. narrow: its width
+# alone (TN_SPRITES_HD720)
+func _sprite_quad(sp: Dictionary, width: float, tall: float = 1.0, narrow: float = 1.0) -> QuadMesh:
 	var q := QuadMesh.new()
-	q.size = Vector2(width, width * sp["aspect"] * tall)
+	q.size = Vector2(width * narrow, width * sp["aspect"] * tall)
 	q.center_offset = Vector3(0, q.size.y * 0.5, 0)
 	return q
 
@@ -817,7 +880,7 @@ func _sprite_mat(key: Vector2i, sp: Dictionary) -> StandardMaterial3D:
 	sm.alpha_scissor_threshold = 0.5
 	sm.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
 	sm.billboard_keep_scale = true
-	sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # the game draws sprites unlit
+	sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # no sun: the ground's light at their foot (_foot_light)
 	sm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	sm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mats[k] = sm
@@ -931,35 +994,40 @@ func _load_gallery() -> void:
 		_screenshot(args[sh + 1])
 
 
-# Share of each tile's cells lying flat on a map (corners within 0.1 unit; the detail and the outer grid, a sea can be
-# only in the outer one): water lies flat (95-100 %), a bluish ground covering the hills does not (planet 3's teal:
-# 5-11 %, taken for water it was a white mirror). -1: too few cells to tell (a water tile on 21 shore cells, 14 %).
-func _flat_tiles(grids: Array) -> PackedFloat32Array:
-	var all := PackedInt32Array()
-	all.resize(256)
-	var flat := PackedInt32Array()
-	flat.resize(256)
-	for grid in grids:
-		if grid.is_empty():
-			continue
-		var tiles: PackedByteArray = grid["tile"]
-		var h: PackedFloat32Array = grid["h"]
-		var n: int = grid["n"]
-		for y in n - 1:
-			for x in n - 1:
-				var i := y * n + x
-				var t := tiles[i]
-				all[t] += 1
-				if maxf(maxf(absf(h[i + 1] - h[i]), absf(h[i + n] - h[i])), absf(h[i + n + 1] - h[i])) <= 0.1:
-					flat[t] += 1
-	var out := PackedFloat32Array()
-	out.resize(64)
-	for t in 64:
-		out[t] = float(flat[t]) / all[t] if all[t] >= 100 else -1.0
-	return out
+# The cells of a grid whose tile is water (0x2B219C: the cell's first point), 1 at y * n + x; empty: none.
+func _water_cells(grid: Dictionary, water: PackedByteArray) -> PackedByteArray:
+	var tiles: PackedByteArray = grid["tile"]
+	var n: int = grid["n"]
+	var out := PackedByteArray()
+	out.resize(n * n)
+	var any := false
+	for i in n * n:
+		if water[tiles[i]] == 1:
+			out[i] = 1
+			any = true
+	return out if any else PackedByteArray()
 
 
-func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float, flat: PackedFloat32Array) -> ShaderMaterial:
+func _water_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float, tint: Color) -> ShaderMaterial:
+	var sm := ShaderMaterial.new()
+	sm.shader = WATER
+	sm.set_shader_parameter("tiles", pl["textures"])
+	sm.set_shader_parameter("water_mask", pl["water_mask"])
+	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
+	sm.set_shader_parameter("origin", origin)
+	sm.set_shader_parameter("step_size", step)
+	sm.set_shader_parameter("grid_n", float(grid["n"]))
+	sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
+	sm.set_shader_parameter("plain", ir_on)
+	var far: Color = pl.get("water_far", Color(0.41, 0.54, 0.5))
+	sm.set_shader_parameter("water_far", far)
+	ground_mats.append(sm)
+	water_mats.append(sm)
+	_sky_to(sm)
+	return sm
+
+
+func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float) -> ShaderMaterial:
 	var sm := ShaderMaterial.new()
 	sm.shader = GROUND
 	sm.set_shader_parameter("tiles", pl["textures"])
@@ -969,26 +1037,10 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float,
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
-	# water tiles: the bluish ones of the planet's set (their mean colour); not the bright, barely blue snow and ice
-	# (an ice planet's (0.70, 0.78, 0.88) was taken for water: a mirror over the snow; water: (0.38, 0.54, 0.75))
-	var wt := Image.create(64, 1, false, Image.FORMAT_R8)
-	var tc: PackedColorArray = pl["tile_color"]
-	var wsum := Color(0, 0, 0)
-	var wn := 0
-	for i in mini(64, tc.size()):
-		var c := tc[i]
-		var lum := c.r * 0.3 + c.g * 0.59 + c.b * 0.11
-		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25 and (lum < 0.65 or c.b - maxf(c.r, c.g) > 0.15) and \
-				(flat[i] < 0.0 or flat[i] >= 0.5):
-			wt.set_pixel(i, 0, Color(1, 0, 0))
-			wsum += c
-			wn += 1
-	sm.set_shader_parameter("water_tiles", ImageTexture.create_from_image(wt))
-	if wn > 0:                                # the game's far water: the mean colour of these tiles, flat
-		var far := Color(wsum.r / wn, wsum.g / wn, wsum.b / wn)
-		sm.set_shader_parameter("water_far", far)
-		mats["water"].set_shader_parameter("far_tint", far)
-		print("far water %d tiles: %s" % [wn, far.to_html(false)])
+	var rows: PackedFloat32Array = pl.get("rows", PackedFloat32Array())
+	if rows.size() == 16:
+		sm.set_shader_parameter("light_rows", rows)
+	sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
 	var t0 := Time.get_ticks_msec()
 	sm.set_shader_parameter("relief", ImageTexture.create_from_image(_relief_image(grid["h"], grid["n"], step)))
 	sm.set_shader_parameter("has_relief", true)
@@ -1065,17 +1117,20 @@ func _is_modern() -> bool:
 
 
 # The planet's ambiance (PLANET_LOOK) over the live look, once per map, after its sky (whose haze the fog starts from).
-# Also called by the lab, for the map viewer.
+# Also called by the lab, for the map viewer. The sun's and the ambient's strength: the planet's, tuned on the maps
+# that have the usual pair (DEFAULT_DIF / DEFAULT_AMB), scaled by the map's own (map_dif, map_amb: res 82). The night
+# planet and the storm sky take planet 0's: their darkness is in their maps' pair.
 func planet_look(planet: String, sky_file: String) -> void:
 	var a: Dictionary = PLANET_LOOK.get(sky_file.get_file().to_upper(), PLANET_LOOK.get(planet.to_upper(), {}))
-	var fog: Array = a.get("fog", [LIVE_FOG_BEGIN, LIVE_FOG_END, LIVE_FOG_MAX])
-	env.fog_depth_begin = fog[0]
-	env.fog_depth_end = fog[1]
-	env.fog_density = fog[2]
+	var base: Dictionary = a
+	if sky_file.get_file().to_upper() == "SKY0S.RES" or planet.to_upper() == "RESPLNT4.RES":
+		base = PLANET_LOOK["RESPLNT0.RES"]
+	_haze_fog(haze_k)
 	env.fog_light_color = env.fog_light_color.lerp(a.get("tint", Color.WHITE), a.get("tint_mix", 0.0))
 	sun.light_color = a.get("sun", Color.WHITE)
-	sun.light_energy = a.get("light", LIVE_LIGHT)
-	env.ambient_light_sky_contribution = a.get("ambient", LIVE_AMBIENT)
+	sun.light_energy = base.get("light", LIVE_LIGHT) * map_dif / DEFAULT_DIF
+	env.ambient_light_sky_contribution = base.get("ambient", LIVE_AMBIENT) * map_amb / DEFAULT_AMB
+	_ground_look(base.get("light", LIVE_LIGHT), env.ambient_light_energy * base.get("ambient", LIVE_AMBIENT))
 	env.adjustment_saturation = a.get("sat", LIVE_SATURATION)
 	env.adjustment_contrast = a.get("contrast", 1.0)
 	env.adjustment_brightness = a.get("bright", 1.0)
@@ -1086,6 +1141,100 @@ func planet_look(planet: String, sky_file: String) -> void:
 			env_nofog_cache.set(p, env.get(p))
 
 
+# The depth fog for haze radius k (see LIVE_FOG_BEGIN): the mission's, or the one the running game draws with (the
+# bridge's 'HAZE': Terra Nova Plus's FAR distance makes it 180)
+var haze_k := 99
+
+
+func _haze_fog(k: float) -> void:
+	env.fog_depth_begin = 20.0 + 16.0 * k / 99.0
+	env.fog_depth_end = 20.0 + 300.0 * k / 99.0
+	env.fog_depth_curve = LIVE_FOG_CURVE
+	env.fog_density = LIVE_FOG_MAX
+
+
+# The cloud ceiling (mission resource 178): a plane at cloud_h, 1 texel a unit, seen from the eye (0x2A7222:
+# cloud_h - 8 x the eye's height): the shaders' texels per unit of slope, 44 at MISS30's start (1080, eye 6.18). The
+# wind moves it (live: the game's own offset, SKYO; the viewer: from the mission's wind); the desert missions' clouds
+# also ripple and sway in a circle of 30 texels (0x2A6F38). At most 10 times a second (a sky's change redraws its light).
+var mis_params := {}
+var cloud_base := Vector2.ZERO         # texels (column, row)
+var cloud_set := Vector2(-1.0, -1.0)   # (cloud_px, time) last set
+var cloud_sway := 0                    # live: the game's sway phase
+var cloud_live_t := 0
+var ripple_img: Image
+var ripple_tex: ImageTexture
+const CLOUD_REF := 1030.56             # 1080 - 8 x 6.18
+const TICK_HZ := 280.0                 # the game's clock (not measured: the map viewer's wind and ripple speed)
+var ripple_sin := PackedInt32Array()
+
+
+func _clouds_update() -> void:
+	if mis_params.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - cloud_set.y < 0.1:
+		return
+	var dt := now - cloud_set.y if cloud_set.y > 0.0 else 0.0
+	var mats_c: Array = ground_mats + [mats["water"]]
+	if env.sky.sky_material is ShaderMaterial:
+		mats_c.append(env.sky.sky_material)
+	var px := 44.0 * maxf(64.0, float(mis_params["cloud_h"]) - 8.0 * camera.position.y) / CLOUD_REF
+	var ticks := now * TICK_HZ
+	if live:
+		ticks = cloud_sway / 193.0
+	else:
+		var a: float = mis_params["wind_angle"]
+		cloud_base += float(mis_params["wind_speed"]) / 65536.0 * dt * TICK_HZ * Vector2(cos(a), sin(a))
+		cloud_base = Vector2(fposmod(cloud_base.x, 256.0), fposmod(cloud_base.y, 256.0))
+	var off := cloud_base
+	var desert: bool = mis_params["desert"]
+	if desert:
+		var phi := (floorf(193.0 * ticks) / 256.0) / 65536.0 * TAU
+		off += Vector2(30.0 * sin(phi), 30.0 * cos(phi))
+		_ripple_tables(ticks)
+	for sm in mats_c:
+		sm.set_shader_parameter("cloud_px", px)
+		sm.set_shader_parameter("cloud_off", off)
+		sm.set_shader_parameter("has_ripple", desert)
+		if desert:
+			sm.set_shader_parameter("ripple", ripple_tex)
+	cloud_set = Vector2(px, now)
+
+
+# The two 256-entry tables of the desert clouds (0x2A6F38): two waves each (1 and 3 periods over the table, 6144 and
+# 1536 x the game's biased sine S[k] = int((sin(2 pi k / 1024) 65536 + 65536) / 513), / 65536), their phases V x
+# ticks / 65536 index units: 1797 and 16384 (columns, 0x425200), 2615 and 14099 (rows, 0x425300).
+static func ripple_table(ticks: float, v1: int, v2: int, sn: PackedInt32Array) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(256)
+	var p1 := int(floorf(v1 * ticks / 65536.0))
+	var p2 := int(floorf(v2 * ticks / 65536.0))
+	for i in 256:
+		out[i] = ((6144 * sn[(4 * i + p1) & 1023]) >> 16) + ((1536 * sn[(12 * i + p2) & 1023]) >> 16)
+	return out
+
+
+static func ripple_sine() -> PackedInt32Array:
+	var sn := PackedInt32Array()
+	sn.resize(1024)
+	for k in 1024:
+		sn[k] = int((sin(TAU * k / 1024.0) * 65536.0 + 65536.0) / 513.0)
+	return sn
+
+
+func _ripple_tables(ticks: float) -> void:
+	if ripple_sin.is_empty():
+		ripple_sin = ripple_sine()
+	var d := ripple_table(ticks, 1797, 16384, ripple_sin) + ripple_table(ticks, 2615, 14099, ripple_sin)
+	if ripple_img == null:
+		ripple_img = Image.create_from_data(256, 2, false, Image.FORMAT_R8, d)
+		ripple_tex = ImageTexture.create_from_image(ripple_img)
+	else:
+		ripple_img.set_data(256, 2, false, Image.FORMAT_R8, d)
+		ripple_tex.update(ripple_img)
+
+
 func _apply_look() -> void:
 	var m := _is_modern()
 	if env.sky.sky_material is ShaderMaterial:
@@ -1094,8 +1243,13 @@ func _apply_look() -> void:
 		sm.set_shader_parameter("modern", m)
 
 
+const PITCH_SIGN := 1.0   # a mission record's pitch: nose up for > 0 (not compared with the game yet, MISS16 #20)
+
+
+# team: the mission's side of its group (1 = the player's; 0: unknown, told from the type's name); pitch: the mission
+# record's (classes 0, 3 and 4; vehicles and building type 0x2F lie on the slope instead, 0x29DD64)
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
-		label: bool, z: float = 0.0) -> MeshInstance3D:
+		label: bool, z: float = 0.0, team: int = 0, pitch: float = 0.0) -> MeshInstance3D:
 	var name: String = data.type_name(cls, sub)
 	var low := name.to_lower()
 	var ground := TNData.height_at(m, x, y)
@@ -1139,13 +1293,9 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
-			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL)
+			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL, sprite_hd)
 			mi.mesh = q
-			mi.material_override = _sprite_mat(ref, sp)
-			if live and cls == 0:                   # a plant or rock placed as an object: lit like the vegetation
-				var sun_dir := sun.global_transform.basis.z.normalized()
-				var k := _veg_light(m, Vector3(x, ground, y), sun_dir, VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0))
-				mi.material_override = _sprite_lit(ref, sp, k)
+			mi.material_override = _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
 	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
@@ -1156,10 +1306,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.material_override = mats["decor"]
 			1:
 				box.size = Vector3(0.5, 1.4, 0.5)
-				mi.material_override = mats["friend"] if data.is_friendly(name) else mats["enemy"]
+				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
 			2, 3:
 				box.size = Vector3(1.4, 0.8, 1.4)
-				mi.material_override = mats["friend"] if data.is_friendly(name) else mats["enemy"]
+				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
 			_:
 				box.size = Vector3(4, 3, 4)
 				mi.material_override = mats["building"]
@@ -1169,8 +1319,13 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		top -= box.size.y * 0.5
 	mi.position = Vector3(x, ground + lift, y)
 	mi.rotation.y = -heading
+	if pitch != 0.0 and TNObjects.is_model(ref) and (cls == 0 or cls == 3 or (cls == 4 and sub != 0x2F)):
+		mi.rotate_object_local(Vector3(0, 0, 1), PITCH_SIGN * pitch)   # (models face +X: their side axis is Z)
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
+	if soldier or TNObjects.is_model(ref):         # (sprites take the light at their foot: _foot_light)
+		mi.set_meta("deep_ok", true)
+		_apply_deep(mi, m, x, y)
 	if label:
 		var l := Label3D.new()
 		l.text = name if group == "" or group.begins_with("(NULL") or group.begins_with("DEFAULT") else "%s\n[%s]" % [name, group]
@@ -1857,7 +2012,8 @@ func _make_oldschool() -> void:
 	get_viewport().size_changed.connect(_oldschool_grid)   # (its grid is counted in the window's pixels)
 
 
-# the planet's palette for it (each new map); live: on from the start (--smooth: off), the map viewer: off (F12)
+# the planet's palette for it (each new map); live: on from the start (--smooth: off), the map viewer: off (F12;
+# TN_OLDSCHOOL=1: on)
 func _oldschool_palette() -> void:
 	if oldschool_rect != null and pal_key != oldschool_key and pal.size() >= 256:
 		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
@@ -1866,7 +2022,8 @@ func _oldschool_palette() -> void:
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 		if oldschool_key == "":
-			oldschool_rect.visible = live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0"
+			oldschool_rect.visible = (live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0") \
+					or (not live and OS.get_environment("TN_OLDSCHOOL") == "1")     # (the map viewer: on when asked)
 			_apply_look()
 		oldschool_key = pal_key
 
@@ -1951,12 +2108,12 @@ func _note(text: String) -> void:
 func _set_sky(path: String, light: Vector2) -> void:
 	for c in sky_root.get_children():
 		c.queue_free()
+	sky_items.clear()
 	var sk: Dictionary = objects.load_sky(path, pal) if objects_ok and path != "" else {}
-	# the map's light direction (azimuth, elevation; game y axis = Godot z)
-	# the game's azimuth 0 is not this viewer's +x: on the running game (MAP23, azimuth 0, height 45) the slopes it
-	# lights brightest face ~315 deg (heading convention), measured on a full turn against the game's terrain
-	var laz: float = light.x + deg_to_rad(SUN_AZ_OFFSET)
-	var to_light := Vector3(cos(light.y) * cos(laz), sin(light.y), cos(light.y) * sin(laz))
+	# the map's light direction (azimuth, elevation; game y axis = Godot z), azimuth 0 along +x: the light levels the
+	# maps store are baked from it so (MAP10 99.6 % of points, MAP23 99.85 %), and the game lights its models with
+	# (sin az cos el, -sin el, cos az cos el) in its 3D library's axes (0x29E5FC), which place world x on their z
+	var to_light := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
 	sun_to = to_light
 	if sk.is_empty():
@@ -1984,6 +2141,8 @@ func _set_sky(path: String, light: Vector2) -> void:
 	mat.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	if sk.get("light") != null:                         # the clouds lighten towards the horizon
 		var lt: Color = sk["light"]
+		if int(mis_params.get("weather_kind", 0)) == 2 and pal.size() > 0x20:
+			lt = pal[0x20]                              # rain (0x2A7085): its far band in greys 0x20.. (not 0xA2..)
 		mat.set_shader_parameter("light", Vector3(lt.r, lt.g, lt.b))
 		sky_light = lt
 	else:
@@ -2001,6 +2160,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# skies without clouds (space) show them
 	elif sk.get("moon") != null:
 		var moon: Dictionary = sk["moon"].duplicate()
+		moon["moon"] = true
 		moon["az"] = light.x
 		moon["el"] = light.y
 		sprites.append(moon)
@@ -2023,6 +2183,32 @@ func _set_sky(path: String, light: Vector2) -> void:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		mi.position = dir * SKY_DISTANCE
 		sky_root.add_child(mi)
+		if not it.get("moon", false):
+			sky_items.append([mi, az, el])
+	sky_items_y = INF
+	_sky_items_place()
+
+
+# The sky's own pictures (resource 153's list, not the moon) are drawn lower the higher the eye (0x2A816C: (eye's
+# height + 64) / 384 in tangent units): at the eye's usual height, half hidden by the horizon.
+var sky_items := []          # [node, azimuth, elevation]
+var sky_items_y := INF
+
+
+func _sky_items_place() -> void:
+	if absf(camera.position.y - sky_items_y) < 0.05:
+		return
+	sky_items_y = camera.position.y
+	var drop := (camera.position.y + 64.0) / 384.0
+	var keep := []
+	for it in sky_items:
+		if not is_instance_valid(it[0]):
+			continue
+		keep.append(it)
+		var az: float = it[1]
+		var el: float = atan(tan(it[2]) - drop)
+		(it[0] as Node3D).position = Vector3(cos(el) * cos(az), sin(el), cos(el) * sin(az)) * SKY_DISTANCE
+	sky_items = keep
 
 
 func _hud_setup() -> void:
@@ -3184,6 +3370,8 @@ func _live_update() -> void:
 			var old := oldschool_rect != null and oldschool_rect.visible
 			if ir_rect != null:
 				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
+			for wm in water_mats:                          # the game draws its water tiles plain in infrared
+				wm.set_shader_parameter("plain", ir_on)
 			if oldschool_rect != null:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
@@ -3217,14 +3405,15 @@ func _live_update() -> void:
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
+		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
+			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "WAYP":
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
-		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
-			if env.sky.sky_material is ShaderMaterial:      # the game's wind offset of its clouds
-				(env.sky.sky_material as ShaderMaterial).set_shader_parameter("cloud_off",
-						Vector2(q.decode_float(4), q.decode_float(8)))
-			for sm in ground_mats + [mats["water"]]:          # the water mirrors the same clouds
-				sm.set_shader_parameter("cloud_off", Vector2(q.decode_float(4), q.decode_float(8)))
+		elif q.size() >= 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
+			cloud_base = Vector2(q.decode_float(4), q.decode_float(8))   # the game's wind offset of its clouds
+			if q.size() >= 16:
+				cloud_sway = q.decode_u32(12)            # its cloud sway's phase ([0x427DB0], +193 a tick)
+			cloud_live_t = Time.get_ticks_msec()
 		else:
 			pk = q
 	if pk.size() < 24:
@@ -4706,7 +4895,7 @@ var puff_seen := {}
 # (Before: four types fitted by eye, two of them on another type's animation and two half their size, the 24
 # others a small orange ball.)
 const FX_GAP_MS := 150           # an entity not seen for that long, then seen again in its slot: a new effect
-var fx_scale := 1.2              # the sprites' scale against the table's size (SPRITE_SCALE: the same routine draws them)
+var fx_scale := 1.0 / 1.1        # the effects' scale against their width (SPRITE_SCALE: the same routine draws them)
 var anims := []                  # [node, start msec, duration in s (0: looping), its entity]
 var smoke_pending := []          # blasts (6/23) waiting to know whether a suit burst there: [position, msec]
 var anim_seen := {}              # entity -> [msec last seen, type, position, its looping node or null]
@@ -5041,6 +5230,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		node.visible = false
 		return
 	node.visible = true
+	if node.has_meta("deep_ok"):
+		_apply_deep(node, m, e[3], e[4])
 	if e[0] == 1 and e[2] == 0:
 		_make_corpse(node, m)
 		return
@@ -5087,6 +5278,9 @@ func _process(delta: float) -> void:
 		var vsz := hd_movie.get_video_texture().get_size()
 		if vsz.y > 0:
 			hd_movie_box.ratio = vsz.x / vsz.y           # the video at its own proportions, black around
+	_sync_sun_half()
+	_clouds_update()
+	_sky_items_place()
 	sky_root.position = camera.position
 	if live:
 		_live_update()

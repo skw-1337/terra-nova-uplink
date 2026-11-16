@@ -16,6 +16,7 @@ uniform float pull = 0.25;        // drawn this much nearer the camera: the game
                                   // a foot reaching just under it is not cut off (a standing suit: its feet and
                                   // shins only, viewer.gd LIMB_PULL; the pieces of a burst suit lying around: all)
 
+instance uniform float deep = 1.0;   // < 1: on the map's darkest light level, half the sun (viewer.gd _apply_deep)
 instance uniform float spin = -1.0;  // >= 0: a fixed angle on the screen (radians; a piece of a burst suit lying
                                      // on the ground, drawn turned like the game's) instead of following the bone
 
@@ -79,5 +80,5 @@ void fragment() {
 	if (col.a < 0.5) {
 		discard;
 	}
-	ALBEDO = col.rgb * shade;
+	ALBEDO = col.rgb * shade * deep;
 }

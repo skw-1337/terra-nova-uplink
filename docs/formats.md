@@ -21,17 +21,18 @@ Everything below was worked out for Uplink from the game files and from the game
 | File / resource | Contents |
 |---|---|
 | LG Res v2 | 128-byte header, directory offset at 0x7C; entries: u16 id, 24-bit size + flags, 24-bit compressed size + type |
-| MAPx.RES 86 | 513 × 513 × 3 bytes: ground type, s16 height (÷ 384 in game units) |
+| MAPx.RES 86 | 513 × 513 × 3 bytes a point: byte 0 = tile (bits 5:0), burned (bit 6: set on 240 points of 13 maps), light level bit 0 (bit 7); byte 1 = light level bits 2:1 (bits 1:0; level 0 brightest .. 7), quarter turns (bits 3:2; the plain tiles turned again at load from resource 81's seed), height bits 3:0 (bits 7:4); byte 2 = height bits 11:4. Height = (s16 at +1 & ~0xF) ÷ 384 game units (12 bits ÷ 24) |
 | MAPx.RES 85 | 257 × 257 × 3 bytes, same format, step 4, offset 256 |
 | MAPx.RES 80 | planet file name (`resplntN.res`) |
-| MAPx.RES 82 | light: u16 azimuth, s16 elevation (1/65536 turn) — the engine also draws the sky's moon there; then 2 words not decoded |
+| MAPx.RES 82 | light: u16 azimuth, u16 elevation (1/65536 turn) — the engine also draws the sky's moon there; s32 16.16 diffuse, s32 16.16 ambient (lowered to 1 − diffuse when they add up to more than 1; the stored light levels are baked with them, the models are lit with them); a last u16 with no reader |
 | MAPx.RES 83 | vegetation map, 128 × 128 bytes stored column by column (index = x × 128 + y), 4 × 4-unit cells; value v > 0 → list 119 + v |
-| MAPx.RES 84 | 30 ground type names (16 bytes) |
+| MAPx.RES 81 | u16 seed of the quarter turns the loader draws for the plain tiles (0x29431C) |
+| MAPx.RES 84 | names of the 30 vegetation lists 120-149 (16 bytes each) |
 | MAPx.RES 120-149 | 30 vegetation lists (50-byte entries: class, type, X/Y offsets in 16.16, 0 to 4 inside the cell) |
 | RESPLNTn 48 | 64 × 64 ground tiles one after the other (4096 bytes each; 64 tiles, 53 and 59 on planets 2 and 3) |
 | RESPLNTn 43 | tile → material (64 entries) |
 | RESPLNTn 47 | material → first tile, number of variants |
-| RESPLNTn 46 | transition table: index = materialA × 50 + materialB × 5 + shape → tile |
+| RESPLNTn 46 | transition table: index = materialA × 5n + materialB × 5 + shape → tile, n = RESPLNTn 42 byte 0 (10 / 9 / 7 / 8 / 10 materials); the game itself never reads it |
 | RESPLNTn 49 | the 64 tiles at 16 × 16 (low resolution) |
 | RESPLNTn 50 | palette: 239 RGB colors from index 17 |
 | RESPLNTn 51 | material names (water, sand, grass, rock, snow, grass2, road, concrete, cliff, rock2) |
@@ -44,8 +45,8 @@ Everything below was worked out for Uplink from the game files and from the game
 | RESTNOBJ 1364 + class | per-type properties: collision shape (u16 kind, u16 index of the radius / height entry, 8-byte entries) |
 | RESMAP.RES 1440 | global texture number → ref (resource, frame) |
 | RESGAME / helmet files | palette colors 0-16 (fixed; a blue-grey ramp also used by planet 3's ground); the planet supplies 17-255 |
-| MISSx.RES 170 / 172 / 173 / 176 / 177 | map / groups / entities (50 bytes: class, type, … x, y, z in 16.16 at 8 / 12 / 16, u16 heading at 20; z = height above the ground, 0 everywhere except the *Eagle's Nest* bridge) / zone positions / zone names |
-| MISSx.RES 178 | sky file name (16 bytes), then mission parameters (copied to 0x4424D4: +0x13 view distance, +0x15 gravity 16.16 — 0.6 on the moon —, +0x1D / +0x1F cloud wind direction and speed) |
+| MISSx.RES 170 / 172 / 173 / 176 / 177 | map / groups / entities (50 bytes: class, type, … x, y, z in 16.16 at 8 / 12 / 16, u16 heading at 20, s16 pitch at 22 (1/65536 turn: only MISS16 #20 and the CD demo's MISS3D #18; +24 is a third angle the game never draws); z = height above the ground, 0 everywhere except the *Eagle's Nest* bridge) / zone positions / zone names |
+| MISSx.RES 178 | sky file name (16 bytes), then mission parameters (copied to 0x442424 EN / 0x4424D4 FR, 0x3B bytes zeroed first: the 27-byte ones read 0 from +0x1B): +0x0E haze radius 16.16 (its s16 at +0x10 × 25558 >> 16 = the haze table's k: 99; MISS2 37, MISS7 96), +0x13 u16 temperature in kelvin (default 293, at least 174; suit and weapon heat), +0x15 gravity 16.16 (0.6 on the moon), +0x1B u16 desert flag (rippling, swaying clouds: MISS25, 26, 35, 36, DVAL, SAND), +0x1D u16 wind angle (1/65536 turn), +0x1F u32 wind speed (16.16 texels a tick), +0x23 s16 cloud ceiling height (768-1280; 0: 1024), +0x27 u8 weather (1 snow, 2 rain), +0x28 u32 its amount; +0x11, +0x12, +0x19, +0x25 have no reader |
 | SKYn.RES 152 | pictures: 0 = 256 × 256 cloud texture (absent on SKY3 / SKY4), then clouds, sun, moons, planets |
 | SKYn.RES 153 | layout: u16 count, u8 base color; 0x04 cloud texture ref, 0x0C u16 star field resource, 0x14 moon ref; from 0x20 12-byte items: u16 azimuth, u16 elevation (1/65536 turn), ref (frame, 152), 4 bytes |
 | SKYn.RES 150 / 151 | haze tables (16 × 256 / 8 × 256 colors); level 15 of 150 = fully hazed color |
@@ -53,8 +54,7 @@ Everything below was worked out for Uplink from the game files and from the game
 
 ## Ground tile orientation
 
-Tile of a map point: `byte & 0x3F`. Bit 7 (~57 % of points) is not an orientation and bit 6 is never set: the orientation is not stored, it follows from the materials of the 8 neighbouring cells. This holds for the transition tiles of table 46, and also for the "one-sided" tiles of a single material (road edge triangles, striped pad borders, corners): their own-material part (told apart with the plainest tile of that material) faces the cells of the same material.
-The viewer makes a first guess from the neighbours' materials, repeats it using the neighbours' chosen orientation until nothing changes (a diagonal road made only of transition tiles settles step by step from its ends), then polishes the transition tiles by edge color continuity.
+Quarter turns are stored in byte 1 bits 3:2 of each point (the game reads them at 0x2AE6AC). At load the game turns its plain tiles again (one material on all four corners, in the planet's mask: RESPLNT 52 and 72) with a generator seeded from resource 81: maps that store 0 there (DVAL, ICE, IMBR, KEEP, SAND, VALE, WILD) get their turns from it. Bit 7 of byte 0 is a light level bit (39.9 % of points), bit 6 the burned flag.
 
 ## 3D models
 

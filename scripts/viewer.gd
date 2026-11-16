@@ -68,6 +68,7 @@ const SUB_EASE := 0.2             # side view cameras: share of the way to the n
 const SUB_HIDE_LAYER := 1 << 19   # the unit carrying a side view's camera: hidden from that view only
 const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side views (the main view is its eyes)
 const FX_LAYER := 1 << 1          # shots and effects: seen by every view, left alone by the ground's burn marks (decals)
+const DEEP_LAYER := 1 << 17       # models on the map's darkest light level: lit by sun_half, not by the sun (_apply_deep)
 var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
@@ -439,6 +440,12 @@ func _build_scene() -> void:
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 250.0
 	add_child(sun)
+	sun_half = DirectionalLight3D.new()            # (no shadows of its own: a second shadow map would halve the sun's)
+	sun_half.light_cull_mask = DEEP_LAYER
+	sun_half.visible = deep_shade
+	add_child(sun_half)
+	if deep_shade:
+		sun.light_cull_mask = 0xFFFFF & ~DEEP_LAYER
 	world = Node3D.new()
 	add_child(world)
 	sky_root = Node3D.new()
@@ -623,6 +630,7 @@ func _load(index: int) -> void:
 	for z in mis["zones"]:
 		_add_zone(m, z)
 	current = {"map": m, "mission": mis, "entry": entry}
+	_sync_sun_half()
 	_place_camera(m, mis)
 	info.text = "%s\nmap %s (%s), %d objects, %d named zones, %d plants%s\nloaded in %.1f s" % [
 		entry["label"], mis["map"], m["planet"], mis["entities"].size(), mis["zones"].size(), nveg, note,
@@ -749,6 +757,44 @@ const DEFAULT_DIF := 46000.0 / 65536.0   # the usual pair of res 82 (diffuse, am
 const DEFAULT_AMB := 19536.0 / 65536.0
 var map_dif := DEFAULT_DIF
 var map_amb := DEFAULT_AMB
+
+
+# An object on the map's darkest stored light level (all its triangle's corners at it: 0x294B18 gives twice the map's
+# highest level, 0x294900) is lit with half the sun and no shine (0x29B645 -> 0x29E544); a suit there also loses the
+# ambient lift the game gives them (0x29C9B3: (amb + 1) / 2 -> amb). On the 10 maps stored at level 0 everywhere,
+# every model. Off unless TN_DEEP_SHADE=1 (not yet compared with the running game).
+var deep_shade := OS.get_environment("TN_DEEP_SHADE") == "1"
+var sun_half: DirectionalLight3D
+
+
+func _apply_deep(node: Node3D, m: Dictionary, x: float, y: float) -> void:
+	if not deep_shade or m.is_empty():
+		return
+	var deep: bool = TNData.level2_at(m, x, y) == 2 * int(m["detail"].get("level_max", 0))
+	if node.get_meta("deep", false) == deep and node.has_meta("deep"):
+		return
+	node.set_meta("deep", deep)
+	var dif := map_dif
+	var amb := map_amb
+	var r := (amb + dif / 4.0) / ((amb + 1.0) / 2.0 + dif / 2.0)   # a suit: deep against normal, at N.L = 0.5
+	var stack: Array = [node]
+	while not stack.is_empty():
+		var nd = stack.pop_back()
+		stack.append_array(nd.get_children())
+		if nd.has_meta("shadow_twin") or nd is Label3D or not (nd is GeometryInstance3D):
+			continue
+		if node.has_meta("soldier") or node.has_meta("suit"):
+			(nd as GeometryInstance3D).set_instance_shader_parameter("deep", r if deep else 1.0)
+		elif (nd as VisualInstance3D).layers == 1 or (nd as VisualInstance3D).layers == DEEP_LAYER:
+			(nd as VisualInstance3D).layers = DEEP_LAYER if deep else 1
+
+
+func _sync_sun_half() -> void:
+	if sun_half == null or not deep_shade:
+		return
+	sun_half.global_transform = sun.global_transform
+	sun_half.light_color = sun.light_color
+	sun_half.light_energy = 0.5 * sun.light_energy
 
 
 func _ground_look(base_light: float, base_ambient: float) -> void:
@@ -1181,6 +1227,9 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	mi.rotation.y = -heading
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
+	if soldier or TNObjects.is_model(ref):         # (sprites take the light at their foot: _foot_light)
+		mi.set_meta("deep_ok", true)
+		_apply_deep(mi, m, x, y)
 	if label:
 		var l := Label3D.new()
 		l.text = name if group == "" or group.begins_with("(NULL") or group.begins_with("DEFAULT") else "%s\n[%s]" % [name, group]
@@ -5050,6 +5099,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		node.visible = false
 		return
 	node.visible = true
+	if node.has_meta("deep_ok"):
+		_apply_deep(node, m, e[3], e[4])
 	if e[0] == 1 and e[2] == 0:
 		_make_corpse(node, m)
 		return
@@ -5096,6 +5147,7 @@ func _process(delta: float) -> void:
 		var vsz := hd_movie.get_video_texture().get_size()
 		if vsz.y > 0:
 			hd_movie_box.ratio = vsz.x / vsz.y           # the video at its own proportions, black around
+	_sync_sun_half()
 	sky_root.position = camera.position
 	if live:
 		_live_update()

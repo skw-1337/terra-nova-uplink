@@ -5770,6 +5770,8 @@ const WEATHER_FALL := 0.45                     # the game's fall step (1/16 px p
 var weather_scale := 0.8                       # flakes per volume against the game's (they are bigger and softer)
 var weather_node: MultiMeshInstance3D = null
 var weather_key := ""
+var weather_off_t := 0
+const WEATHER_OFF_MS := 700
 
 
 # Snow settling on the ground (live). While it snows (weather kind 1: MISS17 and MISS30, the ice planet), the game
@@ -5859,9 +5861,14 @@ func _live_weather(q: PackedByteArray) -> void:
 	var kind := q[4]
 	var n := q.decode_u16(10)
 	if kind == 0xFF or n == 0:
-		if weather_node != null:
+		# a single "none" now and then (the game's views rebuilt between two reads) blinked the snow off for a tenth
+		# of a second: hidden only once it has said so for WEATHER_OFF_MS
+		if weather_off_t == 0:
+			weather_off_t = Time.get_ticks_msec()
+		if weather_node != null and Time.get_ticks_msec() - weather_off_t >= WEATHER_OFF_MS:
 			weather_node.visible = false
 		return
+	weather_off_t = 0
 	if weather_node == null:
 		weather_node = MultiMeshInstance3D.new()
 		var mm := MultiMesh.new()

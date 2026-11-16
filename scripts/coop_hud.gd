@@ -24,6 +24,9 @@ const RIGHT_LEDS := [[165, 168, 0x83], [169, 172, 0x83], [173, 176, 0x84], [177,
 	[209, 212, 0x88], [213, 216, 0x88], [217, 220, 0x89], [221, 224, 0x89], [225, 228, 0x89], [229, 232, 0x8A],
 	[233, 236, 0x8A], [237, 240, 0x8A], [241, 244, 0x8B], [245, 247, 0x8B]]
 
+# the left top bar with its frame and tick rows (x 72-148, rows 26-37): the squad's armour bars in the COMM panel
+const BAR_SRC := Rect2(72, 26, 77, 12)
+
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
 const WEAPONS := ["", "Flare Launcher", "Smoke Grenade", "Grenade Launcher", "Laser", "Multipulsar", "Particle Beam",
@@ -149,6 +152,7 @@ func _ready() -> void:
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.draw.connect(_draw_panel)
+	panel.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST   # the game's pixels (bars, portraits) kept crisp
 	panel.visible = false
 	root.add_child(panel)
 	# crosshair: four short bars around the centre, dark edge for bright skies
@@ -509,10 +513,7 @@ func _draw_panel() -> void:
 			panel.draw_rect(_grect(18.0, y0, 39.0, y0 + 27.0), Color(0.05, 0.05, 0.1))
 		var nm: String = mate_name if i == 0 else _pilot_name(who[2], who[0])
 		_text(nm.to_upper(), 42.0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
-		var a: float = who[1] / 100.0
-		panel.draw_rect(_grect(42.0, y0 + 17.0, 96.0, y0 + 21.0), Color(0.1, 0.1, 0.15))
-		panel.draw_rect(_grect(42.0, y0 + 17.0, 42.0 + 54.0 * a, y0 + 21.0),
-			Color(0.3, 0.9, 0.3) if a > 0.5 else (Color(1.0, 0.7, 0.2) if a > 0.25 else Color(1.0, 0.25, 0.2)))
+		_draw_mini_bar(Rect2(42.0, y0 + 15.0, 55.0, 9.0), who[1] / 100.0)
 	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 58.0, 366.0, 8.0, Color(0.6, 0.65, 0.8), true)
 	if status_page:
 		_draw_status()
@@ -537,7 +538,8 @@ func _draw_panel() -> void:
 
 
 # one top bar: the share f of its pixels lit from its inner end (right end of the left bar, left end of the right one)
-func _draw_leds(cells: Array, f: float, from_right: bool) -> void:
+# (dest: where the bar's source box BAR_SRC goes, in game units; none: in place, the top bar itself)
+func _draw_leds(cells: Array, f: float, from_right: bool, dest := Rect2()) -> void:
 	if hud_pal.is_empty():
 		return
 	var lo: int = cells[0][0]
@@ -545,11 +547,23 @@ func _draw_leds(cells: Array, f: float, from_right: bool) -> void:
 	var n := int(round(clampf(f, 0.0, 1.0) * (hi - lo)))
 	var a := hi - n if from_right else lo
 	var b := hi if from_right else lo + n
+	var k := Vector2.ONE if dest.size == Vector2.ZERO else dest.size / BAR_SRC.size
+	var o := Vector2.ZERO if dest.size == Vector2.ZERO else dest.position - BAR_SRC.position * k
 	for c in cells:
 		var x0: int = maxi(c[0], a)
 		var x1: int = mini(c[1], b)
 		if x1 > x0:
-			panel.draw_rect(_grect(x0, 30.0, x1, 34.0), hud_pal[c[2]])
+			panel.draw_rect(_grect(o.x + x0 * k.x, o.y + 30.0 * k.y, o.x + x1 * k.x, o.y + 34.0 * k.y), hud_pal[c[2]])
+
+
+# a squadmate's armour in the COMM panel: the game's own left top bar (its pixels from the cockpit picture, leds put
+# out there) scaled into dest, lit in the game's led colours for the share f
+func _draw_mini_bar(dest: Rect2, f: float) -> void:
+	if cockpit.texture == null:
+		return
+	var r := _grect(dest.position.x, dest.position.y, dest.end.x, dest.end.y)
+	panel.draw_texture_rect_region(cockpit.texture, r, BAR_SRC)
+	_draw_leds(LEFT_LEDS, f, true, dest)
 
 
 # the host's name over his suit (and how far he is)

@@ -175,7 +175,6 @@ class Guest:
         self.pending, self.clk, self.jet_n, self.jet_air = [0, 0, 0], None, None, None
         self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
-        self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
@@ -262,7 +261,7 @@ class Guest:
         for e in [me] + [i for i in self.squad if i != self.gid]:
             if not self.alive(e):
                 continue
-            full = self.amax0.setdefault(e, self.armour_max(e))
+            full = self.armour_max(e)                          # current / max in its record (+0x15 / +0x17)
             pilot = 255
             for a in range(0x391e50, 0x391f18, 0x32):
                 r = self.g.read(a, 8)
@@ -658,7 +657,7 @@ class Guest:
         if g.read(M + me * 0x25, 2) != b'\x01\x01':          # not in a mission
             if self.gid:
                 self.take(0)
-            self.squad, self.state, self.amax0 = [], OK, {}
+            self.squad, self.state = [], OK
             self.read_input(False)                             # no stale look / F8 at the next mission start
             self.lobby_step(False)
             return

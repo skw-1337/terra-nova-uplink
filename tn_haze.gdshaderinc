@@ -42,6 +42,17 @@ vec3 tn_game_colour(vec3 srgb) {
 	return tn_haze_linear(v) / max(tn_view_bcs.x, 0.01);
 }
 
+// The other way: what the screen shows (sRGB) for a linear colour drawn in this view (e.g. read back from the screen
+// texture, which holds the picture before the view's adjustments)
+vec3 tn_view_srgb(vec3 lin) {
+	if (tn_view_bcs.w < 0.5) {
+		return tn_haze_srgb(lin);
+	}
+	vec3 v = tn_haze_srgb(lin * tn_view_bcs.x);
+	v = mix(vec3(0.5), v, tn_view_bcs.y);
+	return mix(vec3((v.x + v.y + v.z) / 3.0), v, tn_view_bcs.z);
+}
+
 // col: the colour in linear light, wpos: the point's world position, cam: the camera's, layers: CAMERA_VISIBLE_LAYERS
 vec3 tn_haze(vec3 col, vec3 wpos, vec3 cam, uint layers) {
 	if (tn_haze_range.w < 0.5 || (layers & (1u << 16u)) == 0u) {

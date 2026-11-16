@@ -1101,6 +1101,13 @@ func _water_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float, 
 	sm.set_shader_parameter("plain", ir_on)
 	var far: Color = pl.get("water_far", Color(0.41, 0.54, 0.5))
 	sm.set_shader_parameter("water_far", far)
+	var fp: PackedColorArray = pl.get("palette", PackedColorArray())
+	if fp.size() >= 256:
+		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
+		for i in 256:
+			pimg.set_pixel(i, 0, fp[i])
+		sm.set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
+		sm.set_shader_parameter("has_pal", true)
 	ground_mats.append(sm)
 	water_mats.append(sm)
 	_sky_to(sm)
@@ -2960,6 +2967,10 @@ func _hud_camera(fov: float) -> void:
 	camera.near = near
 	camera.size = w
 	camera.frustum_offset = Vector2(0, (yc - vs.y / 2.0) / vs.x * w)
+	for sm in water_mats:                     # (the water's mirror stops at the game's 3D window)
+		(sm as ShaderMaterial).set_shader_parameter("view_rows", 400.0)
+		(sm as ShaderMaterial).set_shader_parameter("view_top", hud_win.position.y / 400.0)
+		(sm as ShaderMaterial).set_shader_parameter("view_bottom", (hud_win.position.y + hud_win.size.y) / 400.0)
 
 
 func _play_scancode(e: InputEventKey) -> int:

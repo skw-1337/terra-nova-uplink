@@ -1596,22 +1596,32 @@ s16 = lambda a: struct.unpack('<h', g.read(a, 2))[0]
 i32 = lambda a: struct.unpack('<i', g.read(a, 4))[0]
 
 
-# The eye's height above the player's entity. The game's main view stands 0.05 above the neck of the player's suit
-# (joint 9 of its record, which the game keeps up to date even for the suit it is seen from): 0.32 for the suit the
-# first measure was made with, 0.397 for a heavy one (measured: the shared viewpoint 0x41EB68 while the main view is
-# drawn). With 0.32 for every suit, what is near the eyes stood too high from a heavy suit: a grenade leaving the
-# gun, a beam's start. --eye N: that height for every suit, as before.
+# The main view's eye, from the player's entity (dx, dy, dz). The game's routine 0x27ec90 (EN) puts it on the line
+# from the pelvis to the neck of the player's suit (joints 8 and 9 of its record, kept up to date even for the suit
+# it is seen from), past the neck by k times that length, k by the suit (dword +0xDE, table 0x27ec64), then adds
+# [0x38FB1C] to z. The torso leans forward, so the eye is a little ahead of the entity (0.019 standing, about 0.07
+# crouched), 0.397 above it for a heavy suit. --eye N: that height straight above the entity for every suit.
 EYE_AUTO = '--eye' not in sys.argv
-oeil_vu = [EYE]
+oeil_vu = [(0.0, 0.0, EYE)]
+EYE_K = {0: 0x4D65, 1: 0x5D17, 2: 0x4771, 10: 0x50D7}   # other suits (3-9, above 10, negative): 0x5174
 
 
 def oeil(e, z):
-    if not EYE_AUTO: return EYE
+    if not EYE_AUTO: return (0.0, 0.0, EYE)
     try:
         nf = u16(e + 3)
-        cou = i32(SOLDATS + nf * 0x582 + 0x1AF + 9 * 12 + 8) / 65536
-        h = cou - z + 0.05
-        if 0.15 < h < 0.9 and nf <= 200: oeil_vu[0] = h      # (else: the last good one, a record being rewritten)
+        S = SOLDATS + nf * 0x582
+        k = EYE_K.get(i32(S + 0xDE), 0x5174)
+        j8 = struct.unpack('<3i', g.read(S + 0x1AF + 8 * 12, 12))
+        j9 = struct.unpack('<3i', g.read(S + 0x1AF + 9 * 12, 12))
+        ent = struct.unpack('<3i', g.read(e + 0x0F, 12))
+        oe = [j9[i] + (((j9[i] - j8[i]) * k) >> 16) for i in range(3)]
+        oe[2] += d32(OEIL)
+        d = tuple((oe[i] - ent[i]) / 65536 for i in range(3))
+        torse = math.dist(j8, j9) / 65536
+        if (nf <= 200 and 0.10 < torse < 0.45 and max(abs(j8[0] - ent[0]), abs(j8[1] - ent[1])) < 0.01 * 65536
+                and math.hypot(d[0], d[1]) < 0.15 and 0.15 < d[2] < 0.9):
+            oeil_vu[0] = d                                    # (else: the last good one, a record being rewritten)
     except BaseException:
         pass
     return oeil_vu[0]
@@ -1886,7 +1896,7 @@ while True:
     sv = [(k, v, c) for k, v, c in sv if c is not None]
     s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *c) for k, v, c in sv),
              ('127.0.0.1', 47821))
-    cam = (x, y, z + eye, head, pitch)
+    cam = (x + eye[0], y + eye[1], z + eye[2], head, pitch)
     if sonde:
         cam = (*(v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vue + 0x0F)),
                struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)

@@ -28,7 +28,7 @@ const SMOKE_WIDTH := 1.4                # world width of a smoke column
 const POSES_FILE := "res://data/soldier_poses.json"   # real poses read from the running game
 # Standing pose computed by the game for a Hog scout (suit 4), read in a RAM snapshot:
 # joints (right, up, forward) in world units, ground at 0. Other suits get the same joint
-# directions with their own bone lengths (sprite pixel length / 256 x 1.09, the scout's own size).
+# directions with their own bone lengths (sprite pixel length / 256 x the game's size factor, _part_scale).
 const TEMPLATE_POSE := [Vector3(-0.0378, 0.0, 0.0329), Vector3(0.0378, 0.0, 0.0329),
 		Vector3(-0.0279, 0.0422, -0.0169), Vector3(0.0279, 0.0422, -0.0169),
 		Vector3(-0.0203, 0.1445, 0.0034), Vector3(0.0388, 0.1445, 0.0035),
@@ -37,7 +37,13 @@ const TEMPLATE_POSE := [Vector3(-0.0378, 0.0, 0.0329), Vector3(0.0378, 0.0, 0.03
 		Vector3(-0.0695, 0.322, 0.061), Vector3(0.0932, 0.3227, 0.0609),
 		Vector3(-0.0714, 0.3061, 0.1374), Vector3(0.111, 0.3112, 0.136)]
 const TEMPLATE_SUIT := 4
-const BODY_SCALE := 1.09
+# A soldier's size (0x27F00C, 0x2817B0): v = 6 + (r1 + r2 + r3) / 4 (r: 0..15, mean 11.25), 11 for the clones (suits 6-8);
+# the squad's from a table by character. d = v + the suit's offset - 8: legs (thigh, shin) x (1 + d / 64), arms and
+# torso x (1 + d / 128), feet as they are. Standing, the game's legs reach 0.9 x thigh + shin (its field +0x2ED).
+const SIZE_OFFSET := {4: 10, 2: 5, 5: 5, 3: 2, 1: -2}
+const SIZE_MEAN := 11.25
+const SIZE_CLONE := 11.0
+const LEG_STAND := 0.9
 const CFG := "user://viewer.cfg"
 
 var data = TNData.new()
@@ -103,6 +109,7 @@ var live_shot := ""
 var live_shot_frame := 60
 var live_nodes := []          # one node per mission entity, in file order
 var live_off := -1            # game entity table index of the first mission entity
+var live_sizes := {}          # game entity index -> its soldier's bone lengths (the bridge's SLEN, _live_size)
 var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
 var live_fx := {}             # game entity index -> glowing sprite: shots (class 5) and their sparks (class 6)
@@ -603,6 +610,7 @@ func _load(index: int) -> void:
 	live_nodes.clear()
 	live_off = -1
 	live_alarm = false                        # (cleared by the game at each mission start)
+	live_sizes.clear()
 	live_extra.clear()
 	live_fx.clear()
 	live_piles.clear()
@@ -1220,7 +1228,7 @@ func _add_soldier(holder: Node3D, suit: int) -> float:
 		# the ground (0.25 for the whole suit: one just behind a wall showed through it)
 		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 5 else 0.0)
 		holder.add_child(seg)
-		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x)])
+		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2])])
 	holder.set_meta("soldier", parts)
 	holder.set_meta("suit", suit)
 	holder.set_meta("leg_rest", [p[6].distance_to(p[4]), p[4].distance_to(p[2]), p[7].distance_to(p[5]),
@@ -1249,7 +1257,7 @@ func _pose_soldier(holder: Node3D, p: Array) -> float:
 	# last guard: a bone far longer than its limb (joints the game left where it last drew the suit) is not drawn, the
 	# suit keeps its previous pose (each sprite is scaled by its bone: such a limb came out several times too big)
 	for part in holder.get_meta("soldier"):
-		if (p[part[2]] - p[part[1]]).length() > 1.6 * float(part[3]) / 256.0 * BODY_SCALE:
+		if (p[part[2]] - p[part[1]]).length() > 1.6 * float(part[3]) / 256.0 * float(part[5]):
 			return -1.0
 	# the body's right, which sets each limb's front (the views turn around the bone): the hips' line for the legs
 	# and feet, the shoulders' for the torso and arms (joints 6 / 7 hips, 10 / 11 shoulders). Front = right x bone:
@@ -1356,12 +1364,36 @@ const WALK_EASE := 8.0                         # the upper body's swing eased (r
 const POSE_FADE := 250.0                       # ms: from the game's pose to its own steps and back
 
 
-func _arms_off(p: Array, stand: Array) -> bool:
-	for b in ARM_BONES:
-		var l0: float = (stand[b[0]] as Vector3).distance_to(stand[b[1]])
+func _arms_off(p: Array, stand: Array, rest: Array = []) -> bool:
+	for i in ARM_BONES.size():
+		var b: Array = ARM_BONES[i]
+		var l0: float = rest[i] if i < rest.size() else (stand[b[0]] as Vector3).distance_to(stand[b[1]])
 		if l0 > 0.0 and absf((p[b[0]] as Vector3).distance_to(p[b[1]]) / l0 - 1.0) > ARM_TOL:
 			return true
 	return false
+
+
+# A soldier's own bone lengths, read by the bridge in its game record (thigh, shin, upper arm, forearm, torso, reach):
+# its legs at rest stand 0.9 x thigh + shin (= reach, as the game's hip to ankle shows), its arms and the neck to
+# shoulders as the game has them (_arms_off); its feet stay at their file length.
+func _live_size(node: Node3D, sz: Array) -> void:
+	node.set_meta("size", sz)
+	if node.has_meta("corpse") or not node.has_meta("stand"):
+		return
+	var th: float = LEG_STAND * float(sz[0])
+	var sh: float = LEG_STAND * float(sz[1])
+	node.set_meta("leg_rest", [th, sh, th, sh])
+	var stand: Array = node.get_meta("stand")
+	var k_torso: float = float(sz[4]) / maxf((stand[8] as Vector3).distance_to(stand[9]), 0.001)
+	var rest := []
+	for b in ARM_BONES:
+		if b in [[10, 12], [11, 13]]:
+			rest.append(float(sz[2]))
+		elif b in [[12, 14], [13, 15]]:
+			rest.append(float(sz[3]))
+		else:
+			rest.append((stand[b[0]] as Vector3).distance_to(stand[b[1]]) * k_torso)
+	node.set_meta("arm_rest", rest)
 
 
 func _gait_wanted(node: Node3D, now: int) -> bool:
@@ -1624,6 +1656,20 @@ func _node_axes(v: Vector3) -> Vector3:
 var captured_poses = null
 
 
+# A suit's standing bone length for a part, x its pixels / 256: the game's size rule (SIZE_OFFSET) for a soldier of the
+# mean size (the game draws each one's at random: not reproducible), the legs as they stand (LEG_STAND).
+static func _part_scale(suit: int, part: int) -> float:
+	var v := SIZE_CLONE if suit in [6, 7, 8] else SIZE_MEAN
+	var d: float = v + SIZE_OFFSET.get(suit, 0) - 8.0
+	match part:
+		0:
+			return 1.0
+		1, 2:
+			return LEG_STAND * (1.0 + d / 64.0)
+		_:
+			return 1.0 + d / 128.0
+
+
 # The pose captured in the game for this suit when there is one (data/soldier_poses.json, written
 # by _MODS/re/poses.py), else the template pose rebuilt with this suit's bone lengths.
 func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
@@ -1644,7 +1690,7 @@ func _soldier_pose(suit: int, segs: Array, limbs: Dictionary) -> Array[Vector3]:
 	for v in TEMPLATE_POSE:
 		t.append(v)
 	var length := func(part: int) -> float:
-		return limbs[part]["len"] / 256.0 * BODY_SCALE if limbs.has(part) else 0.08
+		return limbs[part]["len"] / 256.0 * _part_scale(suit, part) if limbs.has(part) else 0.08
 	# free joints (pelvis, hips, shoulders) keep their place relative to the pelvis / neck,
 	# scaled with the torso; every limb keeps its direction and takes this suit's length
 	var k_torso: float = length.call(5) / t[8].distance_to(t[9])
@@ -3240,6 +3286,11 @@ func _live_update() -> void:
 			_live_vegetation(q.slice(4))
 		elif q.size() >= 8 and q.slice(0, 4).get_string_from_ascii() == "SCOR":
 			_live_scorch(q.slice(4))
+		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "SLEN" and q.size() == 6 + 28 * q.decode_u16(4):
+			for k in q.decode_u16(4):
+				var o := 6 + 28 * k
+				live_sizes[q.decode_s32(o)] = [q.decode_float(o + 4), q.decode_float(o + 8), q.decode_float(o + 12),
+						q.decode_float(o + 16), q.decode_float(o + 20), q.decode_float(o + 24)]
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)
@@ -3548,7 +3599,9 @@ func _live_units(pk: PackedByteArray) -> void:
 			if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
 				node.set_meta("jt0", now_ms)                # its poses again after a while without (GAIT_BACK)
 			node.set_meta("jt", now_ms)
-			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand")):
+			if live_sizes.has(idx) and node.get_meta("size", []) != live_sizes[idx]:
+				_live_size(node, live_sizes[idx])
+			if node.has_meta("stand") and _arms_off(joints[idx], node.get_meta("stand"), node.get_meta("arm_rest", [])):
 				node.set_meta("stale_t", now_ms)            # a half-frozen pose: it walks on its own steps
 			if not _gait_wanted(node, now_ms):
 				_pose_suit(node, joints[idx], false)

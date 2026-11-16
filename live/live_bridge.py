@@ -337,6 +337,28 @@ def meteo():
 PETITES = {}
 
 
+# Each soldier's own size (0x2817B0, from a random value or the squad's table): its bone lengths in its record
+# (SOLDATS + n * 0x582, 16.16): torso +0x2AB, upper arm +0x2BB, forearm +0x2BF, thigh +0x2C3, shin +0x2C7, and the
+# legs' reach +0x2ED (0.9 x thigh + shin). Not for the mech (suit 11: its own values there).
+taille_t = 0.0
+
+
+def tailles(tab):
+    """[(entity, (thigh, shin, upper arm, forearm, torso, reach))] of the soldiers (suits 0-10) in the table"""
+    out = []
+    for i in range(NENT):
+        o = 0x25 * i
+        if not tab[o] or tab[o + 1] != 1: continue
+        nf = struct.unpack_from('<H', tab, o + 3)[0]
+        if nf > 200: continue
+        r = g.read(SOLDATS + nf * 0x582 + 0xDE, 0x214)
+        if struct.unpack_from('<I', r, 0)[0] > 10: continue
+        v = [struct.unpack_from('<i', r, a - 0xDE)[0] / 65536 for a in (0x2C3, 0x2C7, 0x2BB, 0x2BF, 0x2AB, 0x2ED)]
+        if all(0.03 <= x <= 0.6 for x in v):
+            out.append((i, tuple(v)))
+    return out
+
+
 def petite(i, nf, n):
     k = PETITES.get((i, nf))
     if k is None:
@@ -1686,6 +1708,12 @@ while True:
             if guest: guest.dust(pk)           # (the coop guest's window too)
         part_prev, part_t = bool(pts), time.time()
     body = []
+    if time.time() - taille_t > 1.0:           # each soldier's own bone lengths, every second (the viewer: SLEN)
+        taille_t = time.time()
+        tl = tailles(tab)
+        if tl:
+            s.sendto(b'SLEN' + struct.pack('<H', len(tl)) + b''.join(struct.pack('<i6f', i, *v) for i, v in tl),
+                     ('127.0.0.1', 47821))
     if time.time() - corps_t > 0.5:
         corps_t = time.time()
         raw = g.read(CORPS, 200 * 0x14E)

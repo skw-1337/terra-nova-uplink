@@ -581,6 +581,40 @@ func sprite(ref: Vector2i, pal: PackedColorArray, pal_key: String) -> Dictionary
 	return out
 
 
+# A sprite through each of the planet's 16 shade rows (TNData.shade_luts): layer k = file row k, as the game lights a
+# plant by swapping each texel's palette index through the row at its foot. null: not a sprite.
+func sprite_rows(ref: Vector2i, pal_key: String, luts: Array) -> Texture2DArray:
+	var key := "sr%d/%d/%s" % [ref.x, ref.y, pal_key]
+	if tex_cache.has(key):
+		return tex_cache[key]
+	var arr: Texture2DArray = null
+	var fr := LGRes.frames(res.data(ref.x))
+	if is_sprite(ref) and ref.y < fr.size() and luts.size() == 16:
+		var f: PackedByteArray = fr[ref.y]
+		var idx := _bitmap_idx(f)
+		if not idx.is_empty():
+			var w := f.decode_u16(8)
+			var h := f.decode_u16(10)
+			var imgs: Array[Image] = []
+			for k in 16:
+				var lut: PackedByteArray = luts[k]
+				var rgba := PackedByteArray()
+				rgba.resize(w * h * 4)
+				for p in w * h:
+					var c := 3 * idx[p]
+					rgba[4 * p] = lut[c]
+					rgba[4 * p + 1] = lut[c + 1]
+					rgba[4 * p + 2] = lut[c + 2]
+					rgba[4 * p + 3] = 0 if idx[p] == 0 else 255
+				var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+				img.generate_mipmaps()
+				imgs.append(img)
+			arr = Texture2DArray.new()
+			arr.create_from_images(imgs)
+	tex_cache[key] = arr
+	return arr
+
+
 func _texture(global_index: int, pal: PackedColorArray, pal_key: String) -> Texture2D:
 	var key := "t%d/%s" % [global_index, pal_key]
 	if tex_cache.has(key):

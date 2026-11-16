@@ -724,7 +724,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 			if not sp.is_empty():
 				mesh = _sprite_quad(sp, objects.sprite_width(key.x, key.y) * SPRITE_SCALE, SPRITE_TALL, sprite_hd)
-				mat = _sprite_mat(ref, sp)
+				mat = _sprite_mat_rows(ref, sp, m) if _sprites_per_index(m) else _sprite_mat(ref, sp)
 				shadow = _sprite_shadow_mat(ref, sp)
 		elif TNObjects.is_model(ref):
 			var md: Dictionary = objects.model(ref, pal, pal_key)
@@ -747,7 +747,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			mm.set_instance_transform(i, trs[i][0])
 			if lit:
 				var o: Vector3 = trs[i][0].origin
-				mm.set_instance_color(i, _foot_light(m, o.x, o.z))
+				mm.set_instance_color(i, Color(_foot_row(m, o.x, o.z) / 15.0, 0.0, 0.0) if mat is ShaderMaterial and 						(mat as ShaderMaterial).get_shader_parameter("per_index") else _foot_light(m, o.x, o.z))
 			var cell: int = trs[i][1]
 			if not veg_cells.has(cell):
 				veg_cells[cell] = []
@@ -781,6 +781,42 @@ func _foot_light(m: Dictionary, x: float, y: float) -> Color:
 	var rows: PackedFloat32Array = m["planet_data"].get("rows", PackedFloat32Array())
 	var k := rows[clampi(TNData.level2_at(m, x, y), 0, 15)] if rows.size() == 16 else 1.0
 	return Color(ground_light.r * k, ground_light.g * k, ground_light.b * k)
+
+
+# The row of the planet's light table at that foot (file row: 0 = full light)
+func _foot_row(m: Dictionary, x: float, y: float) -> int:
+	return clampi(TNData.level2_at(m, x, y), 0, 15)
+
+
+# Live: the sprites as the game lights them, each texel's palette index through that row (TNData.shade_luts), in the
+# game's colours, not the ground's look times the row's mean brightness (the plants came out darker than the game's)
+func _sprites_per_index(m: Dictionary) -> bool:
+	return live and not m.is_empty() and ((m["planet_data"] as Dictionary).get("shade_luts", []) as Array).size() == 16
+
+
+func _sprite_mat_rows(ref: Vector2i, sp: Dictionary, m: Dictionary) -> ShaderMaterial:
+	var k := "spriterows%s/%s" % [ref, pal_key]
+	if not mats.has(k):
+		var arr := objects.sprite_rows(ref, pal_key, (m["planet_data"] as Dictionary)["shade_luts"])
+		if arr == null:
+			return _sprite_mat(ref, sp)
+		var sm := ShaderMaterial.new()
+		sm.shader = SPRITE
+		sm.set_shader_parameter("tex", sp["texture"])
+		sm.set_shader_parameter("tex_rows", arr)
+		sm.set_shader_parameter("per_index", true)
+		mats[k] = sm
+	return mats[k]
+
+
+func _sprite_lit_row(ref: Vector2i, sp: Dictionary, m: Dictionary, row: int) -> ShaderMaterial:
+	var key := "spriterows%s/%s/%d" % [ref, pal_key, row]
+	if not mats.has(key):
+		var sm := _sprite_mat_rows(ref, sp, m).duplicate() as ShaderMaterial
+		sm.set_shader_parameter("use_vcol", false)
+		sm.set_shader_parameter("row", float(row))
+		mats[key] = sm
+	return mats[key]
 
 
 # (a sprite object: its own copy of the sprite's material at that light)
@@ -1416,7 +1452,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 			mi.mesh = q
 			if _sprite_anchored(sp):
 				mi.set_meta("anchored", true)          # its anchor on the game's point itself (_live_place)
-			mi.material_override = _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
+			mi.material_override = _sprite_lit_row(ref, sp, m, _foot_row(m, x, y)) if _sprites_per_index(m) 					else _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
 	# nothing usable in the data (e.g. the biped mech): a box; not for the Fumee the game deletes at load, nor a hit

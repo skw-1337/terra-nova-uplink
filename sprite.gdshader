@@ -10,6 +10,11 @@ render_mode unshaded, cull_disabled, fog_disabled;
 uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_enable;
 uniform vec4 albedo : source_color = vec4(1.0);
 uniform bool use_vcol = false;          // the instance colour (MultiMesh) as the light
+// per_index (live): the sprite through the planet's shade rows (layer = file row), the row at its foot in row (or, with
+// use_vcol, the instance colour's red x 15), in the game's colours (tn_game_colour); albedo is then unused
+uniform bool per_index = false;
+uniform sampler2DArray tex_rows : source_color, filter_linear_mipmap, repeat_enable;
+uniform float row = 0.0;
 
 void vertex() {
 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
@@ -27,7 +32,10 @@ void vertex() {
 
 void fragment() {
 	vec4 c = texture(tex, UV) * albedo;
-	if (use_vcol) {
+	if (per_index) {
+		c = texture(tex_rows, vec3(UV, use_vcol ? floor(COLOR.r * 15.0 + 0.5) : row));
+		c.rgb = tn_game_colour(tn_haze_srgb(c.rgb));
+	} else if (use_vcol) {
 		c *= COLOR;
 	}
 	ALBEDO = tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);

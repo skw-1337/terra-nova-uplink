@@ -617,7 +617,8 @@ func _load(index: int) -> void:
 	anim_mats.clear()                         # (their pictures are in the mission's palette)
 	smoke_pending.clear()
 	for e in mis["entities"]:
-		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"]))
+		live_nodes.append(_add_object(m, e["cls"], e["sub"], e["x"], e["y"], e["heading"], e["group"], true, e["z"],
+				e.get("state", 0)))
 		live_nodes[-1].set_meta("mission", true)       # placed from the file: buildings stay on the ground
 		counts[e["cls"]] = counts.get(e["cls"], 0) + 1
 	for z in mis["zones"]:
@@ -1100,8 +1101,9 @@ func _apply_look() -> void:
 		sm.set_shader_parameter("modern", m)
 
 
+# state: a decor object's picture (1: hit once, its burnt stump; the mission file or the live game say so).
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
-		label: bool, z: float = 0.0) -> MeshInstance3D:
+		label: bool, z: float = 0.0, state: int = 0) -> MeshInstance3D:
 	var name: String = data.type_name(cls, sub)
 	var low := name.to_lower()
 	var ground := TNData.height_at(m, x, y)
@@ -1112,7 +1114,9 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		lift = 3.0
 	var mi := MeshInstance3D.new()
 	var top := 0.0
-	var ref: Vector2i = objects.ref_for(cls, sub) if objects_ok else Vector2i.ZERO
+	var ref: Vector2i = objects.ref_for(cls, sub, state) if objects_ok else Vector2i.ZERO
+	var no_picture := objects_ok and cls == 0 and state != 0 and ref == Vector2i.ZERO   # (the game draws nothing)
+	mi.set_meta("state", state)
 	var soldier := false
 	if cls == 1 and objects_ok:
 		var suit := TNObjects.suit_of(sub)
@@ -1156,7 +1160,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.material_override = _sprite_lit(ref, sp, k)
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
-	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
+	if mi.mesh == null and not soldier and not no_picture:   # nothing usable in the data (e.g. the biped mech)
 		var box := BoxMesh.new()
 		match cls:
 			0:
@@ -3491,8 +3495,10 @@ func _live_units(pk: PackedByteArray) -> void:
 		if mine or e[0] > 4:
 			continue                                    # units, vehicles, probes, buildings set up in play (turrets),
 		# and decor: when a tree or bush is hit, the game empties its vegetation cell and makes every plant of the
-		# cell a decor entity, intact (drawn like the plant); a destroyed one leaves the table, its ground burnt
-		var ct := Vector2i(e[0], e[1])
+		# cell a decor entity, intact (drawn like the plant); hit once, its picture is its burnt stump (the bridge:
+		# bit 1 of active), a destroyed one leaves the table, its ground burnt. (A mission's own plants keep the
+		# state of the file: the only ones, MISS13's, start burnt and the game never puts one back)
+		var ct := Vector3i(e[0], e[1], (int(e[2]) >> 1) & 1 if e[0] == 0 else 0)
 		if live_extra.has(idx) and live_extra[idx].get_meta("ct") != ct:
 			var old: Node3D = live_extra[idx]           # slot reused by another unit
 			if old.has_meta("soldier") or old.has_meta("mech"):
@@ -3501,7 +3507,7 @@ func _live_units(pk: PackedByteArray) -> void:
 				old.queue_free()
 			live_extra.erase(idx)
 		if not live_extra.has(idx) and e[2] != 0:
-			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0)
+			live_extra[idx] = _add_object(m, e[0], e[1], e[3], e[4], e[6], "", false, 0.0, ct.z)
 			live_extra[idx].set_meta("ct", ct)
 			if idx == body:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)

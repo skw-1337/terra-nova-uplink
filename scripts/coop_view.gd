@@ -1,4 +1,4 @@
-# Online coop view (COOP_VERSION 3), the guest's side: the host's keyframes (VKF), deltas (VDL, or VDP: in parts)
+# Online coop view (COOP_VERSION 4), the guest's side: the host's keyframes (VKF), deltas (VDL, or VDP: in parts)
 # and decor messages (VDC) turned back into the viewer's full live packet (camera, 32 bytes per entity, 200 bytes per posed suit), the
 # packet the local coop sends to port 47831, so viewer.gd reads it as before. Formats: live/coop_view.py (its Decoder
 # is this file's twin, checked byte for byte by live/test_coop_view.py).
@@ -13,6 +13,7 @@ const ACTIVE := 1
 const POS_F32 := 2
 const HEAD_F32 := 4
 const RAW := 8
+const HIT := 16                      # a decor plant hit once: active bit 1
 const JOINT_F32 := 1
 
 var decor := {}                      # index -> 32-byte entity, as in the view
@@ -126,7 +127,7 @@ func _records(b: PackedByteArray, o: int, into: Dictionary, joint: bool) -> int:
 			r.resize(32)
 			r.encode_s32(4, b[o])
 			r.encode_s32(8, b[o + 1])
-			r.encode_s32(12, f & ACTIVE)
+			r.encode_s32(12, (f & ACTIVE) | (2 if f & HIT else 0))
 			o += 2
 			if f & POS_F32:
 				for q in 12:

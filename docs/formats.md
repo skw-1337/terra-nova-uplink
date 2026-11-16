@@ -40,11 +40,11 @@ Everything below was worked out for Uplink from the game files and from the game
 | RESTNOBJ 1160-1163 | tree, bush and rock sprites (LG bitmaps: type 2 raw, type 4 RSD run-length) |
 | RESTNOBJ 1164-1193 | effect animations (explosions, fire, smoke; type 5 = translucent: 248 / 249 = light / dense smoke through the translucency tables) |
 | RESTNOBJ 1196-1342 | model textures |
-| RESTNOBJ 1371 / 1372 / 1373 / 1374 | object type → model or sprite for classes 0 (props), 2 (vehicles), 3 (aircraft), 4 (buildings): ref = u16 frame, u16 resource; props and buildings have 2 refs per type (intact, destroyed) |
+| RESTNOBJ 1371 / 1372 / 1373 / 1374 | object type → model or sprite for classes 0 (props), 2 (vehicles), 3 (aircraft), 4 (buildings): ref = u16 frame, u16 resource; props and buildings have 2 refs per type (props: intact, hit once — a burnt stump, picked by the state byte +6 of the decor record 0x3BA080 + 9n, a second hit removes the prop; buildings: intact, destroyed) |
 | RESTNOBJ 1364 + class | per-type properties: collision shape (u16 kind, u16 index of the radius / height entry, 8-byte entries) |
 | RESMAP.RES 1440 | global texture number → ref (resource, frame) |
 | RESGAME / helmet files | palette colors 0-16 (fixed; a blue-grey ramp also used by planet 3's ground); the planet supplies 17-255 |
-| MISSx.RES 170 / 172 / 173 / 176 / 177 | map / groups / entities (50 bytes: class, type, … x, y, z in 16.16 at 8 / 12 / 16, u16 heading at 20; z = height above the ground, 0 everywhere except the *Eagle's Nest* bridge) / zone positions / zone names |
+| MISSx.RES 170 / 172 / 173 / 176 / 177 | map / groups / entities (50 bytes: class, type, … x, y, z in 16.16 at 8 / 12 / 16, u16 heading at 20, byte 0x1B = a decor object's initial state (1: hit once, its second picture; MISS13's burnt grove); z = height above the ground, 0 everywhere except the *Eagle's Nest* bridge) / zone positions / zone names |
 | MISSx.RES 178 | sky file name (16 bytes), then mission parameters (copied to 0x4424D4: +0x13 view distance, +0x15 gravity 16.16 — 0.6 on the moon —, +0x1D / +0x1F cloud wind direction and speed) |
 | SKYn.RES 152 | pictures: 0 = 256 × 256 cloud texture (absent on SKY3 / SKY4), then clouds, sun, moons, planets |
 | SKYn.RES 153 | layout: u16 count, u8 base color; 0x04 cloud texture ref, 0x0C u16 star field resource, 0x14 moon ref; from 0x20 12-byte items: u16 azimuth, u16 elevation (1/65536 turn), ref (frame, 152), 4 bytes |

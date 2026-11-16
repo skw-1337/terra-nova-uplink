@@ -32,7 +32,10 @@ class Mission:
         for k in range(decor):
             cls = 4 if k % 4 == 0 else 0
             self.ents[i] = [cls, r.randrange(40), 1, r.uniform(10, 500), r.uniform(10, 500), r.uniform(0, 30), r.randrange(65536), None]
+            if cls == 0 and k % 7 == 1:
+                self.ents[i][2] = 3            # a plant hit once (its burnt stump: active bit 1)
             i += 1
+        self.plant = 2                         # a plant hit once at 1/4 of the run
         self.building = i - 4                  # a class 4 entity destroyed at 1/3 of the run
         self.lift = i - 8                      # a class 4 entity that moves after 1/2 of the run
         self.ents[self.building][0] = self.ents[self.lift][0] = 4
@@ -57,6 +60,8 @@ class Mission:
         r, self.t = self.r, self.t + dt
         if self.building in self.ents and self.t > SECONDS / 3:
             self.ents[self.building][1:3] = [41, 0]               # destroyed: another type, inactive
+        if self.t > SECONDS / 4:
+            self.ents[self.plant][2] = 3                          # hit once: its stump
         if self.t > SECONDS / 2:
             e = self.ents[self.lift]
             e[5] += 0.4 * dt                                      # moves up: leaves the decor
@@ -260,6 +265,12 @@ if __name__ == '__main__':
     SMALL = (70, 15, 10, 8, 3, 25)              # decor, suits, posed, vehicles, probes, shots + debris: ~150
     LARGE = (200, 40, 30, 25, 10, 90)           # ~400
     failed = False
+    # a plant hit once (active 3) travels in the compact record, not as RAW, and comes back as 3
+    rec = struct.pack('<3i4f', 0, 1, 3, 200.0, 210.0, 5.0, angle(0x1234))
+    q = cv.q_ent(7, rec)
+    hit_ok = not q[2] & cv.RAW and cv.d_ent(q, 0)[1] == rec
+    print('plant hit once, compact record round trip:', 'OK' if hit_ok else 'FAILED')
+    failed |= not hit_ok
     all_msgs, all_outs = [], []
     for name, args, loss, join in [('150 entities', SMALL, 0.0, None), ('400 entities', LARGE, 0.0, None),
                                    ('150 entities, lossy', SMALL, 0.25, None), ('400 entities, late guest', LARGE, 0.1, 3.3)]:

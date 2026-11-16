@@ -335,6 +335,14 @@ for _nom, _sig in (('BURST', rb'\x8b\x4c\xa8\x0a\x88\x14\x24\x69\xd1\xa9\x03\x00
 if len(PILES) != 2 or 'REC' not in FUM:
     print('armures : signatures introuvables (morceaux sans armure)', PILES)
     PILES = {}
+# A decor object's picture: its decor record (9 bytes, n = word +3 of its entry) holds at +6 the picture slot, 1 once
+# a plant has been hit (its burnt stump; a second hit removes it). Written by the damage routine "mov byte [esi*8 +
+# esi + etat], 1" (EN 0x28e242: 0x3BA086), read by the draw 0x29ad22. Sent as bit 1 of the entity's active int
+_s = [struct.unpack('<I', m.group(1))[0] for m in re.finditer(rb'\xc6\x84\xc6(....)\x01', code, re.S)]
+_s = [a for a in _s if 0x300000 <= a < 0x500000]
+DECOR_ETAT = _s[0] if len(_s) == 1 else None
+if DECOR_ETAT is None:
+    print('decor : signature introuvable (plantes touchees dessinees intactes)')
 fumee_t, fumee_prev, fx_prev = 0.0, False, ()
 # un arbre qui saute (et une armure qui eclate) : boule de feu 6/23, puis le meme nuage qu'une grenade fumigene (meme
 # systeme, ~190 particules, 1 a 15 s) au meme endroit. Uplink dessine deja la fumee d'un arbre (sa colonne noire) :
@@ -1788,7 +1796,7 @@ while True:
             if guest: guest.dust(pk)           # (the coop guest's window too)
         part_prev, part_t = bool(pts), time.time()
     body = []
-    piles = None
+    piles = decor = None
     for i in range(NENT):
         o = 0x25 * i
         if tab[o + 1] > 6 or (tab[o + 1] >= 5 and tab[o] == 0): continue
@@ -1800,7 +1808,12 @@ while True:
         if tab[o + 1] == 6 and tab[o + 2] == 33:     # morceau d'armure : le cap porte l'armure du soldat mort
             if piles is None: piles = armures_piles()
             eh = float(armure_pile(i, struct.unpack_from('<H', tab, o + 3)[0], piles))
-        body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], 1 if tab[o] else 0, ex / 65536, ey / 65536, ez / 65536, eh))
+        actif = 1 if tab[o] else 0
+        if tab[o + 1] == 0 and actif and DECOR_ETAT is not None:   # decor : touche une fois -> bit 1 (sa souche)
+            if decor is None: decor = g.read(DECOR_ETAT - 6, 256 * 9)
+            nd = struct.unpack_from('<h', tab, o + 3)[0]
+            if 0 <= nd < 256 and decor[9 * nd + 6]: actif |= 2
+        body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], actif, ex / 65536, ey / 65536, ez / 65536, eh))
     # the main view through the player's drone (see VUE_ENT)
     vue = u16(VUE_ENT)
     sonde = vue != pid and 0 < vue < NENT and bool(tab[0x25 * vue]) and tab[0x25 * vue + 1] == 3

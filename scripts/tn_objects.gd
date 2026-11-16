@@ -10,7 +10,8 @@ extends RefCounted
 const LGRes = preload("res://scripts/lgres.gd")
 
 # object class -> [RESTNOBJ table, refs per type]; each ref = u16 frame, u16 resource.
-# Decor and buildings have two refs per type: intact, destroyed.
+# Decor and buildings have two refs per type: decor (plants) intact, then hit once (a burnt stump, the picture its
+# decor record's state byte picks: 0x29ad0a; a second hit removes it), buildings intact, destroyed.
 const TABLES := {0: [1371, 2], 2: [1372, 1], 3: [1373, 1], 4: [1374, 2]}
 const MODELS := Vector2i(1343, 1362)       # compound resources holding the models
 const SPRITES := Vector2i(1160, 1195)      # sprite / animation bitmaps
@@ -21,6 +22,7 @@ const RUNTIME_COLOR := Color(0.95, 0.25, 0.15)
 var res                 # RESTNOBJ.RES
 var tex_ref := {}       # global texture index -> Vector2i(resource, frame), from RESMAP.RES 1440
 var refs := {}          # class -> Array of Vector2i(resource, frame) (intact version)
+var refs2 := {}         # class -> Array of the second refs (classes 0 and 4; (0, 0): none)
 var props := {}         # class -> Array of property frames (one per type)
 var model_cache := {}
 var tex_cache := {}
@@ -43,12 +45,16 @@ func setup(data_dir: String) -> bool:
 		tex_ref[t.decode_u32(k)] = Vector2i(v >> 16, v & 0xFFFF)
 	for c in TABLES:
 		var arr := []
+		var arr2 := []
 		var stride: int = TABLES[c][1]
 		for f in LGRes.frames(res.data(TABLES[c][0])):
 			var b: PackedByteArray = f
 			for i in range(0, b.size() / 4, stride):
 				arr.append(Vector2i(b.decode_u16(4 * i + 2), b.decode_u16(4 * i)))
+				if stride == 2:
+					arr2.append(Vector2i(b.decode_u16(4 * i + 6), b.decode_u16(4 * i + 4)) if 4 * i + 8 <= b.size() else Vector2i.ZERO)
 		refs[c] = arr
+		refs2[c] = arr2
 	for c in 7:
 		props[c] = LGRes.frames(res.data(PROPS + c))
 	return true
@@ -413,7 +419,11 @@ static func _star_map(d: PackedByteArray, pal: PackedColorArray) -> ImageTexture
 	return ImageTexture.create_from_image(img)
 
 
-func ref_for(cls: int, sub: int) -> Vector2i:
+# state: a decor object's (class 0) picture slot, 1 = hit once: its second ref (ZERO: the game draws nothing).
+func ref_for(cls: int, sub: int, state := 0) -> Vector2i:
+	if state != 0 and cls == 0:
+		var arr2: Array = refs2.get(cls, [])
+		return arr2[sub] if sub < arr2.size() else Vector2i.ZERO
 	var arr: Array = refs.get(cls, [])
 	return arr[sub] if sub < arr.size() else Vector2i.ZERO
 

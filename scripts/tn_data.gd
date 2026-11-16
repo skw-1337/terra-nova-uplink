@@ -218,7 +218,10 @@ func load_mission(path: String) -> Dictionary:
 		ents.append({"cls": f[0], "sub": f[1], "group": groups[g] if g < groups.size() else "",
 				"x": f.decode_s32(8) / 65536.0, "y": f.decode_s32(12) / 65536.0,
 				"z": f.decode_s32(16) / 65536.0,     # height above the ground (only the Nid d'aigle bridge)
-				"heading": f.decode_u16(20) / 65536.0 * TAU})
+				"heading": f.decode_u16(20) / 65536.0 * TAU,
+				# a decor object's initial state (copied to its decor record +6): 1 = hit once, drawn with its
+				# second picture (the 8 burnt plants of MISS13)
+				"state": (1 if f[0x1B] != 0 else 0) if f[0] == 0 and f.size() > 0x1B else 0})
 	var sky := LGRes.text(r.data(178).slice(0, 16)) if r.has(178) else ""
 	return {"map": LGRes.text(r.data(170)), "groups": groups, "zones": zones, "entities": ents,
 			"sky": sky}

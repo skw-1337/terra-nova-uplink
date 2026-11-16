@@ -115,7 +115,8 @@ var veg_cells := {}           # vegetation cell (cx * 128 + cy) -> [[multimesh, 
 var veg_values := PackedByteArray()
 var scorch_decals := {}         # live mode: burnt ground vertex (y * 513 + x) -> its decal (destroyed tree, blast)
 var scorch_prev := PackedByteArray()
-var ground_mats := []        # ground materials of the map, for the sky they mirror
+var ground_mats := []        # ground materials of the map, for the sky they mirror (the water's too)
+var water_mats := []         # the water's (water.gdshader): plain in the infrared view
 var sky_clouds: Texture2D
 var sky_haze := Color(0.7, 0.76, 0.84)
 var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the horizon)
@@ -572,13 +573,13 @@ func _load(index: int) -> void:
 		c.queue_free()
 	var pl: Dictionary = m["planet_data"]
 	ground_mats.clear()
+	water_mats.clear()
 	var det_mat: Material = mats["terrain"]
 	var out_mat: Material = mats["terrain"]
 	if pl["ok"]:                          # real ground textures (else: average colors)
-		var flat := _flat_tiles([m["detail"], m["outer"]])
-		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0, flat)
+		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0)
 		if not m["outer"].is_empty():
-			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0, flat)
+			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0)
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
@@ -587,17 +588,18 @@ func _load(index: int) -> void:
 	for gi in world.find_children("*", "GeometryInstance3D", true, false):
 		if gi.material_override == det_mat or gi.material_override == out_mat:
 			gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var wl := Terrain.water_level(m["detail"])
-	if not is_nan(wl):
-		var plane := MeshInstance3D.new()
-		var pm := PlaneMesh.new()
-		pm.size = Vector2(1024, 1024)
-		plane.mesh = pm
-		plane.material_override = mats["water"]
-		plane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		plane.position = Vector3(256, wl - 0.05, 256)     # under the water tiles: 0.12 above them it rose up the
-		# river banks, wider than the game's river (its tiles, with their own far colour, are the game's water)
-		world.add_child(plane)
+	if pl["ok"] and pl.get("water_mask") != null:    # the water, over its tiles (water.gdshader)
+		var tint: Color = pl["water_tint"]
+		if entry["file"].get_file().to_upper() == "MISS2.RES":
+			tint = Color8(128, 128, 128)              # (the game's mission 2: a grey tint, 0x2A83BC)
+		for gi in [[m["detail"], 1.0, Vector2(0, 0), Rect2i()], [m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128)]]:
+			var grid: Dictionary = gi[0]
+			if grid.is_empty():
+				continue
+			var only := _water_cells(grid, pl["water"])
+			if only.is_empty():
+				continue
+			Terrain.build(world, grid, gi[1], gi[2], gi[3], _water_mat(pl, grid, gi[2], gi[1], tint), only)
 	pal = pl["palette"] if pl.has("palette") else data.full_palette(PackedByteArray())
 	pal_first = 1 if pl.get("base_share", 0.0) > 0.05 else 17
 	pal_key = m["planet"]
@@ -980,35 +982,40 @@ func _load_gallery() -> void:
 		_screenshot(args[sh + 1])
 
 
-# Share of each tile's cells lying flat on a map (corners within 0.1 unit; the detail and the outer grid, a sea can be
-# only in the outer one): water lies flat (95-100 %), a bluish ground covering the hills does not (planet 3's teal:
-# 5-11 %, taken for water it was a white mirror). -1: too few cells to tell (a water tile on 21 shore cells, 14 %).
-func _flat_tiles(grids: Array) -> PackedFloat32Array:
-	var all := PackedInt32Array()
-	all.resize(256)
-	var flat := PackedInt32Array()
-	flat.resize(256)
-	for grid in grids:
-		if grid.is_empty():
-			continue
-		var tiles: PackedByteArray = grid["tile"]
-		var h: PackedFloat32Array = grid["h"]
-		var n: int = grid["n"]
-		for y in n - 1:
-			for x in n - 1:
-				var i := y * n + x
-				var t := tiles[i]
-				all[t] += 1
-				if maxf(maxf(absf(h[i + 1] - h[i]), absf(h[i + n] - h[i])), absf(h[i + n + 1] - h[i])) <= 0.1:
-					flat[t] += 1
-	var out := PackedFloat32Array()
-	out.resize(64)
-	for t in 64:
-		out[t] = float(flat[t]) / all[t] if all[t] >= 100 else -1.0
-	return out
+# The cells of a grid whose tile is water (0x2B219C: the cell's first point), 1 at y * n + x; empty: none.
+func _water_cells(grid: Dictionary, water: PackedByteArray) -> PackedByteArray:
+	var tiles: PackedByteArray = grid["tile"]
+	var n: int = grid["n"]
+	var out := PackedByteArray()
+	out.resize(n * n)
+	var any := false
+	for i in n * n:
+		if water[tiles[i]] == 1:
+			out[i] = 1
+			any = true
+	return out if any else PackedByteArray()
 
 
-func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float, flat: PackedFloat32Array) -> ShaderMaterial:
+func _water_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float, tint: Color) -> ShaderMaterial:
+	var sm := ShaderMaterial.new()
+	sm.shader = WATER
+	sm.set_shader_parameter("tiles", pl["textures"])
+	sm.set_shader_parameter("water_mask", pl["water_mask"])
+	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
+	sm.set_shader_parameter("origin", origin)
+	sm.set_shader_parameter("step_size", step)
+	sm.set_shader_parameter("grid_n", float(grid["n"]))
+	sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
+	sm.set_shader_parameter("plain", ir_on)
+	var far: Color = pl.get("water_far", Color(0.41, 0.54, 0.5))
+	sm.set_shader_parameter("water_far", far)
+	ground_mats.append(sm)
+	water_mats.append(sm)
+	_sky_to(sm)
+	return sm
+
+
+func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float) -> ShaderMaterial:
 	var sm := ShaderMaterial.new()
 	sm.shader = GROUND
 	sm.set_shader_parameter("tiles", pl["textures"])
@@ -1022,26 +1029,6 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float,
 	if rows.size() == 16:
 		sm.set_shader_parameter("light_rows", rows)
 	sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
-	# water tiles: the bluish ones of the planet's set (their mean colour); not the bright, barely blue snow and ice
-	# (an ice planet's (0.70, 0.78, 0.88) was taken for water: a mirror over the snow; water: (0.38, 0.54, 0.75))
-	var wt := Image.create(64, 1, false, Image.FORMAT_R8)
-	var tc: PackedColorArray = pl["tile_color"]
-	var wsum := Color(0, 0, 0)
-	var wn := 0
-	for i in mini(64, tc.size()):
-		var c := tc[i]
-		var lum := c.r * 0.3 + c.g * 0.59 + c.b * 0.11
-		if c.b > c.r * 1.25 and c.b > c.g * 1.02 and c.b > 0.25 and (lum < 0.65 or c.b - maxf(c.r, c.g) > 0.15) and \
-				(flat[i] < 0.0 or flat[i] >= 0.5):
-			wt.set_pixel(i, 0, Color(1, 0, 0))
-			wsum += c
-			wn += 1
-	sm.set_shader_parameter("water_tiles", ImageTexture.create_from_image(wt))
-	if wn > 0:                                # the game's far water: the mean colour of these tiles, flat
-		var far := Color(wsum.r / wn, wsum.g / wn, wsum.b / wn)
-		sm.set_shader_parameter("water_far", far)
-		mats["water"].set_shader_parameter("far_tint", far)
-		print("far water %d tiles: %s" % [wn, far.to_html(false)])
 	var t0 := Time.get_ticks_msec()
 	sm.set_shader_parameter("relief", ImageTexture.create_from_image(_relief_image(grid["h"], grid["n"], step)))
 	sm.set_shader_parameter("has_relief", true)
@@ -1916,7 +1903,8 @@ func _make_oldschool() -> void:
 	get_viewport().size_changed.connect(_oldschool_grid)   # (its grid is counted in the window's pixels)
 
 
-# the planet's palette for it (each new map); live: on from the start (--smooth: off), the map viewer: off (F12)
+# the planet's palette for it (each new map); live: on from the start (--smooth: off), the map viewer: off (F12;
+# TN_OLDSCHOOL=1: on)
 func _oldschool_palette() -> void:
 	if oldschool_rect != null and pal_key != oldschool_key and pal.size() >= 256:
 		var pimg := Image.create(256, 1, false, Image.FORMAT_RGB8)
@@ -1925,7 +1913,7 @@ func _oldschool_palette() -> void:
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 		if oldschool_key == "":
-			oldschool_rect.visible = live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0"
+			oldschool_rect.visible = (live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0") 					or (not live and OS.get_environment("TN_OLDSCHOOL") == "1")     # (the map viewer: on when asked)
 			_apply_look()
 		oldschool_key = pal_key
 
@@ -3242,6 +3230,8 @@ func _live_update() -> void:
 			var old := oldschool_rect != null and oldschool_rect.visible
 			if ir_rect != null:
 				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
+			for wm in water_mats:                          # the game draws its water tiles plain in infrared
+				wm.set_shader_parameter("plain", ir_on)
 			if oldschool_rect != null:
 				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":

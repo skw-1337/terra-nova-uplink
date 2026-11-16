@@ -1,70 +1,118 @@
-// Water: the planet's sky (the game's cloud texture, as in sky.gdshader) mirrored on small moving ripples, more
-// of it at grazing angles (Fresnel), over a deep blue; unlit like the sky it reflects.
-// Old school (as the game): the sky only near the eye, beyond a flat colour (the mean of the planet's water tiles).
-// Modern: the sky mirrored all over (sky_common: the same sky as above), the sun's glint, the water's own colour deep.
+// Water, as the game draws it (0x2B219C, 0x2A84A4, span loop 0x32E145): over the ground mesh itself (it follows its
+// slopes: no water level), on the water tiles of the planet (RESPLNT 40 / 43 / 67 / 69 / 72) and there only on their
+// water texels (palette 162-175: the shore is the tile's own picture). Such a texel takes no ground light: the screen
+// mirrored about a row just above the horizon, each colour index jittered by a pixel, faded by its screen row
+// towards the planet's water tint.
+// Modern look (old school off): the sky mirrored on moving waves instead (sky_common), on the same texels.
+// One material per ground grid (its tile map), drawn over the water cells of that grid (Terrain.build: only).
 shader_type spatial;
-render_mode unshaded, cull_disabled, depth_draw_opaque;
+render_mode unshaded, cull_back, depth_draw_never, shadows_disabled;
 
 #include "res://sky_common.gdshaderinc"
 
+uniform sampler2DArray tiles : source_color, filter_nearest, repeat_disable;
+uniform sampler2DArray water_mask : filter_nearest, repeat_disable;   // palette index - 161 on water texels, else 0
+uniform sampler2D tilemap : filter_nearest, repeat_disable;
+uniform sampler2D screen : hint_screen_texture, filter_nearest;
+uniform vec2 origin;
+uniform float step_size;
+uniform float grid_n;
+uniform vec3 tint = vec3(0.314, 0.502, 0.627);   // the game's 0..255 / 255 (sRGB): (80, 128, 160) for RESPLNT 40 byte 1 = 0
+uniform bool plain = false;                // infrared: the water tiles drawn as plain ground (the ground under it)
+uniform float view_rows = 200.0;           // the game's 3D window height, for its 1-pixel steps
+// modern look
+uniform bool modern = false;
 uniform sampler2D clouds : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D clouds_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_clouds = true;
 uniform vec3 haze : source_color = vec3(0.7, 0.76, 0.84);
 uniform vec3 light : source_color = vec3(0.91, 0.94, 0.97);
-uniform float cloud_scale = 0.22;
 uniform float cloud_px = 44.0;
 uniform float cloud_par = 1.0;
 uniform vec2 cloud_off = vec2(0.0);
-uniform vec3 sun_dir = vec3(0.0, 0.7, 0.7);    // towards the sun
-uniform float desat = 1.0;                     // live mode: undoes the view's saturation boost, like the sky
-uniform bool modern = false;
-uniform vec3 deep : source_color = vec3(0.08, 0.2, 0.4);
-uniform vec3 far_tint : source_color = vec3(0.29, 0.38, 0.35);
+uniform vec3 sun_dir = vec3(0.0, 0.7, 0.7);
+uniform float desat = 1.0;
+uniform vec3 water_far : source_color = vec3(0.41, 0.54, 0.5);   // the mean colour of the water texels
 
 varying vec3 wpos;
+varying vec2 g;
 
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	g = (wpos.xz - origin) / step_size;
+	// a hair nearer the eye than the ground it lies on (the same triangles)
+	vec3 to_cam = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz - VERTEX;
+	VERTEX += normalize(to_cam) * min(0.02, length(to_cam) * 0.001);
+}
+
+vec3 to_srgb(vec3 c) {
+	c = max(c, vec3(0.0));
+	return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
+vec3 to_linear(vec3 c) {
+	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
+float hash(vec2 p) {
+	p = fract(p * vec2(123.34, 456.21));
+	p += dot(p, p + 45.32);
+	return fract(p.x * p.y);
 }
 
 void fragment() {
-	vec3 v = normalize(wpos - CAMERA_POSITION_WORLD);
-	float dist = length(wpos - CAMERA_POSITION_WORLD);
-	vec2 p = wpos.xz;
-	float t = TIME;
-	// slope of a few crossing waves (calmer far away: finer than a pixel they only shimmered)
-	float amp = modern ? 0.06 / (1.0 + dist * 0.02) : 0.03;
-	vec2 g = amp * vec2(cos(p.x * 1.7 + t * 1.3) + 0.6 * cos((p.x + p.y) * 2.9 - t * 1.9),
-			cos(p.y * 2.1 - t * 1.1) + 0.5 * cos((p.x - p.y) * 3.7 + t * 2.3));
-	if (modern) {
-		g = tn_waves(p, t, dist);
+	vec2 cell = clamp(floor(g), vec2(0.0), vec2(grid_n - 2.0));
+	vec2 f = clamp(g - cell, 0.0, 0.9999);
+	vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
+	float tile = floor(t.r * 255.0 + 0.5);
+	int rot = int(floor(t.g * 255.0 + 0.5));
+	vec2 uv = f;
+	if (rot == 1) {
+		uv = vec2(f.y, 1.0 - f.x);
+	} else if (rot == 2) {
+		uv = 1.0 - f;
+	} else if (rot == 3) {
+		uv = vec2(1.0 - f.y, f.x);
 	}
-	vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
-	vec3 r = reflect(v, n);
-	r.y = max(r.y, modern ? 0.07 : 0.02);
-	float cosv = clamp(dot(-v, n), 0.0, 1.0);
+	float idx = floor(texture(water_mask, vec3(uv, tile)).r * 255.0 + 0.5);
+	if (idx < 0.5 || plain) {
+		discard;
+	}
+	vec3 own = texture(tiles, vec3(uv, tile)).rgb;
 	if (modern) {
-		vec3 sky = tn_sky(r, wpos, clouds_soft, has_clouds, light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
-		sky = mix(vec3(dot(sky, vec3(0.299, 0.587, 0.114))), sky, desat);
-		float fres = 0.04 + 0.96 * pow(1.0 - cosv, 5.0);
-		vec3 col = mix(far_tint * 0.5, sky * mix(vec3(1.0), far_tint * 1.6, 0.35), clamp(0.2 + 0.55 * fres, 0.0, 0.75));
-		col += vec3(1.0, 0.95, 0.85) * pow(max(dot(r, sun_dir), 0.0), 900.0) * 1.2;
-		ALBEDO = col;
-		ALPHA = mix(0.9, 1.0, fres);
+		vec3 v = normalize(wpos - CAMERA_POSITION_WORLD);
+		float dist = length(wpos - CAMERA_POSITION_WORLD);
+		vec2 sm = tn_waves(wpos.xz, TIME, dist);
+		vec3 nm = normalize(vec3(-sm.x, 1.0, -sm.y));
+		vec3 rm = reflect(v, nm);
+		rm.y = max(rm.y, 0.07);
+		vec3 skym = tn_sky(rm, wpos, clouds_soft, has_clouds, light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
+		skym = mix(vec3(dot(skym, vec3(0.299, 0.587, 0.114))), skym, desat);
+		float fm = 0.04 + 0.96 * pow(1.0 - clamp(dot(-v, nm), 0.0, 1.0), 5.0);
+		float km = clamp(0.2 + 0.55 * fm, 0.0, 0.75);
+		ALBEDO = water_far * 0.5 * (1.0 - km) + skym * mix(vec3(1.0), water_far * 1.6, 0.35) * km +
+				vec3(1.0, 0.95, 0.85) * pow(max(dot(rm, sun_dir), 0.0), 900.0) * 1.2;
 	} else {
-		vec3 sky = haze;
-		if (has_clouds) {
-			vec2 uv = r.xz / max(r.y, 0.05) * cloud_scale;
-			sky = mix(haze, texture(clouds, uv).rgb, smoothstep(0.0, 0.28, r.y));
+		// the mirror row H: the horizon's row (the camera has no roll) less one row of the game's window
+		vec3 fwd = -INV_VIEW_MATRIX[2].xyz;
+		vec3 hd = normalize(vec3(fwd.x, 0.0, fwd.z) + vec3(1e-6, 0.0, 0.0));
+		vec4 hp = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(hd, 0.0));
+		float px = VIEWPORT_SIZE.y / view_rows;                   // screen pixels per pixel of the game's window
+		float h = (0.5 + 0.5 * hp.y / hp.w) * VIEWPORT_SIZE.y - px;     // (FRAGCOORD: rows down from the top)
+		vec2 fc = FRAGCOORD.xy;
+		// each of the 14 colour indices gets its own pixel of jitter (-1, 0, 1 on both axes), drawn again each frame
+		float frame = floor(TIME * 30.0);
+		vec2 jit = floor(vec2(hash(vec2(idx, frame)), hash(vec2(idx + 17.0, frame))) * 3.0) - 1.0;
+		vec2 src = vec2(fc.x, 2.0 * h - fc.y) + jit * px;
+		vec3 p = own;
+		if (src.y >= 0.0) {
+			p = texture(screen, clamp(src, vec2(0.5), VIEWPORT_SIZE - 0.5) / VIEWPORT_SIZE).rgb;
 		}
-		float fres = 0.08 + 0.92 * pow(1.0 - cosv, 4.0);
-		float k = clamp(0.15 + 0.3 * fres, 0.0, 0.42);  // a hint of sky, a little more at grazing angles
-		vec3 col = mix(deep, sky, k);
-		// the game reflects the sky only near the eye (~3.5 units): beyond, a flat colour (the mean of the planet's water
-		// tiles, set by the viewer), a sharp change
-		float far_k = smoothstep(2.5, 4.0, dist);
-		ALBEDO = mix(col, far_tint, far_k);
-		ALPHA = mix(0.82, 0.96, fres);
+		float lo = h < VIEWPORT_SIZE.y * 0.5 ? 2.0 * h - 1.0 : VIEWPORT_SIZE.y;
+		float k = fc.y < h ? 0.0 : clamp(floor((fc.y - h) * 16.0 / max(lo - h, 1.0)), 0.0, 15.0);
+		float fk = 0.25 + 0.046875 * k;
+		// out = f C + (1 - f) P (2/3 + C / 768), C and P on 0..255 (0x2F1C64), in the game's (sRGB) values
+		vec3 ps = to_srgb(p);
+		ALBEDO = to_linear(fk * tint + (1.0 - fk) * ps * (2.0 / 3.0 + tint * (255.0 / 768.0)));
 	}
 }

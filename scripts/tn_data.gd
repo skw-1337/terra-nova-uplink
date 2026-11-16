@@ -679,7 +679,65 @@ func _read_planet(path: String) -> Dictionary:
 	out["edge"] = _edges(rgb_tiles)
 	out["qual"] = _plain_tiles(r)
 	out["rows"] = _light_rows(r, raw, fp)
+	_read_water(r, raw, count, fp, out)
 	return out
+
+
+# Water (0x2B219C, drawn only on a planet of kind 0: RESPLNT 40 byte 0): a tile is water when one of its materials
+# has its bit in RESPLNT 72 dword 3 (the tile's material, RESPLNT 43, when its bit is set in RESPLNT 67; otherwise
+# the two of RESPLNT 69: low and high nibble). Only its texels of palette 162-175 are water (0x2A838D): their mask
+# holds the index - 161 (each index jitters on its own). The tint the reflection fades to: RESPLNT 40 byte 1.
+static func _read_water(r, raw: PackedByteArray, count: int, fp: PackedColorArray, out: Dictionary) -> void:
+	var water := PackedByteArray()
+	water.resize(64)
+	out["water"] = water
+	out["water_mask"] = null
+	var r40: PackedByteArray = r.data(40) if r.has(40) else PackedByteArray()
+	out["water_kind"] = r40[0] if r40.size() > 0 else 255
+	var tint_i: int = r40[1] if r40.size() > 1 else 255
+	out["water_tint"] = Color8(80, 128, 160) if tint_i == 0 else (Color8(8, 8, 12) if tint_i == 4 else Color(0, 0, 0))
+	if out["water_kind"] != 0 or not (r.has(43) and r.has(67) and r.has(69) and r.has(72)):
+		return
+	var t43: PackedByteArray = r.data(43)
+	var t67: PackedByteArray = r.data(67)
+	var t69: PackedByteArray = r.data(69)
+	var t72: PackedByteArray = r.data(72)
+	if t72.size() < 16:
+		return
+	var mask := t72.decode_u32(12)
+	var any := false
+	for t in count:
+		var w := 0
+		if (t >> 3) < t67.size() and ((t67[t >> 3] >> (t & 7)) & 1) == 1:
+			w = (mask >> (t43[t] & 31)) & 1 if t < t43.size() else 0
+		elif 2 * t < t69.size():
+			var b := t69[2 * t]
+			w = ((mask >> (b & 15)) | (mask >> (b >> 4))) & 1
+		water[t] = w
+		any = any or w == 1
+	if not any:
+		return
+	var imgs: Array[Image] = []
+	var acc := Vector3.ZERO
+	var n := 0
+	for t in count:
+		var m := PackedByteArray()
+		m.resize(4096)
+		if water[t] == 1:
+			for p in 4096:
+				var c := raw[t * 4096 + p]
+				if c >= 162 and c <= 175:
+					m[p] = c - 161
+					acc += Vector3(fp[c].r, fp[c].g, fp[c].b)
+					n += 1
+		imgs.append(Image.create_from_data(64, 64, false, Image.FORMAT_R8, m))
+	var arr := Texture2DArray.new()
+	arr.create_from_images(imgs)
+	out["water_mask"] = arr
+	out["water_mask_images"] = imgs
+	if n > 0:
+		acc /= n
+		out["water_far"] = Color(acc.x, acc.y, acc.z)
 
 
 # Brightness of the 16 rows of the planet's light table (RESPLNT 53: 16 x 256 palette indices, row 0 = full light):

@@ -5,9 +5,10 @@ const CHUNK := 64
 
 
 # grid: {"n", "h", "col"}; step: spacing in game units; origin: world position of vertex (0, 0);
-# skip: cells (in grid coordinates) to leave out (the outer grid under the detailed map).
+# skip: cells (in grid coordinates) to leave out (the outer grid under the detailed map); only: when given, the cells
+# to build (1 at the cell's first point, y * n + x: the water drawn over the ground), without shadows.
 static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2, skip: Rect2i,
-		mat: Material) -> void:
+		mat: Material, only: PackedByteArray = PackedByteArray()) -> void:
 	var n: int = grid["n"]
 	var h: PackedFloat32Array = grid["h"]
 	var cols: PackedColorArray = grid["col"]
@@ -22,6 +23,8 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 			for y in hh:
 				for x in w:
 					if skip.has_point(Vector2i(cx + x, cy + y)):
+						continue
+					if not only.is_empty() and only[(cy + y) * n + cx + x] == 0:
 						continue
 					var a := y * (w + 1) + x
 					var c := a + w + 1
@@ -68,19 +71,8 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 				var mi := MeshInstance3D.new()
 				mi.mesh = mesh
 				mi.material_override = mat
+				if not only.is_empty():
+					mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				parent.add_child(mi)
 			cx += CHUNK
 		cy += CHUNK
-
-
-# Water level: the lowest height, if a large flat area sits exactly on it.
-static func water_level(grid: Dictionary) -> float:
-	var h: PackedFloat32Array = grid["h"]
-	var lo := INF
-	for v in h:
-		lo = minf(lo, v)
-	var flat := 0
-	for v in h:
-		if v <= lo + 0.01:
-			flat += 1
-	return lo if flat > 2000 else NAN

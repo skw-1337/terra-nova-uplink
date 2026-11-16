@@ -80,7 +80,9 @@ static func suit_of(sub: int) -> int:
 	return SUIT_OF_TYPE[sub % SUIT_OF_TYPE.size()]
 
 
-# Segments of a suit's skeleton: [joint a, joint b, part]; the part's first view marker is joint a.
+# Segments of a suit's skeleton: [joint a, joint b, part, flags]; the part's first view marker is joint a.
+# Flags bit 0: the game draws the part mirrored, its view taken from the other side (the left limbs share the right
+# ones' sprites; drawer 0x2F6C50). Bit 0x10: not drawn (never set in the data).
 func skeleton(suit: int) -> Array:
 	var rid := 886 if suit == MECH_SUIT else (885 if suit in [6, 7, 9] else 884)
 	var d: PackedByteArray = res.data(rid)
@@ -90,7 +92,7 @@ func skeleton(suit: int) -> Array:
 	for k in d[1]:
 		var o := 0x14 + 16 * k
 		if o + 6 <= d.size():
-			out.append([d[o], d[o + 1], d.decode_u16(o + 4)])
+			out.append([d[o], d[o + 1], d.decode_u16(o + 4), d[o + 3]])
 	return out
 
 

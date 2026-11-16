@@ -1206,6 +1206,8 @@ func _add_soldier(holder: Node3D, suit: int) -> float:
 		var seg := MeshInstance3D.new()
 		seg.mesh = _limb_quad(ld)
 		seg.material_override = _limb_mat(suit, sg[2], ld)
+		# a left limb: the right one's sprite, mirrored (per instance: both sides share the material)
+		seg.set_instance_shader_parameter("mirror", 1.0 if int(sg[3]) & 1 else 0.0)
 		# drawn nearer the camera than they are (limb.gdshader pull): the feet and shins only, a sole reaching under
 		# the ground (0.25 for the whole suit: one just behind a wall showed through it)
 		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 5 else 0.0)

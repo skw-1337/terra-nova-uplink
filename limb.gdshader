@@ -18,6 +18,8 @@ uniform float pull = 0.25;        // drawn this much nearer the camera: the game
 
 instance uniform float spin = -1.0;  // >= 0: a fixed angle on the screen (radians; a piece of a burst suit lying
                                      // on the ground, drawn turned like the game's) instead of following the bone
+instance uniform float mirror = 0.0; // 1: segment flag bit 0, a left limb drawn from the right one's sprites: the game
+                                     // takes the view (16 - v) & 15 and mirrors it (no change on the 9-view torsos)
 
 varying flat int layer;
 varying flat float flip;
@@ -37,12 +39,18 @@ void vertex() {
 	vec3 to_cam = CAMERA_POSITION_WORLD - origin;
 	vec3 c = to_cam - ax * dot(to_cam, ax);
 	float ang = atan(dot(c, side), dot(c, front));      // > 0 = camera on the limb's right
+	if (mirror > 0.5) {
+		ang = -ang;
+	}
 	flip = 1.0;
 	if (view_count >= 16) {
 		layer = int(mod(round(8.0 - ang / (TAU / 16.0)), 16.0));
 	} else {
 		layer = clamp(int(round(8.0 - abs(ang) / (PI / 8.0))), 0, view_count - 1);
 		flip = ang < 0.0 ? -1.0 : 1.0;
+	}
+	if (mirror > 0.5) {
+		flip = -flip;
 	}
 	// on the screen: the sprite's bone (straight down in the sprite) along the bone's projection; a bone pointing
 	// at the camera has no direction on the screen, its sprite then stands upright. The game does this in its own

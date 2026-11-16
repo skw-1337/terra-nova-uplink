@@ -17,7 +17,7 @@ const CAMPAIGN := [37, 38, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 10, 11, 12, 13, 34
 const FRIENDLY := ["SFC", "Nikola", "Strike Force", "Centauri"]
 const DETAIL_N := 513        # detailed grid: 513 x 513, 1 unit apart, covers 0..512
 const COARSE_N := 257        # outer grid: 257 x 257, 4 units apart, covers -256..768
-const HEIGHT_SCALE := 1.0 / 384.0   # measured on the running game: units stand 0.12 above it on every map
+const HEIGHT_SCALE := 1.0 / 384.0   # 12-bit heights / 24 (the player's suit stands 0.118 above the ground)
 const BASE_PALETTE := [0, 0, 0, 156, 189, 189, 135, 163, 163, 103, 135, 131, 87, 119, 115, 72, 104, 96,
 		63, 95, 83, 51, 83, 67, 43, 75, 59, 39, 67, 47, 31, 59, 39, 29, 55, 37, 28, 50, 35, 26, 46, 33,
 		24, 41, 30, 23, 37, 28, 7, 28, 16]
@@ -784,16 +784,17 @@ static func _regions(m: PackedFloat32Array) -> PackedFloat32Array:
 	return out
 
 
-# Terrain height at game coordinates (x, y), bilinear, detail grid first then outer grid.
+# Terrain height at game coordinates (x, y), detail grid first then outer grid, on the game's own triangles
+# (0x2949C4): each cell is two flat triangles, split in a checkerboard (see Terrain.build).
 static func height_at(m: Dictionary, x: float, y: float) -> float:
 	if x >= 0 and y >= 0 and x < 512 and y < 512:
-		return _bilinear(m["detail"], x, y)
+		return _planar(m["detail"], x, y)
 	if not m["outer"].is_empty():
-		return _bilinear(m["outer"], (x + 256.0) / 4.0, (y + 256.0) / 4.0)
+		return _planar(m["outer"], (x + 256.0) / 4.0, (y + 256.0) / 4.0)
 	return 0.0
 
 
-static func _bilinear(g: Dictionary, gx: float, gy: float) -> float:
+static func _planar(g: Dictionary, gx: float, gy: float) -> float:
 	var n: int = g["n"]
 	var h: PackedFloat32Array = g["h"]
 	gx = clampf(gx, 0, n - 1.001)
@@ -802,6 +803,15 @@ static func _bilinear(g: Dictionary, gx: float, gy: float) -> float:
 	var y0 := int(gy)
 	var fx := gx - x0
 	var fy := gy - y0
-	var a := lerpf(h[y0 * n + x0], h[y0 * n + x0 + 1], fx)
-	var b := lerpf(h[(y0 + 1) * n + x0], h[(y0 + 1) * n + x0 + 1], fx)
-	return lerpf(a, b, fy)
+	var i := y0 * n + x0
+	var h00 := h[i]
+	var h10 := h[i + 1]
+	var h01 := h[i + n]
+	var h11 := h[i + n + 1]
+	if ((x0 + y0) & 1) == 0:                   # diagonal (X, Y)-(X+1, Y+1)
+		if fx > fy:
+			return h00 + fx * (h10 - h00) + fy * (h11 - h10)
+		return h00 + fx * (h11 - h01) + fy * (h01 - h00)
+	if fx + fy >= 1.0:                         # diagonal (X+1, Y)-(X, Y+1)
+		return h11 + (1.0 - fx) * (h01 - h11) + (1.0 - fy) * (h10 - h11)
+	return h00 + fx * (h10 - h00) + fy * (h01 - h00)

@@ -24,9 +24,14 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 						continue
 					var a := y * (w + 1) + x
 					var c := a + w + 1
-					# clockwise seen from above (Godot's front faces)
-					idx.append(a); idx.append(a + 1); idx.append(c)
-					idx.append(a + 1); idx.append(c + 1); idx.append(c)
+					# clockwise seen from above (Godot's front faces). The game splits its cells in a checkerboard
+					# (height 0x2949C4, drawing 0x2B1814): (X + Y) even along (X, Y)-(X+1, Y+1), odd along the other
+					if ((cx + x + cy + y) & 1) == 0:
+						idx.append(a); idx.append(a + 1); idx.append(c + 1)
+						idx.append(a); idx.append(c + 1); idx.append(c)
+					else:
+						idx.append(a); idx.append(a + 1); idx.append(c)
+						idx.append(a + 1); idx.append(c + 1); idx.append(c)
 			if idx.size() > 0:
 				var count := (w + 1) * (hh + 1)
 				var verts := PackedVector3Array()

@@ -376,7 +376,7 @@ class Guest:
 
     def flush(self):
         if any(self.pending) and self.g.read(G_JUMP, 1)[0] == 0:
-            self.g.write(G_JV, struct.pack('<3i', *self.pending))
+            self.g.write(G_JV, struct.pack('<3i', *(max(-0x7FFFFFFF, min(0x7FFFFFFF, v)) for v in self.pending)))
             self.g.write(G_JUMP, b'\x01')
             self.pending = [0, 0, 0]
 
@@ -388,25 +388,28 @@ class Guest:
         if dt > 100:
             dt = 0 if dt > 0x7FFFFFFF else 100                  # the clock went back (no update), or a long hitch
         self.clk = c
-        if jets and self.gid and self.i32(MISSION) != NO_JETS:
-            self.jets(self.suit(self.gid), c, dt)
-        else:
-            self.jet_n = self.jet_air = None
+        if self.gid:
+            # the ground under him: his height when he last stood (no height map in the bridge; the game's 0x28927C
+            # measures from the terrain), kept while he is in the air
+            s, z = self.suit(self.gid), self.i32(self.master + 0x25 * self.gid + 0x17)
+            if self.grounded(s):
+                self.jet_z0 = z
+            if jets and self.i32(MISSION) != NO_JETS:
+                self.jets(s, c, dt, z)
+            else:
+                self.jet_n = self.jet_air = None
         self.flush()
 
-    def jets(self, s, c, dt):
+    def jets(self, s, c, dt, z):
         if self.jet_n is None:
             self.jet_n = 0                                     # pressed: this tick is the first update
         elif dt:
             self.jet_n += 1
         else:
             return                                             # no game update since the last tick
-        z = self.i32(self.master + 0x25 * self.gid + 0x17)
-        if not self.grounded(s):
-            self.jet_z0 = None
-        elif self.jet_z0 is None:
-            self.jet_z0 = z                                    # the ground under him (no height map in the bridge)
-        if self.jet_z0 is not None and z - self.jet_z0 <= AIR:  # near the ground: the kick, unpaid
+        if self.jet_z0 is not None and abs(z - self.jet_z0) <= AIR:   # within 0.25 of the ground: the kick, unpaid
+            if self.jet_air is not None:
+                self.jet_n = 0                                 # back from the air: the game kicks at once (0x288EF0)
             self.jet_air = None
             if self.jet_n % 2 == 0:
                 self.kick(0, 0, JET_KICK << 16)
@@ -541,7 +544,9 @@ class Guest:
         g.write(G_ON, b'\x00')
         self.gid = gid
         if gid:
-            g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid)); g.write(G_ON, b'\x01')
+            g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid))
+            g.write(G_JUMP, b'\x00')                           # (a kick the last suit never took: not for this one)
+            g.write(G_ON, b'\x01')
             self.amax, self.state, self.taken_t = self.armour_max(gid), OK, time.time()
             self.pending, self.jet_n, self.jet_z0, self.jet_air = [0, 0, 0], None, None, None
             print('guest: entity %d' % gid, flush=True)

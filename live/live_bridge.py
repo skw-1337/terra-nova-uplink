@@ -1900,8 +1900,11 @@ while True:
              ('127.0.0.1', 47821))
     cam = (x + eye[0], y + eye[1], z + eye[2], head, pitch)
     if sonde:
+        # the drone's view as the game sets it (0x26952f): its entity's x, y, z, heading +0x1B and pitch +0x1D (positive
+        # = down), nothing added (no eye, no ground slope: tangage()'s slope is the player's, frozen in this view)
         cam = (*(v / 65536 for v in struct.unpack_from('<3i', tab, 0x25 * vue + 0x0F)),
-               struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)
+               struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi,
+               -struct.unpack_from('<h', tab, 0x25 * vue + 0x1D)[0] / 65536 * 2 * math.pi)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
              struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid), ('127.0.0.1', 47821))

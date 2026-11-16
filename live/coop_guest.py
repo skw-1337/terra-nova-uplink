@@ -206,6 +206,7 @@ class Guest:
         # the Mission Outfitting lobby (his column, pilot, loadout)
         self.data_dir = coop_lobby.find_data(g)
         self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, self.data_dir), 0.0, []
+        self.frames = {}                                       # 3D window -> its cockpit frame (mask, pixels), the host whole
         self.comm, self.ind, self.ind_at = [], None, None      # his COMM rows' entities; the armour indicator's picture
         # (False: none) and where the host's game draws it (his window draws his own there)
         self.anim = None
@@ -741,12 +742,37 @@ class Guest:
             return
         import numpy as np
         scr, alpha, (fx0, fy0, fw, fh), pal = src[:4]
+        still = src[4] if len(src) > 4 else None
         if fw < 100 or fh < 100:                               # the game's map or a menu: not the cockpit
             return
         self.tpl_t = time.time()
         scr, alpha = scr.copy(), alpha.copy()
-        m = 16                                                 # the 3D window: only its frame stays
-        alpha[fy0 + m:fy0 + fh - m, fx0 + m:fx0 + fw - m] = 0
+        # the 3D window: only the cockpit's frame stays, pixel for pixel as on the host's screen (its rounded corners):
+        # what is opaque there (and has not changed for a second, when the bridge knows) and joined to the window's
+        # edge. The rest is the host's own, drawn in the 3D (crosshair, armour indicator, target box): left out
+        win = alpha[fy0:fy0 + fh, fx0:fx0 + fw]
+        opaque = still if still is not None and still.shape == win.shape else win == 255
+        edge = np.zeros_like(opaque)
+        edge[0], edge[-1], edge[:, 0], edge[:, -1] = opaque[0], opaque[-1], opaque[:, 0], opaque[:, -1]
+        while True:
+            g = edge.copy()
+            g[1:] |= edge[:-1]; g[:-1] |= edge[1:]
+            g[:, 1:] |= g[:, :-1].copy(); g[:, :-1] |= g[:, 1:].copy()
+            g &= opaque
+            if (g == edge).all():
+                break
+            edge = g
+        # ... but not the cracks the game draws across the host's visor once he is hurt (they join the frame): the
+        # frame as it was last seen while he was whole, when there is one
+        pix = scr[fy0:fy0 + fh, fx0:fx0 + fw]
+        me = self.u16(self.pid_addr + 2)
+        cur, mx = self.health(me)
+        if cur >= mx and self.armour(me) >= self.armour_max(me):
+            self.frames[(fx0, fy0, fw, fh)] = (edge.copy(), pix.copy())
+        elif (fx0, fy0, fw, fh) in self.frames:
+            edge, whole = self.frames[(fx0, fy0, fw, fh)]
+            pix[edge] = whole[edge]
+        win[:] = np.where(edge, 255, 0)
         # where the game draws the host's armour indicator: its dark outline, whole, in the window
         ind = self.indicator()
         if ind is not None and ind.shape[0] <= fh and ind.shape[1] <= fw:

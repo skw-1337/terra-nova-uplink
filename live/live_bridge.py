@@ -1139,6 +1139,7 @@ def send_hud():
     hud_copies = c                            # une seule tentative par image (elle ne se represente pas)
     scr = np.frombuffer(g.read(sbuf, 640 * 400), np.uint8).reshape(400, 640)[:, :320]
     alpha = np.full((400, 320), 255, np.uint8)
+    still = None
     fx0, fy0, fw, fh, fww, fside = d32(FX), d32(FY), d32(FWV), d32(FHV), d32(FWWV), d32(FSI)
     if carte_hud and 0 < fw <= 320 and 0 < fh <= 400:
         pass                                  # the map in the HUD: nothing of the 3D there, the game's picture whole
@@ -1204,10 +1205,14 @@ def send_hud():
         clair = ((same & (hud_rate > 0.6)) | eclair) & ~cadre
         alpha[fy0:fy0 + fh, fx0:fx0 + fw][clair] = 0
         hud_mobile = ~clair & ~cadre
+        if (hud_fixe['n'] > 30).mean() > 0.01:
+            still = cadre                     # (once the pictures are enough to tell: before, the opaque pixels do)
     else:
         fx0 = fy0 = fw = fh = 0
-    global hud_last                           # coop: the guest's cockpit is made from ours (coop_guest.py)
-    hud_last = (scr.copy(), alpha.copy(), (fx0, fy0, fw, fh), g.read(PAL, 768))
+    # coop: the guest's cockpit is made from ours (coop_guest.py); still: what of the 3D window has not changed for 30
+    # pictures and is not the 3D (the cockpit's frame, the crosshair, the armour indicator), None when not known
+    global hud_last
+    hud_last = (scr.copy(), alpha.copy(), (fx0, fy0, fw, fh), g.read(PAL, 768), still)
     if PLAY:
         curseur_hud(scr, alpha)
     hud_n += 1

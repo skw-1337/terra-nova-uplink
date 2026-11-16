@@ -559,7 +559,6 @@ func _draw_panel() -> void:
 		_text(nm.to_upper(), 42.0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
 		var hp: float = squad_health[i] / 100.0 if i < squad_health.size() and squad_health[i] <= 100 else 1.0
 		_draw_mini_bar(Rect2(42.0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
-	_text("SHIFT+MOVE JUMP  ALT LOOK  F8", 58.0, 366.0, 8.0, Color(0.6, 0.65, 0.8), true)
 	if status_page:
 		_draw_status()
 	# WEAPON: his selected weapon, its picture under the texts where the game puts it

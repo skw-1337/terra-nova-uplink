@@ -1257,6 +1257,7 @@ func _live_arms(idx: int, arms: int) -> void:
 	for part in node.get_meta("soldier"):
 		(part[0] as Node).queue_free()
 	_add_soldier(node, PIRATE_SUIT, arms)
+	node.remove_meta("size")                     # (its standing lengths were reset: its own sizes put back, SLEN)
 
 
 const LIMB_WPX := 1.0 / 256.0   # a limb sprite's pixel across its bone, in world units (the game's part +4 = 256)

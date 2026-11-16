@@ -9,6 +9,10 @@ signal group_picked(id: int)
 signal save_pressed
 signal revert_pressed
 signal leave_pressed
+signal export_file_pressed
+signal copy_code_pressed
+signal import_file_pressed
+signal paste_code_pressed
 
 const KIND_TABS := [[-1, "All"], [1, "Soldiers"], [2, "Vehicles"], [3, "Probes & craft"], [4, "Buildings"], [0, "Decor"]]
 const KIND_COL := {1: Color(0.95, 0.45, 0.25), 2: Color(0.95, 0.75, 0.25), 3: Color(0.45, 0.75, 0.95),
@@ -126,6 +130,21 @@ func _ready() -> void:
 	revert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	revert.pressed.connect(func(): revert_pressed.emit())
 	fr.add_child(revert)
+	right.add_child(HSeparator.new())
+	right.add_child(_title("SHARE  (only your changes)"))
+	var sh := GridContainer.new()
+	sh.columns = 2
+	right.add_child(sh)
+	for it in [["Export to a file...", export_file_pressed, "Your changes to this mission as a small .tnmod file"],
+			["Copy as a code", copy_code_pressed, "The same as a text code, copied: paste it in a chat or a forum"],
+			["Import a file...", import_file_pressed, "Put a .tnmod creation on this mission (nothing is written until you save)"],
+			["Paste a code", paste_code_pressed, "Put the creation whose code you copied on this mission (nothing is written until you save)"]]:
+		var b := _flat(str(it[0]), 14)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.tooltip_text = str(it[2])
+		var sig: Signal = it[1]
+		b.pressed.connect(func(): sig.emit())
+		sh.add_child(b)
 	var gap2 := Control.new()
 	gap2.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_child(gap2)

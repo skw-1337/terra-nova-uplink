@@ -6,32 +6,51 @@
 #                 crosshair meets the ground, facing you
 #   1 physgun     left button held on a unit or a zone post grabs it: it follows the aim on the ground, the wheel
 #                 pushes it away or pulls it in, E held + the mouse turns it (Shift: 15 degree steps)
-#   2 remover     left click removes a unit you added (the mission's own stay: its scripts may use them)
+#   2 remover     left click removes the unit aimed at, the mission's own too (the game's loader never reads the
+#                 units' numbers: a record can go; what the mission's script does with its label or its group is
+#                 said when it matters)
 #   3 duplicator  right click copies the unit aimed at, left click places the copy at the crosshair
 #   4 team        left click puts the unit aimed at in the chosen group (the group gives its side), right click
 #                 takes the group of the unit aimed at
 #   C held        the cursor: drag units with the left button, right click a unit for its menu
-#   Z undo (spawn, move, turn, group, removal), R / Shift+R turn 15 degrees, Delete removes, F2 every unit's
-#   name, Ctrl+S saves, Esc closes a menu, then leaves the build mode
+#   P             the properties of the unit aimed at (editor_props.gd): group, label, place, state, weapons
+#   Z undo (spawn, move, turn, group, removal, a property, an import), R / Shift+R turn 15 degrees, Delete
+#   removes, F2 every unit's name, Ctrl+S saves, Esc closes a menu, then leaves the build mode
+# Sharing (the spawn menu, SHARE): a creation is only the changes against the original mission, as a small file
+# or as a code to copy and paste (mission_mod.gd); importing one puts it on the original mission in the editor
+# and writes nothing: the player saves.
 # Held keys and buttons are read from their real state each frame: a release lost to another window or to a
 # popup ends what it started all the same.
 # The file: resource 173, one 50-byte record per unit: class, type, entity number (u16 +2), number in its class
 # (u16 +4), group (+7; the group's side in 174: 1 Strike Force, 2 enemy), x, y, height (16.16 at +8 / +12 /
-# +16), heading (u16 +20, 1/65536 turn, forward = (cos, sin) on the map), armour % (+27.. : 7 parts for a
-# soldier, 3 for the others). A new unit is a copy of a record of the same type from one of the game's missions
-# (weapons, orders), armour full, with the next numbers: it goes at the end, the mission's scripts only know the
-# numbers it had. Zones: 176, x, y (16.16) by zone number, names in 177.
+# +16), heading (u16 +20, 1/65536 turn, forward = (cos, sin) on the map), label (+26: what the mission's script
+# knows the unit by), state in % (+27..: see editor_props.gd), weapons. The game numbers its entities itself, in
+# the order of the records: the numbers at +2 / +4 are only kept tidy. A new unit is a copy of a record of the
+# same type from one of the game's missions (its weapons), whole, with the next numbers, after the mission's own.
+# Zones: 176, x, y (16.16) by zone number, names in 177.
 # Saved in the file itself (written beside it first and checked), the original kept once as
-# <file>.uplink-original (Revert puts it back); the units after the original's are the added ones, removable in
-# a later session too. Unsaved changes are asked about before another mission loads or the window closes.
+# <file>.uplink-original (Revert puts it back), and the changes as a creation in <file>.uplink-edit: that is how a
+# later session knows the mission's own units from the added ones, and what was removed. Unsaved changes are
+# asked about before another mission loads or the window closes.
 extends CanvasLayer
 
 const LGRes = preload("res://scripts/lgres.gd")
 const TNData = preload("res://scripts/tn_data.gd")
 const Menu = preload("res://scripts/editor_menu.gd")
 const Thumbs = preload("res://scripts/editor_thumbs.gd")
+const Mod = preload("res://scripts/mission_mod.gd")
+const Props = preload("res://scripts/editor_props.gd")
+const CoopHud = preload("res://scripts/coop_hud.gd")           # (the game's weapon names)
 const REC := 50
 const BACKUP := ".uplink-original"
+const EDIT := ".uplink-edit"
+# the game's tables (its loader and the routines it calls): 300 entities, shots and wrecks included; 60 AI records
+# for the soldiers, vehicles, probes and craft and armed buildings, the player's squad (4) and the units the
+# script brings in later (resource 181) included; a group number over 31 overruns its group table
+const MAX_ENTITIES := 300
+const MAX_AI := 60
+const SQUAD := 4
+const MAX_GROUP := 31
 const KINDS := {1: "Soldier", 2: "Vehicle", 3: "Probe / craft", 4: "Building", 0: "Decor"}
 const KIND_ORDER := [1, 2, 3, 4, 0]
 const SIDES := {1: "Strike Force", 2: "enemy"}
@@ -51,7 +70,9 @@ const HOLD_MAX := 600.0
 const TAP_MS := 300
 const UNDO_MAX := 200
 const NOTE_MS := 3500
-const ARMOUR := 27                   # first armour byte
+const ARMOUR := 27                   # first state byte (%)
+const PROP_NAMES := {"group": "the group", "label": "the label", "x": "the place", "y": "the place", "z": "the height",
+	"h": "the heading", "p": "the pitch"}
 
 var viewer: Node
 var seen = null                      # the viewer's current mission (a new load resets the editor)
@@ -61,7 +82,16 @@ var path := ""
 var recs := []                       # unit records (PackedByteArray), the file's order, then the added ones
 var uids := []                       # a stable id per record (undo, held unit)
 var nodes := []                      # their nodes in the viewer's world
-var n_orig := 0                      # the mission's own units (the original file's)
+var origin := []                     # per record: its place among the ORIGINAL mission's units, -1: added in the editor
+var src := []                        # per added record: {"f": mission file, "i": record} it is a copy of ({}: not known)
+var orig_recs := []                  # the original mission's units and zones (<file>.uplink-original once saved)
+var orig_zones := PackedByteArray()
+var adopted := false                 # <file>.uplink-original is there and is this file's original
+var src_cache := {}                  # mission file (upper case) -> its original units
+var mission_files := {}              # mission file (upper case) -> its path
+var refs := {}                       # what this mission's script does with labels and groups (data/mission_refs.json)
+var all_refs = null
+var weapon_names := {}               # weapon id -> text (the properties panel)
 var next_uid := 1
 var zones := PackedByteArray()       # resource 176
 var groups := PackedStringArray()
@@ -93,6 +123,7 @@ var free_cam := Vector3.ZERO         # the camera before Ctrl went down: put bac
 var team_group := 0
 var new_group := -1                  # -1: like the units of that type in this mission
 var dup := PackedByteArray()
+var dup_src := {}
 var was_panel := true
 var was_status := true
 # what is drawn
@@ -114,6 +145,10 @@ var unit_menu: PopupMenu
 var confirm: ConfirmationDialog
 var unsaved: ConfirmationDialog
 var menu_target := {}
+var props
+var props_uid := -1
+var file_dlg: FileDialog
+var dlg_import := false
 
 
 class Crosshair extends Control:
@@ -207,6 +242,10 @@ func _ready() -> void:
 	menu.save_pressed.connect(save)
 	menu.revert_pressed.connect(_ask_revert)
 	menu.leave_pressed.connect(leave)
+	menu.export_file_pressed.connect(_on_export_file)
+	menu.copy_code_pressed.connect(_on_copy_code)
+	menu.import_file_pressed.connect(_on_import_file)
+	menu.paste_code_pressed.connect(_on_paste_code)
 	menu.search.text_submitted.connect(func(_t): menu_sticky = true)   # (Enter after a search: the menu stays open)
 	unit_menu = PopupMenu.new()
 	unit_menu.id_pressed.connect(_on_unit_menu)
@@ -224,6 +263,20 @@ func _ready() -> void:
 	unsaved.custom_action.connect(_unsaved_discard)
 	unsaved.canceled.connect(_unsaved_cancel)
 	add_child(unsaved)
+	props = Props.new()
+	props.visible = false
+	add_child(props)
+	props.changed.connect(func(r, tag): _edit_rec(props_uid, r, tag))
+	props.closed.connect(_close_props)
+	props.remove_pressed.connect(func(): _remove(props_uid))
+	file_dlg = FileDialog.new()
+	file_dlg.access = FileDialog.ACCESS_FILESYSTEM
+	file_dlg.use_native_dialog = false
+	file_dlg.filters = PackedStringArray(["*.%s ; Terra Nova Uplink creation" % Mod.EXT])
+	file_dlg.size = Vector2i(900, 560)
+	file_dlg.file_selected.connect(_on_file_picked)
+	file_dlg.canceled.connect(func(): _recapture.call_deferred())
+	add_child(file_dlg)
 	thumbs = Thumbs.new()
 	thumbs.viewer = viewer
 	thumbs.made.connect(func(k, tex): menu.set_thumb(k, tex))
@@ -298,6 +351,7 @@ func leave() -> void:
 	_close_menu()
 	cursor = false
 	rotating = false
+	_close_props()
 	hud.visible = false
 	_capture(false)
 	viewer.panel.visible = was_panel
@@ -315,7 +369,7 @@ func _capture(on: bool) -> void:
 
 
 func _free_mouse() -> bool:
-	return menu_open or cursor or unit_menu.visible or confirm.visible or unsaved.visible
+	return menu_open or cursor or props.visible or unit_menu.visible or confirm.visible or unsaved.visible or file_dlg.visible
 
 
 func _recapture() -> void:
@@ -452,6 +506,7 @@ func _process(_dt: float) -> void:
 	elif not menu_open and not unit_menu.visible:
 		aim = _pick_at(_aim_point())
 	_show_aim(held if not held.is_empty() else aim)
+	_props_sync()
 	_zone_names()
 	_beam_update()
 	crosshair.visible = not _free_mouse()
@@ -467,7 +522,8 @@ func _poll() -> void:
 	if menu_open and not menu_sticky and not Input.is_physical_key_pressed(KEY_Q):
 		if Time.get_ticks_msec() - menu_t < TAP_MS and not menu_used:
 			menu_sticky = true                       # tapped: it stays open
-		elif not menu.search_focused() and not menu.popup_open() and not confirm.visible and not unsaved.visible:
+		elif not menu.search_focused() and not menu.popup_open() and not confirm.visible and not unsaved.visible \
+				and not file_dlg.visible:
 			_close_menu()
 	if cursor and not Input.is_physical_key_pressed(KEY_C) and not unit_menu.visible:
 		_end_cursor()
@@ -486,6 +542,12 @@ func _load_mission() -> void:
 	recs.clear()
 	uids.clear()
 	nodes.clear()
+	origin.clear()
+	src.clear()
+	orig_recs.clear()
+	orig_zones = PackedByteArray()
+	adopted = false
+	src_cache.clear()
 	undo.clear()
 	aim = {}
 	held = {}
@@ -493,7 +555,10 @@ func _load_mission() -> void:
 	new_group = -1                                   # (group numbers mean other groups in another mission)
 	team_group = 0
 	dup = PackedByteArray()
+	dup_src = {}
 	lg = null
+	if props != null and props.visible:
+		_close_props()
 	if viewer.current.is_empty() or viewer.current["entry"].get("gallery", false):
 		if active:
 			leave()
@@ -505,32 +570,142 @@ func _load_mission() -> void:
 			leave()
 		return
 	for f in LGRes.frames(lg.data(173)):
-		recs.append(PackedByteArray(f))
-	n_orig = recs.size()
-	var orig := _backup_units(path + BACKUP)         # saved by the editor before: the units after the original's
-	if orig >= 0:                                    # are the ones added then (removable)
-		n_orig = orig
+		recs.append(PackedByteArray(f).duplicate())
+	zones = lg.data(176).duplicate()
 	for i in recs.size():
 		uids.append(i + 1)
+		origin.append(i)
+		src.append({})
+		orig_recs.append(recs[i].duplicate())
+	orig_zones = zones.duplicate()
 	next_uid = recs.size() + 1
+	_adopt_backup()
 	nodes = viewer.live_nodes.duplicate()
-	zones = lg.data(176)
 	groups = LGRes.names16(lg.data(172))
 	sides = lg.data(174)
+	refs = _mission_refs(path.get_file())
 	_make_markers()
 	if active:
 		_fill_groups()
 		_names(true)
 
 
-# the original kept beside the file: its number of units if it is a good one for the current file (readable, and
-# the current file's first units are its units: same class, type and numbers, which the editor never changes),
-# else -1
-func _backup_units(bak: String) -> int:
-	if not FileAccess.file_exists(bak) or lg == null:
-		return -1
+# The original kept beside the file (the editor saved this mission before): the mission's own units and zones are
+# its, and each unit of the file is one of them or an added one. Told by the editor's note beside it
+# (<file>.uplink-edit: the changes as a creation, and the checksum of what was saved); a file saved by an older
+# editor has none: its first units are the original's. An original that is not this file's (the file was made anew
+# since) is left alone: the file is then its own original.
+func _adopt_backup() -> void:
+	var bak := path + BACKUP
+	if not FileAccess.file_exists(bak):
+		return
 	var b = LGRes.open(bak)
-	return _matches(b, lg, recs) if _whole(b) else -1
+	if not _whole(b) or not _same_but_units(b, lg):
+		return
+	var own := orig_recs
+	var borig := []
+	for f in LGRes.frames(b.data(173)):
+		borig.append(PackedByteArray(f).duplicate())
+	var bz: PackedByteArray = b.data(176).duplicate()
+	orig_recs = borig                                # (a unit added as a copy of one of this mission's: _source)
+	var note := _read_note()
+	if not note.is_empty() and str(note.get("saved", "")) == Mod.base_sum(recs, zones):
+		var st := Mod.apply(note, path, borig, bz, _source)
+		if not st.has("error") and st["recs"] == recs and st["zones"] == zones:
+			orig_zones = bz
+			origin = st["origin"]
+			src = st["src"]
+			adopted = true
+			return
+	var k := _matches(b, lg, recs)
+	if k < 0:
+		orig_recs = own
+		return
+	orig_zones = bz
+	for i in recs.size():
+		origin[i] = i if i < k else -1
+	adopted = true
+
+
+func _read_note() -> Dictionary:
+	var t := FileAccess.get_file_as_string(path + EDIT) if FileAccess.file_exists(path + EDIT) else ""
+	if t == "" or t.length() > Mod.MAX_TEXT:
+		return {}
+	var j := JSON.new()
+	if j.parse(t) != OK or not (j.data is Dictionary) or Mod.check(j.data) != "":
+		return {}
+	return j.data
+
+
+# record `index` of the game's mission `file` as the game shipped it (the kept original when the editor changed
+# that mission); empty: no such record
+func _source(file: String, index: int) -> PackedByteArray:
+	var f := file.to_upper()
+	var list: Array = orig_recs
+	if f != path.get_file().to_upper():
+		if not src_cache.has(f):
+			src_cache[f] = _original_units(_mission_path(f))
+		list = src_cache[f]
+	return list[index] if index >= 0 and index < list.size() else PackedByteArray()
+
+
+func _mission_path(f: String) -> String:
+	if mission_files.is_empty():
+		var dir: String = viewer.data.data_dir()
+		for n in DirAccess.get_files_at(dir):
+			var u := n.to_upper()
+			if u.begins_with("MISS") and u.ends_with(".RES"):
+				mission_files[u] = dir.path_join(n)
+	return mission_files.get(f.to_upper(), "")
+
+
+static func _original_units(p: String) -> Array:
+	var out := []
+	if p == "":
+		return out
+	var r = LGRes.open(p + BACKUP) if FileAccess.file_exists(p + BACKUP) else null
+	if not _whole(r):
+		r = LGRes.open(p)
+	if r != null and r.has(173):
+		for f in LGRes.frames(r.data(173)):
+			out.append(PackedByteArray(f).duplicate())
+	return out
+
+
+# an added unit whose record of the game is not known (saved by an older editor): the game's record of its type
+# that differs least from it
+func _guess_source(r: PackedByteArray) -> Dictionary:
+	var best := {}
+	var best_n := 999
+	_mission_path("")
+	var names := mission_files.keys()
+	names.sort()
+	for f in names:
+		for i in 400:
+			var b := _source(f, i)
+			if b.is_empty():
+				break
+			if b[0] != r[0] or b[1] != r[1]:
+				continue
+			var n := 0
+			for o in range(24, REC):
+				if b[o] != r[o]:
+					n += 1
+			if n < best_n:
+				best_n = n
+				best = {"f": f, "i": i}
+	return best
+
+
+# what the mission's script does with labels and groups (scanned from the game's scripts): {} when not known
+func _mission_refs(file: String) -> Dictionary:
+	if all_refs == null:
+		all_refs = {}
+		var j = JSON.parse_string(FileAccess.get_file_as_string("res://data/mission_refs.json"))
+		if j is Dictionary and j.get("missions") is Dictionary:
+			all_refs = j["missions"]
+	var e = all_refs.get(file.to_upper())
+	return e if e is Dictionary else {}
 
 
 # a mission file that can be read whole, with its units and zones
@@ -538,16 +713,22 @@ static func _whole(r) -> bool:
 	return r != null and r.has(173) and r.has(176) and r.has(170)
 
 
-# b is the original of the file cur (with these units): the same resources in the same order, all but the units
-# and zones (173 / 176, the only ones a save writes) byte for byte, and cur's first units are b's units (same
-# class, type and numbers, which the editor never changes); b's number of units, else -1 (another file: one
-# made anew since, or another generator mission, whose 0 units would match anything)
-static func _matches(b, cur, cur_recs: Array) -> int:
+# the same resources in the same order, all but the units and zones (173 / 176, the only ones a save writes) byte
+# for byte (else another file: one made anew since, or another generator mission)
+static func _same_but_units(b, cur) -> bool:
 	if b.order != cur.order:
-		return -1
+		return false
 	for rid in b.order:
 		if rid != 173 and rid != 176 and b.data(rid) != cur.data(rid):
-			return -1
+			return false
+	return true
+
+
+# b is the original of the file cur (with these units) as an older editor saved it: cur's first units are b's units
+# (same class, type and numbers); b's number of units, else -1
+static func _matches(b, cur, cur_recs: Array) -> int:
+	if not _same_but_units(b, cur):
+		return -1
 	var fr: Array = LGRes.frames(b.data(173))
 	if fr.size() > cur_recs.size():
 		return -1
@@ -560,7 +741,14 @@ static func _matches(b, cur, cur_recs: Array) -> int:
 
 
 func _is_added(i: int) -> bool:
-	return i >= n_orig
+	return int(origin[i]) < 0
+
+
+# where a copy of unit i starts from: the game's record it is (the mission's own) or was made from
+func _source_of(i: int) -> Dictionary:
+	if int(origin[i]) >= 0:
+		return {"f": path.get_file().to_upper(), "i": int(origin[i])}
+	return (src[i] as Dictionary).duplicate()
 
 
 func _make_markers() -> void:
@@ -639,32 +827,53 @@ func _group_text(g: int, n: int = -1) -> String:
 # one record of each unit type in the game's own missions (the originals when the editor changed one), the one
 # with its armour full when there is one; the most units of each class in one mission
 func _build_catalog() -> void:
-	var dir: String = viewer.data.data_dir()
 	var have := {}
-	for f in DirAccess.get_files_at(dir):
-		var u := f.to_upper()
-		if not (u.begins_with("MISS") and u.ends_with(".RES")):
-			continue
-		var p := dir.path_join(f)
-		var r = LGRes.open(p + BACKUP if FileAccess.file_exists(p + BACKUP) else p)
-		if r == null or not r.has(173):
-			continue
+	var carried := {}                                # weapon id -> {type name: true}
+	_mission_path("")
+	var names := mission_files.keys()
+	names.sort()
+	for f in names:
+		if not src_cache.has(f) and f != path.get_file().to_upper():
+			src_cache[f] = _original_units(mission_files[f])
 		var per := {}
-		for fr in LGRes.frames(r.data(173)):
-			var rec: PackedByteArray = fr
+		for i in 4000:
+			var rec := _source(f, i)
+			if rec.is_empty():
+				break
 			if rec.size() != REC:
 				continue
 			per[rec[0]] = per.get(rec[0], 0) + 1
 			var key := rec[0] * 256 + rec[1]
+			var tn: String = viewer.data.type_name(rec[0], rec[1])
+			for o in Props.WEAPON_AT.get(rec[0], []):
+				if rec[o] != 0:
+					if not carried.has(rec[o]):
+						carried[rec[o]] = {}
+					carried[rec[o]][tn] = true
 			if not have.has(key):
 				have[key] = catalog.size()
-				catalog.append({"cls": rec[0], "sub": rec[1], "name": viewer.data.type_name(rec[0], rec[1]),
-					"kind": KINDS.get(rec[0], "Other"), "rec": rec})
+				catalog.append({"cls": rec[0], "sub": rec[1], "name": tn, "kind": KINDS.get(rec[0], "Other"), "rec": rec,
+					"f": f, "i": i})
 			elif not _full_armour(catalog[have[key]]["rec"]) and _full_armour(rec):
 				catalog[have[key]]["rec"] = rec
+				catalog[have[key]]["f"] = f
+				catalog[have[key]]["i"] = i
 		for c in per:
 			class_max[c] = maxi(class_max.get(c, 0), per[c])
 	catalog.sort_custom(func(a, b): return _rank(a["cls"]) * 256 + a["sub"] < _rank(b["cls"]) * 256 + b["sub"])
+	# the weapons: the game names the player's (1 to 17, its weapon panel); the others are told by who carries them
+	weapon_names.clear()
+	for id in carried:
+		var who: Array = carried[id].keys()
+		who.sort()
+		var t := ", ".join(who.slice(0, 3)) + ("..." if who.size() > 3 else "")
+		if int(id) < CoopHud.WEAPONS.size() and CoopHud.WEAPONS[int(id)] != "":
+			weapon_names[int(id)] = "%d  ·  %s" % [id, CoopHud.WEAPONS[int(id)]]
+		else:
+			weapon_names[int(id)] = "%d  ·  as carried by %s" % [id, t]
+	for id in range(1, CoopHud.WEAPONS.size()):
+		if not weapon_names.has(id):
+			weapon_names[id] = "%d  ·  %s" % [id, CoopHud.WEAPONS[id]]
 
 
 static func _rank(cls: int) -> int:
@@ -865,7 +1074,8 @@ func _describe(t: Dictionary) -> String:
 		return "Zone %d  %s" % [t["i"], _zone_name(int(t["i"]))]
 	var i := _index(int(t["uid"]))
 	var r: PackedByteArray = recs[i]
-	return "%s\n%s  ·  %s" % [viewer.data.type_name(r[0], r[1]), _group_text(r[7]), "added" if i >= n_orig else "mission"]
+	return "%s\n%s%s  ·  %s" % [viewer.data.type_name(r[0], r[1]), _group_text(r[7]),
+		"  ·  label %d" % r[26] if r[26] != 0 else "", "added" if _is_added(i) else "mission"]
 
 
 func _zone_name(i: int) -> String:
@@ -939,6 +1149,8 @@ func _key(e: InputEventKey) -> bool:
 	if pk == KEY_ESCAPE:
 		if menu_open:
 			_close_menu()
+		elif props.visible:
+			_close_props()
 		elif cursor:
 			_end_cursor()
 		else:
@@ -971,6 +1183,16 @@ func _key(e: InputEventKey) -> bool:
 		if aim.get("kind", "") == "unit":
 			_remove(int(aim["uid"]))
 		return true
+	if pk == KEY_P:
+		var t := held if not held.is_empty() else aim
+		if props.visible and (t.get("kind", "") != "unit" or int(t["uid"]) == props_uid):
+			_close_props()
+		elif t.get("kind", "") == "unit":
+			_drop()
+			_open_props(int(t["uid"]))
+		else:
+			notify("Aim at a unit to see its properties", HOT)
+		return true
 	if pk == KEY_TAB:
 		return true                                  # (the viewer's panel stays hidden in the build mode)
 	return false
@@ -984,8 +1206,11 @@ func _ctrl_shortcut(e: InputEventKey) -> void:
 
 
 func _button(e: InputEventMouseButton) -> void:
-	if menu_open or confirm.visible or unsaved.visible:
+	if menu_open or confirm.visible or unsaved.visible or file_dlg.visible:
 		return
+	var typed := get_viewport().gui_get_focus_owner()
+	if typed != null and props.is_ancestor_of(typed):    # (a click in the view: the panel's field is done)
+		typed.release_focus()
 	if refocus and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		refocus = false
 		if Time.get_ticks_msec() - focus_in_t < 300:  # the click that brought the window back: no tool
@@ -1009,9 +1234,11 @@ func _button(e: InputEventMouseButton) -> void:
 		if not e.pressed:
 			_drop()
 			return
-		if cursor:
+		if cursor or props.visible:
 			var t := _pick_at(e.position)
 			if not t.is_empty():
+				if props.visible and t["kind"] == "unit" and int(t["uid"]) != props_uid:
+					_open_props(int(t["uid"]))
 				_grab(t, false)
 			return
 		match tool:
@@ -1031,17 +1258,21 @@ func _button(e: InputEventMouseButton) -> void:
 					if g == null:
 						notify("Aim at the ground to place the copy", HOT)
 					else:
-						var uid := _add_rec(dup, g, dup.decode_u16(20), dup[7], -1)
-						_push({"op": "spawn", "uid": uid})
-						notify("Pasted: " + viewer.data.type_name(dup[0], dup[1]))
-						_warn_note(dup[0])
+						var full := _no_room(dup)
+						if full != "":
+							notify("Not pasted: " + full, BAD)
+						else:
+							var uid := _add_rec(dup, g, dup.decode_u16(20), dup[7], dup_src)
+							_push({"op": "spawn", "uid": uid})
+							notify("Pasted: " + viewer.data.type_name(dup[0], dup[1]))
+							_warn_note(dup[0])
 			TEAM:
 				if aim.get("kind", "") == "unit":
 					_regroup(int(aim["uid"]), team_group)
 				else:
 					notify("Aim at a unit to put it in group %d" % team_group, HOT)
 	elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
-		if cursor:
+		if cursor or props.visible:
 			var t := _pick_at(e.position)
 			if t.get("kind", "") == "unit":
 				_open_unit_menu(t, e.position)
@@ -1052,7 +1283,8 @@ func _button(e: InputEventMouseButton) -> void:
 				_drop()
 			DUPLICATOR:
 				if tu:
-					dup = PackedByteArray(recs[_index(int(aim["uid"]))])
+					dup = recs[_index(int(aim["uid"]))].duplicate()
+					dup_src = _source_of(_index(int(aim["uid"])))
 					notify("Copied: " + viewer.data.type_name(dup[0], dup[1]))
 			TEAM:
 				if tu:
@@ -1080,24 +1312,27 @@ func _paint_tools() -> void:
 
 func _tool_list() -> Array:
 	return [[TOOL_NAMES[0], "Grab, move and turn units and zone posts", _k(KEY_1)],
-		[TOOL_NAMES[1], "Remove a unit you added", _k(KEY_2)],
+		[TOOL_NAMES[1], "Remove a unit (the mission's own too)", _k(KEY_2)],
 		[TOOL_NAMES[2], "Right: copy a unit · Left: place the copy", _k(KEY_3)],
 		[TOOL_NAMES[3], "Put units in a group (their side)", _k(KEY_4)]]
 
 
 func _help() -> String:
 	return ("%s held: this menu (tap: it stays open)\nMouse: look · %s: fly\nSpace / Ctrl: up / down · Shift: fast\n" +
-		"%s held: cursor (drag, right click a unit)\n%s: undo · %s: turn · Del: remove\nF2: every unit's name\n" +
-		"Ctrl+S: save · Esc: leave") % [_k(KEY_Q), _fly_keys(), _k(KEY_C), _k(KEY_Z), _k(KEY_R)]
+		"%s held: cursor (drag, right click a unit)\n%s: properties of the unit aimed at\n" +
+		"%s: undo · %s: turn · Del: remove\nF2: every unit's name\n" +
+		"Ctrl+S: save · Esc: leave") % [_k(KEY_Q), _fly_keys(), _k(KEY_C), _k(KEY_P), _k(KEY_Z), _k(KEY_R)]
 
 
 func _hint() -> String:
 	if menu_open:
 		return "Click a picture to spawn it where you aim   ·   %s %s (or Esc) to close" % [
 			"press" if menu_sticky else "release", _k(KEY_Q)]
-	if cursor:
+	if cursor or props.visible:
 		if not held.is_empty():
 			return "Move the mouse: move it   ·   %s + mouse: turn   ·   release: drop" % _k(KEY_E)
+		if props.visible:
+			return "Properties   ·   Left: pick another unit (drag: move it)   ·   Right click a unit: its menu   ·   %s or Esc: close" % _k(KEY_P)
 		return "Left (drag): move   ·   Right click a unit: its menu   ·   release %s: back to the crosshair" % _k(KEY_C)
 	if not held.is_empty():
 		if rotating:
@@ -1105,13 +1340,14 @@ func _hint() -> String:
 		return "Aim: move it   ·   Wheel: push / pull   ·   %s + mouse: turn   ·   release: drop" % _k(KEY_E)
 	match tool:
 		REMOVER:
-			return "Left: remove the unit aimed at (only the ones you added)   ·   %s: spawn menu" % _k(KEY_Q)
+			return "Left: remove the unit aimed at   ·   %s: undo   ·   %s: spawn menu" % [_k(KEY_Z), _k(KEY_Q)]
 		DUPLICATOR:
 			var c: String = "nothing copied yet" if dup.is_empty() else "copied: " + viewer.data.type_name(dup[0], dup[1])
 			return "Right: copy the unit aimed at   ·   Left: place the copy   (%s)" % c
 		TEAM:
 			return "Left: put the unit aimed at in %s   ·   Right: take its group" % _group_text(team_group)
-	return "Left (hold): grab   ·   %s: spawn menu   ·   %s: cursor   ·   %s: undo   ·   Esc: leave" % [_k(KEY_Q), _k(KEY_C), _k(KEY_Z)]
+	return "Left (hold): grab   ·   %s: spawn menu   ·   %s: cursor   ·   %s: properties   ·   %s: undo   ·   Esc: leave" % [
+		_k(KEY_Q), _k(KEY_C), _k(KEY_P), _k(KEY_Z)]
 
 
 # ---- menus
@@ -1171,7 +1407,12 @@ func _on_menu_spawn(i: int) -> void:
 	var rec := PackedByteArray(c["rec"]).duplicate()
 	for k in _armour_parts(rec[0]):                  # (some of the game's units start damaged: these start whole)
 		rec[ARMOUR + k] = maxi(rec[ARMOUR + k], 100)
-	var uid := _add_rec(rec, g, _facing_camera(g), group, -1)
+	var full := _no_room(rec)
+	if full != "":
+		menu.flash(i, "Not spawned: " + full, BAD)
+		notify("Not spawned: " + full, BAD)
+		return
+	var uid := _add_rec(rec, g, _facing_camera(g), group, {"f": c["f"], "i": c["i"]})
 	_push({"op": "spawn", "uid": uid})
 	var n := 0
 	for r in recs:
@@ -1247,8 +1488,8 @@ func _open_unit_menu(t: Dictionary, at: Vector2) -> void:
 	unit_menu.add_item("Face me", 2)
 	unit_menu.add_item("Duplicate", 3)
 	unit_menu.add_item("Copy (duplicator)", 4)
-	unit_menu.add_item("Remove" if i >= n_orig else "Remove (the mission's own: kept)", 5)
-	unit_menu.set_item_disabled(unit_menu.get_item_index(5), i < n_orig)
+	unit_menu.add_item("Properties", 6)
+	unit_menu.add_item("Remove" if _is_added(i) else "Remove (the mission's own)", 5)
 	unit_menu.add_separator("Put in group")
 	var count := {}
 	for q in recs:
@@ -1276,15 +1517,22 @@ func _on_unit_menu(id: int) -> void:
 			_set_heading(uid, _facing_camera(g))
 		3:
 			var g := _free_spot(Vector2(r.decode_s32(8) / 65536.0 + 2.0, r.decode_s32(12) / 65536.0))
-			var nu := _add_rec(r, g, r.decode_u16(20), r[7], -1)
+			var full := _no_room(r)
+			if full != "":
+				notify("Not duplicated: " + full, BAD)
+				return
+			var nu := _add_rec(r, g, r.decode_u16(20), r[7], _source_of(i))
 			_push({"op": "spawn", "uid": nu})
 			notify("Duplicated " + viewer.data.type_name(r[0], r[1]))
 			_warn_note(r[0])
 		4:
-			dup = PackedByteArray(r)
+			dup = r.duplicate()
+			dup_src = _source_of(i)
 			notify("Copied: %s  (duplicator, %s)" % [viewer.data.type_name(r[0], r[1]), _k(KEY_3)])
 		5:
 			_remove(uid)
+		6:
+			_open_props(uid)
 		_:
 			if id >= 100:
 				_regroup(uid, id - 100)
@@ -1295,6 +1543,297 @@ func _ask_revert() -> void:
 		notify("Nothing to revert: this mission was never saved by the editor", HOT)
 		return
 	confirm.popup_centered()
+
+
+# ---- limits: the game's tables
+static func _is_ai(r: PackedByteArray) -> bool:
+	return r[0] in [1, 2, 3] or (r[0] == 4 and (r[7] != 0 or r[30] != 0 or r[31] != 0))
+
+
+func _ai_count() -> int:
+	var n := SQUAD
+	var later: PackedByteArray = lg.data(181) if lg != null else PackedByteArray()
+	if later.size() >= 4:                            # the units the script brings in later: a bit a slot
+		var m := later.decode_u32(0)
+		for k in 32:
+			n += (m >> k) & 1
+	for r in recs:
+		if _is_ai(r):
+			n += 1
+	return n
+
+
+# why one more unit like r does not fit in the game ("" when it does)
+func _no_room(r: PackedByteArray) -> String:
+	if recs.size() + SQUAD + 1 > MAX_ENTITIES:
+		return "the game has %d places for everything on the map" % MAX_ENTITIES
+	if _is_ai(r) and _ai_count() + 1 > MAX_AI:
+		return "the game drives %d units at most (soldiers, vehicles, probes, armed buildings, your squad): %d here" % [
+			MAX_AI, _ai_count()]
+	return ""
+
+
+# ---- the properties panel
+func _open_props(uid: int) -> void:
+	var i := _index(uid)
+	if i < 0:
+		return
+	var r: PackedByteArray = recs[i]
+	var gl := []
+	for g in MAX_GROUP + 1:
+		gl.append([g, _group_text(g)])
+	props_uid = uid
+	props.show_unit(r, {"name": viewer.data.type_name(r[0], r[1]), "kind": "added" if _is_added(i) else "the mission's own",
+		"groups": gl, "weapons": weapon_names, "note": _script_use(i, false)})
+	props.visible = true
+	_capture(false)
+
+
+func _close_props() -> void:
+	props.visible = false
+	props_uid = -1
+	var f := get_viewport().gui_get_focus_owner() if is_inside_tree() else null
+	if f != null and props.is_ancestor_of(f):
+		f.release_focus()
+	_recapture()
+
+
+# its unit moved, turned, undone or removed elsewhere
+func _props_sync() -> void:
+	if not props.visible:
+		return
+	var i := _index(props_uid)
+	if i < 0:
+		_close_props()
+	elif props.rec != recs[i]:
+		props.refresh(recs[i], _script_use(i, false))
+
+
+# What the mission's script does with this unit's label and group (data/mission_refs.json, scanned from the game's
+# scripts), and with `removing` what taking the unit out changes; "" when nothing is known to use it. The game
+# counts an objective's units by label, in % of those the mission starts with; a group with no unit left does not
+# exist for the script.
+func _script_use(i: int, removing: bool) -> String:
+	var r: PackedByteArray = recs[i]
+	var label: int = r[26]
+	var g: int = r[7]
+	var same_label := 0
+	var same_group := 0
+	for k in recs.size():
+		if k != i:
+			same_label += 1 if recs[k][26] == label else 0
+			same_group += 1 if recs[k][7] == g else 0
+	var out := []
+	if label != 0:
+		var key := str(label)
+		var uses := []
+		var kill = refs.get("kill", {}).get(key)
+		var alive = refs.get("alive", {}).get(key)
+		if kill is Array:
+			uses.append("the objectives count its units destroyed (%s %%)" % _pcts(kill))
+		if alive is Array:
+			uses.append("the objectives need its units alive (%s %%)" % _pcts(alive))
+		if _has_num(refs.get("follow", []), label):
+			uses.append("a group follows it")
+		if _has_num(refs.get("attack", []), label):
+			uses.append("a group is sent to attack it")
+		if _has_num(refs.get("count", []), label):
+			uses.append("the script counts its losses")
+		if uses.is_empty():
+			uses.append("the mission's script may know this unit by it")
+		var t := "Label %d: %s" % [label, ", ".join(uses)]
+		if removing:
+			t += "; %d other unit%s with this label" % [same_label, "" if same_label == 1 else "s"]
+			if same_label == 0:
+				t += ": what waits for it is met at once, or never"
+		out.append(t)
+	if g != 0 and _has_num(refs.get("groups", []), g):
+		var t := "Group %d gets its orders from the mission's script" % g
+		if removing and same_group == 0:
+			t = "It was the last unit of group %d, which the mission's script gives orders to: the group is gone for it" % g
+		out.append(t)
+	elif removing and g != 0 and same_group == 0:
+		out.append("It was the last unit of group %d: the group is gone" % g)
+	return ".  ".join(out)
+
+
+static func _pcts(a: Array) -> String:
+	var parts := []
+	for v in a:
+		parts.append(str(int(v)))
+	return " / ".join(parts)
+
+
+static func _has_num(a, v: int) -> bool:
+	if a is Array:
+		for x in a:
+			if int(x) == v:
+				return true
+	return false
+
+
+# ---- sharing: a creation is the changes against the original mission (mission_mod.gd)
+func _state() -> Dictionary:
+	return {"recs": recs, "origin": origin, "src": src, "zones": zones}
+
+
+func creation() -> Dictionary:
+	for i in recs.size():
+		if _is_added(i) and (src[i] as Dictionary).is_empty():
+			src[i] = _guess_source(recs[i])
+	return Mod.make(path, orig_recs, orig_zones, _state(), _source)
+
+
+# the creation as a code to paste ("" and a notice when it can't be made)
+func export_code() -> String:
+	var mod := creation()
+	if mod.has("error"):
+		_say("Not exported: " + str(mod["error"]), BAD)
+		return ""
+	return Mod.to_code(mod)
+
+
+# "" when written, else what went wrong
+func export_file(to: String) -> String:
+	var mod := creation()
+	if mod.has("error"):
+		return str(mod["error"])
+	var f := FileAccess.open(to, FileAccess.WRITE)
+	if f == null:
+		return "%s could not be written" % to.get_file()
+	f.store_string(Mod.to_json(mod))
+	f.close()
+	return ""
+
+
+# A creation (what a .tnmod file holds, or a pasted code) put on the ORIGINAL mission, in the editor only: nothing
+# is written, the player saves; one undo brings back what was there. "" or why it was not taken.
+func import_text(t: String) -> String:
+	if lg == null:
+		return "no mission to put it on"
+	var mod := Mod.from_text(t)
+	if mod.has("error"):
+		return str(mod["error"])
+	var st := Mod.apply(mod, path, orig_recs, orig_zones, _source)
+	if st.has("error"):
+		return str(st["error"])
+	_drop()
+	var before := _snapshot()
+	_restore(st)
+	_push({"op": "state", "st": before, "what": "the import"})
+	return ""
+
+
+func _snapshot() -> Dictionary:
+	var rc := []
+	for r in recs:
+		rc.append(r.duplicate())
+	return {"recs": rc, "uids": uids.duplicate(), "origin": origin.duplicate(), "src": src.duplicate(true),
+		"zones": zones.duplicate(), "next_uid": next_uid}
+
+
+# the whole state replaced (an import, or its undo): every unit drawn again, the zone posts put where they are
+func _restore(st: Dictionary) -> void:
+	_drop()
+	aim = {}
+	if props.visible:
+		_close_props()
+	for n in nodes:
+		if n != null and is_instance_valid(n):
+			n.queue_free()
+	recs = st["recs"]
+	origin = st["origin"]
+	src = st["src"]
+	zones = st["zones"]
+	if st.has("uids"):
+		uids = st["uids"]
+		next_uid = maxi(next_uid, int(st["next_uid"]))
+	else:
+		uids = []
+		for i in recs.size():
+			uids.append(next_uid)
+			next_uid += 1
+	nodes = []
+	for r in recs:
+		var n := _make_node(r)
+		_new_names(n)
+		nodes.append(n)
+	for zi in viewer.zone_nodes:
+		_place_zone(int(zi))
+	dirty = true
+	if active:
+		_fill_groups()
+
+
+func _place_zone(zi: int) -> void:
+	var zn = viewer.zone_nodes.get(zi)
+	if zn == null or not is_instance_valid(zn) or 8 * zi + 8 > zones.size():
+		return
+	var g := Vector2(zones.decode_s32(8 * zi) / 65536.0, zones.decode_s32(8 * zi + 4) / 65536.0)
+	zn.position = Vector3(g.x, TNData.height_at(viewer.current["map"], g.x, g.y) + 3.0, g.y)
+
+
+# said where it is seen: the menu hides the notices while it is open
+func _say(t: String, col: Color) -> void:
+	notify(t, col)
+	if menu_open:
+		menu.flash(-1, t, col)
+		menu.set_file(path.get_file(), dirty)
+
+
+func _on_export_file() -> void:
+	dlg_import = false
+	file_dlg.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	file_dlg.title = "Export this creation"
+	if file_dlg.current_dir == "" or file_dlg.current_path.begins_with("res://"):
+		file_dlg.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOCUMENTS)
+	file_dlg.current_file = "%s creation.%s" % [path.get_file().get_basename(), Mod.EXT]
+	file_dlg.popup_centered()
+
+
+func _on_import_file() -> void:
+	dlg_import = true
+	file_dlg.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	file_dlg.title = "Import a creation"
+	if file_dlg.current_dir == "" or file_dlg.current_path.begins_with("res://"):
+		file_dlg.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOCUMENTS)
+	file_dlg.popup_centered()
+
+
+func _on_file_picked(p: String) -> void:
+	if dlg_import:
+		var f := FileAccess.open(p, FileAccess.READ)
+		if f == null or f.get_length() > Mod.MAX_TEXT:
+			_say("Not imported: %s can't be read (or is too big to be a creation)" % p.get_file(), BAD)
+		else:
+			_import_report(import_text(f.get_as_text()))
+	else:
+		if p.get_extension().to_lower() != Mod.EXT:
+			p += "." + Mod.EXT
+		var err := export_file(p)
+		if err != "":
+			_say("Not exported: " + err, BAD)
+		else:
+			_say("Exported %s  (%s)" % [p.get_file(), Mod.summary(creation())], GOOD)
+	_recapture.call_deferred()
+
+
+func _on_copy_code() -> void:
+	var code := export_code()
+	if code != "":
+		DisplayServer.clipboard_set(code)
+		_say("Code copied (%d characters, %s): paste it anywhere" % [code.length(), Mod.summary(creation())], GOOD)
+
+
+func _on_paste_code() -> void:
+	_import_report(import_text(DisplayServer.clipboard_get()))
+
+
+func _import_report(err: String) -> void:
+	if err != "":
+		_say("Not imported: " + err, BAD)
+	else:
+		_say("Imported (%s). Nothing is written until you save; %s undoes it" % [Mod.summary(creation()), _k(KEY_Z)], GOOD)
 
 
 # ---- changes (each undoable)
@@ -1320,11 +1859,16 @@ func _undo() -> void:
 				notify("Undone: spawned " + viewer.data.type_name(r[0], r[1]))
 		"remove":
 			var r: PackedByteArray = op["rec"]
-			_add_rec(r, Vector2(r.decode_s32(8) / 65536.0, r.decode_s32(12) / 65536.0), r.decode_u16(20), r[7], int(op["uid"]))
-			var j := _index(int(op["uid"]))         # (the very same position, not one rounded through floats)
-			if j >= 0:
-				_set_raw({"kind": "unit", "uid": op["uid"]}, [r.decode_s32(8), r.decode_s32(12)])
+			_insert(r, int(op["uid"]), int(op["o"]), op["src"], int(op["at"]))   # (the very record, where it was)
 			notify("Undone: removed " + viewer.data.type_name(r[0], r[1]))
+		"rec":
+			var i := _index(int(op["uid"]))
+			if i >= 0:
+				_set_rec(i, op["rec"])
+				notify("Undone: %s of %s" % [PROP_NAMES.get(str(op.get("tag", "")), "a property"), viewer.data.type_name(recs[i][0], recs[i][1])])
+		"state":
+			_restore(op["st"])
+			notify("Undone: " + str(op.get("what", "the change")))
 		"move":
 			var t: Dictionary = op["t"]
 			_set_raw(t, op["raw"])
@@ -1340,25 +1884,66 @@ func _undo() -> void:
 	dirty = true
 
 
-# a record at g, facing h, in group: appended (with its uid again when undoing a removal); returns its uid
-func _add_rec(src: PackedByteArray, g: Vector2, h: int, group: int, uid: int) -> int:
-	var r := PackedByteArray(src).duplicate()
-	r[7] = clampi(group, 0, 31)
+# a copy of record `from` at g, facing h, in group, after the others; source: the game's record it starts from
+# ({"f": mission file, "i": record}); returns its uid
+func _add_rec(from: PackedByteArray, g: Vector2, h: int, group: int, source: Dictionary) -> int:
+	var r := from.duplicate()
+	r[7] = clampi(group, 0, MAX_GROUP)
 	r.encode_s32(8, int(round(g.x * 65536.0)))
 	r.encode_s32(12, int(round(g.y * 65536.0)))
 	r.encode_s32(16, 0)
 	r.encode_u16(20, h & 0xFFFF)
-	recs.append(r)
-	if uid < 0:
-		uid = next_uid
-		next_uid += 1
-	uids.append(uid)
-	_renumber()
-	var n := _make_node(r)
-	_new_names(n)
-	nodes.append(n)
-	dirty = true
+	var uid := next_uid
+	next_uid += 1
+	_insert(r, uid, -1, source.duplicate(), -1)
 	return uid
+
+
+# record r in the list at `at` (-1: at the end), as the original's unit `o` (-1: an added one), drawn
+func _insert(r: PackedByteArray, uid: int, o: int, source: Dictionary, at: int) -> void:
+	if at < 0 or at > recs.size():
+		at = recs.size()
+	recs.insert(at, r.duplicate())
+	uids.insert(at, uid)
+	origin.insert(at, o)
+	src.insert(at, source)
+	_renumber()
+	var n := _make_node(recs[at])
+	_new_names(n)
+	nodes.insert(at, n)
+	dirty = true
+
+
+# a record replaced (a property changed, or its undo): drawn again
+func _set_rec(i: int, r: PackedByteArray) -> void:
+	recs[i] = r.duplicate()
+	var old = nodes[i]
+	if old != null and is_instance_valid(old):
+		old.queue_free()
+	var n := _make_node(recs[i])
+	_new_names(n)
+	nodes[i] = n
+	dirty = true
+
+
+# one field of a unit changed in the properties panel: one undo step for a field changed in a row (a slider)
+func _edit_rec(uid: int, r: PackedByteArray, tag: String) -> void:
+	var i := _index(uid)
+	if i < 0 or r.size() != REC or recs[i] == r:
+		return
+	if r[7] > MAX_GROUP:
+		return
+	var now := Time.get_ticks_msec()
+	var last: Dictionary = undo.back() if not undo.is_empty() else {}
+	if last.get("op", "") == "rec" and int(last.get("uid", -1)) == uid and str(last.get("tag", "")) == tag \
+			and now - int(last.get("t", 0)) < 1500:
+		last["t"] = now
+	else:
+		_push({"op": "rec", "uid": uid, "rec": recs[i].duplicate(), "tag": tag, "t": now})
+	var keep := r.duplicate()
+	keep.encode_u16(2, recs[i].decode_u16(2))       # (its numbers are the editor's)
+	keep.encode_u16(4, recs[i].decode_u16(4))
+	_set_rec(i, keep)
 
 
 # a record's node in the viewer's world, as the viewer makes them when it loads the mission (tn_data.load_mission)
@@ -1378,43 +1963,34 @@ func _remove(uid: int, push := true) -> void:
 	if i < 0:
 		return
 	var r: PackedByteArray = recs[i]
-	if i < n_orig:
-		notify("%s belongs to the mission (its scripts may use it): move it, it can't be removed" % viewer.data.type_name(r[0], r[1]), HOT)
-		return
+	var own := not _is_added(i)
+	var warn := _script_use(i, true) if push and own else ""
 	var n = nodes[i]
 	if n != null and is_instance_valid(n):         # (Garry's Mod's remover: it shrinks away)
 		var tw: Tween = n.create_tween()
 		tw.tween_property(n, "scale", Vector3(0.01, 0.01, 0.01), 0.15)
 		tw.tween_callback(n.queue_free)
+	var op := {"op": "remove", "rec": r, "uid": uid, "at": i, "o": int(origin[i]), "src": src[i]}
 	recs.remove_at(i)
 	nodes.remove_at(i)
 	uids.remove_at(i)
+	origin.remove_at(i)
+	src.remove_at(i)
 	_renumber()
 	if aim.get("uid", -1) == uid:
 		aim = {}
 	if held.get("uid", -1) == uid:
 		held = {}
 	if push:
-		_push({"op": "remove", "rec": r, "uid": uid})
-		notify("Removed " + viewer.data.type_name(r[0], r[1]))
+		_push(op)
+		notify("Removed %s%s" % [viewer.data.type_name(r[0], r[1]), "  (the mission's own: %s brings it back)" % _k(KEY_Z) if own else ""])
+		if warn != "":
+			notify(warn, HOT)
 	dirty = true
 
 
 func _renumber() -> void:
-	# the added units: entity numbers after the mission's own, and the next numbers in their class
-	var top := 0
-	var per := {}
-	for i in n_orig:
-		var r: PackedByteArray = recs[i]
-		top = maxi(top, r.decode_u16(2))
-		per[r[0]] = maxi(per.get(r[0], 0), r.decode_u16(4))
-	for i in range(n_orig, recs.size()):
-		var r: PackedByteArray = recs[i]
-		top += 1
-		per[r[0]] = per.get(r[0], 0) + 1
-		r.encode_u16(2, top)
-		r.encode_u16(4, per[r[0]])
-		recs[i] = r
+	Mod.renumber(orig_recs, recs, origin)            # (the added units: the next numbers, tidy)
 
 
 func _get_raw(t: Dictionary) -> Array:
@@ -1486,17 +2062,9 @@ func _set_group(uid: int, g: int) -> void:
 	var i := _index(uid)
 	if i < 0:
 		return
-	var r: PackedByteArray = recs[i]
-	r[7] = g
-	recs[i] = r
-	var n = nodes[i]
-	if n != null and is_instance_valid(n):
-		for c in n.get_children():
-			if c is Label3D and c.is_in_group("labels"):
-				var tname: String = viewer.data.type_name(r[0], r[1])
-				var gn := groups[g] if g < groups.size() else ""
-				c.text = tname if gn == "" or gn.begins_with("(NULL") or gn.begins_with("DEFAULT") else "%s\n[%s]" % [tname, gn]
-	dirty = true
+	var r: PackedByteArray = recs[i].duplicate()
+	r[7] = clampi(g, 0, MAX_GROUP)
+	_set_rec(i, r)                                   # (drawn again: the group gives its side, the side its colours)
 
 
 func _regroup(uid: int, g: int) -> void:
@@ -1577,6 +2145,8 @@ func _drop() -> void:
 		var h: int = recs[_index(int(t["uid"]))].decode_u16(20) if t["kind"] == "unit" else 0
 		if _get_raw(t) != held["from_raw"] or h != int(held["from_h"]):
 			_push({"op": "move", "t": t, "raw": held["from_raw"], "h": held["from_h"]})
+			if t["kind"] == "unit":                  # (drawn again where it is now: a vehicle lies on its slope)
+				_set_rec(_index(int(t["uid"])), recs[_index(int(t["uid"]))])
 	held = {}
 	rotating = false
 
@@ -1617,8 +2187,13 @@ func save() -> void:
 	if not _whole(lg):
 		notify("Not saved: %s is damaged (no units or zones in it): Revert puts the original back" % path.get_file(), BAD)
 		return
+	for r in recs:
+		if r.size() != REC or r[7] > MAX_GROUP:
+			notify("Not saved: a unit is in group %d, the game has groups 0 to %d" % [r[7], MAX_GROUP], BAD)
+			return
+	var mod := creation()                            # (before anything is written: what the note beside it will say)
 	var bak := path + BACKUP
-	if _backup_units(bak) < 0:                       # none yet, or not this file's (the file was made anew since)
+	if not adopted:                                  # none yet, or not this file's (the file was made anew since)
 		if FileAccess.file_exists(bak):              # an original of another file: kept aside, never overwritten
 			var old := bak + ".old"
 			if FileAccess.file_exists(old):
@@ -1631,8 +2206,8 @@ func save() -> void:
 		if err != "":
 			notify("Not saved: could not keep the original (%s)" % err, BAD)
 			return
-		n_orig = mini(n_orig, recs.size())
-	if not lg.set_data(173, LGRes.compose(recs)) or not lg.set_data(176, zones):
+		adopted = true
+	if not lg.set_data(173, LGRes.compose(recs)) or not lg.set_data(176, zones.duplicate()):
 		notify("Not saved: %s has no units or zones resource" % path.get_file(), BAD)
 		return
 	var e: String = lg.save(path)
@@ -1641,6 +2216,16 @@ func save() -> void:
 		return
 	dirty = false
 	menu.set_file(path.get_file(), dirty)
+	var noted := false
+	if not mod.has("error"):                         # the changes beside it: the next session's memory
+		mod["saved"] = Mod.base_sum(recs, zones)
+		var f := FileAccess.open(path + EDIT, FileAccess.WRITE)
+		if f != null:
+			f.store_string(Mod.to_json(mod))
+			f.close()
+			noted = true
+	if not noted:
+		DirAccess.remove_absolute(path + EDIT)       # (a stale one would not match the file anyway)
 	notify("Saved %s  (the original: %s)" % [path.get_file(), bak.get_file()], GOOD)
 
 
@@ -1671,18 +2256,15 @@ func _revert() -> void:
 		notify("Not reverted: %s can't be read whole" % bak.get_file(), BAD)
 		return
 	var cur = LGRes.open(path)                       # (a damaged file: the original goes back whatever it is)
-	if _whole(cur):
-		var cur_recs := []
-		for f in LGRes.frames(cur.data(173)):
-			cur_recs.append(PackedByteArray(f))
-		if _matches(b, cur, cur_recs) < 0:
-			notify("Not reverted: %s is not this file's original (the file was made anew since); both kept" % bak.get_file(), BAD)
-			return
+	if _whole(cur) and not (adopted and _same_but_units(b, cur)):
+		notify("Not reverted: %s is not this file's original (the file was made anew since); both kept" % bak.get_file(), BAD)
+		return
 	var err := _copy_checked(bak, path)
 	if err != "":
 		notify("Not reverted: %s; the original is still in %s" % [err, bak.get_file()], BAD)
 		return
 	DirAccess.remove_absolute(bak)
+	DirAccess.remove_absolute(path + EDIT)
 	_close_menu()
 	dirty = false
 	notify("Original mission back: " + path.get_file(), GOOD)

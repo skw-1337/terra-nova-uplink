@@ -3692,6 +3692,7 @@ const WAYPOINT_LINE := 1.25                      # its lines' width, in rows of 
 const WAYPOINT_TEXT := 9.5                       # its letters' size, the same (capitals 7 rows high)
 var waypoint: Node3D
 var waypoint_at := Vector2.ZERO
+var live_me := -1                                # the player's entity (live): the waypoint's distance is from his suit
 
 
 func _live_waypoint(at: Vector2) -> void:
@@ -3781,7 +3782,13 @@ func _waypoint_update(delta: float) -> void:
 	l.pixel_size = WAYPOINT_TEXT * vs.y / 400.0 * px / l.font_size
 	# the game writes it 15 columns right of the pyramid's middle and from 3 rows above it (of its 848 x 400 picture)
 	l.offset = Vector2(15.0 * vs.x / 848.0, 3.0 * vs.y / 400.0) * px / l.pixel_size
-	l.text = "%d M" % int(6.0 * Vector2(camera.position.x - waypoint_at.x, camera.position.z - waypoint_at.y).length())
+	# from the player's suit, as the game measures it (the eye stands a little ahead of the suit: from the camera it
+	# read a metre short)
+	var from := Vector2(camera.position.x, camera.position.z)
+	var me: Array = live_ents.get(live_me, [])
+	if me.size() >= 5:
+		from = Vector2(me[3], me[4])
+	l.text = "%d M" % int(6.0 * (from - waypoint_at).length())
 
 
 # Game entities after the camera: count, player index, then 32 bytes each: index, class, type, active (int32),
@@ -3793,6 +3800,7 @@ func _waypoint_update(delta: float) -> void:
 func _live_units(pk: PackedByteArray) -> void:
 	var n := pk.decode_s32(24)
 	var player := pk.decode_s32(28)
+	live_me = player
 	var body := player                                 # whose body the view hides: the one it is seen from
 	var tail := 32 + 32 * n
 	if pk.size() >= tail + 4:

@@ -2993,8 +2993,6 @@ func _hud_update() -> void:
 		if tag == "MOV":                                 # the game's cutscene: its HD version, if made
 			_hd_movie_play(pk.slice(7).get_string_from_ascii().to_upper())
 			continue
-		if tag == "MIS":                                 # back in the game's 3D: another mission?
-			var mf := pk.slice(7).get_string_from_ascii().to_upper()
 		if tag == "FAD" and pk.size() >= 11:             # the game's own fade (its palette), see _menu_fade
 			game_fade = clampf(pk.decode_float(7), 0.0, 1.0)
 			game_fade_t = Time.get_ticks_msec()

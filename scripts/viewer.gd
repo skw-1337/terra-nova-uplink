@@ -103,6 +103,7 @@ var live_shot := ""
 var live_shot_frame := 60
 var live_nodes := []          # one node per mission entity, in file order
 var live_off := -1            # game entity table index of the first mission entity
+var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
 var live_fx := {}             # game entity index -> glowing sprite: shots (class 5) and their sparks (class 6)
 var live_piles := {}          # game entity index -> pile of armour pieces of a burst suit (6/33)
@@ -601,6 +602,7 @@ func _load(index: int) -> void:
 	var counts := {}
 	live_nodes.clear()
 	live_off = -1
+	live_alarm = false                        # (cleared by the game at each mission start)
 	live_extra.clear()
 	live_fx.clear()
 	live_piles.clear()
@@ -1130,12 +1132,17 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 	if soldier or mi.mesh != null:
 		pass
 	elif TNObjects.is_model(ref):
-		var md: Dictionary = objects.model(ref, pal, pal_key)
+		# lamps (types 56 / 57): their colour and full brightness (tn_objects.gd LAMP_TYPES); 57 waits for the alarm
+		var lamp := TNObjects.lamp_state(cls, sub, live_alarm)
+		var md: Dictionary = objects.model(ref, pal, pal_key, PackedByteArray(), lamp)
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
 			top = md["height"]
 			if md["params"] > 0:
 				mi.set_meta("art_ref", ref)              # articulated parts: posed by the live game (_live_arts)
+			if lamp != TNObjects.LAMP_NONE:
+				mi.set_meta("lamp", [ref, cls, sub])
+				mi.add_to_group("lamps")
 	elif TNObjects.is_sprite(ref):
 		var sp: Dictionary = objects.sprite(ref, pal, pal_key)
 		if not sp.is_empty():
@@ -3360,6 +3367,8 @@ func _live_units(pk: PackedByteArray) -> void:
 			tail += 4 + 8 * pk.decode_s32(tail)
 			if pk.size() >= tail + 4:
 				body = pk.decode_s32(tail)
+				if pk.size() >= tail + 8:
+					_live_alarm(pk.decode_s32(tail + 4) != 0)   # (after the body: the alarm, newer bridges)
 	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
 	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
 	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
@@ -3647,7 +3656,23 @@ func _live_arts(pk: PackedByteArray, at: int) -> void:
 		if mi.get_meta("art_pose", PackedByteArray()) == pr:
 			continue
 		mi.set_meta("art_pose", pr)
-		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr)
+		var lp: Array = mi.get_meta("lamp", [])
+		var lamp := TNObjects.lamp_state(lp[1], lp[2], live_alarm) if not lp.is_empty() else TNObjects.LAMP_NONE
+		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr, lamp)
+		if not md.is_empty():
+			mi.mesh = md["mesh"]
+
+
+# The alarm went on (it stays on until the next mission): the type-57 lamps light up, as the game's 0x29B4D0 sees it.
+func _live_alarm(on: bool) -> void:
+	if on == live_alarm:
+		return
+	live_alarm = on
+	for n in get_tree().get_nodes_in_group("lamps"):
+		var mi := n as MeshInstance3D
+		var lp: Array = mi.get_meta("lamp")
+		var md: Dictionary = objects.model(lp[0], pal, pal_key, mi.get_meta("art_pose", PackedByteArray()),
+				TNObjects.lamp_state(lp[1], lp[2], on))
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
 

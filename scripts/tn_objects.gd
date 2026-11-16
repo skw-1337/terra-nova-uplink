@@ -15,8 +15,13 @@ const TABLES := {0: [1371, 2], 2: [1372, 1], 3: [1373, 1], 4: [1374, 2]}
 const MODELS := Vector2i(1343, 1362)       # compound resources holding the models
 const SPRITES := Vector2i(1160, 1195)      # sprite / animation bitmaps
 const PROPS := 1364                        # + class: footprint and size of each object type
-# lamp polygons take their color from the object at run time (blinking alarm light)
-const RUNTIME_COLOR := Color(0.95, 0.25, 0.15)
+# Lamps: the lamp model's 7 polygons take their colour at run time (slot 2 of the byte table 0x3617F8): the game's
+# routine 0x29B4D0 writes 0x4B there for an object of type 56, and for type 57 once the alarm is on (0 before: black).
+# Such an object is then drawn full-bright (ambient 1, no diffuse: its palette colours as they are, shade row 16),
+# whatever its class (also the research buildings 4/56 and 4/57). Nothing blinks.
+const LAMP_TYPES := [56, 57]
+const LAMP_COLOR := 0x4B
+enum {LAMP_NONE = -1, LAMP_OFF = 0, LAMP_ON = 1}
 
 var res                 # RESTNOBJ.RES
 var tex_ref := {}       # global texture index -> Vector2i(resource, frame), from RESMAP.RES 1440
@@ -420,17 +425,26 @@ func model_name(ref: Vector2i) -> String:
 # {"mesh": ArrayMesh, "name": String, "height": float}, or {} when the ref is not a model.
 # Mesh axes: the model's forward axis is +X (heading 0 = east), up is +Y; turn the node by
 # rotation.y = -heading.
-func model(ref: Vector2i, pal: PackedColorArray, pal_key: String, params := PackedByteArray()) -> Dictionary:
-	var key := "%d/%d/%s/%s" % [ref.x, ref.y, pal_key, params.hex_encode()]
+# lamp: LAMP_NONE (not a lamp object: run-time colours lit as the lamp's), LAMP_OFF (type 57 before the alarm) or
+# LAMP_ON (full-bright, run-time colours = palette 0x4B), see lamp_state.
+func model(ref: Vector2i, pal: PackedColorArray, pal_key: String, params := PackedByteArray(), lamp := LAMP_NONE) -> Dictionary:
+	var key := "%d/%d/%s/%s/%d" % [ref.x, ref.y, pal_key, params.hex_encode(), lamp]
 	if model_cache.has(key):
 		return model_cache[key]
 	var out := {}
 	if is_model(ref) or (ref.x >= MECH_PARTS.x and ref.x <= MECH_PARTS.y):
 		var fr := LGRes.frames(res.data(ref.x))
 		if ref.y < fr.size():
-			out = _build(fr[ref.y], pal, pal_key, params)
+			out = _build(fr[ref.y], pal, pal_key, params, lamp)
 	model_cache[key] = out
 	return out
+
+
+# The lamp state of a model object (any class but the soldiers): type 56 always on, type 57 on once the alarm is.
+static func lamp_state(cls: int, sub: int, alarm: bool) -> int:
+	if cls == 1 or not sub in LAMP_TYPES:
+		return LAMP_NONE
+	return LAMP_ON if sub == 56 or alarm else LAMP_OFF
 
 
 # Sprite as a texture + height / width ratio, or {}.
@@ -544,7 +558,7 @@ static func _bitmap(f: PackedByteArray, pal: PackedColorArray, data_at: int = 0x
 	return Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
 
 
-func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params := PackedByteArray()) -> Dictionary:
+func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params := PackedByteArray(), lamp := LAMP_NONE) -> Dictionary:
 	if f.size() < 0x5e:
 		return {}
 	var d := Decoder.new()
@@ -579,7 +593,7 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 			var col := Color.WHITE
 			if s < 0:
 				var ci: int = p[3]
-				col = pal[ci & 0xFF] if ci >= 0 else RUNTIME_COLOR
+				col = pal[ci & 0xFF] if ci >= 0 else (Color.BLACK if lamp == LAMP_OFF else pal[LAMP_COLOR])
 			for k in range(1, v.size() - 1):
 				for j in [0, k, k + 1]:
 					if s >= 0:
@@ -594,6 +608,8 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 		var mat := StandardMaterial3D.new()
 		mat.roughness = 1.0
 		mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+		if lamp == LAMP_ON:                          # full-bright: its colours as they are, on every face
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
 		if s < 0:
 			mat.vertex_color_use_as_albedo = true
@@ -828,7 +844,7 @@ class Decoder:
 					for i in n33:
 						idx33.append(f.decode_u16(pc + 0x20 + 2 * i))
 					var last := f.decode_u16(pc + 0x20 + 2 * n33)
-					var col := (last & 0xFFF) if last & 0x8000 else -1
+					var col := (last & 0xFFF) if last & 0x8000 else -1 - (last & 0xFF)   # < 0: run-time colour slot
 					var nrm := xf.basis * v3(pc + 4)
 					if sub == 2:
 						var uv33 := PackedVector2Array()

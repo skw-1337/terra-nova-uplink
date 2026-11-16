@@ -299,6 +299,14 @@ for _nom, _sig in (('ETAT VUES', rb'\x83\xec\x0c\x89\xd3\x8b\x15(....)\x83\x7a\x
 if len(METEO) != 4:
     print('meteo : signatures introuvables (neige non envoyee)', METEO)
     METEO = {}
+# The mission's alarm byte (EN 0x371174): set once when an enemy is alerted, cleared at each mission start. The lamps
+# of type 57 light up with it (routine 0x29B4D0). Found by its setter (cmp [a],1 / je / mov [a],1 / call ...) and its
+# getter (mov al,[a] / ret) right after; sent after the view's body (0 when not found)
+ALARME = [struct.unpack('<I', _m.group(1))[0] for _m in re.finditer(
+    rb'\x80\x3d(....)\x01\x74.\xc6\x05\1\x01\xe8....\x80\x3d....\x03\x72.\xe9....\x90\xa0\1\xc3', code, re.S)]
+ALARME = next((a for a in ALARME if 0x300000 <= a < 0x500000), None)
+if ALARME is None:
+    print('alarme : signature introuvable (lampes de type 57 laissees eteintes)')
 
 
 def meteo():
@@ -1873,7 +1881,8 @@ while True:
                struct.unpack_from('<H', tab, 0x25 * vue + 0x1B)[0] / 65536 * 2 * math.pi, pitch)
     if CAM: cam = CAM                         # --cam x,y,z,cap_deg,tangage_deg : camera d'observation fixe (tests)
     s.sendto(struct.pack('<6f2i', *cam, fov_now(), len(body), pid) + b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
-             struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid), ('127.0.0.1', 47821))
+             struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid) +
+             struct.pack('<i', g.read(ALARME, 1)[0] if ALARME else 0), ('127.0.0.1', 47821))
     if guest: guest.step(body, joints, arts)
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()

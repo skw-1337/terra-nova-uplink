@@ -48,6 +48,12 @@ KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A 
 # units/s per s) stands for it. Damage to the jets (sputter, 0x27DF14) is left out
 JET_ACC = float(os.environ.get('TN_JET_ACC', '1600'))
 JET_KICK, JET_FREE, AIR = 150, 200, 0x4000   # the ground kick, free airtime (ms), "near the ground" (0.25, 0x28927C)
+# The ground under him: the game's height map (English exe: pointer at 0x36F50A, 513 x 513 points of 3 bytes, the
+# height s16 at +1, >> 4, / 24 units), between its 4 points (the game cuts the cells in triangles: a few hundredths
+# off on slopes). His suit's contact bytes (CONTACT) are no help: the game keeps them for the player's suit only (in
+# flight the host's +0xE2 reads 2, the guest's stays 0 even 100 units up), so both the Bound's "on the ground" and the
+# jets' band are his height over this, as the game's 0x28927C measures it
+HMAP, HMAP_N = 0x36F50A, 513
 MISSION, NO_JETS, NO_FUEL, ENERGY_F = 0x359708, 0x2E, 0x2F, 0x442439
 J_RATING, J_FUEL, J_HALF = 0xA6, 0xAA, 0x0D   # suit record: jets' rating (word), fuel (word), dword 4 = half the fuel
 F8 = 0x42                     # next teammate
@@ -159,7 +165,7 @@ class Guest:
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
-        self.pending, self.clk, self.jet_n, self.jet_z0, self.jet_air = [0, 0, 0], None, None, None, None
+        self.pending, self.clk, self.jet_n, self.jet_air = [0, 0, 0], None, None, None
         self.lock, self.lock_req, self.pad_lock = 0, False, False
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.amax0 = {}                                       # each teammate's armour when first seen (100 %)
@@ -349,14 +355,32 @@ class Guest:
     def clock(self):
         return struct.unpack('<I', self.g.read(CLOCK, 4))[0]
 
-    def grounded(self, s):
-        """the suit stands on something, as the game's 0x27EDA0 tells (suit bytes)"""
-        r = self.g.read(s, 0x398)
-        return not any(r[o] in v for o, v in CONTACT)
+    def ground(self, x, y):
+        """the terrain's height under x, y (units) from the game's height map, None when it is not there"""
+        base = struct.unpack('<I', self.g.read(HMAP, 4))[0]
+        if not 0x100000 <= base < 0x2000000:
+            return None
+        ix, iy = min(HMAP_N - 2, max(0, int(x))), min(HMAP_N - 2, max(0, int(y)))
+        fx, fy = min(1.0, max(0.0, x - ix)), min(1.0, max(0.0, y - iy))
+        a, b = (self.g.read(base + 3 * (HMAP_N * j + ix), 6) for j in (iy, iy + 1))
+        h = lambda r, o: (struct.unpack_from('<h', r, o + 1)[0] >> 4) / 24
+        return (h(a, 0) * (1 - fx) + h(a, 3) * fx) * (1 - fy) + (h(b, 0) * (1 - fx) + h(b, 3) * fx) * fy
+
+    def near_ground(self, e):
+        """entity e within 0.25 of the terrain (the game's 0x28927C); True when the height map is not there"""
+        x, y, z = (v / 65536 for v in struct.unpack('<3i', self.g.read(self.master + 0x25 * e + 0x0F, 12)))
+        h = self.ground(x, y)
+        return h is None or abs(z - h) <= AIR / 65536
+
+    def grounded(self, e):
+        """his suit stands on something: the game's contact bytes (0x27EDA0) say so, and he is near the ground"""
+        r = self.g.read(self.suit(e), 0x398)
+        return not any(r[o] in v for o, v in CONTACT) and self.near_ground(e)
 
     def jump_ok(self):
-        """the game's Bound gates for his suit: on the ground, 250 game ms since the last one, suit +0x3C8 low (the
-        game's count of 4 foot plants, kept for the player only, is left out)"""
+        """the game's Bound gates for his suit: on the ground (within its 0.25 band: kicks pressed fast no longer
+        carry him up), 250 game ms since the last one, suit +0x3C8 low (the game's count of 4 foot plants, kept for
+        the player only, is left out)"""
         if not self.gid:
             return False
         s, c = self.suit(self.gid), self.clock()
@@ -364,7 +388,7 @@ class Guest:
             self.jump_clock = None                             # the clock went back: a new mission or a load
         if self.jump_clock is not None and not c > self.jump_clock:
             return False
-        return self.grounded(s) and self.i32(s + BOUND_GATE) < 0x30000
+        return self.grounded(self.gid) and self.i32(s + BOUND_GATE) < 0x30000
 
     def jump(self, angle):
         """the game's Bound toward the heading + angle: one kick of 120 flat, 80 up; it costs no energy"""
@@ -395,25 +419,20 @@ class Guest:
             dt = 0 if dt > 0x7FFFFFFF else 100                  # the clock went back (no update), or a long hitch
         self.clk = c
         if self.gid:
-            # the ground under him: his height when he last stood (no height map in the bridge; the game's 0x28927C
-            # measures from the terrain), kept while he is in the air
-            s, z = self.suit(self.gid), self.i32(self.master + 0x25 * self.gid + 0x17)
-            if self.grounded(s):
-                self.jet_z0 = z
             if jets and self.i32(MISSION) != NO_JETS:
-                self.jets(s, c, dt, z)
+                self.jets(self.suit(self.gid), c, dt)
             else:
                 self.jet_n = self.jet_air = None
         self.flush()
 
-    def jets(self, s, c, dt, z):
+    def jets(self, s, c, dt):
         if self.jet_n is None:
             self.jet_n = 0                                     # pressed: this tick is the first update
         elif dt:
             self.jet_n += 1
         else:
             return                                             # no game update since the last tick
-        if self.jet_z0 is not None and abs(z - self.jet_z0) <= AIR:   # within 0.25 of the ground: the kick, unpaid
+        if self.near_ground(self.gid):                         # within 0.25 of the ground: the kick, unpaid
             if self.jet_air is not None:
                 self.jet_n = 0                                 # back from the air: the game kicks at once (0x288EF0)
             self.jet_air = None
@@ -554,7 +573,7 @@ class Guest:
             g.write(G_JUMP, b'\x00')                           # (a kick the last suit never took: not for this one)
             g.write(G_ON, b'\x01')
             self.amax, self.state, self.taken_t = self.armour_max(gid), OK, time.time()
-            self.pending, self.jet_n, self.jet_z0, self.jet_air = [0, 0, 0], None, None, None
+            self.pending, self.jet_n, self.jet_air = [0, 0, 0], None, None
             print('guest: entity %d' % gid, flush=True)
             self.tag.put(gid, self.name, self.face)
         else:

@@ -1908,14 +1908,14 @@ func _gait_place(node: Node3D, now: int) -> void:
 	var hist: Array = st["hist"]
 	var p2: Vector2 = node.get_meta("pkt", Vector2(node.position.x, node.position.z))
 	var ez: float = node.get_meta("ez", node.position.y)
-	st["ez"] = ez
+	st["ez"] = float(node.get_meta("ez_s", ez)) if unit_smooth else ez   # (eased with its place, _unit_smooth)
 	if hist.is_empty() or hist[-1][1] != p2 or hist[-1][2] != ez:
 		if not hist.is_empty() and now - int(hist[-1][0]) > 120:   # moving again: from one game move before
 			hist.assign([[now - 33, hist[-1][1], hist[-1][2]]])
 		hist.append([now, p2, ez])
 	while hist.size() > 2 and now - int(hist[1][0]) >= 150:
 		hist.pop_front()
-	if smooth or hist.size() < 2:
+	if smooth or unit_smooth or hist.size() < 2:
 		return
 	var a: Vector2 = hist[-2][1]
 	var b: Vector2 = hist[-1][1]
@@ -1970,8 +1970,13 @@ func _gait(node: Node3D, m: Dictionary, dt: float) -> void:
 	# on the ground under it; above where the game has its feet (its entity minus GAIT_FEET) once they are clearly
 	# off the ground (a jump: rising with it, no jump at the start)
 	var ez: float = (node.get_meta("gait", {}) as Dictionary).get("ez", node.get_meta("ez", ground))
-	node.position.y = ground + maxf(ez - GAIT_FEET - ground - 0.04, 0.0)
-	var air := node.position.y - ground > leg * GAIT_AIR
+	var gy := ground + maxf(ez - GAIT_FEET - ground - 0.04, 0.0)
+	var now := Time.get_ticks_msec()
+	if not node.has_meta("gait") and absf(node.position.y - gy) < 1.0:
+		node.set_meta("y_off", [node.position.y - gy, now])   # (from the game's pose: its height eased, _y_ease)
+	node.set_meta("gait_y", gy)
+	node.position.y = gy + _y_ease(node, now)
+	var air := gy - ground > leg * GAIT_AIR
 	var xf := node.global_transform
 	var home := []                                       # where each ankle stands (under its hip: a stride even
 	for s in 2:                                          # both ways)
@@ -1988,7 +1993,6 @@ func _gait(node: Node3D, m: Dictionary, dt: float) -> void:
 				"hist": [], "dir": Vector3.ZERO, "yaw": [node.rotation.y, node.rotation.y], "arms": [0.0, 0.0]}
 		node.set_meta("gait", st)
 	# its speed over the last 150 ms of its moves (_gait_place; none for 80 ms: stopped), eased
-	var now := Time.get_ticks_msec()
 	var hist: Array = st["hist"]
 	var v2 := Vector2.ZERO
 	if hist.size() >= 2 and now - int(hist[-1][0]) < 80:
@@ -4251,10 +4255,13 @@ func _live_units(pk: PackedByteArray) -> void:
 			if not node.has_meta("corpse") and not node.has_meta("gait"):
 				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits
 				# ~0.06 above the game's, seen up close)
+				node.set_meta("feet_off", feet[idx] - float(node.get_meta("ez", feet[idx])))
 		elif node != null and node.visible and node.has_meta("mech"):
 			_pose_mech(node, joints[idx])
+			node.set_meta("mech_pose", joints[idx])
 			node.position.y = feet[idx]              # on its feet: the walker's entity is 0.23 to 0.39 above them
 			# as it walks (a suit's: 0.15), so GAME_Z left it floating
+			node.set_meta("feet_off", feet[idx] - float(node.get_meta("ez", feet[idx])))
 
 
 # The HUD's side views: each one a small viewport sharing the world, its camera where the game puts it (the unit's
@@ -4463,37 +4470,117 @@ func _live_smooth() -> void:
 	pitch = lerpf(cam_from[2], cam_to[2], a)
 	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
 	for node in smooth_nodes:
-		if not is_instance_valid(node):
-			continue
-		var sm: Array = node.get_meta("sm")
-		node.position = (sm[0] as Vector3).lerp(sm[1], clampf(float(now - int(sm[2])) / sm_int, 0.0, 1.0))
+		if is_instance_valid(node):
+			_unit_smooth(node, now)
 
+
+# The units, eased (on unless TN_UNIT_SMOOTH=0; the camera stays the game's, TN_SMOOTH): the game moves each one
+# once per frame of its own (a suit it poses: once per picture the bridge reads between two, often fewer), Uplink
+# draws many more; shown as they came, they moved by jerks. Each new state of a unit (its place, its turn, the game's
+# pose of a suit, the walker's) is reached in the time its states come apart (measured per unit, UNIT_GAP), from
+# where it is drawn: a little behind, without the steps. A suit's place and pose come from the same picture of the
+# game (the bridge): eased together, its planted feet stay put. Jumps of more than SMOOTH_JUMP are taken at once.
+var unit_smooth := OS.get_environment("TN_UNIT_SMOOTH") != "0"
+const UNIT_GAP := Vector2(8.0, 90.0)              # ms: the shortest and longest easing
+var smooth_nodes: Array[Node3D] = []
+var sm_n := 0                                     # the units' captures so far (one a packet)
 
 # after the units are placed (their game positions): each one eased from where it is drawn to there
-var smooth_nodes: Array[Node3D] = []
-
 func _smooth_capture() -> void:
 	var now := Time.get_ticks_msec()
 	smooth_nodes.clear()
-	if not smooth:
+	if not (smooth or unit_smooth):
 		return
-	for node in live_nodes + live_extra.values():
-		if node == null or not is_instance_valid(node) or not node.visible or node.has_meta("corpse"):
+	sm_n += 1
+	for idx in live_ents:
+		var cls: int = live_ents[idx][0]
+		if cls < 1 or cls > 4:
 			continue
-		var to: Vector3 = node.position
+		var node := _live_node(idx)
+		if node == null or not is_instance_valid(node) or not node.visible or node.has_meta("corpse") \
+				or node.has_meta("player_body"):
+			continue                                     # (the view's own body: with the camera, the game's)
+		var gait := node.has_meta("gait")
+		var to := [node.position, node.quaternion, null, float(node.get_meta("ez", node.position.y))]
+		if node.has_meta("soldier") and not gait and node.has_meta("pose_last") and not node.get_meta("own", false):
+			to[2] = node.get_meta("pose_last")
+		elif node.has_meta("mech") and node.has_meta("mech_pose"):
+			to[2] = node.get_meta("mech_pose")
 		var sm: Array = node.get_meta("sm", [])
-		if sm.is_empty() or not node.get_meta("sm_vis", false) or to.distance_to(sm[1]) >= SMOOTH_JUMP:
-			sm = [to, to, now]                       # new, shown again or jumped: no easing
-		elif not to.is_equal_approx(sm[1]):
-			var drawn: Vector3 = (sm[0] as Vector3).lerp(sm[1], clampf(float(now - int(sm[2])) / sm_int, 0.0, 1.0))
-			sm = [drawn, to, now]
+		if sm.is_empty() or int(node.get_meta("sm_n", -1)) != sm_n - 1 or (to[0] as Vector3).distance_to(sm[1][0]) >= SMOOTH_JUMP:
+			sm = [to, to, now, float(node.get_meta("sm_gap", 33.0)), gait, now]    # new, shown again, jumped: at once
+		elif not ((to[0] as Vector3).is_equal_approx(sm[1][0]) and (to[1] as Quaternion).is_equal_approx(sm[1][1])
+				and to[2] == sm[1][2] and is_equal_approx(to[3], sm[1][3])):
+			var gap := float(node.get_meta("sm_gap", 33.0))
+			var dt := float(now - int(sm[5]))           # since its last new state
+			if dt > 0.0 and dt < 200.0:
+				gap = lerpf(gap, clampf(dt, UNIT_GAP.x, UNIT_GAP.y), 0.25)
+				node.set_meta("sm_gap", gap)
+			var from := _unit_drawn(sm, now)
+			if bool(sm[4]) and not gait:              # back on the game's pose from its own steps: its height eased
+				from = from.duplicate()                  # apart, over the pose's cross-fade (_y_ease)
+				var p0: Vector3 = from[0]
+				p0.y = (to[0] as Vector3).y
+				from[0] = p0
+				node.set_meta("y_off", [float(node.get_meta("gait_y", (to[0] as Vector3).y)) - (to[0] as Vector3).y, now])
+			sm = [from, to, now, gap, gait, now]
 		node.set_meta("sm", sm)
-		node.set_meta("sm_vis", true)
+		node.set_meta("sm_n", sm_n)
 		smooth_nodes.append(node)
-	for node in live_nodes + live_extra.values():
-		if node != null and is_instance_valid(node) and not node.visible:
-			node.set_meta("sm_vis", false)
 	_live_smooth()                                   # drawn eased from this frame on
+
+
+# a suit's height between the game's pose and its own steps (each puts its feet a little differently): the step
+# between the two eased away over POSE_FADE
+func _y_ease(node: Node3D, now: int) -> float:
+	if not node.has_meta("y_off"):
+		return 0.0
+	var yo: Array = node.get_meta("y_off")
+	var k := (now - int(yo[1])) / POSE_FADE
+	if k >= 1.0 or absf(float(yo[0])) > 1.0:
+		node.remove_meta("y_off")
+		return 0.0
+	return float(yo[0]) * (1.0 - k * k * (3.0 - 2.0 * k))
+
+
+# where a unit is drawn now: [position, turn, pose or null, height of its entity], from sm's two states
+func _unit_drawn(sm: Array, now: int) -> Array:
+	var a := clampf(float(now - int(sm[2])) / float(sm[3]), 0.0, 1.0)
+	var f: Array = sm[0]
+	var t: Array = sm[1]
+	if a >= 1.0:
+		return t
+	var q = null
+	if t[2] != null and f[2] != null and (t[2] as Array).size() == (f[2] as Array).size():
+		q = []
+		for j in (t[2] as Array).size():
+			q.append((f[2][j] as Vector3).lerp(t[2][j], a))
+	elif t[2] != null:
+		q = t[2]
+	return [(f[0] as Vector3).lerp(t[0], a), (f[1] as Quaternion).slerp(t[1], a), q, lerpf(f[3], t[3], a)]
+
+
+func _unit_smooth(node: Node3D, now: int) -> void:
+	var sm: Array = node.get_meta("sm")
+	var gait := node.has_meta("gait")
+	if int(node.get_meta("sm_done", -1)) == int(sm[2]) and (gait or not node.has_meta("y_off")):
+		return                                       # (reached: left where it is, a suit's own steps move it)
+	var d := _unit_drawn(sm, now)
+	if now - int(sm[2]) >= int(sm[3]):
+		node.set_meta("sm_done", int(sm[2]))
+	var p: Vector3 = d[0]
+	if gait:
+		p.y = node.position.y                        # (a suit on its own steps: its height from the ground, _gait)
+		node.set_meta("ez_s", d[3])
+	else:
+		p.y += _y_ease(node, now)
+	node.position = p
+	node.quaternion = d[1]
+	if d[2] != null:
+		if node.has_meta("mech"):
+			_pose_mech(node, d[2])
+		else:
+			_pose_soldier(node, d[2])
 
 
 func _live_node(idx: int) -> Node3D:
@@ -5928,6 +6015,9 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):
 			y = node.position.y                          # (a suit on its own steps: on the ground, _gait)
+		elif node.has_meta("feet_off") and absf(float(node.get_meta("feet_off"))) < 0.5:
+			y += float(node.get_meta("feet_off"))        # (a suit on the game's pose, none in this packet: on its feet
+			# as in the last one, not up and down by the entity's draw offset)
 		node.position = Vector3(e[3], y, e[4])
 	elif e[0] == 0 and not node.has_meta("mission"):
 		node.position = Vector3(e[3], e[5], e[4])        # decor made in play (a hit plant, rubble): the game's height

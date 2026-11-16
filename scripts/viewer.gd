@@ -2997,9 +2997,11 @@ func _hud_update() -> void:
 			game_fade = clampf(pk.decode_float(7), 0.0, 1.0)
 			game_fade_t = Time.get_ticks_msec()
 			continue
+		if tag == "MIS":                                 # back in the game's 3D: another mission?
+			var mf := pk.slice(7).get_string_from_ascii().to_upper()
+			live_mis_name = mf
 			if not current.is_empty() and current["entry"]["file"].get_file().to_upper() != mf:
 				_load_by_label(mf)
-			live_mis_name = mf
 			continue
 		if tag == "PIN":                                 # the game holds its cursor: a map dragged (see play_hold)
 			if frame & 1:
@@ -3468,12 +3470,12 @@ func _set_menu_mode(on: bool) -> void:
 	if OS.has_environment("TN_DEBUG"):
 		print("menus : mode ", on, " (image ", menu_tex != null, ")")
 	menu_mode = on
-	if on:
-		menu_fresh = false                              # its picture: one taken from now on (the last one is an old screen)
 	if not on and live:
 		start_hold = true                               # (black until the mission is ready, _start_ready)
 		start_hold_t = Time.get_ticks_msec()
 		live_units_seen = 0
+	if on:
+		menu_fresh = false                              # its picture: one taken from now on (the last one is an old screen)
 		menu_mode_t = Time.get_ticks_msec()
 	if not play:
 		return
@@ -3638,8 +3640,6 @@ var menu_fade := 0.0
 var menu_veil := 0.0                             # the black between the two (menu_bg, which is also the screen's black sides)
 var menu_fresh := false
 var menu_mode_t := 0
-
-
 # The game's own fade to black (a mission that ends, the death screen: its palette, bridge 'FAD', 1 = as in play): the
 # black follows it over the whole window, and the 3D stays as it was (no removal, no unloading) until the game's
 # screen comes. The fade used to start only once the game had left its mission: the player saw its objects and its
@@ -3649,6 +3649,8 @@ var game_fade_t := 0
 var live_mis_name := ""
 var start_hold := false
 var start_hold_t := 0
+
+
 func _menu_fade() -> void:
 	if menu_rect == null:
 		return
@@ -3656,28 +3658,26 @@ func _menu_fade() -> void:
 	if menu_mode and menu_tex != null and (menu_fresh or Time.get_ticks_msec() - menu_mode_t > 600):
 		want = 1.0
 	var step := get_process_delta_time() / MENU_FADE_S
-	if menu_mode:
-		menu_veil = move_toward(menu_veil, 1.0, step)        # to black first, then the screen out of it
 	var now := Time.get_ticks_msec()
 	if game_fade < 1.0 and now - game_fade_t > 2000:
 		game_fade = 1.0                                      # (no news: the bridge went away)
 	if start_hold and (now - start_hold_t > 4000 or _start_ready()):
 		start_hold = false
+	if menu_mode:
+		menu_veil = move_toward(menu_veil, 1.0, step)        # to black first, then the screen out of it
 		if menu_veil >= 1.0:
 			menu_fade = move_toward(menu_fade, want, step)
 	else:
 		menu_fade = move_toward(menu_fade, 0.0, step)        # the screen to black first, then the view out of it
 		if menu_fade <= 0.0 and not start_hold:
 			menu_veil = move_toward(menu_veil, 0.0, step)
+		menu_veil = maxf(menu_veil, 1.0 - game_fade)         # the game's own fade, as it goes
 	menu_rect.visible = menu_fade > 0.0
 	(menu_rect.material as ShaderMaterial).set_shader_parameter("fade", menu_fade)   # (its shader writes COLOR: no modulate)
-		menu_veil = maxf(menu_veil, 1.0 - game_fade)         # the game's own fade, as it goes
 	menu_bg.visible = menu_veil > 0.0
 	menu_bg.modulate.a = menu_veil
 
 
-func _menu_place() -> void:
-	if menu_rect == null:
 # a mission back in the game's 3D is ready to be seen: its map loaded (the one the bridge names) and its objects placed
 func _start_ready() -> bool:
 	if current.is_empty() or live_units_seen < 2:
@@ -3685,6 +3685,8 @@ func _start_ready() -> bool:
 	return live_mis_name != "" and current["entry"]["file"].get_file().to_upper() == live_mis_name
 
 
+func _menu_place() -> void:
+	if menu_rect == null:
 		return
 	_menu_fade()
 	var box := _menu_box()
@@ -4033,9 +4035,9 @@ func _live_update() -> void:
 	elif pk.size() >= 32 and not current.is_empty():
 		_live_units(pk)
 		_smooth_capture()
+		live_units_seen += 1
 	if live_shot != "" and live_seen == live_shot_frame:
 		_screenshot(live_shot)
-		live_units_seen += 1
 
 
 # The player's waypoint (a click on the cockpit's map; live_bridge.py 'WAYP', x = 0: none). The game draws it in its
@@ -4413,8 +4415,9 @@ func _sub_views(q: PackedByteArray) -> void:
 		(tr.material as ShaderMaterial).set_shader_parameter("hud", hud_tex)
 		(tr.material as ShaderMaterial).set_shader_parameter("frame", Vector4(r.position.x, r.position.y, r.size.x, r.size.y))
 		# the game's labels over its small view: the probe's compass (lavender, dark blue outline), the target camera's
-		# name (red)
-		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel in [3, 4] else (18.0 if panel == 2 else 0.0))
+		# name (red), and its red messages anywhere in the panel (an ID lock: "SENDING" under the name while the
+		# game sends the target's identity, MISS8; drawn by the game in the same red, index 68, they were hidden)
+		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel in [3, 4] else (r.size.y if panel == 2 else 0.0))
 		(tr.material as ShaderMaterial).set_shader_parameter("label_a", 47.0 if panel in [3, 4] else 68.0)
 		(tr.material as ShaderMaterial).set_shader_parameter("label_b", 59.0 if panel in [3, 4] else 68.0)
 		# the 360 view's panels are mirrors: what is on the player's left is on the left of the one behind him, and the
@@ -4478,6 +4481,25 @@ func _sub_views(q: PackedByteArray) -> void:
 		if not on and sv["node"] != null:
 			_sub_hide(sv["node"], false)
 			sv["node"] = null
+	_map_cursor(sub_views.has(8) and (sub_views[8]["rect"] as TextureRect).visible)
+
+
+# The game's full screen map (M, or its button under the cockpit's map): the map takes the HUD's view, which goes to a
+# panel (8). It is used with the cursor (waypoints, the squad's orders): the mouse goes to the game's cursor by itself
+# while it is shown, and back to looking around when it closes (only if it was taken for the map: a player already
+# in the cursor mode stays in it).
+var map_freed := false
+
+func _map_cursor(on: bool) -> void:
+	if not play or guest_win:
+		return
+	if on and not map_freed and play_started and not menu_mode and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		_look_swap()
+		map_freed = true
+	elif not on and map_freed:
+		map_freed = false
+		if play_started and not menu_mode and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 # The objects' articulated parts (the dropship's door, turrets): after the joints, a count then for each object its
@@ -5998,6 +6020,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		if objects_ok and not TNObjects.is_sprite(objects.ref_for(e[0], e[1])):
 			f = objects.draw_offset(e[0], e[1])
 		var y: float = e[5] - f
+		if node.has_meta("foot"):
+			y += _ship_lift(node, m, e[3], e[4], e[6])
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
 		if node.has_meta("gait"):
@@ -6026,6 +6050,50 @@ func _ground_pitch(m: Dictionary, x: float, y: float, heading: float, half: floa
 	var c := half * cos(heading)
 	var s := half * sin(heading)
 	return atan2(TNData.height_at(m, x + c, y + s) - TNData.height_at(m, x - c, y - s), 2.0 * half)
+
+
+# Landed ships (class 3, types 8 to 14: the dropships, the shuttles, the recon aircraft) on a slope. The game draws
+# them level at z - 0.667 (0x29B3AC, no pitch for class 3) and, drawing its objects over its ground (no depth
+# test between the two), shows the whole ship even where its hull goes below the slope. Here the ground hides what is
+# under it: on a steep pickup point half the dropship sank into the hill. Raised so: level as the game has it, by
+# what the ground under its lowest part (the bottom quarter of its height, measured on the model; sampled at its
+# corners, edges and middle) rises above the ground under its origin; on flat ground nothing changes.
+const SHIP_FIRST := 8
+const SHIP_LAST := 14
+
+
+func _foot_of(mesh: Mesh) -> Array:
+	var bb := mesh.get_aabb()
+	var lo := bb.position.y
+	var cut := lo + 0.25 * bb.size.y
+	var r := Rect2()
+	var first := true
+	for s in mesh.get_surface_count():
+		var v: PackedVector3Array = mesh.surface_get_arrays(s)[Mesh.ARRAY_VERTEX]
+		for p in v:
+			if p.y <= cut:
+				if first:
+					r = Rect2(p.x, p.z, 0.0, 0.0)
+					first = false
+				else:
+					r = r.expand(Vector2(p.x, p.z))
+	return [lo, r]
+
+
+func _ship_lift(node: Node3D, m: Dictionary, x: float, y: float, heading: float) -> float:
+	var ft: Array = node.get_meta("foot")
+	var r: Rect2 = ft[1]
+	var c := cos(-heading)
+	var s := sin(-heading)
+	var top := -INF
+	for k in 9:
+		var lx := r.position.x + r.size.x * 0.5 * float(k % 3)
+		var lz := r.position.y + r.size.y * 0.5 * float(k / 3)
+		# (local to world as Basis(UP, -heading) turns it: x' = x cos + z sin, z' = -x sin + z cos)
+		top = maxf(top, TNData.height_at(m, x + lx * c + lz * s, y - lx * s + lz * c))
+	# (measured from the ground under its origin, not from its hull: the game itself draws it 0.133 into flat ground,
+	# z - 0.667 with z 0.533 above it, MISS31's shuttle and cruiser; that is kept)
+	return maxf(0.0, top - TNData.height_at(m, x, y))
 
 
 # Half the model's length by class and type, when its node has none (no model in the data: a box).

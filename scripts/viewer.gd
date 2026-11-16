@@ -3233,7 +3233,7 @@ func _live_update() -> void:
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
 		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
-			if q.size() == 16:                              # (an older bridge: no angle word)
+			if q.size() == 16:                              # the game's angle word (12 bytes: an older bridge, none)
 				_waypoint_word(q.decode_u32(12) & 0xFFFF)
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
 		elif q.size() == 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":

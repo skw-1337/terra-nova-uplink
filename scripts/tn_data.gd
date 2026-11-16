@@ -240,8 +240,22 @@ func load_map(path: String, mission_file: String) -> Dictionary:
 	# resource 81, word 0: the seed of the quarter turns the game draws for its plain tiles at load (see _grid)
 	var r81: PackedByteArray = r.data(81)
 	var seed := r81.decode_u16(0) if r81.size() >= 2 else -1
-	var detail := _grid(r.data(86), DETAIL_N, pl, path + "#86", seed)
-	var outer := _grid(r.data(85), COARSE_N, pl, path + "#85") if r.has(85) else {}   # (the game keeps its turns)
+	var d86: PackedByteArray = r.data(86)
+	var detail := _grid(d86, DETAIL_N, pl, path + "#86", seed)
+	var outer := {}
+	if r.has(85):                              # (the game keeps the outer grid's own turns)
+		# the game's loader (0x294470) copies every 4th point of the detail grid over the outer grid's middle: outer
+		# (64 + i, 64 + j) = detail (4i, 4j), i, j < 128 (its light levels, and its heights at the detail map's edge)
+		var d85: PackedByteArray = r.data(85).duplicate()
+		if d85.size() >= COARSE_N * COARSE_N * 3 and d86.size() >= DETAIL_N * DETAIL_N * 3:
+			for j in 128:
+				for i in 128:
+					var o := ((64 + j) * COARSE_N + 64 + i) * 3
+					var s := (4 * j * DETAIL_N + 4 * i) * 3
+					d85[o] = d86[s]
+					d85[o + 1] = d86[s + 1]
+					d85[o + 2] = d86[s + 2]
+		outer = _grid(d85, COARSE_N, pl, path + "#85")
 	# Vegetation, as the engine lays it out: resource 83 = 128 x 128 map (stored column by column)
 	# of 4 x 4 unit cells; value v > 0 puts vegetation list v (resource 119 + v) in the cell,
 	# each list item at an offset inside the cell (16.16 fixed point, 0..4).
@@ -280,7 +294,13 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "", seed: i
 	# (bits 3:2), height bits 3:0 (bits 7:4); byte 2 = height bits 11:4 (12 bits, signed).
 	var turns := PackedByteArray()
 	turns.resize(n * n)
+	# light level 0 (brightest) .. 7, baked by the map's maker from its sun with the hills' shadows: the game draws
+	# the ground with it (0x2AE6AC: 15.5 - 2 level, a row of RESPLNT 53) and never relights it
+	var level := PackedByteArray()
+	level.resize(n * n)
+	var level_max := 0
 	for i in n * n:
+		level[i] = (d[3 * i] >> 7) | ((d[3 * i + 1] & 3) << 1)
 		var t := d[3 * i] & 0x3F
 		if t >= count:
 			t = 0
@@ -307,7 +327,11 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, key: String = "", seed: i
 					st = (st * 2053 + 13849) & 0xFFFF       # (only the low 16 bits are ever used)
 					turns[i] = st >> 14
 					rerolled[i] = 1
-	var grid := {"n": n, "h": h, "col": col, "tile": tiles}
+	if n == DETAIL_N:          # the darkest level over rows and columns 0..511 (0x294900; row / column 512 not read)
+		for y in 512:
+			for x in 512:
+				level_max = maxi(level_max, level[y * n + x])
+	var grid := {"n": n, "h": h, "col": col, "tile": tiles, "level": level, "level_max": level_max}
 	if pl["ok"]:
 		if STORED_TURNS:                 # R = tile, G = quarter turns, as the map stores them
 			var out := PackedByteArray()
@@ -646,6 +670,37 @@ func _read_planet(path: String) -> Dictionary:
 	out["own"] = own
 	out["edge"] = _edges(rgb_tiles)
 	out["qual"] = _plain_tiles(r)
+	out["rows"] = _light_rows(r, raw, fp)
+	return out
+
+
+# Brightness of the 16 rows of the planet's light table (RESPLNT 53: 16 x 256 palette indices, row 0 = full light):
+# the luminance of each remapped colour against its own, over the colours of the ground tiles.
+static func _light_rows(r, raw: PackedByteArray, fp: PackedColorArray) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(16)
+	out.fill(1.0)
+	var t53: PackedByteArray = r.data(53) if r.has(53) else PackedByteArray()
+	if t53.size() < 4096:
+		for k in 16:
+			out[k] = 1.0 - k / 16.0
+		return out
+	var hist := PackedInt32Array()
+	hist.resize(256)
+	for b in raw:
+		hist[b] += 1
+	var lum := PackedFloat32Array()
+	lum.resize(256)
+	for c in 256:
+		lum[c] = 0.3 * fp[c].r + 0.59 * fp[c].g + 0.11 * fp[c].b
+	for k in 16:
+		var num := 0.0
+		var den := 0.0
+		for c in 256:
+			if hist[c] > 0:
+				num += hist[c] * lum[t53[k * 256 + c]]
+				den += hist[c] * lum[c]
+		out[k] = num / den if den > 0.0 else 1.0 - k / 16.0
 	return out
 
 
@@ -815,3 +870,36 @@ static func _planar(g: Dictionary, gx: float, gy: float) -> float:
 	if fx + fy >= 1.0:                         # diagonal (X+1, Y)-(X, Y+1)
 		return h11 + (1.0 - fx) * (h01 - h11) + (1.0 - fy) * (h10 - h11)
 	return h00 + fx * (h10 - h00) + fy * (h01 - h00)
+
+
+# Twice the light level under (x, y), as the game reads it for an object's foot (0x294B18): the levels of the cell's
+# corners on the same checkerboard triangles as the heights, floored. 0 .. 14 (RESPLNT 53 row).
+static func level2_at(m: Dictionary, x: float, y: float) -> int:
+	var X := floori(x * 65536.0)
+	var Y := floori(y * 65536.0)
+	var g: Dictionary = m["detail"]
+	if X < 0 or Y < 0 or X > 0x2000000 or Y > 0x2000000:
+		if m["outer"].is_empty():
+			return 0
+		g = m["outer"]
+		X = (X >> 2) + (64 << 16)
+		Y = (Y >> 2) + (64 << 16)
+	var n: int = g["n"]
+	var lv: PackedByteArray = g["level"]
+	var xi := clampi(X >> 16, 0, n - 2)
+	var yi := clampi(Y >> 16, 0, n - 2)
+	var fx := X & 0xFFFF
+	var fy := Y & 0xFFFF
+	var i := yi * n + xi
+	var a := 2 * lv[i]
+	var c := 2 * lv[i + 1]
+	var b := 2 * lv[i + n]
+	var d := 2 * lv[i + n + 1]
+	if ((xi + yi) & 1) == 0:
+		if fx > fy:
+			b = a + d - c
+		else:
+			c = a + d - b
+	elif fx + fy >= 65536:
+		a = b + c - d
+	return ((a << 16) + fx * (c - a) + fy * (b - a)) >> 16

@@ -1,7 +1,15 @@
 // Terra Nova ground: one 64x64 atlas tile per grid cell, turned by a quarter-turn count.
 // tilemap: R = tile index, G = clockwise quarter turns (0-3), one texel per grid vertex.
+// Its light is the map's own, as the game draws it: each vertex carries 15.5 - 2 x its stored light level (UV2.x),
+// interpolated over the triangle, and the floor of it picks a row of the planet's light table (light_rows: their
+// brightness, RESPLNT 53). No sun on the ground (its slopes and the hills' shadows are in the levels): the colour is
+// given as emission, and the light only takes away where an object's shadow falls (light()).
 shader_type spatial;
-render_mode diffuse_burley, specular_disabled;
+render_mode ambient_light_disabled, specular_disabled;
+
+uniform float light_rows[16];                  // brightness of the light table's rows, row 0 = full light
+uniform vec3 ground_light = vec3(1.0);         // the ground at full light (the viewer's look)
+uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
 
 #include "res://sky_common.gdshaderinc"
 
@@ -25,7 +33,7 @@ uniform float reflect_gain = 1.0;
 // modern look (old school off): the water tiles mirror the whole sky (sky_common), as the water plane does
 uniform bool modern = false;
 uniform sampler2D clouds_soft : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform vec3 light : source_color = vec3(0.91, 0.94, 0.97);
+uniform vec3 horizon_light : source_color = vec3(0.91, 0.94, 0.97);   // (the sky's "light")
 uniform float cloud_px = 44.0;
 uniform float cloud_par = 1.0;
 uniform vec2 cloud_off = vec2(0.0);
@@ -177,6 +185,7 @@ float ground_fine(vec2 p, vec3 c) {
 
 varying vec2 g;
 varying vec3 wpos;
+varying float vlight;
 
 // the ground's texel at grid position q (tile of its cell, turned), sharpened mip choice
 vec3 ground_at(vec2 q, vec2 dx, vec2 dy, out vec2 uv, out float tile, out vec2 du, out vec2 dv) {
@@ -211,6 +220,13 @@ void vertex() {
 	vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	wpos = w;
 	g = (w.xz - origin) / step_size;
+	vlight = UV2.x;
+}
+
+void light() {
+	if (LIGHT_IS_DIRECTIONAL) {
+		DIFFUSE_LIGHT += vec3(ATTENUATION - 1.0);
+	}
 }
 
 void fragment() {
@@ -218,6 +234,8 @@ void fragment() {
 	// ground shimmered as the view turned, worse through the game's palette)
 	vec2 dx = dFdx(g);
 	vec2 dy = dFdy(g);
+	vec3 n_geo = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	float row_light = light_rows[15 - clamp(int(floor(vlight)), 0, 15)];
 	vec2 uv;
 	float tile;
 	vec2 du;
@@ -238,7 +256,7 @@ void fragment() {
 	vec3 avg = textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
 	float gain = dot(fine, vec3(0.3, 0.59, 0.11)) / max(dot(avg, vec3(0.3, 0.59, 0.11)), 0.02);
 	col *= mix(1.0, clamp(gain, 0.4, 1.8), GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)));
-	if (has_relief) {
+	if (has_relief && modern) {          // (modern look only: the game's ground has no light but its levels)
 		col *= texture(relief, (g + 0.5) / grid_n).r + 0.5;
 	}
 	{                                    // wide patches, the fine detail up close, rock on the slopes
@@ -253,7 +271,7 @@ void fragment() {
 		vec3 nwg = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 		float steep = 1.0 - smoothstep(0.55, 0.85, nwg.y);
 		float lc = dot(col, vec3(0.3, 0.59, 0.11));
-		col = mix(col, vec3(lc) * vec3(0.95, 0.93, 0.9) * 0.78, steep * slope_rock * (1.0 - wl));
+		col = mix(col, vec3(lc) * vec3(0.95, 0.93, 0.9) * 0.78, steep * slope_rock * (1.0 - wl) * float(modern));
 		if (sparkle > 0.0 && near > 0.0) {
 			float h = detail_hash(floor(wpos.xz * 40.0) + 0.37);
 			EMISSION += vec3(1.0, 0.98, 0.95) * step(0.996, h) * sparkle * near * near;
@@ -261,7 +279,7 @@ void fragment() {
 	}
 	ALBEDO = col;
 	ROUGHNESS = 1.0;
-	float bump_k = bump * (1.0 - smoothstep(0.25, 0.5, tpp)) * (1.0 - wl);
+	float bump_k = modern ? bump * (1.0 - smoothstep(0.25, 0.5, tpp)) * (1.0 - wl) : 0.0;
 	if (modern) {        // across a cell border the next tile's texels made a step: a line along every border
 		vec2 fe = fract(g);
 		bump_k *= smoothstep(0.0, 0.06, min(min(fe.x, 1.0 - fe.x), min(fe.y, 1.0 - fe.y)));
@@ -280,7 +298,7 @@ void fragment() {
 		nw = normalize(nw - vec3(slope.x, 0.0, slope.y));
 		NORMAL = normalize((VIEW_MATRIX * vec4(nw, 0.0)).xyz);
 	}
-	if (!water && detail > 0.0) {      // detail relief
+	if (!water && detail > 0.0 && modern) {      // detail relief
 		// world units per pixel from the distance and the smooth normal (continuous across triangles: wpos's
 		// derivatives change at each one, they drew straight lines); at a grazing angle squashed along one screen
 		// axis only: the factor's square root
@@ -308,6 +326,15 @@ void fragment() {
 		NORMAL = normalize((VIEW_MATRIX * vec4(nwd, 0.0)).xyz);
 		ALBEDO *= clamp(1.0 + cav * cavity * (1.0 - wl), 0.5, 1.5);
 	}
+	// the modern look's bumps and detail relief: only what they change against the cell's own slope (its light is the
+	// level's), towards the sun
+	float bump_light = 1.0;
+	if (modern) {
+		vec3 nwb = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+		bump_light = clamp(1.0 + max(dot(nwb, sun_dir), 0.0) - max(dot(n_geo, sun_dir), 0.0), 0.6, 1.4);
+	}
+	vec3 lit = ALBEDO * row_light * bump_light * ground_light;
+	vec3 glow = EMISSION;
 	if (wl > 0.001) {                   // water: waves, the sky mirrored (more at a grazing angle), the sun's glint; old school too
 		vec3 v = normalize(wpos - CAMERA_POSITION_WORLD);
 		float dist = length(wpos - CAMERA_POSITION_WORLD);
@@ -315,16 +342,17 @@ void fragment() {
 		vec3 nm = normalize(vec3(-sm.x, 1.0, -sm.y));
 		vec3 rm = reflect(v, nm);
 		rm.y = max(rm.y, 0.07);
-		vec3 skym = tn_sky(rm, wpos, clouds_soft, has_clouds, light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
+		vec3 skym = tn_sky(rm, wpos, clouds_soft, has_clouds, horizon_light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
 		skym = mix(vec3(dot(skym, vec3(0.299, 0.587, 0.114))), skym, desat);
 		float fm = 0.04 + 0.96 * pow(1.0 - clamp(dot(-v, nm), 0.0, 1.0), 5.0);
 		float km = clamp(0.25 + 0.6 * fm, 0.0, 0.85);
 		vec3 deep = water_far * 0.55;
-		ALBEDO = mix(ALBEDO, deep * (1.0 - km), wl);
-		EMISSION = (skym * mix(vec3(1.0), water_far * 1.5, 0.3) * km +
+		lit = mix(lit, deep * (1.0 - km) * ground_light, wl);
+		glow += (skym * mix(vec3(1.0), water_far * 1.5, 0.3) * km +
 				vec3(1.0, 0.95, 0.85) * pow(max(dot(rm, sun_dir), 0.0), 600.0) * 1.5) * wl;
-		ROUGHNESS = mix(1.0, 0.2, wl);
 	}
+	EMISSION = lit + glow;
+	ALBEDO = lit * shadow_dark;              // (only the shadows use it: light())
 	if (water) {
 		vec3 v = normalize(wpos - CAMERA_POSITION_WORLD);
 		vec2 p = wpos.xz;
@@ -344,7 +372,7 @@ void fragment() {
 			vec3 nm = normalize(vec3(-sm.x, 1.0, -sm.y));
 			vec3 rm = reflect(v, nm);
 			rm.y = max(rm.y, 0.07);              // not only the white horizon: the clouds above it
-			vec3 skym = tn_sky(rm, wpos, clouds_soft, has_clouds, light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
+			vec3 skym = tn_sky(rm, wpos, clouds_soft, has_clouds, horizon_light, haze, cloud_px, cloud_par, cloud_off, vec3(0.0, -1.0, 0.0));
 			skym = mix(vec3(dot(skym, vec3(0.299, 0.587, 0.114))), skym, desat);
 			float fm = 0.04 + 0.96 * pow(1.0 - clamp(dot(-v, nm), 0.0, 1.0), 5.0);
 			float km = clamp(0.2 + 0.55 * fm, 0.0, 0.75);

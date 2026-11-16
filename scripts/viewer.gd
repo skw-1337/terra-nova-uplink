@@ -123,7 +123,6 @@ var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light 
 # 3D window, then one 'HUZ' packet: the 320 x 400 screen as (palette index, alpha), deflated); the camera is then
 # off-centre like the game's, whose view looks 2 rows under the middle of its 3D window (_view_row)
 const HUD_PORT := 47823
-const SUN_AZ_OFFSET := 315.0  # see _set_sky
 const LIVE_LIGHT := 0.73       # sun in live mode, and the sky's share of the ambient light: the game's ground is
 const LIVE_SUIT_SHADE := 0.5   # suits in live mode: the game's are dark and shaded
 const SUIT_SQUASH := 1.0       # suits: height of the joints (0.75 was measured while the live view was zoomed in)
@@ -309,9 +308,9 @@ func _ready() -> void:
 		# ground's light is mostly the sky's ambient, which only its sky contribution scales (not its energy), and
 		# the blurred sky reflection Godot adds to every surface: off
 		sun.light_energy = LIVE_LIGHT
-		# shadows: trees, objects, suits (the player's too, see _shadow_twin) and the hills cast them (the game leaves
-		# its hills lit: without theirs, a suit's shadow lay on a slope the hill should have darkened). Sharper near
-		# the eye: 8192 atlas, splits at 4, 14, 35 units
+		# shadows: trees, objects, suits (the player's too, see _shadow_twin) cast them; the hills do not (their shade
+		# is in the map's light levels, which the ground is drawn with). Sharper near the eye: 8192 atlas, splits at
+		# 4, 14, 35 units
 		sun.shadow_enabled = true
 		sun.directional_shadow_max_distance = LIVE_SHADOW
 		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
@@ -576,10 +575,11 @@ func _load(index: int) -> void:
 	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
-	if live:                                  # the hills' shadows (both sides: no light through a thin crest)
-		for gi in world.find_children("*", "GeometryInstance3D", true, false):
-			if gi.material_override == det_mat or gi.material_override == out_mat:
-				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_DOUBLE_SIDED
+	# the hills cast no shadow: the map's light levels already hold them (the ground is drawn with them, see
+	# terrain.gdshader), and the game shades no object behind a hill
+	for gi in world.find_children("*", "GeometryInstance3D", true, false):
+		if gi.material_override == det_mat or gi.material_override == out_mat:
+			gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var wl := Terrain.water_level(m["detail"])
 	if not is_nan(wl):
 		var plane := MeshInstance3D.new()
@@ -597,6 +597,8 @@ func _load(index: int) -> void:
 	_set_sky(data.resolve(entry["file"], mis.get("sky", "")) if mis.get("sky", "") != "" else "", m["light"])
 	if live:
 		planet_look(m["planet"], mis.get("sky", ""))
+	else:
+		_ground_look(1.0)
 	var nveg := _add_vegetation(m)
 	var counts := {}
 	live_nodes.clear()
@@ -652,9 +654,6 @@ func _add_vegetation(m: Dictionary) -> int:
 				n += 1
 	veg_cells.clear()
 	veg_values = vmap.duplicate()
-	var sun_dir := sun.global_transform.basis.z.normalized()     # towards the sun (the planet's, set before)
-	var flat := VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0)
-	sprite_gain = _sprite_gain(sun_dir)
 	for key in groups:                # key = (class, type)
 		var mesh: Mesh = null
 		var mat: Material = null
@@ -680,7 +679,7 @@ func _add_vegetation(m: Dictionary) -> int:
 			mat = mats["rock"] if shape == "rock" else mats["tree"]
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		var lit := live and mat is StandardMaterial3D
+		var lit := mat is StandardMaterial3D        # sprites: the light of the ground at their foot
 		mm.use_colors = lit                   # (before the count)
 		mm.mesh = mesh
 		var trs: Array = groups[key]
@@ -688,8 +687,8 @@ func _add_vegetation(m: Dictionary) -> int:
 		for i in trs.size():
 			mm.set_instance_transform(i, trs[i][0])
 			if lit:
-				var k := _veg_light(m, trs[i][0].origin, sun_dir, flat)
-				mm.set_instance_color(i, Color(k, k, k))
+				var o: Vector3 = trs[i][0].origin
+				mm.set_instance_color(i, _foot_light(m, o.x, o.z))
 			var cell: int = trs[i][1]
 			if not veg_cells.has(cell):
 				veg_cells[cell] = []
@@ -715,45 +714,39 @@ func _add_vegetation(m: Dictionary) -> int:
 	return n
 
 
-# Live mode: the plants are sprites drawn unlit (the game draws them so) on a ground Godot lights: on a slope turned
-# away from the sun the ground went dark and they stayed bright. Each one takes the light of the ground at its foot,
-# its slope's towards the sun against flat ground's (VEG_AMBIENT of it does not come from the sun), within VEG_LIGHT
-const VEG_AMBIENT := 0.25
-const VEG_LIGHT := Vector2(0.3, 1.1)
+# Sprites (plants, rocks, probes) take the light of the ground at their foot, as the game draws them (0x29B039 ->
+# 0x294B18: twice the light level there, on the ground's triangles, floored; that row of the planet's light table)
+func _foot_light(m: Dictionary, x: float, y: float) -> Color:
+	var rows: PackedFloat32Array = m["planet_data"].get("rows", PackedFloat32Array())
+	var k := rows[clampi(TNData.level2_at(m, x, y), 0, 15)] if rows.size() == 16 else 1.0
+	return Color(ground_light.r * k, ground_light.g * k, ground_light.b * k)
 
 
-# (a sprite object: its own copy of the sprite's material at that light, one per twentieth of light)
-func _sprite_lit(ref: Vector2i, sp: Dictionary, k: float) -> StandardMaterial3D:
-	var key := "sprite%s/lit%d" % [ref, roundi(k * 20.0)]
+# (a sprite object: its own copy of the sprite's material at that light)
+func _sprite_lit(ref: Vector2i, sp: Dictionary, c: Color) -> StandardMaterial3D:
+	var q := Color(roundi(c.r * 40.0) / 40.0, roundi(c.g * 40.0) / 40.0, roundi(c.b * 40.0) / 40.0)
+	var key := "sprite%s/lit%s" % [ref, q.to_html(false)]
 	if not mats.has(key):
 		var sm := _sprite_mat(ref, sp).duplicate() as StandardMaterial3D
 		sm.vertex_color_use_as_albedo = false
-		var l := roundi(k * 20.0) / 20.0
-		sm.albedo_color = Color(l, l, l)                 # (alpha untouched: the sprite's cut-out)
+		sm.albedo_color = q                              # (alpha untouched: the sprite's cut-out)
 		mats[key] = sm
 	return mats[key]
 
 
-func _veg_light(m: Dictionary, p: Vector3, sun_dir: Vector3, flat: float) -> float:
-	var nrm := Vector3(TNData.height_at(m, p.x - 0.6, p.z) - TNData.height_at(m, p.x + 0.6, p.z), 1.2,
-			TNData.height_at(m, p.x, p.z - 0.6) - TNData.height_at(m, p.x, p.z + 0.6)).normalized()
-	return clampf((VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(nrm.dot(sun_dir), 0.0)) / flat, VEG_LIGHT.x, VEG_LIGHT.y) * sprite_gain
+# The ground at full light (light level 0), the colour terrain.gdshader draws it with: what flat ground took from the
+# sun and the sky under the high sun of the map the look was tuned on (MAP30, 57.7 deg: GROUND_SUN_REF), from the
+# look's base sun (not the map's own diffuse light: the levels hold it)
+const GROUND_SUN_REF := 0.845
+var ground_light := Color(1, 1, 1)
 
 
-# ... and as bright as flat ground there is lit: the sun's or the moon's light (energy, colour, height) and the
-# sky's share of the ambient, against the planet they were matched with (Panama, temperate, sun at 34 deg:
-# SPRITE_LIGHT_REF); never brighter. At night they stayed as bright as at noon on a dark ground
-const SPRITE_LIGHT_REF := 0.53
-var sprite_gain := 1.0
-
-
-func _sprite_gain(sun_dir: Vector3) -> float:
-	var c := sun.light_color
-	var direct := sun.light_energy * (0.3 * c.r + 0.59 * c.g + 0.11 * c.b) * maxf(sun_dir.y, 0.05)
-	var ambient := env.ambient_light_sky_contribution * env.ambient_light_energy * \
-			(0.3 * sky_light.r + 0.59 * sky_light.g + 0.11 * sky_light.b)
-	var l := direct + ambient
-	return clampf(l / SPRITE_LIGHT_REF, 0.25, 1.0)
+func _ground_look(base_light: float) -> void:
+	var amb := env.ambient_light_energy * env.ambient_light_sky_contribution
+	var c := sun.light_color * base_light * GROUND_SUN_REF
+	ground_light = Color(c.r + sky_haze.r * amb, c.g + sky_haze.g * amb, c.b + sky_haze.b * amb)
+	for sm in ground_mats:
+		sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
 
 
 # The game draws its plant and rock sprites a little wider than their radius and taller than their picture's
@@ -817,7 +810,7 @@ func _sprite_mat(key: Vector2i, sp: Dictionary) -> StandardMaterial3D:
 	sm.alpha_scissor_threshold = 0.5
 	sm.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
 	sm.billboard_keep_scale = true
-	sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # the game draws sprites unlit
+	sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # no sun: the ground's light at their foot (_foot_light)
 	sm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	sm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mats[k] = sm
@@ -969,6 +962,10 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float,
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
+	var rows: PackedFloat32Array = pl.get("rows", PackedFloat32Array())
+	if rows.size() == 16:
+		sm.set_shader_parameter("light_rows", rows)
+	sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
 	# water tiles: the bluish ones of the planet's set (their mean colour); not the bright, barely blue snow and ice
 	# (an ice planet's (0.70, 0.78, 0.88) was taken for water: a mirror over the snow; water: (0.38, 0.54, 0.75))
 	var wt := Image.create(64, 1, false, Image.FORMAT_R8)
@@ -1054,6 +1051,7 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	if sky_clouds != null:
 		sm.set_shader_parameter("clouds_soft", sky_clouds)
 	sm.set_shader_parameter("light", Vector3(sky_light.r, sky_light.g, sky_light.b))
+	sm.set_shader_parameter("horizon_light", Vector3(sky_light.r, sky_light.g, sky_light.b))   # (the ground's name for it)
 	sm.set_shader_parameter("sun_dir", sun_to)
 	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
@@ -1076,6 +1074,7 @@ func planet_look(planet: String, sky_file: String) -> void:
 	sun.light_color = a.get("sun", Color.WHITE)
 	sun.light_energy = a.get("light", LIVE_LIGHT)
 	env.ambient_light_sky_contribution = a.get("ambient", LIVE_AMBIENT)
+	_ground_look(a.get("light", LIVE_LIGHT))
 	env.adjustment_saturation = a.get("sat", LIVE_SATURATION)
 	env.adjustment_contrast = a.get("contrast", 1.0)
 	env.adjustment_brightness = a.get("bright", 1.0)
@@ -1141,11 +1140,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		if not sp.is_empty():
 			var q := _sprite_quad(sp, objects.sprite_width(cls, sub) * SPRITE_SCALE, SPRITE_TALL)
 			mi.mesh = q
-			mi.material_override = _sprite_mat(ref, sp)
-			if live and cls == 0:                   # a plant or rock placed as an object: lit like the vegetation
-				var sun_dir := sun.global_transform.basis.z.normalized()
-				var k := _veg_light(m, Vector3(x, ground, y), sun_dir, VEG_AMBIENT + (1.0 - VEG_AMBIENT) * maxf(sun_dir.y, 0.0))
-				mi.material_override = _sprite_lit(ref, sp, k)
+			mi.material_override = _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
 	if mi.mesh == null and not soldier:   # nothing usable in the data (e.g. the biped mech)
@@ -1952,11 +1947,10 @@ func _set_sky(path: String, light: Vector2) -> void:
 	for c in sky_root.get_children():
 		c.queue_free()
 	var sk: Dictionary = objects.load_sky(path, pal) if objects_ok and path != "" else {}
-	# the map's light direction (azimuth, elevation; game y axis = Godot z)
-	# the game's azimuth 0 is not this viewer's +x: on the running game (MAP23, azimuth 0, height 45) the slopes it
-	# lights brightest face ~315 deg (heading convention), measured on a full turn against the game's terrain
-	var laz: float = light.x + deg_to_rad(SUN_AZ_OFFSET)
-	var to_light := Vector3(cos(light.y) * cos(laz), sin(light.y), cos(light.y) * sin(laz))
+	# the map's light direction (azimuth, elevation; game y axis = Godot z), azimuth 0 along +x: the light levels the
+	# maps store are baked from it so (MAP10 99.6 % of points, MAP23 99.85 %), and the game lights its models with
+	# (sin az cos el, -sin el, cos az cos el) in its 3D library's axes (0x29E5FC), which place world x on their z
+	var to_light := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
 	sun_to = to_light
 	if sk.is_empty():

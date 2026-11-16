@@ -11,6 +11,7 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 	var n: int = grid["n"]
 	var h: PackedFloat32Array = grid["h"]
 	var cols: PackedColorArray = grid["col"]
+	var lv: PackedByteArray = grid.get("level", PackedByteArray())
 	var cy := 0
 	while cy < n - 1:
 		var cx := 0
@@ -40,6 +41,8 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 				norms.resize(count)
 				var colors := PackedColorArray()
 				colors.resize(count)
+				var light := PackedVector2Array()        # UV2.x: the game's vertex light 15.5 - 2 level (0x2AE6AC)
+				light.resize(count)
 				var k := 0
 				for y in range(cy, cy + hh + 1):
 					for x in range(cx, cx + w + 1):
@@ -51,12 +54,14 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 						verts[k] = Vector3(origin.x + x * step, h[i], origin.y + y * step)
 						norms[k] = Vector3((hl - hr) / (2.0 * step), 1.0, (hu - hd) / (2.0 * step)).normalized()
 						colors[k] = cols[i]
+						light[k] = Vector2(15.5 - 2.0 * lv[i] if lv.size() == n * n else 15.5, 0.0)
 						k += 1
 				var arr := []
 				arr.resize(Mesh.ARRAY_MAX)
 				arr[Mesh.ARRAY_VERTEX] = verts
 				arr[Mesh.ARRAY_NORMAL] = norms
 				arr[Mesh.ARRAY_COLOR] = colors
+				arr[Mesh.ARRAY_TEX_UV2] = light
 				arr[Mesh.ARRAY_INDEX] = idx
 				var mesh := ArrayMesh.new()
 				mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)

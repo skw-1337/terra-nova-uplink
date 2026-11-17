@@ -5,7 +5,7 @@
 # health (coop_guest.py hud_more). And every 15 s 'GCK' + palette + zlib(index, alpha 320 x 400): the host's cockpit with his own panels
 # emptied. With it the guest gets the game's cockpit filled with his own armour, weapon, compass and map, and the
 # host's name and Steam avatar in the COMM panel (set_mate, from coop_net.gd), the game's crosshair and its armour
-# indicator (in light blue). Before the first cockpit: a plain crosshair and armour bar. Online, the host window's coop_net.gd relays the packets over Steam and the guest's
+# indicator (light blue, its damaged parts in the game's yellow and red). Before the first cockpit: a plain crosshair and armour bar. Online, the host window's coop_net.gd relays the packets over Steam and the guest's
 # coop_net.gd forwards them here. Nothing is drawn when no packet came for 2 s.
 extends CanvasLayer
 
@@ -28,14 +28,15 @@ const RIGHT_LEDS := [[165, 168, 0x83], [169, 172, 0x83], [173, 176, 0x84], [177,
 # the left top bar with its frame and tick rows (x 72-148, rows 26-37): the squad's bars in the COMM panel
 const BAR_SRC := Rect2(72, 26, 77, 12)
 # The guest's own colours. Energy: the game's green leds in orange, from its brightest (palette 0x83) to its dimmest
-# (0x8B), and its "E" (on the cockpit picture: x 156-163, rows 24-37). Armour: light blue, on the game's armour
-# indicator (RESHLMHI.RES 506: the game gives each part a level 0-6 and colours it green at 5-6, yellow at 3-4, red
-# at 1-2, table 0x35a998; here light, middle and deep blue) and in the COMM bars.
+# (0x8B), and its "E" (on the cockpit picture: x 156-163, rows 24-37). Armour: light blue, in the COMM bars and on
+# the game's armour indicator (RESHLMHI.RES 506: the game gives each part a level 0-6 and one colour of its palette
+# by level, table 0x35a998: 0x84 green at 5-6, 0x4E yellow at 3-4, 0x44 red at 1-2). A whole part (5-6) is light blue
+# here, a damaged one keeps the game's warning colours.
 const ENERGY_LIT := Color8(255, 165, 40)
 const ENERGY_DIM := Color8(170, 95, 25)
 const ENERGY_E := Rect2i(156, 24, 8, 14)
 const ARMOUR_LIT := Color8(135, 200, 255)
-const ARMOUR_DEEP := Color8(30, 70, 150)
+const ARMOUR_WARN: Array[int] = [0, 0x44, 0x44, 0x4E, 0x4E]   # levels 1-4: the game's red, red, yellow, yellow (palette)
 const INDICATOR := 506
 const INDICATOR_AT := Vector2i(211, 144)     # from the 3D window's corner, in the cockpit view (the host's says where)
 const CROSS := 505                            # the game's cursors: the first is the crosshair, its tip at 6, 10
@@ -644,7 +645,8 @@ func _draw_cross() -> void:
 
 # his suit's armour indicator as the game draws the host's (0x2635c8, 0x2634b8), where the host's is: the picture's
 # part colours 0xB0 + 16 k + ring (front, left, right, back; ring 0 the outer one) and 0xF0 (the pilot), a part at
-# level n keeps its n inner rings; its dark outline as it is; the levels' colours in blue
+# level n keeps its n inner rings; its dark outline as it is; a whole part (levels 5-6) in light blue where the game
+# has green, a damaged one in the game's yellow (3-4) or red (1-2)
 func _draw_indicator() -> void:
 	if levels.size() < 5 or hud_pal.is_empty():
 		return
@@ -668,7 +670,7 @@ func _draw_indicator() -> void:
 					var part := mini((c - 0xB0) >> 4, 4)
 					var lv := mini(levels[part], 6)
 					on = lv > 0 and (part == 4 or (c & 15) >= 6 - lv)
-					col = ARMOUR_LIT if lv >= 5 else (ARMOUR_LIT.lerp(ARMOUR_DEEP, 0.5) if lv >= 3 else ARMOUR_DEEP)
+					col = ARMOUR_LIT if lv >= 5 else hud_pal[ARMOUR_WARN[lv]]
 				rgba[4 * p] = col.r8
 				rgba[4 * p + 1] = col.g8
 				rgba[4 * p + 2] = col.b8

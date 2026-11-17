@@ -16,6 +16,7 @@
 #   P             the properties of the unit aimed at (editor_props.gd): group, label, place, state, weapons
 #   M             the mission (editor_mission.gd): its objectives and orders in plain sentences, and the controls
 #                 to change them; the zones; PLAY THIS MISSION; your own missions in the game's two free slots
+#                 (the key that prints M, wherever it is: its place on a QWERTY keyboard is the comma on AZERTY)
 #   Z undo (spawn, move, turn, group, removal, a property, an import), R / Shift+R turn 15 degrees, Delete
 #   removes, F2 every unit's name, Ctrl+S saves, Esc closes a menu, then leaves the build mode
 # Sharing (the spawn menu, SHARE): a creation is only the changes against the original mission, as a small file
@@ -1283,7 +1284,7 @@ func _key(e: InputEventKey) -> bool:
 		_ctrl_shortcut(e)
 		save()
 		return true
-	if pk == KEY_M:
+	if e.keycode == KEY_M:
 		if mpanel.visible:
 			_close_mission()
 		else:
@@ -1449,7 +1450,7 @@ func _help() -> String:
 		"%s held: cursor (drag, right click a unit)\n%s: properties of the unit aimed at\n" +
 		"%s: the mission (objectives, orders, play)\n" +
 		"%s: undo · %s: turn · Del: remove\nF2: every unit's name\n" +
-		"Ctrl+S: save · Esc: leave") % [_k(KEY_Q), _fly_keys(), _k(KEY_C), _k(KEY_P), _k(KEY_M), _k(KEY_Z), _k(KEY_R)]
+		"Ctrl+S: save · Esc: leave") % [_k(KEY_Q), _fly_keys(), _k(KEY_C), _k(KEY_P), "M", _k(KEY_Z), _k(KEY_R)]
 
 
 func _hint() -> String:
@@ -1462,7 +1463,7 @@ func _hint() -> String:
 		if zone_setter.is_valid():
 			return "Click a zone post in the world to pick that zone"
 		if mpanel.visible and not props.visible:
-			return "Mission   ·   Left (drag): move units and zone posts   ·   %s: undo   ·   %s or Esc: close" % [_k(KEY_Z), _k(KEY_M)]
+			return "Mission   ·   Left (drag): move units and zone posts   ·   %s: undo   ·   M or Esc: close" % _k(KEY_Z)
 		if props.visible:
 			return "Properties   ·   Left: pick another unit (drag: move it)   ·   Right click a unit: its menu   ·   %s or Esc: close" % _k(KEY_P)
 		return "Left (drag): move   ·   Right click a unit: its menu   ·   release %s: back to the crosshair" % _k(KEY_C)
@@ -1478,8 +1479,8 @@ func _hint() -> String:
 			return "Right: copy the unit aimed at   ·   Left: place the copy   (%s)" % c
 		TEAM:
 			return "Left: put the unit aimed at in %s   ·   Right: take its group" % _group_text(team_group)
-	return "Left (hold): grab   ·   %s: spawn menu   ·   %s: cursor   ·   %s: properties   ·   %s: mission   ·   %s: undo   ·   Esc: leave" % [
-		_k(KEY_Q), _k(KEY_C), _k(KEY_P), _k(KEY_M), _k(KEY_Z)]
+	return "Left (hold): grab   ·   %s: spawn menu   ·   %s: cursor   ·   %s: properties   ·   M: mission   ·   %s: undo   ·   Esc: leave" % [
+		_k(KEY_Q), _k(KEY_C), _k(KEY_P), _k(KEY_Z)]
 
 
 # ---- menus
@@ -2399,6 +2400,10 @@ func notify(text: String, col: Color = Color(0.9, 0.95, 1.0)) -> void:
 	l.text = text
 	l.add_theme_font_size_override("font_size", 15)
 	l.add_theme_color_override("font_color", col)
+	if text.length() > 110:                          # (a long one, what a script does with a label: on several lines)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.custom_minimum_size = Vector2(760, 0)
+		p.set_meta("long", true)
 	p.add_child(l)
 	p.set_meta("t", Time.get_ticks_msec())
 	notes.add_child(p)
@@ -2411,7 +2416,7 @@ func notify(text: String, col: Color = Color(0.9, 0.95, 1.0)) -> void:
 func _fade_notes() -> void:
 	var now := Time.get_ticks_msec()
 	for p in notes.get_children():
-		var age: int = now - int(p.get_meta("t", now))
+		var age: int = now - int(p.get_meta("t", now)) - (NOTE_MS if p.get_meta("long", false) else 0)   # (time to read it)
 		if age > NOTE_MS + 600:
 			p.queue_free()
 		elif age > NOTE_MS:

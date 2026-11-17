@@ -1,4 +1,4 @@
-# The mission editor's Mission panel (M, or the MISSION button of the spawn menu): what the mission asks of the
+# The mission editor's Mission panel (M, or its button in the spawn menu): what the mission asks of the
 # player and what its groups do, in plain sentences, and the controls to change it.
 #   - a mission whose script is made of the editor's blocks (a new mission of yours, or an imported creation that
 #     has one): the three objectives (destroy / keep alive, a label, a percentage; several conditions an objective),
@@ -463,6 +463,7 @@ func _end() -> void:
 		var oo := _option(_with(used, int(e.get("objective", 1)), "objective %d  (not used)"), int(e.get("objective", 1)), func(v):
 			_spec()["end"]["objective"] = int(v)
 			_commit("end_objective", false))
+		oo.custom_minimum_size = Vector2(130, 0)
 		h.add_child(oo)
 		fields["end_objective"] = oo
 	body.add_child(h)

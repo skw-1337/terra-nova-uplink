@@ -58,6 +58,11 @@ while time.time() - t0 < SECONDS:
         if t - hud_t >= 0.5:
             hud_t, state = t, state + 1
             pk = b'GHD' + struct.pack('<BhhH', state & 3, 1000 - state, 1100, me)
+            if state % 2:                                     # as the real one, whole: his squad, weapon and map marks,
+                pk += struct.pack('<BBH', 0, 11, state * 911 & 0xFFFF) + bytes(38) + bytes([2]) + bytes(8) + bytes(30)   # the weapon box's
+                pk += b'M' + struct.pack('<BBHB', 1, 5, 14, 3) + bytes(i * 7 & 255 for i in range(512)) + \
+                    bytes([0, 0x44, 4]) + struct.pack('<2H', 6400 + state, 20000) + bytes([4, 0x9C, 4]) + \
+                    struct.pack('<2H', 7000, 21000) + bytes([8, 0, 4]) + struct.pack('<2H', 7100, 21100)   # colour tables (about 650 bytes)
             s.sendto(pk, ('127.0.0.1', VIEW_PORT))
             out.write('H %s\n' % pk.hex())
         out.flush()

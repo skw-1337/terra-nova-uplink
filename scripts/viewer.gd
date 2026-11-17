@@ -3583,11 +3583,28 @@ func _play_scancode(e: InputEventKey) -> int:
 		KEY_ALT:
 			return 0xE038 if e.location == KEY_LOCATION_RIGHT else 0x38
 	var sc: int = SCANCODES.get(k, 0)
-	return key_map.get(sc, sc)
+	if not key_map.has(sc):
+		return sc
+	var cmd: int = key_map[sc]
+	if GUEST_TURN.has(cmd):                               # turn left / right by key: his suit turns with the look
+		if e.pressed:
+			guest_turn[sc] = GUEST_TURN[cmd]
+		else:
+			guest_turn.erase(sc)
+		return 0
+	return GUEST_KEYS.get(cmd, cmd)
 
 
 # The coop guest's own keys (his launcher's Game keys, in TN+'s KEYBOARD page): TN_KEYS = "2C:11,11:0,...", the key
 # pressed -> the game's key for that command (0: none). The host's are TN+'s own, in his game.
+# His suit is not moved by the game's keys but by the host's bridge, which knows its own few (coop_guest.py: 11
+# forward, 1F back, 1E / 20 a step left / right, 39 the jets; the game's own: 2D back, 2C / 2E the steps, 1E / 20 turn,
+# 1F stop). So a command he put on a key is sent as the bridge's key for it: with back, the steps and the turns moved
+# (any AZERTY set) his keys did nothing, or something else. Stop has no key for a guest. The turns: as the mouse does.
+const GUEST_KEYS := {0x2D: 0x1F, 0x2C: 0x1E, 0x2E: 0x20, 0x1F: 0}
+const GUEST_TURN := {0x1E: -1.0, 0x20: 1.0}
+const GUEST_TURN_RATE := 1100.0                  # mouse counts a second (about a quarter turn in 1.2 s at TN+'s own speed)
+var guest_turn := {}                             # his turn keys held: key -> -1 left, 1 right
 var key_map := _key_map()
 
 static func _key_map() -> Dictionary:
@@ -4912,6 +4929,7 @@ func _play_key(sc: int, down: bool) -> void:
 
 
 func _play_release_all() -> void:
+	guest_turn.clear()
 	for sc in play_held.keys():
 		_play_key(sc, false)
 	key_holders.clear()
@@ -5408,6 +5426,8 @@ func _notification(what: int) -> void:
 
 func _live_update() -> void:
 	_smoke_linger()
+	for sc in guest_turn:                                 # coop guest: his turn keys held
+		play_dx += float(guest_turn[sc]) * GUEST_TURN_RATE * get_process_delta_time()
 	if play and (absf(play_dx) >= 1.0 or absf(play_dy) >= 1.0):
 		var dx := clampi(int(play_dx), -32000, 32000)
 		var dy := clampi(int(play_dy), -32000, 32000)

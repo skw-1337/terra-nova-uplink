@@ -142,6 +142,15 @@ CONTACTS_AT = {1: (PBA, PBA_N, 0xB2), 2: (0x3A19E8, 0x128, 0x4D), 3: (0x39E590, 
 SQUAD_COLOURS, DRONE, FOOTPRINTS, WAYPOINTS = 0x35B3ED, 0x396868, 0x3C5DD0, 0x392170
 WAYPOINT_COLOURS = (0x38, 0x3F, 0x7E, 0x84)
 M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = range(9)
+# The guest's laser on the host's speakers. The cave fires for him as the game does for its player (the player's
+# entity word is his during his pass), so the shot's sound takes the player's path (0x290524): heard as the host's
+# own, its voice kept in his suit (+0x82: a voice of the game's table 0x370738, 0x4F bytes each; byte 0 the sound
+# driver's sample, +0x17: 1 = played once). The laser's (weapon 4) is the one sound started to go on: the game stops
+# it when its player lets the fire button go (0x290858, the host's suit only), so the guest's went on for ever.
+# Nothing of the bridge can call the game's stop; the driver's sample (Miles: pointers at 0x44B600; +4 status, 4 =
+# playing; +0x10 length, +0x18 position, +0x30 loops left, 0 = for ever) is told instead that this pass is its last:
+# it ends by itself, the game frees the voice and empties the suit's.
+SOUND, VOICES, VOICE_N, SAMPLES = 0x82, 0x370738, 0x4F, 0x44B600
 # A map marker for each player. The host's is the game's own nav marker. The guest's is Uplink's: his window asks for
 # it ('W' + world x, y, floats; x = 0: none), the bridge keeps it (the game is not told: it has one marker only) and
 # says it back to both windows: to his in the marks of his map (M_MATE), to the host's as 'GNAV' + x, y (floats; x = 0:
@@ -226,6 +235,7 @@ class Guest:
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.gnav, self.gnav_t, self.gnav_told, self.gnav_mis = None, 0.0, False, None   # his map marker (world x, y)
+        self.fired_t = 0.0                                     # when he last held the fire (his laser's sound: laser_off)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
         self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
@@ -892,9 +902,38 @@ class Guest:
             return live[(live.index(after) + 1) % len(live)]
         return min(live, key=lambda e: self.dist(me, e))       # a new suit: the one nearest the host
 
+    def laser_off(self, e, firing=False):
+        """the laser's sound of suit e (his, or the one he leaves) ended once he no longer fires: see SOUND"""
+        if firing:
+            self.fired_t = time.time()
+        if not e or firing or time.time() - self.fired_t < 0.12:
+            return
+        g = self.g
+        v = self.i32(self.suit(e) + SOUND)
+        if not 0 <= v < g.read(0x35982D, 1)[0]:
+            return
+        r = g.read(VOICES + VOICE_N * v, 0x18)
+        k = struct.unpack_from('<b', r, 0)[0]
+        if k < 0 or r[0x17] != 0:
+            return                                             # (no sample, or a sound played once: it ends by itself)
+        p = self.i32(SAMPLES + 4 * k)
+        if not 0x100000 <= p < 0x2000000:
+            return
+        status, length, pos, loops = (struct.unpack('<i', g.read(p + o, 4))[0] for o in (4, 0x10, 0x18, 0x30))
+        if status == 4 and loops == 0:
+            g.write(p + 0x30, struct.pack('<i', 1))
+            if 0 < pos < length - 2048:
+                g.write(p + 0x18, struct.pack('<i', length - 1024))   # (and its end now: under a twentieth of a second)
+
     def take(self, gid):
         g = self.g
         g.write(G_ON, b'\x00')
+        if self.gid and self.gid != gid:
+            try:
+                self.fired_t = 0.0
+                self.laser_off(self.gid)                       # (the suit he leaves: its sound would never be stopped)
+            except (OSError, struct.error):
+                pass
         self.gid = gid
         if gid:
             g.write(G_TIM, bytes(16)); g.write(G_CTRL, bytes(0x28)); g.write(G_ID, struct.pack('<H', gid))
@@ -1137,6 +1176,7 @@ class Guest:
         g.write(G_TGT, struct.pack('<3i', *(int(v * 65536) for v in aim)))
         if fire:
             g.write(G_FIRE, b'\x01')
+        self.laser_off(self.gid, bool(fire))
         # the host's suit: the game never poses it in the cockpit view, its joints there are stale (they folded it
         # out of sight): left out; the learnt walk / rest pose instead, else the viewer's default pose
         joints = [j for j in joints if struct.unpack_from('<i', j)[0] != me]

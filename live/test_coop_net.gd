@@ -308,6 +308,28 @@ func _run() -> void:
 		if not e[2] and not release:                    # the host lets go of a leaving guest's keys: allowed
 			early += 1
 	check(early == 0, "no input at the bridge before peer_ok", "%d" % early)
+	# the guest's keys as his window sends them (the bridge's own: forward, back, the steps, the jets, 1-4, F8, Enter)
+	# and his map marker ('W' + world x, y): each one at the bridge, byte for byte
+	var sent: Array[PackedByteArray] = []
+	for sc in [0x11, 0x1F, 0x1E, 0x20, 0x39, 0x02, 0x05, 0x42, 0x1C]:
+		for down in [1, 0]:
+			sent.append(PackedByteArray([0x4B, sc, 0, down]))
+	var mark := PackedByteArray([0x57, 0, 0, 0, 0, 0, 0, 0, 0])
+	mark.encode_float(1, 123.5)
+	mark.encode_float(5, 321.25)
+	sent.append(mark)
+	var t_keys := now()
+	for pk in sent:
+		play.put_packet(pk)
+		await wait(0.01)
+	await wait(0.5)
+	var there := 0
+	var at := 0
+	for e in inputs:                                        # (in the order sent: a key let go before it went down stays held)
+		if e[0] >= t_keys and at < sent.size() and e[1] == sent[at]:
+			at += 1
+			there += 1
+	check(there == sent.size(), "the guest's keys and his map marker reach the bridge as sent, in order", "%d / %d" % [there, sent.size()])
 
 	# --- the guest's own 'R': its decor table lost (a new decoder), it must ask again
 	var r_before := count(resyncs, 0.0)

@@ -219,6 +219,7 @@ var play_dx := 0.0
 # coop guest's window (--coop-hud / --coop-guest): free look, the middle button or Alt held: the mouse turns only
 # his camera (up to 120 degrees aside, 60 up / down), his suit and aim stay; let go: the view comes back
 var guest_win := false
+var uplink_menu: Node = null           # Uplink's own menu over a live window (uplink_menu.gd)
 var lobby_was_open := false
 var free_look := false
 var look_off := Vector2.ZERO
@@ -456,6 +457,11 @@ func _ready() -> void:
 			versus_btn.pressed.connect(_host_online.bind(true))
 			bl.add_child(versus_btn)
 	_extras()
+	if live and play:                         # Uplink's own menu (Esc for a coop guest, F5 for the host) and the
+		uplink_menu = load("res://scripts/uplink_menu.gd").new()   # first mission's keys line (uplink_menu.gd)
+		add_child(uplink_menu)
+	if live and guest_win:                    # coop guest: where the host's game is (host_state.gd)
+		add_child(load("res://scripts/host_state.gd").new())
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8
@@ -5243,6 +5249,8 @@ func _lobby_open() -> bool:
 
 func _input(event: InputEvent) -> void:
 	if not play:
+		return
+	if uplink_menu and uplink_menu.menu_input(event):     # Uplink's menu (uplink_menu.gd): open, or its key
 		return
 	if guest_win and _lobby_open():                       # its buttons, lists and chat get the mouse and keys
 		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:

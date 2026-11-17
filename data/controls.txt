@@ -1,0 +1,80 @@
+# Every key of Terra Nova Uplink in one list, read by the launcher's Controls page and by the in-game menu's
+# (scripts/controls.gd, launcher/TerraNovaUplink.cs ControlsModel). One line a command:
+#   group | id | name | default key | where it is kept
+# group: Move, Fight, View, Squad, Map, Drone, System (the game's commands, as Terra Nova Plus changes them: TNPlus.ini
+# key_game_<id> and mouse_<id>), Tools (Terra Nova Plus's own keys: key_<id>), Uplink (Uplink's own keys: the
+# launcher's key_<id>). The key: a PC scancode in hex (80 + the code for a key of the grey block, as TN+ writes them;
+# E0xx for Uplink's), after SHIFT+, CTRL+ or ALT+; - : none; MID, M4, M5: a mouse button (Uplink's order wheel).
+# "fixed": the game's own, which cannot be changed. Centre view comes without a key (F is the freelook's).
+Move|fwd|Forward|11|game
+Move|back|Back|2D|game
+Move|turnl|Turn left|1E|game
+Move|turnr|Turn right|20|game
+Move|stop|Stop|1F|game
+Move|sidel|Sidestep left|2C|game
+Move|sider|Sidestep right|2E|game
+Move|jump|Jump jets|39|game
+Move|crouch|Crouch|29|game
+Move|bound|Bound (hold)|2A|game
+Fight|w1|Weapon 1|02|game
+Fight|w2|Weapon 2|03|game
+Fight|w3|Weapon 3|04|game
+Fight|w4|Weapon 4|05|game
+Fight|asf|Use ASF|06|game
+Fight|tnext|Next target|14|game
+Fight|tprev|Previous target|15|game
+View|lookup|Look up|13|game
+View|lookdn|Look down|2F|game
+View|lookl|Look left|10|game
+View|lookr|Look right|12|game
+View|centre|Centre view|21|game
+View|v360|360 view|30|game
+View|full|Full-screen|22|game
+View|ir|Infrared|17|game
+View|zoomin|HUD zoom in|0D|game
+View|zoomout|HUD zoom out|0C|game
+View|mfd|MFDs full-screen|0F|game
+Squad|sq1|Call squadmate 1|3B|game
+Squad|sq2|Call squadmate 2|3C|game
+Squad|sq3|Call squadmate 3|3D|game
+Squad|sqall|Call entire squad|3E|game
+Squad|drop|Call dropship|1C|game
+Squad|o_attack|Aggressive attack|ALT+1E|game
+Squad|o_cover|Find cover|ALT+2E|game
+Squad|o_caution|Cautious advance|ALT+20|game
+Squad|o_form|Assume formation|ALT+21|game
+Squad|o_hold|Hold fire|ALT+23|game
+Squad|o_follow|Follow me|ALT+32|game
+Squad|o_nav|Go to nav point|ALT+31|game
+Squad|o_pickup|Go to pickup point|ALT+19|game
+Squad|o_retreat|Retreat|ALT+13|game
+Squad|o_status|Status check|ALT+1F|game
+Squad|o_target|Attack my target|ALT+14|game
+Map|recentre|Recentre map|31|game
+Map|maphud|Map to HUD|32|game
+Map|mapout|Map zoom out|33|game
+Map|mapin|Map zoom in|34|game
+Map|squadinfo|Squad info|43|game
+Map|sensor|Sensor range|44|game
+Map|wrange|Weapon range|57|game
+Map|minfo|Mission info|58|game
+Drone|d_up|Drone up|CTRL+C9|game
+Drone|d_down|Drone down|CTRL+D1|game
+Drone|d_recall|Recall drone|CTRL+C7|game
+System|pause|Pause|19|game
+System|objectives|Objectives|42|game
+System|help|Help|35|game
+System|exit|Exit game|ALT+2D|game
+System|options|Options|18|fixed
+System|abort|Abort mission|CTRL+01|fixed
+Tools|freelook|Free look / game cursor|21|tnplus
+Tools|noclip|Noclip (TN+)|16|tnplus
+Tools|distance|View distance (TN+)|24|tnplus
+Tools|stereo|Stereo swap (TN+)|41|tnplus
+Uplink|menu|Uplink menu (host; Esc for a guest)|3F|uplink
+Uplink|order|Order wheel (hold)|MID|uplink
+Uplink|photo|Photo mode|18|uplink
+Uplink|oldschool|Old school look|58|uplink
+Uplink|sharp|Old school pixel size|SHIFT+58|uplink
+Uplink|shot|Screenshot|CTRL+58|uplink
+Uplink|fps|Frame counter|CTRL+SHIFT+58|uplink

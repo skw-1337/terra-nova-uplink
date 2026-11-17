@@ -5570,20 +5570,22 @@ func _live_waypoint(at: Vector2) -> void:
 		waypoint = _waypoint_new()
 	var col: Color = hud_pal_img.get_pixel(WAYPOINT_COLOUR, 0) if hud_pal_img != null and hud_version > 0 else (
 			pal[WAYPOINT_COLOUR] if pal.size() > WAYPOINT_COLOUR else Color(0.47, 0.0, 0.72))
-	_waypoint_put(waypoint, at, HOST_MARK if guest_win else col)   # (a co-op guest's window: the host's, in his colour)
+	_waypoint_put(waypoint, at, HOST_MARK if guest_win or _coop_marks() else col)   # (co-op: the host's, in his colour)
 	_waypoint_update(0.0)
 
 
 # Co-op: a map marker for each player. The host's is the game's own (above). The guest's is Uplink's: his window
 # asks the host's bridge for it (coop_hud.gd map_click), which says it back to both windows. Each window draws the
 # other player's and its own in the 3D as the game's pyramid, in the co-op HUD's colours (the host's orange, the
-# guest's light blue; the host's own stays the game's purple in his window, as his game draws it on its map), and the
-# host's window draws the guest's over the game's maps: 'GNAV' tells where they are on its screen and what they show.
+# guest's light blue), and the host's window draws the guest's over the game's maps: 'GNAV' tells where they are on
+# its screen and what they show. It also draws the host's own again where the game drew it on its maps, in orange
+# over the game's purple (not with TN_HUD_COLOURS=0: the game's colour, in the 3D too). Solo: the game's colours.
 const HOST_MARK := Color8(255, 165, 40)          # (coop_hud.gd ENERGY_LIT, ARMOUR_LIT)
 const MATE_MARK := Color8(135, 200, 255)
 var mate_wp: Node3D                              # the guest's marker in the 3D
 var mate_wp_at := Vector2.ZERO
-var mate_maps := []                              # host: [the map on the game's screen, its corner in the world, a column's and a row's length]
+var mate_maps := []                              # host: [the map on the game's screen, its corner in the world, a column's
+# and a row's length, where the game draws its own marker on it (x < 0: nowhere), as one pixel]
 var mate_news := -100000                         # host: when the bridge last said it
 var mate_view: Control
 
@@ -5608,10 +5610,11 @@ func _mate_nav(q: PackedByteArray) -> void:
 	if at != mate_wp_at:
 		mate_marker(at)
 	mate_maps = []
-	for i in mini(q[12], (q.size() - 13) / 24):
-		var o := 13 + 24 * i
+	for i in mini(q[12], (q.size() - 13) / 29):
+		var o := 13 + 29 * i
 		mate_maps.append([Rect2(q.decode_s16(o), q.decode_s16(o + 2), q.decode_s16(o + 4) - q.decode_s16(o), q.decode_s16(o + 6) - q.decode_s16(o + 2)),
-				Vector2(q.decode_float(o + 8), q.decode_float(o + 12)), Vector2(maxf(q.decode_float(o + 16), 0.0001), maxf(q.decode_float(o + 20), 0.0001))])
+				Vector2(q.decode_float(o + 8), q.decode_float(o + 12)), Vector2(maxf(q.decode_float(o + 16), 0.0001), maxf(q.decode_float(o + 20), 0.0001)),
+				Vector2(q.decode_s16(o + 24), q.decode_s16(o + 26)), q[o + 28] != 0])
 	if mate_view == null:
 		var ml := CanvasLayer.new()
 		ml.layer = 3                                       # over the game's HUD, under the subtitles, the wheel and its screens
@@ -5624,14 +5627,29 @@ func _mate_nav(q: PackedByteArray) -> void:
 	mate_view.queue_redraw()
 
 
-# host: the guest's marker on the game's maps, the game's own mark for its marker (3 pixels across, 3 rows down) in
-# the guest's colour, where each map shows that place
+# host, co-op with Uplink's HUD colours: his own marker is orange
+func _coop_marks() -> bool:
+	return hud_colours and not guest_win and _ticks() - mate_news < 2000
+
+
+# host: on the game's maps, his own marker again in orange on the game's purple one (the game's mark: 3 pixels
+# across, 3 rows down; one pixel at its zoom levels 0 to 3), and the guest's marker in his colour (always the small
+# cross) where each map shows that place
 func _mate_draw() -> void:
-	if mate_wp_at.x == 0.0 or menu_mode or _photo_hides() or _ticks() - mate_news > 2000:
+	if menu_mode or _photo_hides() or _ticks() - mate_news > 2000:
 		return
 	var k := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
 	for m in mate_maps:
 		var box: Rect2 = m[0]
+		var own: Vector2 = m[3]
+		if hud_colours and own.x >= 0.0:
+			if m[4]:
+				mate_view.draw_rect(Rect2(own * k, k), HOST_MARK)
+			else:
+				mate_view.draw_rect(Rect2((own + Vector2(-1, 0)) * k, Vector2(3, 1) * k).intersection(Rect2(box.position * k, box.size * k)), HOST_MARK)
+				mate_view.draw_rect(Rect2((own + Vector2(0, -1)) * k, Vector2(1, 3) * k).intersection(Rect2(box.position * k, box.size * k)), HOST_MARK)
+		if mate_wp_at.x == 0.0:
+			continue
 		var p: Vector2 = box.position + ((mate_wp_at - (m[1] as Vector2)) / (m[2] as Vector2)).floor()
 		if not box.grow(-1.0).has_point(p):
 			continue
@@ -5707,10 +5725,10 @@ func _waypoint_update(delta: float) -> void:
 	if mate_wp != null and mate_wp.visible:
 		if not guest_win and _ticks() - mate_news > 2000:   # (host: the bridge no longer says it)
 			mate_marker(Vector2.ZERO)
-			if mate_view != null:
-				mate_view.queue_redraw()
 		else:
 			_waypoint_turn(mate_wp, mate_wp_at, delta)
+	if mate_view != null and mate_view.visible != (_ticks() - mate_news < 2000):
+		mate_view.visible = not mate_view.visible          # (host: co-op over, nothing more over the game's maps)
 	if waypoint != null and waypoint.visible:
 		_waypoint_turn(waypoint, waypoint_at, delta)
 

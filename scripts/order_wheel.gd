@@ -32,6 +32,7 @@ var off := {}                          # panes that cannot be picked: pane -> th
 var who := "ENTIRE SQUAD"
 var marker := 0                        # what is aimed at: 0 nothing, 1 a point on the ground, 2 an enemy
 var marker_at := Vector2.ZERO          # where it is on the screen
+var marker_k := 1.0                    # its size (smaller on the game's map)
 var line := ""                         # the short line after an order ("ORDER: ... > ...")
 var line_bad := false
 var bold: Font
@@ -122,14 +123,15 @@ func _draw() -> void:
 	if shown:
 		_draw_wheel()
 	if marker == 1:                                       # a yellow diamond on the point
-		var q := 13.0 * k
+		var q := 13.0 * k * maxf(marker_k, 0.75)
 		var c := marker_at
 		_stroke([c + Vector2(0, -q), c + Vector2(q, 0), c + Vector2(0, q), c + Vector2(-q, 0), c + Vector2(0, -q)], YELLOW, 3.2)
 	elif marker == 2:                                     # red corners around the enemy
+		var m := k * marker_k
 		for sx in [-1, 1]:
 			for sy in [-1, 1]:
-				_stroke([marker_at + Vector2(sx * 44, sy * 16) * k, marker_at + Vector2(sx * 44, sy * 30) * k,
-						marker_at + Vector2(sx * 30, sy * 30) * k], RED, 3.2)
+				_stroke([marker_at + Vector2(sx * 44, sy * 16) * m, marker_at + Vector2(sx * 44, sy * 30) * m,
+						marker_at + Vector2(sx * 30, sy * 30) * m], RED, 3.2)
 	if line != "" and not shown:
 		_draw_line()
 

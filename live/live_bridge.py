@@ -1060,6 +1060,70 @@ if PLAY and os.environ.get('TN_ORDER_WHEEL') == '1':   # (the launcher's "Order 
         print('orders: %r' % (ex,), flush=True)
 ordres_t = 0.0
 
+# The order wheel on the game's map shown in the HUD (carte_hud: the full screen map): where the map is on the game's
+# screen and what it shows, for the viewer to turn a click on it into a place of the world or a unit.
+# The game's own click on that map (the HUD's handler, EN 0x26B064): on its box of switches (a word pair: its x, y
+# in the HUD's window; 84 wide, 84 rows high in the 400-row mode, 44 otherwise) the click is the box's; anywhere
+# else it puts the nav marker there, or answers an order of the COMM menu that waits for a place or a target (the
+# low 6 bits of the order block's flags). The place: the map's view (a pointer, 0 while the map is not in the HUD):
+# +0 / +4 the world x, y (16.16) of its top left corner, +0xA the world length of a pixel (16.16), +0x12 the canvas
+# it is drawn on (a region's, at +0x22 of it: the region's x0, y0, x1, y1 at +8); a screen row counts for half a pixel
+# in the 400-row mode (the shift's byte). What it shows of the units: the contacts' list (6 bytes each, the entity at
+# +1, ended by 0; the game's own pick on the map, 0x2D35A0, reads the same).
+#   'MAPV' + flags (u8: bit 0 the map is in the HUD, bit 1 the game itself waits for a click on it), x0, y0, x1, y1
+#   (i16: the map on the game's screen), the world x, y of its corner and the world length of a column and of a row
+#   (4 floats), the box of switches (x0, y0, x1, y1, i16), the contacts' count (u16) and entities
+def _carte_adr():
+    def f(*parts):
+        pat = b''.join(b'(....)' if q is None else re.escape(bytes.fromhex(q)) for q in parts)
+        for m in re.finditer(pat, code, re.S):
+            v = [struct.unpack('<I', b)[0] for b in m.groups()]
+            if all(0x300000 <= a < 0x500000 for a in v): return v
+        return [None] * sum(1 for q in parts if q is None)
+    # mov eax, [box] / mov [esp + 8], eax / xor eax, eax / mov al, [400 rows] / mov ebx, [esp + 8] / sar eax, 1 / add ebx, 0x54
+    boite, mode = f('a1', None, '8944240831c0a0', None, '8b5c2408d1f883c354')
+    # test byte [order flags], 0x3f / je / mov edx, [esp + 4] / mov eax, [the HUD's map] / call
+    _, vue = f('f605', None, '3f74178b542404a1', None, 'e8')
+    # mov cl, [shift] / movsx edx, di / sar edx, cl / imul edx, [eax + 0xa]   (the click's place, 0x27B240)
+    dec, = f('8a0d', None, '0fbfd7d3fa0faf500a')
+    # imul eax, eax, 6 / mov dx, [eax + contacts + 1] / inc bh / test dx, dx
+    ct, = f('88f86bc006668b90', None, 'fec76685d2')
+    return boite, mode, vue, dec, ct - 1 if ct else None
+
+
+CARTE_BOITE, CARTE_400, CARTE_VUE, CARTE_DEC, CONTACTS = _carte_adr()
+carte_dit = False
+carte_t = 0.0
+
+
+def carte_ordres():
+    global carte_dit
+    pk = None
+    v = d32(CARTE_VUE) if carte_hud and None not in (CARTE_BOITE, CARTE_400, CARTE_VUE, CARTE_DEC, CONTACTS) else 0
+    if 0x300000 <= v < 0x500000:
+        vx, vy, _, pas, _, toile = struct.unpack('<iiHiiI', g.read(v, 0x16))
+        if 0x300000 <= toile < 0x500000 and pas > 0:
+            x0, y0, x1, y1 = struct.unpack('<4h', g.read(toile - 0x22 + 8, 8))
+            dec = g.read(CARTE_DEC, 1)[0] & 3
+            if 0 <= x0 < x1 <= 320 and 0 <= y0 < y1 <= 400:
+                bx, by = struct.unpack('<2h', g.read(CARTE_BOITE, 4))
+                bh = 84 if g.read(CARTE_400, 1)[0] >> 1 else 44
+                ct = g.read(CONTACTS, 6 * 0xC0)
+                ents = []
+                for i in range(0xC0):
+                    e = struct.unpack_from('<H', ct, 6 * i + 1)[0]
+                    if not e: break
+                    ents.append(e)
+                attend = 2 if g.read(ordres.order + 2, 1)[0] & 0x3F else 0
+                pk = b'MAPV' + struct.pack('<B4h4f4hH%dH' % len(ents), 1 | attend, x0, y0, x1, y1, vx / 65536, vy / 65536,
+                                           pas / 65536, pas / 65536 / (1 << dec), x0 + bx, y0 + by, x0 + bx + 84, y0 + by + bh,
+                                           len(ents), *ents)
+    if pk is None and carte_dit:
+        pk = b'MAPV' + bytes(35)
+    carte_dit = pk is not None and pk[4] & 1 == 1
+    if pk: s.sendto(pk, ('127.0.0.1', 47821))
+
+
 # Squadmates' subtitles (subtitles.py; the launcher's "Subtitles": nothing of it otherwise): who speaks and what the
 # clip he plays means, told to the viewer ('SUBT') when it starts and while it plays
 sous_titres = None
@@ -2357,6 +2421,12 @@ while True:
                 s.sendto(ordres.status(tab, NENT, x + y > 0 and not curseur['menu']), ('127.0.0.1', 47821))
             except Exception as ex:
                 if os.environ.get('TN_DEBUG'): print('orders:', repr(ex), flush=True)
+        if ordres is not None and ordres.ok and time.time() - carte_t > 0.05:   # ... and the map in the HUD, for its orders
+            carte_t = time.time()
+            try:
+                carte_ordres()
+            except Exception as ex:
+                if os.environ.get('TN_DEBUG'): print('orders, map:', repr(ex), flush=True)
         repeter_touches()
         glisser(time.time())
         maj_garder(time.time())

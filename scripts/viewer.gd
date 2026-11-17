@@ -3769,6 +3769,11 @@ func _bind_taps() -> void:
 # nearest the crosshair (those the bridge names, 'ORDS': the game's units of another side, in sight), else the point
 # of the ground under it. The bridge gives the order to the game with the game's own keys (live_bridge.py 'O',
 # orders.py) and says whether it took it ('ORDR'). Not on a game screen, not without a squad, not for a coop guest.
+# The launcher's "Order wheel" page can change what is where (nothing given: as written above). TN_ORDER_PANES: the
+# order of each pane, clockwise from the top, six numbers with commas (0 attack target, 1 move there, 2 take cover,
+# 3 retreat, 4 follow me, 5 hold position, 6 assume formation, -1 an empty pane, which cannot be picked);
+# TN_ORDER_TAP_ENEMY and TN_ORDER_TAP_GROUND: the short press's order on an enemy and on the ground (-1: none);
+# TN_ORDER_TAP_MS: how long a short press is; TN_ORDER_DEAD: the middle where no pane is picked (pixels of 1080 rows).
 const OrderWheel = preload("res://scripts/order_wheel.gd")
 const LGRes = preload("res://scripts/lgres.gd")
 const ORDER_TAP_MS := 200                # held less: the obvious order, no wheel
@@ -3776,6 +3781,10 @@ const ORDER_SHOW_MS := 2000              # the marker and the line stay that lon
 const ORDER_DEAD := 48.0                 # the hand within that of where it was (pixels of a 1080-row window): no pane
 const ORDER_REACH := 150.0               # ... and it counts no further than that (a quick way back)
 var order_on := OS.get_environment("TN_ORDER_WHEEL") == "1"
+var order_panes := _order_panes()        # the order on each pane, clockwise from the top (-1: an empty pane)
+var order_tap := [_order_env("TN_ORDER_TAP_ENEMY", 0, -1, 6), _order_env("TN_ORDER_TAP_GROUND", 1, -1, 6)]
+var order_tap_ms := _order_env("TN_ORDER_TAP_MS", ORDER_TAP_MS, 50, 1000)
+var order_dead := float(_order_env("TN_ORDER_DEAD", int(ORDER_DEAD), 10, int(ORDER_REACH) - 10))
 var order_key := _order_key()            # [mouse button (0: a key), physical key, modifiers]
 var order_state := 0                     # 0 nothing, 1 the button is down (wheel not open yet), 2 the wheel, 3 cancelled
 var order_t := 0                         # when the button went down
@@ -3806,6 +3815,22 @@ static func _order_key() -> Array:
 		return [b, KEY_NONE, 0]
 	var k := _own_key(spec)
 	return [0, k[0], k[1]] if not k.is_empty() else [MOUSE_BUTTON_MIDDLE, KEY_NONE, 0]
+
+
+# a whole number of the launcher's, kept between lo and hi (not given, or not a number: def)
+static func _order_env(name: String, def: int, lo: int, hi: int) -> int:
+	var v := OS.get_environment(name).strip_edges()
+	return clampi(v.to_int(), lo, hi) if v.is_valid_int() else def
+
+
+static func _order_panes() -> Array:
+	var out := []
+	for p in OS.get_environment("TN_ORDER_PANES").split(","):
+		var v := p.strip_edges()
+		if not v.is_valid_int() or v.to_int() < -1 or v.to_int() > 6:
+			return [0, 1, 2, 3, 4, 5]
+		out.append(v.to_int())
+	return out if out.size() == 6 else [0, 1, 2, 3, 4, 5]
 
 
 # an order can be given now: in a mission, its map loaded, with a squad (the bridge's news, fresh), the mouse not
@@ -3984,26 +4009,30 @@ func _order_button(down: bool) -> void:
 	order_state = 0
 	if was == 1:                                           # a short press: the obvious order
 		if int(order_aim.get("ent", -1)) >= 0:
-			_order_send(0, 0)
+			_order_send(int(order_tap[0]), 0)
 		elif order_aim.get("point") != null:
-			_order_send(1, 0)
+			_order_send(int(order_tap[1]), 0)
 	elif was == 2:
-		var pane := OrderWheel.pane_at(order_ptr, ORDER_DEAD * _order_scale())
+		var pane := OrderWheel.pane_at(order_ptr, order_dead * _order_scale())
 		if pane >= 0 and not _order_off().has(pane):
-			_order_send(pane, order_who)
+			_order_send(int(order_panes[pane]), order_who)
 
 
 func _order_scale() -> float:
 	return get_viewport().get_visible_rect().size.y / 1080.0
 
 
-# the panes that cannot be picked now
+# the panes that cannot be picked now (an empty one: never)
 func _order_off() -> Dictionary:
 	var off := {}
-	if _order_target(0)[0] == 0:
-		off[0] = "NO TARGET"
-	if _order_target(1)[0] == 0:
-		off[1] = "NO GROUND"
+	for pane in 6:
+		var o := int(order_panes[pane])
+		if o < 0:
+			off[pane] = ""
+		elif o == 0 and _order_target(0)[0] == 0:
+			off[pane] = "NO TARGET"
+		elif o == 1 and _order_target(1)[0] == 0:
+			off[pane] = "NO GROUND"
 	return off
 
 
@@ -4019,6 +4048,8 @@ func _order_cancel() -> void:
 
 
 func _order_send(order: int, who: int) -> void:
+	if order < 0 or order >= OrderWheel.LABELS.size():
+		return
 	var tg := _order_target(order)
 	var kind := 0
 	var ent := 0
@@ -4090,7 +4121,7 @@ func _order_update() -> void:
 	var now := _ticks()
 	if order_state != 0 and not _order_ready():
 		order_state = 3                                    # (a game screen came, the squad is gone)
-	if order_state == 1 and now - order_t >= ORDER_TAP_MS:
+	if order_state == 1 and now - order_t >= order_tap_ms:
 		order_state = 2
 	if now >= order_mark_end:
 		order_line = ""
@@ -4115,12 +4146,14 @@ func _order_update() -> void:
 	w.shown = order_state == 2
 	var mark := [0, Vector2.ZERO]
 	if order_state == 2:
+		w.panes = order_panes
 		w.off = _order_off()
-		var pane := OrderWheel.pane_at(order_ptr, ORDER_DEAD * w.k)
+		var pane := OrderWheel.pane_at(order_ptr, order_dead * w.k)
 		w.picked = -1 if w.off.has(pane) else pane
 		w.who = _order_who_name()
 		# the mark in the middle: where the pane under the hand would send them, else what is aimed at
-		mark = _order_on_screen(_order_target(w.picked if w.picked == 0 or w.picked == 1 else -1))
+		var po := int(order_panes[w.picked]) if w.picked >= 0 else -1
+		mark = _order_on_screen(_order_target(po if po == 0 or po == 1 else -1))
 		if mark[0] == 0 and w.picked < 0:
 			mark = _order_on_screen(_order_target(0))
 	elif not order_mark.is_empty() and not menu_mode:

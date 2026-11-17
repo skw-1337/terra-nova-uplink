@@ -150,6 +150,11 @@ var hl_res = null                     # RESHLMHI.RES
 # in this (the guest's) cockpit. The host's HUD keeps "Player 2": a local guest has no Steam account of his own.
 var preview_steam: Object
 var win := Rect2()                   # the game's 3D window (320 x 400 units), from the cockpit packet
+# the host's cockpit panels moved from where the usual cockpit has them (the bridge's 'RGN' after the cockpit's picture,
+# coop_guest.py regions: the training suit's has its panels 8 lower and its WEAPON panel 8 further left): COMM, map,
+# WEAPON, compass strip. Everything drawn in a panel moves with it
+const REG_HOME: Array[Vector2] = [Vector2(17, 276), Vector2(118, 264), Vector2(217, 264), Vector2(33, 6)]
+var reg_move: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
 var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
 
@@ -410,8 +415,13 @@ func _cockpit(pk: PackedByteArray) -> void:
 		ground_of = ""
 		map_dirty = true
 	var raw := pk.slice(11 + 768).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
-	if raw.size() != 320 * 400 * 2:
+	if raw.size() < 320 * 400 * 2:
 		return
+	var t := 320 * 400 * 2                                   # (after the picture: the panels' corners, 'RGN')
+	if raw.size() >= t + 3 + 16 and raw.slice(t, t + 3).get_string_from_ascii() == "RGN":
+		for k in 4:
+			reg_move[k] = Vector2(raw.decode_s16(t + 3 + 4 * k), raw.decode_s16(t + 5 + 4 * k)) - REG_HOME[k]
+		map_dirty = true
 	var rgba := PackedByteArray()
 	rgba.resize(320 * 400 * 4)
 	for i in 320 * 400:
@@ -555,7 +565,8 @@ func _map_box() -> Rect2:
 	if big_map and win.size.y > 0:
 		var sz := _map_size()
 		return _grect(win.position.x + 12.0, win.position.y + 8.0, win.position.x + 12.0 + sz.x, win.position.y + 8.0 + sz.y)
-	return _grect(MAP_BOX.position.x, MAP_BOX.position.y, MAP_BOX.end.x, MAP_BOX.end.y)
+	var o := Vector2(MAP_BOX.position) + reg_move[1]
+	return _grect(o.x, o.y, o.x + MAP_BOX.size.x, o.y + MAP_BOX.size.y)
 
 
 # a place of the world (1/64 units, two words of a mark) -> its pixel of the map picture, as the game's (a screen
@@ -880,15 +891,16 @@ func _draw_panel() -> void:
 	var amber := Color(1.0, 0.8, 0.25)
 	for k in 8:
 		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0
-		var x := 161.0 + d * 64.0 / 90.0
-		if x < 38.0 or x > 284.0:
+		var x := 161.0 + reg_move[3].x + d * 64.0 / 90.0
+		if x < 38.0 + reg_move[3].x or x > 284.0 + reg_move[3].x:
 			continue
 		if k % 2 == 0:
-			_text(["N", "E", "S", "W"][k / 2], x, 8.0, 10.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
+			_text(["N", "E", "S", "W"][k / 2], x, 8.0 + reg_move[3].y, 10.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
 		else:
-			panel.draw_rect(_grect(x - 0.5, 11.0, x + 0.5, 16.0), Color(0.6, 0.6, 0.8))
-	panel.draw_rect(_grect(160.0, 6.0, 162.0, 8.0), amber)
-	panel.draw_rect(_grect(160.0, 20.0, 162.0, 22.0), amber)
+			panel.draw_rect(_grect(x - 0.5, 11.0 + reg_move[3].y, x + 0.5, 16.0 + reg_move[3].y), Color(0.6, 0.6, 0.8))
+	var cm := reg_move[3]
+	panel.draw_rect(_grect(160.0 + cm.x, 6.0 + cm.y, 162.0 + cm.x, 8.0 + cm.y), amber)
+	panel.draw_rect(_grect(160.0 + cm.x, 20.0 + cm.y, 162.0 + cm.x, 22.0 + cm.y), amber)
 	# the top bars, lit in the game's own led cells (the cockpit packet has them put out), each from its left end as
 	# the game fills them (0x2652f4, 0x26541c: the lit bar, then black from the value to the bar's end): the pilot's
 	# health on the left in the game's reds (its routine 0x2652a0: width x current / max, whole pixels), the energy on
@@ -904,28 +916,30 @@ func _draw_panel() -> void:
 	# armour in the indicator's light blue (the other half), the rest unlit
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
 	for i in rows.size():
-		var y0 := 277.0 + 28.0 * i
+		var y0 := 277.0 + reg_move[0].y + 28.0 * i
+		var x0 := reg_move[0].x
 		var who: Array = rows[i]
 		var pic: Texture2D = mate_face if i == 0 and mate_face else _face(who[2])
 		if pic:
-			panel.draw_texture_rect(pic, _grect(18.0, y0, 39.0, y0 + 27.0), false)
+			panel.draw_texture_rect(pic, _grect(18.0 + x0, y0, 39.0 + x0, y0 + 27.0), false)
 		else:
-			panel.draw_rect(_grect(18.0, y0, 39.0, y0 + 27.0), Color(0.05, 0.05, 0.1))
+			panel.draw_rect(_grect(18.0 + x0, y0, 39.0 + x0, y0 + 27.0), Color(0.05, 0.05, 0.1))
 		var nm: String = mate_name if i == 0 else _pilot_name(who[2], who[0])
-		_text(nm.to_upper(), 42.0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
+		_text(nm.to_upper(), 42.0 + x0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
 		var hp: float = squad_health[i] / 100.0 if i < squad_health.size() and squad_health[i] <= 100 else 1.0
-		_draw_mini_bar(Rect2(42.0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
+		_draw_mini_bar(Rect2(42.0 + x0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
 	if status_page:
 		_draw_status()
 	# WEAPON: his selected weapon, its picture under the texts where the game puts it
+	var wm := reg_move[2]
 	var wpic := null if status_page else _weapon_pic(weapon_type)
 	if wpic:
-		panel.draw_texture_rect(wpic, _grect(217.0, 264.0, 217.0 + wpic.get_width(), 264.0 + wpic.get_height()), false)
+		panel.draw_texture_rect(wpic, _grect(217.0 + wm.x, 264.0 + wm.y, 217.0 + wm.x + wpic.get_width(), 264.0 + wm.y + wpic.get_height()), false)
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
 	if not status_page:
-		_text(wn.to_upper(), 257.0, 267.0, 10.0, Color(0.95, 0.95, 1.0), true)
-		_text("%d%%" % int(round(f * 100.0)), 219.0, 335.0, 10.0, Color(0.95, 0.95, 1.0))
-		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0, 353.0, 10.0,
+		_text(wn.to_upper(), 257.0 + wm.x, 267.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0), true)
+		_text("%d%%" % int(round(f * 100.0)), 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
+		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0 + wm.x, 353.0 + wm.y, 10.0,
 			Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
 	if map_tex:
 		panel.draw_texture_rect(map_tex, _map_box(), false)
@@ -1180,16 +1194,17 @@ func toggle_status() -> void:
 
 # STATUS page (the WEAPON panel's other tab): his 4 weapon slots, the selected one lit, jump and lock
 func _draw_status() -> void:
-	_text("STATUS", 257.0, 267.0, 10.0, Color(0.95, 0.95, 1.0), true)
+	var wm := reg_move[2]
+	_text("STATUS", 257.0 + wm.x, 267.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0), true)
 	for k in 4:
 		var t: int = slot_types[k]
 		var nm: String = WEAPONS[t] if t < WEAPONS.size() and t > 0 else "-"
 		var sel := k == weapon_slot
-		_text("%d %s" % [k + 1, nm.to_upper()], 219.0, 284.0 + 13.0 * k, 10.0,
+		_text("%d %s" % [k + 1, nm.to_upper()], 219.0 + wm.x, 284.0 + wm.y + 13.0 * k, 10.0,
 			Color(0.4, 1.0, 0.45) if sel else Color(0.75, 0.78, 0.9))
-	_text("JUMP %s" % ("READY" if jump_ready else "..."), 219.0, 337.0, 10.0,
+	_text("JUMP %s" % ("READY" if jump_ready else "..."), 219.0 + wm.x, 337.0 + wm.y, 10.0,
 		Color(0.4, 1.0, 0.45) if jump_ready else Color(1.0, 0.7, 0.25))
-	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 219.0, 351.0, 10.0,
+	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 219.0 + wm.x, 351.0 + wm.y, 10.0,
 		Color(0.4, 1.0, 0.45) if lock else Color(0.75, 0.78, 0.9))
 
 

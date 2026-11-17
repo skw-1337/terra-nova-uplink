@@ -16,8 +16,8 @@ const UNIT := 8                              # the bridge: units of the game's a
 const RAD := TAU / 65536.0 * UNIT            # radians per mouse count
 const MAX := 0.75                            # how far past the limit (rad): 43 degrees, 88 down in all
 const LEAN := 0.05                           # the eye leans this far forward at the lowest (a head bending down)
-const TEST := "TN_LOOK_DOWN_TEST"            # tests: "start,rate" = from that second on, the mouse pulled down for 3 s
-                                             # at that many counts a second, held 3 s, pulled back up 3 s
+const TEST := "TN_LOOK_DOWN_TEST"            # tests: "start,rate[,hold]" = from that second on, the mouse pulled down for
+                                             # 3 s at that many counts a second, held 3 s (or hold), pulled back up 3 s
 
 var v: Node                                  # the viewer
 var extra := 0.0                             # the camera's turn past the game's limit (rad, <= 0: down)
@@ -238,11 +238,12 @@ func _test(dt: float) -> void:
 	test_t += dt if test_t >= 0.0 else dt + 1.0
 	var t := test_t - a[0]
 	var rate := 0.0
+	var hold := a[2] if a.size() > 2 else 3.0
 	if t >= 0.0 and t < 3.0:
 		rate = a[1]
-	elif t >= 6.0 and t < 9.0:
+	elif t >= 3.0 + hold and t < 6.0 + hold:
 		rate = -a[1]
 	if rate != 0.0:
 		v.play_dy += take(rate * dt)
-	if int(t * 2.0) != int((t - dt) * 2.0) and t > -1.0 and t < 10.0:
+	if int(t * 2.0) != int((t - dt) * 2.0) and t > -1.0 and t < 7.0 + hold:
 		print("look down test: t %.1f head %d extra %.3f rad, view pitch %.1f deg" % [t, head, extra, rad_to_deg(v.camera.rotation.x)])

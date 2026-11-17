@@ -18,13 +18,16 @@ const WEAPON := {
 const OTHER := [Color(1.0, 0.88, 0.65), 0.6, 0.0]   # the weapons not listed: a plain gun flash
 const NONE := [8, 12]                                # EM emitter, SIR: no shot to see
 const FLASH_S := 0.07           # the gun's flash lasts this long
-const FLASH_RANGE := 2.4
-const FLASH_ENERGY := 5.0
+const FLASH_RANGE := 2.2
+const FLASH_ENERGY := 4.0
 const FLY_RANGE := 1.5
 const FLY_ENERGY := 1.3
 const BLAST_S := 0.4            # a blast's flash: fading over this long
 const BLAST_COLOUR := Color(1.0, 0.7, 0.35)
-const BLAST_ENERGY := 6.5
+const BLAST_ENERGY := 6.0
+const DAY := 0.15               # in full daylight the lights count this much (a flash hardly shows on sunlit ground:
+                                # at full strength it washed the desert white): from the map's own light (its
+                                # diffuse + ambient: 0.26 on the night maps, 1 by day)
 const POOL := 8                 # real lights at once (the ground's); the first SHADOWS of them may cast shadows
 const SHADOWS := 2
 const UNLIT := 4                # lights the unlit shaders take
@@ -110,6 +113,9 @@ func _process(_dt: float) -> void:
 		return
 	on = true
 	want.sort_custom(func(a, b): return a[0] > b[0])
+	var dim := lerpf(1.0, DAY, smoothstep(0.35, 0.95, float(v.map_dif) + float(v.map_amb)))
+	for w in want:
+		w[4] = float(w[4]) * dim
 	# the real lights: the shadow casters to the strongest flashes, the others to what is left
 	var casters := range(SHADOWS)
 	var plain := range(SHADOWS, POOL)

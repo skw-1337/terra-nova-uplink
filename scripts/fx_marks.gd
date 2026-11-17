@@ -14,7 +14,7 @@ const FADE := 20.0
 # weapon (class 5 type) -> kind: 0 pock, 1 laser line, 2 scorched spot, 3 blast burn, -1 none (smoke grenade, EM)
 const KIND := {2: -1, 3: 3, 4: 1, 5: 2, 6: 2, 7: 0, 8: -1, 9: 2, 10: 3, 11: 2, 12: -1, 13: 3, 14: 0, 22: 2, 25: 2, 23: 0}
 # kind -> half width, half thickness of its box (world units: a suit is 0.4 tall), strength
-const SIZE := {0: [0.022, 0.03, 0.85], 1: [0.016, 0.03, 0.95], 2: [0.07, 0.05, 0.9], 3: [0.5, 0.16, 0.95]}
+const SIZE := {0: [0.022, 0.03, 0.85], 1: [0.016, 0.03, 0.95], 2: [0.07, 0.05, 0.9], 3: [0.45, 0.16, 0.8]}
 const LINE_GAP := 0.4          # s: two laser impacts closer in time than this ...
 const LINE_REACH := 1.3        # ... and nearer than this are joined by a line
 const LINE_PIECE := 0.22       # a line follows the ground in stretches of this length

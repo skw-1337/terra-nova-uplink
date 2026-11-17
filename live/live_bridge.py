@@ -478,22 +478,51 @@ def portee(tab, cx, cy, k, table):
 # (SOLDATS + n * 0x582, 16.16): torso +0x2AB, upper arm +0x2BB, forearm +0x2BF, thigh +0x2C3, shin +0x2C7, and the
 # legs' reach +0x2ED (0.9 x thigh + shin). Not for the mech (suit 11: its own values there).
 taille_t = 0.0
+allure_t = 0.0
+echelle_vue = 0.0
+tl = []
+
+
+# Its walk as the game computes it (0x280a84, ported in scripts/suit_gait.gd for the suits the game does not pose): the
+# record's values from +0xDE on, 16.16: torso +0x1CD, shoulders' height along it +0x1D1, shoulder and hip widths +0x1D5
+# / +0x1D9, upper arm, forearm, thigh, shin +0x1DD.., ankle height +0x1ED, foot +0x1F1 / +0x1F5, the feet's lead
+# +0x1F9, the paces' speeds +0x207 (walking) / +0x20B (long strides: 1.44 x sqrt(leg x gravity)), the stride +0x20F,
+# the feet's gap +0x217, the entity above its feet +0x221, leg lengths +0x2F6 / +0x2FE; the toes' turn (word +0x205),
+# the knees' side (+0x1FD) and flat feet (+0x201); and what its AI sets: the pelvis' height factor +0x213, the lean
+# wanted (word +0x21D), the stance (byte +0x2BF: 0 standing, 1 crouching, 2 lying), and each arm's aim, which the game
+# adds when it draws the suit (0x29C61E): turn from the heading and pitch (words +0x318 / +0x31A left, +0x314 / +0x316
+# right), share (16.16, +0x320 left, +0x31C right; 0: the arm as it walks). Crouching or lying, the factor and lean it
+# stood with are kept at +0x2C0 / word +0x2C4 (put back when it gets up).
+ALLURE = (0x1CD, 0x1D1, 0x1D5, 0x1D9, 0x1DD, 0x1E1, 0x1E5, 0x1E9, 0x1ED, 0x1F1, 0x1F5, 0x1F9, None, 0x207, 0x20B, 0x20F, 0x217,
+          0x221, 0x2F6, 0x2FE)
 
 
 def tailles(tab):
-    """[(entity, (thigh, shin, upper arm, forearm, torso, reach))] of the soldiers (suits 0-10) in the table"""
-    out = []
+    """[(entity, (thigh, shin, upper arm, forearm, torso, reach))] of the soldiers (suits 0-10) in the table, and
+    their walks: [entity, knee side, flat feet, stance, 0, 20 values, height factor, lean wanted, 6 of aim,
+    height factor and lean kept from before it crouched], packed"""
+    out, allures, vus = [], [], []
     for i in range(NENT):
         o = 0x25 * i
         if not tab[o] or tab[o + 1] != 1: continue
         nf = struct.unpack_from('<H', tab, o + 3)[0]
         if nf > 200: continue
-        r = g.read(SOLDATS + nf * 0x582 + 0xDE, 0x214)
+        r = g.read(SOLDATS + nf * 0x582 + 0xDE, 0x324)
         if struct.unpack_from('<I', r, 0)[0] > 10: continue
         v = [struct.unpack_from('<i', r, a - 0xDE)[0] / 65536 for a in (0x2C3, 0x2C7, 0x2BB, 0x2BF, 0x2AB, 0x2ED)]
         if all(0.03 <= x <= 0.6 for x in v):
             out.append((i, tuple(v)))
-    return out
+            tour = lambda a: struct.unpack_from('<h', r, a)[0] / 65536 * 2 * math.pi
+            w = [tour(0x205) if a is None else struct.unpack_from('<i', r, a)[0] / 65536 for a in ALLURE]
+            if w[13] > 0 and w[14] > w[13] and 0.05 < w[18] < 2.0:
+                vus.append((i, struct.unpack_from('<i', r, 5)[0], w[0] + w[18]))
+                tr = lambda a: round(struct.unpack_from('<H', r, a)[0] / 256) / 256 * 2 * math.pi   # (to 1.4 degrees: the
+                part = lambda a: round(max(0, min(65536, struct.unpack_from('<i', r, a)[0])) / 4096) / 16   # packet changes less)
+                allures.append(struct.pack('<ibBBB30f', i, 1 if struct.unpack_from('<i', r, 0x1FD)[0] >= 0 else -1, 1 if r[0x201] else 0,
+                                           r[0x2BF], 0, *w, struct.unpack_from('<i', r, 0x213)[0] / 65536, tour(0x21D),
+                                           tr(0x318), tr(0x31A), part(0x320), tr(0x314), tr(0x316), part(0x31C),
+                                           struct.unpack_from('<i', r, 0x2C0)[0] / 65536, tour(0x2C4)))
+    return out, allures, vus
 
 
 # A pirate's arms (suit 9): at its creation the game draws each arm (5 times in 13) with the captain's sprites
@@ -2198,9 +2227,27 @@ while True:
             if guest: guest.dust(pk)           # (the coop guest's window too)
         part_prev, part_t = bool(pts), time.time()
     body = []
-    if time.time() - taille_t > 1.0:           # each soldier's own bone lengths, every second (the viewer: SLEN)
+    if time.time() - allure_t > 0.25:          # each soldier's walk (the viewer: GAIT), 4 times a second (its stance
+        allure_t = time.time()                 # changes); its own bone lengths (SLEN) and arms every second
+        tl, al, vus = tailles(tab)
+        # how tall the game draws a suit (pixels at 1 unit): from the ones it has just drawn, their size on its screen
+        # (dword +5 of the suit's record, set by its draw 0x29C508, which picks the pose's detail from it) x how far
+        # ahead of the player they are / their height (torso + legs); sent with GAIT, 0 until one is seen
+        if 0 <= pid < NENT:
+            px, py = struct.unpack_from('<ii', tab, 0x25 * pid + 0x0F)
+            pc = struct.unpack_from('<H', tab, 0x25 * pid + 0x1B)[0] / 65536 * 2 * math.pi
+            ech = []
+            for i, vu, haut in vus:
+                ex, ey = struct.unpack_from('<ii', tab, 0x25 * i + 0x0F)
+                loin = ((ex - px) * math.cos(pc) + (ey - py) * math.sin(pc)) / 65536
+                if vu >= 8 and loin > 2.0 and i != pid: ech.append(vu * loin / haut)
+            if ech: echelle_vue = sorted(ech)[len(ech) // 2]
+        if al:
+            pk = b'GAIT' + struct.pack('<H', len(al)) + b''.join(al) + struct.pack('<f', echelle_vue)
+            s.sendto(pk, ('127.0.0.1', 47821))
+            if guest: guest.relay(pk)          # (the coop guest's window too)
+    if time.time() - taille_t > 1.0:
         taille_t = time.time()
-        tl = tailles(tab)
         if tl:
             pk = b'SLEN' + struct.pack('<H', len(tl)) + b''.join(struct.pack('<i6f', i, *v) for i, v in tl)
             s.sendto(pk, ('127.0.0.1', 47821))

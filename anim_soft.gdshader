@@ -11,15 +11,33 @@ uniform float fps = 16.0;
 uniform bool loop = false;
 uniform float pixel_aspect = 1.2;
 uniform float pull = 0.3;              // drawn a little nearer: the game paints it over the ground
+// a blast next to the camera fills the view, in the game too (a fireball 0.8 unit away: a third of its width), where
+// each of its texels shows as a block; smoothed between texels as it is far away, it was a flat blur. Up close each
+// texel keeps its colour, blended into the next over this share of a texel only (1: the plain smooth filter)
+uniform float texel_soft = 0.35;
 instance uniform float age = 0.0;      // seconds since it started
 instance uniform float frame = -1.0;   // the frame the game shows (none: by its age)
 
 void vertex() {
 	vec3 o = (VIEW_MATRIX * vec4(MODEL_MATRIX[3].xyz, 1.0)).xyz;
 	vec3 v = o + vec3(VERTEX.x, VERTEX.y * pixel_aspect, 0.0);
-	float l = length(v);
-	v *= max(l - pull, 0.05) / l;
+	// the whole picture nearer along the eye's ray by one factor: its place and size on the screen unchanged, flat, and
+	// never against the near plane (each corner pulled by itself, a blast at the camera was bent round the eye and the
+	// near plane cut pieces out of it)
+	float lo = max(length(o), 0.001);
+	v *= max((lo - pull) / lo, 0.07 / max(-o.z, 0.001));
 	POSITION = PROJECTION_MATRIX * vec4(v, 1.0);
+}
+
+// the frame's texel at uv: the smooth filter far away, the game's own texels up close (texel_soft); dx, dy: uv's
+// change from one pixel of the screen to the next
+vec4 frame_texel(vec2 uv, float f, vec2 dx, vec2 dy) {
+	vec2 ts = vec2(textureSize(frames, 0).xy);
+	vec2 p = uv * ts - 0.5;
+	vec2 i = floor(p);
+	vec2 w = max(vec2(texel_soft), (abs(dx) + abs(dy)) * ts);
+	vec2 fr = clamp((p - i - 0.5) / w + 0.5, 0.0, 1.0);
+	return textureGrad(frames, vec3((i + 0.5 + fr) / ts, f), dx, dy);
 }
 
 void fragment() {
@@ -27,7 +45,9 @@ void fragment() {
 	if (frame >= 0.0) {
 		f = min(frame, float(frame_count - 1));
 	}
-	vec4 c = texture(frames, vec3(UV, f));
-	ALBEDO = tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	vec4 c = frame_texel(UV, f, dFdx(UV), dFdy(UV));
+	// in the game's own colours (live: the view's saturation and contrast are the models' look, they made a blast
+	// a brighter orange than the game's)
+	ALBEDO = tn_haze(tn_game_colour(tn_haze_srgb(c.rgb)), (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 	ALPHA = c.a;
 }

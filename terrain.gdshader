@@ -103,6 +103,24 @@ vec3 detail_noised(vec2 p) {
 }
 
 
+// Live, modern look: the game's ground is strongly contrasted texels (light and dark grains side by side); smoothed
+// between texels where each covers many pixels, next to the eye, they ran into marbled blotches (in the game's own
+// colours: under the viewer's warm light and saturation of before they showed far less). Up close each texel keeps
+// its colour, blended into the next over texel_soft of a texel only; where a texel is smaller than that on the
+// screen it is the plain smooth filter (1: always).
+uniform float texel_soft = 0.35;
+// and the cells blended over a narrow band only (blend_width: half the ground was two or four tiles laid over each
+// other, their grains doubled)
+uniform float blend_live = 0.08;
+
+vec3 tile_px(vec2 uv, float layer, vec2 dx, vec2 dy) {
+	vec2 p = uv * 64.0 - 0.5;
+	vec2 i = floor(p);
+	vec2 w = max(vec2(game_colours ? texel_soft : 1.0), (abs(dx) + abs(dy)) * 64.0);
+	vec2 fr = clamp((p - i - 0.5) / w + 0.5, 0.0, 1.0);
+	return textureGrad(tiles_lit_soft, vec3((i + 0.5 + fr) / 64.0, layer), dx, dy).rgb;
+}
+
 // a ground cell's tile at a position beyond its edges (mirrored)
 vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
 	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
@@ -128,7 +146,7 @@ vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
 	// clamped, not wrapped: uv stays in 0..1 (mirrored above), and a wrapping filter mixed the tile's opposite edge
 	// into its border texels (a thin light line along the cells of two-material tiles)
 	if (per_index) {
-		return textureGrad(tiles_lit_soft, vec3(uv, tile + loff), dx, dy).rgb;
+		return tile_px(uv, tile + loff, dx, dy);
 	}
 	return textureGrad(tiles_soft, vec3(uv, tile), dx, dy).rgb;
 }
@@ -141,7 +159,8 @@ vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff) {
 	vec2 c0 = floor(qc);
 	vec2 fb = fract(qc);
 	vec2 jit = vec2(detail_noised(wp.xz * 0.7).x, detail_noised(wp.xz * 0.7 + 31.7).x) - 0.5;
-	vec2 fw = smoothstep(0.5 - blend_width, 0.5 + blend_width, clamp(fb + jit * 0.5, 0.0, 1.0));
+	float bw = game_colours ? blend_live : blend_width;
+	vec2 fw = smoothstep(0.5 - bw, 0.5 + bw, clamp(fb + jit * 0.5, 0.0, 1.0));
 	vec3 a = cell_tile(c0, q, dx, dy, loff);
 	vec3 b = cell_tile(c0 + vec2(1.0, 0.0), q, dx, dy, loff);
 	vec3 c = cell_tile(c0 + vec2(0.0, 1.0), q, dx, dy, loff);
@@ -240,7 +259,7 @@ vec3 ground_at(vec2 q, vec2 dx, vec2 dy, float loff, out vec2 uv, out float tile
 	dv = dy;
 	if (per_index) {
 		if (modern) {
-			return textureGrad(tiles_lit_soft, vec3(uv * (63.0 / 64.0) + 0.5 / 64.0, tile + loff), dx, dy).rgb;
+			return tile_px(uv * (63.0 / 64.0) + 0.5 / 64.0, tile + loff, dx, dy);
 		}
 		return textureGrad(tiles_lit, vec3(uv, tile + loff), dx, dy).rgb;
 	}

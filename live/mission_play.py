@@ -19,6 +19,8 @@
 #   python mission_play.py --game "C:\...\Terra Nova Strike Force Centauri" --mission 18            the save only
 #   python mission_play.py --game ... --mission 18 --start [--pid DOSBOX_PID]                        and the menus
 #   python mission_play.py --game ... --list
+#   (--out DIR and --data DIR: where the save is written and where the missions are looked for, when they are not
+#   the game's own TNOVA and TNOVA\DATA: a test's folder laid over the game's)
 # From the launcher or the bridge:  import mission_play; label, path = mission_play.make_save(tnova_dir, 18)
 #                                   mission_play.start(18, row=mission_play.slot_of(path))
 # Every failure is a PlayError whose text can be shown as it is.
@@ -329,10 +331,20 @@ def main(argv):
                                                                  '(ours)' if s['ours'] else ''))
             return 0
         mission = int(opt('--mission', '0'))
-        label, path = make_save(tnova, mission, out_dir=opt('--out'))
-        print('save "%s" written: %s' % (label, path))
+        label, path = make_save(tnova, mission, out_dir=opt('--out'), data_dir=opt('--data'))
+        print('save "%s" written: %s' % (label, path), flush=True)
         if '--start' in argv:
-            start(mission, slot_of(path), Game(opt('--pid')), log=print)
+            say = lambda s: print(s, flush=True)
+            gm = Game(opt('--pid'))
+            for attempt in range(8):                 # (the game may still be on its intro: its menu is waited for)
+                try:
+                    start(mission, slot_of(path), gm, log=say)
+                    break
+                except PlayError as e:
+                    if attempt == 7 or not ('not at its main menu' in str(e) or 'did not start' in str(e)):
+                        raise
+                    say('the game is not at its main menu yet: waiting')
+                    time.sleep(6)
         else:
             print('In the game: Load Game, then "%s".' % label)
         return 0

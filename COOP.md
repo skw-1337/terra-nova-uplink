@@ -37,7 +37,7 @@ It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: 
 | M | big map |
 | F8 | next squadmate |
 | Enter | call the dropship |
-| Y | free the mouse |
+| F | free the mouse (Y on an installation made before this version; the freelook key of **Game keys**) |
 
 A gamepad works too: switch on **Gamepad for the guest** on the launcher's Co-op page.
 

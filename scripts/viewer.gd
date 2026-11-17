@@ -3599,8 +3599,8 @@ static func _key_map() -> Dictionary:
 
 # The key that swaps look and cursor: TN+'s freelook key, which the player sets on its KEYBOARD page (the launcher's
 # Game keys). Its PC scancode comes from the launcher (TN_KEY_FREELOOK) or, with a launcher that does not send it,
-# from the TNPlus.ini of the launcher's TN+ next to this folder (tnplus\, else tnplus_coop\: key_freelook); Y when
-# neither says, or for a key this window does not know.
+# from the TNPlus.ini of the launcher's TN+ next to this folder (tnplus\, else tnplus_coop\: key_freelook); F when
+# neither says, or for a key this window does not know (Y on settings made before: they say so).
 var look_key := _look_key()
 
 static func _look_key() -> int:
@@ -3619,7 +3619,7 @@ static func _look_key() -> int:
 	for k in SCANCODES:
 		if SCANCODES[k] == sc:
 			return k
-	return KEY_Y
+	return KEY_F
 
 
 # The viewer's own two keys: the old school look on / off (F12) and its pixel grid finer or coarser (Shift+F12). The
@@ -5228,7 +5228,7 @@ func _input(event: InputEvent) -> void:
 	if _photo_input(event):                                # the photo mode: its key, and every input while it is on
 		get_viewport().set_input_as_handled()
 		return
-	# Two modes, swapped by the freelook key (Y unless the player changed it, see look_key) or Pause, which stay in
+	# Two modes, swapped by the freelook key (F unless the player's settings say otherwise, see look_key) or Pause, which stay in
 	# the viewer: look (mouse captured, it turns the view, clicks at the view's centre) and cursor (the game's own
 	# cursor follows the mouse, clicks where it is: the HUD's buttons, the map, free aiming).
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED

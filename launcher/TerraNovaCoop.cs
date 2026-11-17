@@ -91,7 +91,11 @@ static class Uplink
         LogPath = Path.Combine(Comp, "logs", "launcher.log");
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2 (GitHub, python.org, PyPI)
         Migrate();
+        bool had = File.Exists(Ini);
         LoadCfg();
+        // The keys a new installation comes with (2: freelook on F), as against one that was already there (1: on
+        // Y): said once, when the settings do not say yet, so that nobody's key changes with an update
+        if (Cfg("keys_gen") != "1" && Cfg("keys_gen") != "2") Set("keys_gen", had && cfg.Count > 0 ? "1" : "2");
         string[] args = Environment.GetCommandLineArgs();
         if (args.Length > 2 && args[1] == "--install")    // checks: install / update only, no window (exit code 0 = ok)
         {
@@ -2984,6 +2988,14 @@ static class Uplink
             string line = kv.Key + " = " + kv.Value;
             if (at >= 0) lines[at] = line; else lines.Add(line);
         }
+        // TN+ settings with no key in them yet: the freelook key said here, so that the game and Uplink agree whatever
+        // the TN+ build. A new installation: F, and the keys' version 4 (TN+ then leaves the game's Centre view, on F,
+        // without a key); an installation made before: Y, as it always was
+        if (!lines.Exists(l => Regex.IsMatch(l, @"^\s*keys?_")))
+        {
+            lines.Add("key_freelook = " + (Cfg("keys_gen") == "2" ? "21" : "15"));
+            if (Cfg("keys_gen") == "2") lines.Add("keys_version = 4");
+        }
         File.WriteAllLines(ini, lines);
     }
 
@@ -3124,8 +3136,9 @@ static class Uplink
         return m;
     }
 
-    // TN+'s freelook key (key_freelook, a PC scancode; Y unless changed): in Uplink it gives the game's cursor and takes
-    // the mouse back. Uplink is told which (TN_KEY_FREELOOK); the status line names it as this keyboard prints it
+    // TN+'s freelook key (key_freelook, a PC scancode): in Uplink it gives the game's cursor and takes the mouse back.
+    // Uplink is told which (TN_KEY_FREELOOK); the status line names it as this keyboard prints it. Where no TN+
+    // settings say (a guest who only joins): F on a new installation, Y on one made before (keys_gen)
     static int FreelookScan()
     {
         string ini = KeysIni();
@@ -3135,7 +3148,7 @@ static class Uplink
                 Match m = Regex.Match(l, @"^\s*key_freelook\s*=\s*([0-9A-Fa-f]{1,2})\s*$");
                 if (m.Success) return Convert.ToInt32(m.Groups[1].Value, 16);
             }
-        return 0x15;
+        return Cfg("keys_gen") == "2" ? 0x21 : 0x15;
     }
 
     static string ScanName(int scan)

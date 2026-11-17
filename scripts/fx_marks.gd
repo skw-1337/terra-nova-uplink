@@ -1,4 +1,4 @@
-# Impact marks (an extra on top of the game's look: off unless TN_FX_MARKS=1). Where a shot hits the ground it leaves
+# Impact marks (an extra on top of the game's look: on unless TN_FX_MARKS=0). Where a shot hits the ground it leaves
 # a mark that fits its weapon: a laser a thin burnt line along the way its beam went over the ground (its impacts of a
 # held trigger joined), the energy bolts (pulsar, plasma, particle beam, ion rifle, disruptor) a small scorched
 # spot, missiles, grenades and shells a wide burn, bullets small pocks. They fade out after a while and there are

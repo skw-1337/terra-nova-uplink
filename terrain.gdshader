@@ -31,7 +31,7 @@ uniform bool has_haze_lut = false;
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of tables 59, 60, 61, 62
 uniform bool has_ir = false;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
-// cloud shadows (an extra, off unless TN_FX_CLOUD_SHADOWS=1: viewer.gd _cloud_cover): the sky's cloud layer seen from
+// cloud shadows (an extra, on unless TN_FX_CLOUD_SHADOWS=0: viewer.gd _cloud_cover): the sky's cloud layer seen from
 // the ground along the sun's direction, where it stands over the map (its texels are a world unit, shifted by the
 // same wind offset as the sky's: cloud_off), takes up to cloud_rows rows of the planet's light table away
 uniform bool cloud_shadows = false;
@@ -159,7 +159,7 @@ vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
 	return textureGrad(tiles_soft, vec3(uv, tile), dx, dy).rgb;
 }
 
-// cliffs (an extra, off unless TN_FX_CLIFFS=1): the tiles are laid on the map from above, one a cell: on a steep
+// cliffs (an extra, on unless TN_FX_CLIFFS=0): the tiles are laid on the map from above, one a cell: on a steep
 // face a cell's 64 texels run down the whole height of the cliff, stretched into streaks. With this on, the faces
 // steeper than CLIFF_FROM are textured from the side instead, along the slope (the same tile of the cell, a texel as
 // big as on flat ground, across the face and up it, from the side the face looks to: both sides weighed by the

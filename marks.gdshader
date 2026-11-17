@@ -1,4 +1,4 @@
-// Impact marks (an extra, off unless TN_FX_MARKS=1: fx_marks.gd): what the shots leave where they hit the ground.
+// Impact marks (an extra, on unless TN_FX_MARKS=0: fx_marks.gd): what the shots leave where they hit the ground.
 // Each mark is a flat box laid on the ground; whatever the view shows inside it (the ground, read back from the depth
 // of the picture) is darkened by the mark's pattern: no mesh to fit to the slopes, nothing drawn on what stands in
 // front. INSTANCE_CUSTOM: x the kind (0 a bullet's pock, 1 a laser's burnt line, 2 an energy bolt's scorched spot,

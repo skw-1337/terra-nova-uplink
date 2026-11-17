@@ -1,4 +1,4 @@
-# Looking down past the game's limit (an extra on top of the game's look: off unless TN_FX_LOOK_DOWN=1). The game
+# Looking down past the game's limit (an extra on top of the game's look: on unless TN_FX_LOOK_DOWN=0). The game
 # stops the head 45 degrees down (0x2c9254; the bridge's look does the same). With this on, the mouse pulled further
 # down turns Uplink's camera alone, down to nearly straight under the player: he sees the ground at his feet and his
 # own suit's legs and feet (his body, drawn from his own joints: it already stands there for the cockpit's side

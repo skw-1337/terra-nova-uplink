@@ -1201,7 +1201,7 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 		sm.set_shader_parameter("has_ir", true)
 	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
-	sm.set_shader_parameter("cliffs", OS.get_environment("TN_FX_CLIFFS") == "1")   # (an extra: steep faces textured from the side)
+	sm.set_shader_parameter("cliffs", OS.get_environment("TN_FX_CLIFFS") != "0")   # (an extra: steep faces textured from the side)
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
@@ -8191,31 +8191,31 @@ func _process(delta: float) -> void:
 
 
 # ------------------------------------------------------------------ optional extras
-# Novelties on top of the game's look, each off unless asked for (the launcher's "In game" switches, or the
-# environment), each in its own script, nothing of them made when off:
-# TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
-# TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
-# TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
-# TN_FX_LOOK_DOWN=1 the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
-# TN_FX_CLIFFS=1    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
-# TN_FX_STARS=1     the space skies' stars as sharp points at the window's resolution (sky.gdshader star_scale)
+# Novelties on top of the game's look, each on unless turned off (the launcher's "In game" switches, or the
+# environment: TN_FX_<NAME>=0), each in its own script, nothing of them made when off:
+# TN_FX_MARKS    impact marks where the shots hit the ground (fx_marks.gd)
+# TN_FX_LIGHTS   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
+# TN_FX_CLOUD_SHADOWS  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
+# TN_FX_LOOK_DOWN the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
+# TN_FX_CLIFFS    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
+# TN_FX_STARS     the space skies' stars as sharp points at the window's resolution (sky.gdshader star_scale)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
 var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
 const FX_NOT_FOLLOWED := [28, 29, 31, 32, 33]   # class 6: beams, particles, lightning, debris, burst suits
 
 
 func _extras() -> void:
-	if live and not guest_win and OS.get_environment("TN_FX_MARKS") == "1":
+	if live and not guest_win and OS.get_environment("TN_FX_MARKS") != "0":
 		var mk: Node = load("res://scripts/fx_marks.gd").new()
 		mk.v = self
 		mk.shots = _fx_shots()
 		add_child(mk)
-	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") == "1":
+	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") != "0":
 		var lt: Node = load("res://scripts/fx_lights.gd").new()
 		lt.v = self
 		lt.shots = _fx_shots()
 		add_child(lt)
-	if live and not guest_win and OS.get_environment("TN_FX_LOOK_DOWN") == "1":
+	if live and not guest_win and OS.get_environment("TN_FX_LOOK_DOWN") != "0":
 		look_dn = load("res://scripts/look_down.gd").new()
 		look_dn.v = self
 		add_child(look_dn)
@@ -8229,15 +8229,15 @@ func _fx_shots() -> Node:
 	return fx_shots
 
 
-# Cloud shadows (TN_FX_CLOUD_SHADOWS=1): how thick the sky's cloud layer is, texel by texel, for the ground's shader
+# Cloud shadows (TN_FX_CLOUD_SHADOWS): how thick the sky's cloud layer is, texel by texel, for the ground's shader
 # (terrain.gdshader cloud_shadows), which looks it up where the sun's ray from the ground meets the cloud ceiling
 # (the height the sky is drawn with at the drop zone: 0.0478 x (the mission's cloud height - 8 x the eye's), _sky_to)
 # and darkens by rows of the planet's light table. The sky's wind offset moves it (_clouds_update gives the ground's
 # materials the sky's cloud_off): the shadows drift with the clouds. On the planets' skies the clouds are the light,
 # pale texels on a deeper sky (thick = light); a storm sky is grey all over, its darker texels the thicker cloud,
 # and shades half as much. No clouds (the space skies): no shadows.
-var fx_cloud_shadows := OS.get_environment("TN_FX_CLOUD_SHADOWS") == "1"
-var fx_stars := OS.get_environment("TN_FX_STARS") == "1"
+var fx_cloud_shadows := OS.get_environment("TN_FX_CLOUD_SHADOWS") != "0"
+var fx_stars := OS.get_environment("TN_FX_STARS") != "0"
 var cloud_cover: ImageTexture
 
 

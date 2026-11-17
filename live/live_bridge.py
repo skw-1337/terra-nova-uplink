@@ -931,7 +931,7 @@ def articulations(tab):
 #   'X' + 1 / 0 -> the viewer's photo mode: the mission paused / resumed with the game's own Pause (see photo_step)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -0x2000, 0x2000
-LOOK_DOWN = PLAY and os.environ.get('TN_FX_LOOK_DOWN') == '1'   # (an extra of Uplink's: nothing of it otherwise)
+LOOK_DOWN = PLAY and os.environ.get('TN_FX_LOOK_DOWN') != '0'   # (an extra of Uplink's: on unless turned off)
 if PLAY:
     import ctypes
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

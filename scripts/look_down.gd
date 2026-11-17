@@ -241,3 +241,5 @@ func _test(dt: float) -> void:
 		rate = -a[1]
 	if rate != 0.0:
 		v.play_dy += take(rate * dt)
+	if int(t * 2.0) != int((t - dt) * 2.0) and t > -1.0 and t < 10.0:
+		print("look down test: t %.1f head %d extra %.3f rad, view pitch %.1f deg" % [t, head, extra, rad_to_deg(v.camera.rotation.x)])

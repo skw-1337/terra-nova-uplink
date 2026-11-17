@@ -24,6 +24,7 @@ var shots := {}               # entity -> [type, position, the one before, steps
 var effects := {}             # entity -> [type, position] of the animated effects in the last state
 var gone := []                # shots that left in the last state: [type, position, direction, step], judged at the next
 var seen := -1
+var debug := OS.has_environment("TN_FX_DEBUG")   # tests: what is seen, said in the log
 
 
 func _process(_dt: float) -> void:
@@ -46,6 +47,8 @@ func _process(_dt: float) -> void:
 			var fd: Dictionary = v.objects.fx_def(e[1]) if v.objects_ok else {}
 			if not fd.is_empty():
 				blast.emit(e[1], p, float(fd["width"]))
+				if debug:
+					print("fx effect: type ", e[1], " width ", fd["width"], " at ", p)
 	# the shots gone one state ago: where they hit
 	for g in gone:
 		var typ: int = g[0]
@@ -66,10 +69,14 @@ func _process(_dt: float) -> void:
 			var gh := TNData.height_at(m, hp.x, hp.z)
 			var on := absf(hp.y - gh) < NEAR_GROUND or (THROWN.has(typ) and hp.y - gh < 0.5)
 			impact.emit(typ, Vector3(hp.x, gh, hp.z) if on else hp, on, d)
+			if debug:
+				print("fx impact: weapon ", typ, " at its effect ", hp, " ground ", gh, " on the ground " if on else " off the ground ")
 			continue
 		var gp = _ground_on(m, p, d, 0.0 if THROWN.has(typ) else reach)
 		if gp != null:
 			impact.emit(typ, gp, true, d)
+		if debug:
+			print("fx impact: weapon ", typ, " no effect on its way, ground ", gp, " from ", p, " dir ", d, " step ", g[3])
 	gone.clear()
 	for idx in shots.keys():
 		var s: Array = shots[idx]
@@ -94,6 +101,8 @@ func _process(_dt: float) -> void:
 		if not shots.has(idx):
 			shots[idx] = [e[1], p, p, 0]
 			fired.emit(idx, e[1], p)
+			if debug:
+				print("fx fired: weapon ", e[1], " entity ", idx, " at ", p)
 		elif p != shots[idx][1]:
 			var s: Array = shots[idx]
 			s[2] = s[1]

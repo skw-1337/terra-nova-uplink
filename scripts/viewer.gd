@@ -1378,6 +1378,10 @@ func _sky_rows() -> void:
 	sm.set_shader_parameter("row_up", b.y)
 	sm.set_shader_parameter("row_fwd", -b.z)
 	sm.set_shader_parameter("row_edge", 1.0 / px if px > 0.0 else 0.0)
+	if fx_stars and px > 0.0:                         # (an extra: sharp stars, sky.gdshader star_scale)
+		# pixels of the picture (the old school's own, when it is on) per pixel of the game's star map (TAU / 4 / 512)
+		var wide := _old_grid(old_sharp).x if oldschool_rect != null and oldschool_rect.visible else get_viewport().get_visible_rect().size.x
+		sm.set_shader_parameter("star_scale", (TAU / 2048.0) / (2.0 / (px * maxf(wide, 1.0))))
 
 
 func _clouds_update() -> void:
@@ -6712,6 +6716,7 @@ func _process(delta: float) -> void:
 # TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
 # TN_FX_LOOK_DOWN=1 the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
 # TN_FX_CLIFFS=1    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
+# TN_FX_STARS=1     the space skies' stars as sharp points at the window's resolution (sky.gdshader star_scale)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
 var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
 
@@ -6749,6 +6754,7 @@ func _fx_shots() -> Node:
 # pale texels on a deeper sky (thick = light); a storm sky is grey all over, its darker texels the thicker cloud,
 # and shades half as much. No clouds (the space skies): no shadows.
 var fx_cloud_shadows := OS.get_environment("TN_FX_CLOUD_SHADOWS") == "1"
+var fx_stars := OS.get_environment("TN_FX_STARS") == "1"
 var cloud_cover: ImageTexture
 
 

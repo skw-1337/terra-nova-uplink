@@ -613,6 +613,7 @@ func _load(index: int) -> void:
 	snow_lit = null
 	snow_idx = null
 	snow_raw.clear()
+	snow_px.clear()
 	snow_mats.clear()
 	if pl["ok"]:                          # real ground textures (else: average colors)
 		det_mat = _ground_mat(pl, m["detail"], Vector2(0, 0), 1.0)
@@ -6089,6 +6090,7 @@ var snow_tex: Texture2DArray = null             # its tiles as the game holds th
 var snow_lit: Texture2DArray = null             # the same through the shade rows (TNData.lit_tiles)
 var snow_idx: Texture2DArray = null             # and as palette indices (TNData.index_tiles)
 var snow_raw := {}                              # tile -> the palette indices last laid on snow_tex
+var snow_px := {}                               # tile -> [its colours, its colours through each shade row] as laid
 
 
 func _live_tiles(q: PackedByteArray) -> void:
@@ -6139,22 +6141,49 @@ func _live_tiles(q: PackedByteArray) -> void:
 				snow_idx.create_from_images(iimgs)
 				for sm in snow_mats:
 					(sm as ShaderMaterial).set_shader_parameter("tiles_idx", snow_idx)
-		var rgb := PackedByteArray()
-		rgb.resize(4096 * 3)
-		for i in 4096:
-			var c: Color = fp[p[i]]
-			rgb[3 * i] = c.r8
-			rgb[3 * i + 1] = c.g8
-			rgb[3 * i + 2] = c.b8
+		# The snow comes a few dozen texels at a time on every tile, each tile every few seconds: the first time a tile
+		# changes its colours are worked out whole (its 4096 texels, as they are and through each of the 16 shade rows)
+		# and kept; after that only the texels that changed are put in them (the same bytes as worked out whole, for a
+		# hundredth of the work: it was 5 ms a tile, 10 times a second)
+		var luts: Array = snow_pl["shade_luts"] if snow_lit != null else []
+		var rgb: PackedByteArray
+		var lit: Array[PackedByteArray] = []
+		if snow_px.has(t) and (snow_px[t][1] as Array).size() == luts.size():
+			rgb = snow_px[t][0]
+			lit = snow_px[t][1]
+			for i in 4096:
+				var pi := p[i]
+				if pi == prev[i]:
+					continue
+				var c: Color = fp[pi]
+				rgb[3 * i] = c.r8
+				rgb[3 * i + 1] = c.g8
+				rgb[3 * i + 2] = c.b8
+				for row in lit.size():
+					var lut: PackedByteArray = luts[row]
+					var lb := lit[row]
+					lb[3 * i] = lut[3 * pi]
+					lb[3 * i + 1] = lut[3 * pi + 1]
+					lb[3 * i + 2] = lut[3 * pi + 2]
+		else:
+			rgb.resize(4096 * 3)
+			for i in 4096:
+				var c: Color = fp[p[i]]
+				rgb[3 * i] = c.r8
+				rgb[3 * i + 1] = c.g8
+				rgb[3 * i + 2] = c.b8
+			for row in luts.size():
+				lit.append(TNData.lit_tile(p, luts[row]).get_data().slice(0, 4096 * 3))   # (its full-size level)
 		var img := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, rgb)
 		img.generate_mipmaps()
 		snow_tex.update_layer(img, t)
 		if snow_idx != null:
 			snow_idx.update_layer(TNData.index_tile(p), t)
-		if snow_lit != null:
-			var luts: Array = snow_pl["shade_luts"]
-			for row in luts.size():
-				snow_lit.update_layer(TNData.lit_tile(p, luts[row]), row * n + t)
+		for row in lit.size():
+			var limg := Image.create_from_data(64, 64, false, Image.FORMAT_RGB8, lit[row])
+			limg.generate_mipmaps()
+			snow_lit.update_layer(limg, row * n + t)
+		snow_px[t] = [rgb, lit]
 		snow_raw[t] = p
 
 

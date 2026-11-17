@@ -8260,9 +8260,11 @@ func _extras() -> void:
 		lt.v = self
 		lt.shots = _fx_shots()
 		add_child(lt)
-	if live and not guest_win and OS.get_environment("TN_FX_LOOK_DOWN") != "0":
+	if live and OS.get_environment("TN_FX_LOOK_DOWN") != "0":     # (the co-op guest too: his own suit, his own look)
 		look_dn = load("res://scripts/look_down.gd").new()
 		look_dn.v = self
+		if guest_win:
+			look_dn.setup_guest()
 		add_child(look_dn)
 
 

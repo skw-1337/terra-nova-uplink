@@ -119,7 +119,7 @@ HEADYAW, HEADPITCH, SLOPE, SLOPE_OFF = 0x441355, 0x441357, 0x35AEB4, 0x35F544   
 # so that nothing of the host's shows around what the guest's window draws there.
 CLEAR = [((17, 277, 99, 380), 60, 255),      # COMM panel, ENTIRE SQUAD box included (the guest's squad)
          ((217, 266, 298, 368), 60, 255),    # WEAPON panel, its title included (his weapon)
-         ((118, 264, 204, 372), 0, 255),     # map (his own, from above)
+         ((118, 264, 202, 372), 0, 255),     # map (his own; the game's panel: 84 wide)
          ((33, 6, 289, 22), 0, 255),         # compass strip (his heading)
          ((146, 226, 172, 252), 0, 255)]     # rear view
 # the two top bars: only their leds are put out (colour 0, as the game's own unlit ones), their frame stays; the
@@ -977,6 +977,11 @@ class Guest:
         scr, alpha, (fx0, fy0, fw, fh), pal = src[:4]
         still = src[4] if len(src) > 4 else None
         if fw < 100 or fh < 100:                               # the game's map or a menu: not the cockpit
+            return
+        # ... nor while the game writes a line for the host at the bottom of his cockpit (what a button does: a box
+        # drawn in its green, 161 pixels across): it stayed on the guest's cockpit until the next picture
+        line = np.cumsum(scr[360:400] == 0x84, axis=1)
+        if (line[:, 120:] - line[:, :-120]).max() >= 120:
             return
         self.tpl_t = time.time()
         scr, alpha = scr.copy(), alpha.copy()

@@ -1228,7 +1228,7 @@ class Guest:
                 if self.joined:
                     self.joined = False
                     print('guest: left', flush=True)
-                self.gnav = None                               # (his map marker goes with him)
+                self.gnav, self.fire = None, False             # (his map marker goes with him, and his fire)
                 continue
             if not self.joined:
                 self.joined = True
@@ -1262,6 +1262,8 @@ class Guest:
                     self.lock_req = True
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
+            elif pk[:1] == b'C' and len(pk) >= 3 and pk[1] == 1 and not pk[2]:
+                self.fire = False                              # (the left button let go with his mouse freed)
             elif pk[:1] == b'W' and len(pk) == 9:                # his map marker: put there, or (x = 0) taken away
                 x, y = struct.unpack('<2f', pk[1:])
                 self.gnav = (x, y) if active and 1.0 <= x <= 511.0 and 1.0 <= y <= 511.0 else None

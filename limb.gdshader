@@ -108,9 +108,23 @@ void vertex() {
 	if (spin >= 0.0) {                                   // a burst suit's piece: as before (its routine not checked)
 		vec2 off = right * (VERTEX.x * s * widen) + down * (VERTEX.y * s * squash);
 		v = av + vec3(off.x, off.y * pixel_aspect, 0.0);
+	} else if (bone_px > 0.0 && -(av.z + (VIEW_MATRIX * vec4(ax, 0.0)).z * (s * bone_px)) > 0.02 && -av.z > 0.02) {
+		// a standing suit's limb, as the game's limb drawer lays it (0x2F6C50, from 0x2F6EFF): its two joints are
+		// projected on the screen and the sprite is stretched between them, its row 0 on the first joint, its row
+		// 'bone length' on the second, the rows before and after carried on in proportion (sprite header +0x14,
+		// +0x18): a bone leaning towards the camera is drawn that much shorter, a foot pointing at it is a stub (drawn at
+		// its full length down the screen, feet, shins and forearms reached past their next joint and crossed each
+		// other). Across the bone the width is the same in every direction (0x2F6FC3: (dy k, -dx k / 1.2) in its
+		// picture, shown 1.2 x taller), set by the depth alone
+		vec3 bf = av + (VIEW_MATRIX * vec4(ax, 0.0)).xyz * (s * bone_px);
+		vec2 pbf = bf.xy / -bf.z;
+		vec2 dd = pbf - pa;
+		vec2 dn = dd * vec2(1.0, 1.0 / pixel_aspect);
+		vec2 rt = length(dn) > 1e-7 ? vec2(-dn.y, dn.x) / length(dn) : vec2(1.0, 0.0);
+		vec2 on = (pa + dd * (VERTEX.y * squash / bone_px)) * -av.z;
+		v = vec3(on + rt * (VERTEX.x * wx * widen), av.z);
 	} else {
-		// across the bone the game's width is the same on the screen in every direction (0x2F6FC3: (dy k, -dx k / 1.2)
-		// in its picture, shown 1.2 x taller): only the length along the bone takes the picture's stretch
+		// (no bone length given, or a joint behind the eye: the sprite at its full length along the bone's direction)
 		vec2 along_v = down * (VERTEX.y * s * squash);
 		vec2 across = right * (VERTEX.x * wx * widen);
 		v = av + vec3(along_v.x, along_v.y * pixel_aspect, 0.0) + vec3(across, 0.0);

@@ -41,6 +41,10 @@ It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: 
 
 A gamepad works too: switch on **Gamepad for the guest** on the launcher's Co-op page.
 
+Keys changed in the launcher's **Game keys** follow for the guest too: forward, back, the side steps, the turns, the jets and the weapon keys.
+
+**Sound**: the game runs on the host's PC only, so only the host hears it. The guest's window is silent in a mission (he gets the menu sounds of the outfitting screen). Use a voice chat.
+
 ## If something goes wrong
 
 - **Your friend isn't in the list**: you must be Steam friends, and he must have clicked HOST A GAME.

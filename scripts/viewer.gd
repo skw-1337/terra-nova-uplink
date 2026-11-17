@@ -1166,6 +1166,7 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 		sm.set_shader_parameter("has_ir", true)
 	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
+	sm.set_shader_parameter("cliffs", OS.get_environment("TN_FX_CLIFFS") == "1")   # (an extra: steep faces textured from the side)
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
@@ -6710,6 +6711,7 @@ func _process(delta: float) -> void:
 # TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
 # TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
 # TN_FX_LOOK_DOWN=1 the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
+# TN_FX_CLIFFS=1    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
 var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
 

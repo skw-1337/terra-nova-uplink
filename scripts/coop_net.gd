@@ -901,7 +901,8 @@ func _draw_marker() -> void:
 	if cam.is_position_behind(top):
 		return
 	var font := ThemeDB.fallback_font
-	var c := cam.unproject_position(top)
+	# (not cam.unproject_position: wrong with the cockpit's frustum camera, see the viewer's _order_pixel)
+	var c: Vector2 = vp._order_pixel(top) if vp != null and vp.has_method("_order_pixel") and vp.get("camera") == cam else cam.unproject_position(top)
 	var fs := int(clampf(marker.size.y * 0.028, 12.0, 26.0))
 	var t := "%s  %dm" % [steam.getFriendPersonaName(peer), int(round(cam.global_position.distance_to(top) * 6.0))]   # the game's metres (its lock reads 51 m where 8.5 units)
 	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x

@@ -686,6 +686,17 @@ func _draw_indicator() -> void:
 	panel.draw_texture_rect(t, _grect(at.x, at.y, at.x + t.get_width(), at.y + t.get_height()), false)
 
 
+# A point of the world on the screen. Not Camera3D.unproject_position: with the cockpit's camera (the viewer's
+# _hud_camera, a frustum given by its width) Godot takes the frustum's size for its height, so a unit seen 512 pixels
+# left of the middle came back 288 pixels left of it: the host's name and the lock's corners slid towards the middle
+# of the window, away from the suit they belong to. The viewer's own projection (_order_pixel) is used instead.
+func _pixel(cam: Camera3D, p: Vector3) -> Vector2:
+	var vp := get_parent()
+	if vp != null and vp.has_method("_order_pixel") and vp.get("camera") == cam:
+		return vp._order_pixel(p)
+	return cam.unproject_position(p)
+
+
 # the host's name over his suit (and how far he is)
 func _draw_mate() -> void:
 	var cam := get_viewport().get_camera_3d()
@@ -695,7 +706,7 @@ func _draw_mate() -> void:
 	var top := (n.global_position if n else host_pos) + Vector3(0, 0.72, 0)   # just over his head (a suit stands ~0.6)
 	if cam.is_position_behind(top):
 		return
-	var c := cam.unproject_position(top)
+	var c := _pixel(cam, top)
 	var d := cam.global_position.distance_to(top)
 	var fs := int(clampf(root.size.y * 0.028, 12.0, 26.0))
 	var t := "%s  %dm" % [mate_name, int(round(d * 6.0))]   # the game's metres (its lock reads 51 m where 8.5 units)
@@ -725,7 +736,7 @@ func _draw_lock() -> void:
 	var at := n.global_position + Vector3(0, 0.35, 0) if n else lock_pos   # its middle, as the bridge's lock_pos
 	if cam.is_position_behind(at):
 		return
-	var c := cam.unproject_position(at)
+	var c := _pixel(cam, at)
 	var r := maxf(10.0, root.size.y * 0.03)
 	var col := Color(0.3, 1.0, 0.35)
 	for sx in [-1, 1]:

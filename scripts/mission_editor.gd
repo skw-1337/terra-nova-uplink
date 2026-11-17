@@ -870,11 +870,11 @@ func _build_catalog() -> void:
 	for id in carried:
 		var who: Array = carried[id].keys()
 		who.sort()
-		var t := ", ".join(who.slice(0, 3)) + ("..." if who.size() > 3 else "")
+		var t := ", ".join(who.slice(0, 2)) + ("..." if who.size() > 2 else "")
 		if int(id) < CoopHud.WEAPONS.size() and CoopHud.WEAPONS[int(id)] != "":
 			weapon_names[int(id)] = "%d  ·  %s" % [id, CoopHud.WEAPONS[int(id)]]
 		else:
-			weapon_names[int(id)] = "%d  ·  as carried by %s" % [id, t]
+			weapon_names[int(id)] = "%d  ·  %s" % [id, t]
 
 
 static func _rank(cls: int) -> int:
@@ -1593,7 +1593,7 @@ func _open_props(uid: int) -> void:
 # record offset -> the weapons a unit of that class carries there in the game's own missions (only those are offered)
 func _slots_of(cls: int) -> Dictionary:
 	var out := {}
-	for o in Props.WEAPON_AT.get(cls, []):
+	for o in Props.WEAPON_EDIT.get(cls, []):
 		var ids: Array = slot_weapons.get(cls * 256 + int(o), {}).keys()
 		ids.sort()
 		out[int(o)] = ids

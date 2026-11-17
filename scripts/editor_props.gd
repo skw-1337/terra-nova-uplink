@@ -3,12 +3,17 @@
 #   +7  group (its side comes from the group: resource 174)       +26 label: what the mission's script knows the
 #   +8 / +12 / +16 x, y, height above the ground (16.16)              unit by (objectives count labels)
 #   +20 heading, +22 pitch (1/65536 turn)
-#   soldier (0x27D818): +27 pilot's health, +28 armour (its 4 parts), +29 energy, +32 jump jet fuel, +33 jump jet
-#     rating, all in % of the suit's own values (over 100: a tougher one); +34..+37 the 4 weapon slots
-#   vehicle, probe / craft, building (0x27DD64, 0x27C20C, 0x27D018): +27 armour %; weapons at +30 (and +31)
-# A weapon slot only offers what the game's own units of that class carry in that slot (its missions' records):
-# the game's player weapons (1 to 17) have names, the others are told by who carries them.
-# What is not decoded for sure is shown as it is in the file, and not edited here.
+#   soldier (0x27D818): +27 pilot's health, +28 armour (its 4 parts), +32 jump jet fuel, +33 jump jet rating, in %
+#     of the suit's own values (over 100: a tougher one); +34..+37 the 4 weapon slots
+#   vehicle (0x27DD64): +27 armour %
+# Only what was checked in the running game is edited here (a mission made by the editor, read back in the game's
+# memory: entity +0x23 = the label, AI record +6 = the group, the suit's health +0x34 / +0x32, armour +0x15 + 7k,
+# jets +0xA6 / +0xAA, weapon slots +0x45 + 15k, the vehicle's armour +6). The rest is shown as the file has it:
+# a soldier's +29 / +30 (energy: it recharges at once, not told apart in game), +31, +38, +39 (ASF); a vehicle's
+# +28 / +29 and its weapons (+30, +31); a probe's, craft's or building's +27..+29 (the same routines read them:
+# armour, energy) and weapons (+30, +31).
+# A weapon slot only offers what the game's own soldiers carry in that slot (its missions' records): the game's
+# player weapons (1 to 17) have names, the others are told by who carries them.
 extends PanelContainer
 
 signal changed(rec: PackedByteArray, tag: String)     # the record with one field changed (tag: which one)
@@ -17,9 +22,9 @@ signal remove_pressed
 
 const Menu = preload("res://scripts/editor_menu.gd")
 const REC := 50
-const SOLDIER_PCT := [[27, "Pilot's health"], [28, "Armour"], [29, "Energy"], [32, "Jump jet fuel"], [33, "Jump jet rating"]]
-const OTHER_PCT := [[27, "Armour"]]
-const WEAPON_AT := {1: [34, 35, 36, 37], 2: [30, 31], 3: [30], 4: [30, 31]}
+const PCT := {1: [[27, "Pilot's health"], [28, "Armour"], [32, "Jump jet fuel"], [33, "Jump jet rating"]], 2: [[27, "Armour"]]}
+const WEAPON_AT := {1: [34, 35, 36, 37], 2: [30, 31], 3: [30], 4: [30, 31]}   # where each class keeps its weapons
+const WEAPON_EDIT := {1: [34, 35, 36, 37]}                                      # the slots edited here
 
 var rec := PackedByteArray()
 var busy := false
@@ -123,14 +128,14 @@ func show_unit(r: PackedByteArray, info: Dictionary) -> void:
 	_spin("h", "Heading °", 0, 359.99, 0.01, func(val): _set_u16(20, val, "h"))
 	if rec[0] != 1 and rec[0] != 2:
 		_spin("p", "Pitch °", -180, 180, 0.01, func(val): _set_u16(22, val, "p"), "Nose up or down (models only)")
-	var pcts: Array = SOLDIER_PCT if rec[0] == 1 else OTHER_PCT if rec[0] in [2, 3, 4] else []
+	var pcts: Array = PCT.get(rec[0], [])
 	if not pcts.is_empty():
 		_section("STATE  (% of this type's own values)")
 		for p in pcts:
 			_slider("b%d" % p[0], str(p[1]), int(p[0]))
-	var slots: Array = WEAPON_AT.get(rec[0], [])
+	var slots: Array = WEAPON_EDIT.get(rec[0], [])
 	if not slots.is_empty():
-		_section("WEAPONS")
+		_section("WEAPONS  (by number; the others: who carries them)")
 		for k in slots.size():
 			_weapon("w%d" % slots[k], "Slot %d" % (k + 1), int(slots[k]))
 	refresh(rec, str(info.get("note", "")))
@@ -180,15 +185,15 @@ func _raw_text() -> String:
 	var known := {7: 1, 26: 1}
 	for o in range(8, 24):
 		known[o] = 1
-	for p in (SOLDIER_PCT if rec[0] == 1 else OTHER_PCT if rec[0] in [2, 3, 4] else []):
+	for p in PCT.get(rec[0], []):
 		known[int(p[0])] = 1
-	for o in WEAPON_AT.get(rec[0], []):
+	for o in WEAPON_EDIT.get(rec[0], []):
 		known[int(o)] = 1
 	var parts := []
 	for o in range(6, REC):
 		if not known.has(o) and rec[o] != 0:
 			parts.append("+%d: %02X" % [o, rec[o]])
-	return "Not decoded, kept as in the file:  " + ("  ".join(parts) if not parts.is_empty() else "nothing (all 0)")
+	return "Not edited here, kept as in the file:  " + ("  ".join(parts) if not parts.is_empty() else "nothing (all 0)")
 
 
 func _weapon_text(id: int) -> String:

@@ -11,6 +11,7 @@ import coop_lobby, coop_view
 from coop_name import NameTag
 
 CAVE = 0x46B040
+CAVE_WAIT = 60                    # seconds the bridge waits for it before saying it is missing
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
 G_HIT = 0x46C200                  # 1v1 hit mailbox (TN+ Coop coop3): 1, +2 entity hit, +6 the guest's projectile that hit it
 # versus: the guest's shots never collide with the host, so the bridge watches them (projectile entities: class 5, record
@@ -263,8 +264,11 @@ class Guest:
             self.anim = HostAnim()
         except Exception:
             pass
+        # TN+ Coop writes its code into the game at the main menu, a few seconds after the bridge starts: said when it
+        # is seen (step), "NOT in place" only once the game has been up a while without it
         self.ready = g.read(CAVE, 4) != bytes(4)
-        print('coop :', 'code in place' if self.ready else 'NOT in place (start the game with TN+ Coop, English game)', flush=True)
+        self.ready_t, self.ready_said = time.time(), self.ready
+        print('coop :', 'code in place' if self.ready else 'waiting for the co-op code (TN+ Coop puts it in at the main menu)', flush=True)
 
     def u16(self, a):
         return struct.unpack('<H', self.g.read(a, 2))[0]
@@ -1078,6 +1082,11 @@ class Guest:
         g, M = self.g, self.master
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
+            if self.ready:
+                print('coop : code in place', flush=True)
+            elif not self.ready_said and time.time() - self.ready_t > CAVE_WAIT:
+                self.ready_said = True
+                print('coop : NOT in place after %d s (start the game with TN+ Coop, English game)' % CAVE_WAIT, flush=True)
             if not self.ready:
                 return
         me = self.u16(self.pid_addr + 2)

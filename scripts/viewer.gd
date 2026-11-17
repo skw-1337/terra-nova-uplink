@@ -81,7 +81,8 @@ const PLAYER_LAYER := 1 << 18     # the player's own body: seen only in the side
 const FX_LAYER := 1 << 1          # shots and effects: seen by every view, left alone by the ground's burn marks (decals)
 const DEEP_LAYER := 1 << 17       # models on the map's darkest light level: lit by sun_half, not by the sun (_apply_deep)
 const NO_HAZE_LAYER := 1 << 16    # a camera without it sees no haze (tn_haze.gdshaderinc: the co-op maps high above)
-var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h)
+var live_ents := {}               # coop guest's map: the last live entities (index -> class, type, active, x, y, z, h),
+                                  # but the shots and effects (classes 5 and 6: _live_units)
 var live_player := -1             # the entity whose body is hidden (the view's own suit)
 var live_player_node: Node3D        # its node (an extra, or one of the mission's units)
 var sub_views := {}               # panel -> {"vp", "cam", "rect", "seen", "node"}
@@ -4370,14 +4371,23 @@ func _live_units(pk: PackedByteArray) -> void:
 			_sub_hide(pn, true, PLAYER_LAYER)
 		live_player = body
 		live_player_node = pn
+	# the entities, 32 bytes each (index, class, type, active, x, y, z, heading), read in one go as whole numbers and
+	# as decimals. The shots and effects (classes 5 and 6: in a fight, thousands of dust particles) are not put in the
+	# table, where nothing looks for them: their places in the packet are kept, in its order (fx_at), for _live_fx
 	var ents := {}
 	live_ents = ents
-	for k in n:
-		var o := 32 + 32 * k
-		if o + 32 > pk.size():
-			break
-		ents[pk.decode_s32(o)] = [pk.decode_s32(o + 4), pk.decode_s32(o + 8), pk.decode_s32(o + 12),
-			pk.decode_float(o + 16), pk.decode_float(o + 20), pk.decode_float(o + 24), pk.decode_float(o + 28)]
+	var ne := clampi(mini(n, (pk.size() - 32) / 32), 0, 1 << 20)
+	var eblock := pk.slice(32, 32 + 32 * ne)
+	var ei := eblock.to_int32_array()
+	var ef := eblock.to_float32_array()
+	var fx_at := PackedInt32Array()
+	for k in ne:
+		var o := 8 * k
+		var cls := ei[o + 1]
+		if cls == 5 or cls == 6:
+			fx_at.append(o)
+		else:
+			ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 	var joints := {}                                   # game index -> 16 joints (after the entities)
 	var feet := {}                                     # game index -> height of its lowest foot
 	var jo := 32 + 32 * n
@@ -4439,14 +4449,42 @@ func _live_units(pk: PackedByteArray) -> void:
 	if ents.has(player):                             # the player's own jetpack only: around the other soldiers the
 		var u = ents[player]                         # weapons' dust settles at their feet too (thousands of 6/29 in a
 		puff_units.append(Vector3(u[3], u[5], u[4]))  # fight), which made puffs fill the screen; the game shows none
-	_pulsar_trails(ents)
-	for idx in ents:
-		var e = ents[idx]
-		if (e[0] == 5 or e[0] == 6) and e[2] != 0:
-			_live_fx(idx, e)
-			if live_shot != "" and OS.has_environment("TN_FXSHOT") and live_shot_frame > live_seen + 20:
-				live_shot_frame = live_seen + 20           # tests: capture as soon as a shot flies
+	_pulsar_trails(ei, ef, fx_at)
+	var fx_any := false
+	var no_clouds := smoke_clouds.is_empty()
+	var no_29 := fx29.is_empty()
+	for en in ne:                                       # (in the packet's order, shots, effects and units together)
+		var o := 8 * en
+		var idx := ei[o]
+		var ecls := ei[o + 1]
+		if ecls == 5 or ecls == 6:
+			if ei[o + 3] == 0:
+				continue
+			if not fx_any:
+				fx_any = true
+				if live_shot != "" and OS.has_environment("TN_FXSHOT") and live_shot_frame > live_seen + 20:
+					live_shot_frame = live_seen + 20       # tests: capture as soon as a shot flies
+			if ecls == 6 and ei[o + 2] == 29:
+				# a shot's dust, by far the most of them: _live_fx has nothing to do for one that is no smoke cloud, no
+				# smoke of a tree or jetpack (fx29), not under the player (_live_puff), when the bridge sends the
+				# particles themselves (part_mode); the same tests as there, without building its entry
+				if not no_clouds and smoke_clouds.has(idx):
+					continue
+				var k29: int = 7 if no_29 else int(fx29.get(idx, 7))
+				if k29 == 8:
+					continue
+				if k29 != 9 and part_mode:
+					var under := false
+					var fxy := Vector2(ef[o + 4], ef[o + 5])
+					for u in puff_units:
+						if Vector2(u.x, u.z).distance_to(fxy) < 0.25:
+							under = true
+							break
+					if not under:
+						continue
+			_live_fx(idx, [ecls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]])
 			continue
+		var e = ents[idx]
 		var k: int = idx - live_off
 		var mine: bool = live_off >= 0 and k >= 0 and k < mis.size() and e[0] == mis[k]["cls"] and e[1] == mis[k]["sub"]
 		if mine or e[0] > 4:
@@ -4472,7 +4510,10 @@ func _live_units(pk: PackedByteArray) -> void:
 			_live_place(live_extra[idx], e, m)
 	if draw_distance and not live_drawn.is_empty() and not free_look:
 		# as in the game (its distances per type, see the bridge's DRAW): hidden, not freed (a suit keeps its steps)
-		for idx in ents:
+		var all_idx: Array = ents.keys()
+		for o in fx_at:
+			all_idx.append(ei[o])
+		for idx in all_idx:
 			if idx >> 3 >= live_drawn.size() or live_drawn[idx >> 3] & (1 << (idx & 7)) or idx == body:
 				continue
 			for hid in [_live_node(idx), live_fx.get(idx), live_piles.get(idx)]:
@@ -5757,20 +5798,19 @@ var pulsar_dust := {}                           # 6/28 particles trailing a puls
 var pulsar_mat: ShaderMaterial
 
 
-func _pulsar_trails(ents: Dictionary) -> void:
+func _pulsar_trails(ei: PackedInt32Array, ef: PackedFloat32Array, fx_at: PackedInt32Array) -> void:
 	pulsar_parts.clear()
 	pulsar_dust.clear()
-	for idx in ents:
-		var e = ents[idx]
-		if e[0] == 5 and e[1] == 5 and e[2] != 0:
-			pulsar_parts[idx] = [Vector3(e[3], e[5], e[4])]
+	for o in fx_at:                                     # (the packet's shots and effects: _live_units)
+		if ei[o + 1] == 5 and ei[o + 2] == 5 and ei[o + 3] != 0:
+			pulsar_parts[ei[o]] = [Vector3(ef[o + 4], ef[o + 6], ef[o + 5])]
 	if pulsar_parts.is_empty() or beam_mode:            # (its 6/28 are the game's own lines then: _live_beam)
 		return
-	for idx in ents:
-		var e = ents[idx]
-		if not (e[0] == 6 and e[1] == 28 and e[2] != 0):
+	for o in fx_at:
+		if not (ei[o + 1] == 6 and ei[o + 2] == 28 and ei[o + 3] != 0):
 			continue
-		var p := Vector3(e[3], e[5], e[4])
+		var idx := ei[o]
+		var p := Vector3(ef[o + 4], ef[o + 6], ef[o + 5])
 		var best := -1
 		var bd := 0.4
 		for b in pulsar_parts:

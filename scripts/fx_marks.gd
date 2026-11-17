@@ -108,6 +108,8 @@ func _on_impact(typ: int, pos: Vector3, on_ground: bool, _dir: Vector3) -> void:
 		return
 	var m: Dictionary = v.current["map"]
 	if pos.x < 1.0 or pos.z < 1.0 or pos.x > 511.0 or pos.z > 511.0 or _on_water(m, pos):
+		if shots.debug:
+			print("fx mark: none at ", pos, " (off the detailed map, or water)")
 		return                                          # (the detailed map only; nothing stays on water)
 	var now := Time.get_ticks_msec() / 1000.0
 	var half: float = SIZE[kind][0]
@@ -130,6 +132,8 @@ func _on_impact(typ: int, pos: Vector3, on_ground: bool, _dir: Vector3) -> void:
 		half *= 1.6                                     # (where the beam ends: a little wider than its line)
 	var slot := _put(m, pos, Vector3.ZERO, half, half, SIZE[kind][1], 2 if kind == 1 else kind, float(SIZE[kind][2]), now)
 	recent.append([kind, pos, slot, now])
+	if shots.debug:
+		print("fx mark: kind ", kind, " slot ", slot, " at ", pos)
 	if recent.size() > 48:
 		recent.pop_front()
 

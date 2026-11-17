@@ -92,7 +92,7 @@ void fragment() {
 		float edge = 0.6 + 0.4 * streak;
 		float n = mk_noise(q * 6.0 + seed * 3.0);
 		a = (1.0 - smoothstep(0.45 * edge, edge, r)) * (0.85 + 0.15 * n);
-		tint = mix(vec3(0.2, 0.15, 0.11), vec3(0.045, 0.04, 0.04), 1.0 - smoothstep(0.1, 0.7, r / edge));
+		tint = mix(vec3(0.26, 0.2, 0.15), vec3(0.1, 0.085, 0.075), 1.0 - smoothstep(0.1, 0.7, r / edge));
 	}
 	a *= 1.0 - smoothstep(0.6, 1.0, abs(b.y) * 2.0);    // (what stands in the box, off the ground: less and less)
 	// in the haze the ground goes to the haze's colour: the mark goes with it

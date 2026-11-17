@@ -58,6 +58,7 @@ const MAP_LIGHT := "020202020202020202020202020202020303030303030303040404040404
 const MAP_LIGHT_8 := "04040404040404040404040404040404040404040404040404040404040404040505050505050505050505050505050505050505050505050505050505050505"
 enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE }   # the marks' kinds (coop_guest.py)
 
+const LOCK_SOUND := 2021                     # the game's sound when its player locks a target (0x262BBF)
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
 const WEAPONS := ["", "Flare Launcher", "Smoke Grenade", "Grenade Launcher", "Laser", "Multipulsar", "Particle Beam",
@@ -76,6 +77,7 @@ var entity := 0
 var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
+var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
 var host_pos := Vector3.ZERO           # the host's suit (Godot units): his name above it
@@ -330,6 +332,12 @@ func _process(delta: float) -> void:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
 				lock = pk.decode_u16(14)
+				if lock != 0 and lock != lock_heard:
+					if sound == null:
+						sound = preload("res://scripts/coop_sound.gd").new()
+						add_child(sound)
+					sound.play_own(LOCK_SOUND, 64)                    # (the game's lock sound, at its volume)
+				lock_heard = lock
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true

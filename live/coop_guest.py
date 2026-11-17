@@ -41,12 +41,16 @@ BOUND_GATE = 0x3C8                # suit record: the game's Bound only while thi
 REPEAT = (0.5, 1 / 10.9)
 FEET, STEPS, STRIDE, STILL, STANCE = (0x353, 0x397), 4, 290, 600, 16
 CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of these values = off the ground (0x27EDA0)
-# Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
-# of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
-LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 120.0   # range: 1.2 km (2.5 km picked targets out of sight)
-# side angle as above; up / down much wider: the guest rarely aims his pitch at a unit on another level (the arena's
-# terraces put the host 30 degrees below him at 8 units)
-LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
+# Lock (right button, gamepad RB), as the game's for its player (a click in its 3D view, 0x269F28, or its next-target
+# key, then 0x262D4C): of the units in his view (the game's list of those on its screen; here within his field of
+# view, 84.5 degrees across, and 120 units), not one of the squad, the one nearest the middle; the game then plays its
+# lock sound (2021, his window plays it) and keeps the target while it is on his screen or within his suit's sensor
+# range (suit +0xB6, 16.16 metres: / 6 for units, 0x262B00), else drops it. While it stays within 30 degrees of his view
+# his shots aim at its middle. Right button again: off. (It was the unit within 12 degrees of the middle only: a click
+# a little off a target locked nothing.)
+LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
+LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
+SENSOR = 0xB6
 LIVE_PORT, PLAY_PORT = 47831, 47834
 HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
@@ -431,6 +435,10 @@ class Guest:
         up = abs(math.atan2(d[2], math.hypot(d[0], d[1])) - math.asin(max(-1.0, min(1.0, view[2]))))
         return side, up
 
+    def sensor(self):
+        """his suit's sensor range (units), as the game keeps a lock (0x262B00)"""
+        return self.i32(self.suit(self.gid) + SENSOR) / 65536 / 6
+
     def pick_target(self, me, eye, view):
         best, pick = None, 0
         for i in range(1, self.nent):
@@ -442,7 +450,7 @@ class Guest:
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
-            score = side + up * 0.25 + math.dist(t[:2], eye[:2]) * 0.0005   # nearest the crosshair; near ones first (100 u = 3 deg)
+            score = math.hypot(side, up) + math.dist(t[:2], eye[:2]) * 0.0005   # nearest the crosshair; near ones first (100 u = 3 deg)
             if side < LOCK_PICK and up < LOCK_PICK_V and (best is None or score < best):
                 best, pick = score, i
         print('guest: lock', pick or 'nothing', flush=True)
@@ -1238,6 +1246,9 @@ class Guest:
                 side, up = self.off_aim(eye, view, t)
                 if side < LOCK_KEEP and up < LOCK_KEEP_V:
                     aim = t
+                elif (side > LOCK_PICK or up > LOCK_PICK_V) and math.dist(t[:2], eye[:2]) > self.sensor():
+                    print('guest: lock lost (%d: off his view, out of his sensor range)' % self.lock, flush=True)
+                    self.lock = 0                              # (the game's rule: off its screen and out of range)
         if aim is None:
             aim = tuple(e + v * 30 for e, v in zip(eye, view))
         g.write(G_TGT, struct.pack('<3i', *(int(v * 65536) for v in aim)))

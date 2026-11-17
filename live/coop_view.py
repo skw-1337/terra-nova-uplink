@@ -170,6 +170,7 @@ class Encoder:
         for i in [i for i in self.seen if i not in recs or struct.unpack_from('<i', ents[i])[0] not in DECOR]:
             del self.seen[i]
         out = []
+        decor_seq = self.decor_seq
         if self.reset:
             self.decor_seq += 1
             out.append(b'VDC' + zlib.compress(struct.pack('<IB', self.decor_seq, 1) + _list(list(decor.values())) +
@@ -182,7 +183,9 @@ class Encoder:
                 out.append(b'VDC' + zlib.compress(struct.pack('<IB', self.decor_seq, 0) + _list(up) + _gone(gone), LEVEL))
         self.decor = decor
         dyn = {i: r for i, r in recs.items() if i not in decor}
-        if self.reset or self.kf is None or t - self.kf[1] >= self.key_every:
+        # a new decor: a keyframe with it (its deltas may only be read with that decor: one sent unreliable can
+        # arrive before the decor, reliable, sent ahead of it, or one of the keyframe before after it)
+        if self.reset or self.kf is None or t - self.kf[1] >= self.key_every or self.decor_seq != decor_seq:
             self.kf_seq = (self.kf_seq + 1) & 0xffff
             self.kf = (self.kf_seq, t, dyn, jrecs)
             out.append(b'VKF' + zlib.compress(struct.pack('<HI', self.kf_seq, self.decor_seq) + cam +
@@ -211,7 +214,7 @@ class Decoder:
 
     def __init__(self):
         self.decor, self.decor_seq, self.decor_ok = {}, 0, False
-        self.kf = None                 # (seq, {index: 28 bytes}, {index: 196 bytes})
+        self.kf = None                 # (seq, {index: 28 bytes}, {index: 196 bytes}, decor seq it was made with)
         self.seen_any = False
         self.part_id, self.parts = -1, {}
 
@@ -250,12 +253,12 @@ class Decoder:
             cam, ents, joints = b[6:38], {}, {}
             o = self._records(b, 38, ents, d_ent)
             o = self._records(b, o, joints, d_joint)
-            self.kf = (seq, ents, joints)
+            self.kf = (seq, ents, joints, dseq)
             return build(cam, {**self.decor, **ents}, joints, b[o:]) if self.decor_ok else None
         if tag == b'VDL':
             seq = struct.unpack_from('<H', b)[0]
-            if self.kf is None or self.kf[0] != seq or not self.decor_ok:
-                return None
+            if self.kf is None or self.kf[0] != seq or not self.decor_ok or self.kf[3] != self.decor_seq:
+                return None            # (a delta of a keyframe made with another decor: the decor came between)
             cam, ents, joints = b[2:34], dict(self.kf[1]), dict(self.kf[2])
             o = self._records(b, 34, ents, d_ent)
             gone, o = self._gone(b, o)

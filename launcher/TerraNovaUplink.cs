@@ -61,6 +61,7 @@ static class Uplink
     static readonly Color CBlue = Color.FromArgb(61, 139, 240), CLedOff = Color.FromArgb(40, 64, 58);
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string ids);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -118,7 +119,14 @@ static class Uplink
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
         { Res.Load(args[2]).Save(args[3]); Environment.Exit(0); }
         try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
+        // The window is drawn at the screen's own scale (100, 125, 150 %...): every size below is for 100 % and
+        // multiplied by K, the text set on whole pixels at that scale. (Before, Windows stretched the 100 % picture.)
+        try { SetProcessDPIAware(); } catch { }
         Application.EnableVisualStyles();
+        using (Graphics g0 = Graphics.FromHwnd(IntPtr.Zero)) K = g0.DpiX / 96f;
+        float forced;
+        if (float.TryParse(Environment.GetEnvironmentVariable("TN_LAUNCHER_SCALE"), NumberStyles.Float, CultureInfo.InvariantCulture, out forced) && forced >= 1f && forced <= 3f)
+            K = forced;                                           // (checks: the window as on a screen at that scale)
         Build();
         form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
         form.FormClosing += delegate { loading = false; SaveOptions(); stopping = true; };
@@ -183,9 +191,11 @@ static class Uplink
     static readonly string[] ORDERS = { "Attack target", "Move there", "Take cover", "Retreat", "Follow me", "Hold position", "Assume formation" };
     static readonly Color CSoft = Color.FromArgb(157, 176, 169), CTape = Color.FromArgb(242, 194, 26), CTapeInk = Color.FromArgb(21, 20, 15);
     static readonly Color COff = Color.FromArgb(34, 51, 47), CKnob = Color.FromArgb(108, 133, 125);
-    static Font F9, F95b, F10b, F105b, F11, F115, F12, F12s, F125, F13, F14s, F16b, F19b, F22b;
+    static Font F10, F9, F95b, F10b, F105b, F11, F115, F12, F12s, F125, F13, F14s, F16b, F19b, F22b;
     static StringFormat SF;
     static readonly Graphics GM = Graphics.FromImage(new Bitmap(1, 1));
+    static float K = 1f;                                      // the screen's scale: 1 at 100 %, 1.25, 1.5...
+    static int S(float v) { return (int)Math.Round(v * K); }
 
     static int pageNow;
 
@@ -201,25 +211,62 @@ static class Uplink
         if (toast != null) toast.Place();
     }
 
+    // One family for the whole window, in three weights. Bahnschrift (Windows 10 and 11's own DIN): the face Uplink
+    // writes its HUD lines and its order wheel in, close to the game's cockpit letters. "font = segoe" in the ini:
+    // Segoe UI. A PC without the family (before Windows 10 1709): Segoe UI. Sizes are whole pixels at the screen's
+    // scale, drawn by GDI (the hinting Windows' own text has).
+    static readonly string[][] FAMILIES = {
+        new[] { "Bahnschrift", "Bahnschrift SemiBold", "Bahnschrift SemiBold" },
+        new[] { "Segoe UI", "Segoe UI Semibold", "Segoe UI Semibold" } };
+
     static Font Px(float px, int weight)
     {
-        if (weight == 600)
+        float size = (float)Math.Max(7, Math.Round(px * K));
+        foreach (string[] fam in new[] { FAMILIES[Cfg("font").ToLowerInvariant() == "segoe" ? 1 : 0], FAMILIES[1] })
         {
-            Font s = new Font("Segoe UI Semibold", px, FontStyle.Regular, GraphicsUnit.Pixel);
-            if (s.Name == "Segoe UI Semibold") return s;
+            string name = fam[weight >= 700 ? 2 : weight >= 600 ? 1 : 0];
+            Font f = new Font(name, size, FontStyle.Regular, GraphicsUnit.Pixel);
+            if (f.Name == name) return f;
+            f.Dispose();
         }
-        return new Font("Segoe UI", px, weight >= 600 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
+        return new Font("Segoe UI", size, weight >= 600 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
     }
+
+    // a dialog's font: a size in points as at 100 %, set in pixels at the screen's scale
+    static Font Pt(string[] families, float pt, FontStyle style)
+    {
+        float size = (float)Math.Round(pt * 96f / 72f * K);
+        foreach (string f in families)
+            using (Font t = new Font(f, size, style, GraphicsUnit.Pixel))
+                if (t.Name == f) return new Font(f, size, style, GraphicsUnit.Pixel);
+        return new Font("Segoe UI", size, style, GraphicsUnit.Pixel);
+    }
+
+    // a dialog built for 100 %: its sizes at the screen's scale
+    static void Dpi(Form f) { if (K != 1f) f.Scale(new SizeF(K, K)); }
+
+    // the pages, built for 100 %: every control's place and size at the screen's scale
+    static void ScaleTree(Control c)
+    {
+        foreach (Control k in c.Controls)
+        {
+            int x0 = S(k.Left), y0 = S(k.Top), x1 = S(k.Right), y1 = S(k.Bottom);
+            ScaleTree(k);
+            k.Bounds = new Rectangle(x0, y0, x1 - x0, y1 - y0);
+        }
+    }
+
+    static RectangleF Logical(Control c) { return new RectangleF(c.Left / K, c.Top / K, c.Width / K, c.Height / K); }
 
     static void Build()
     {
-        FHead = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 13f, FontStyle.Regular);
-        FBody = new Font("Segoe UI", 9.5f);
-        FSmall = new Font("Segoe UI", 8.5f);
-        FIcon = Pick(new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" }, 16f, FontStyle.Regular);
-        F9 = Px(9f, 400); F95b = Px(9.5f, 700); F10b = Px(10f, 700); F105b = Px(10.5f, 700); F11 = Px(11f, 400); F115 = Px(11.5f, 400);
-        F12 = Px(12f, 400); F12s = Px(12f, 600); F125 = Px(12.5f, 400); F13 = Px(13f, 400); F14s = Px(14f, 600); F16b = Px(16f, 700);
-        F19b = Px(19f, 700); F22b = Px(22f, 700);
+        FHead = Px(17f, 600);
+        FBody = Px(13f, 400);
+        FSmall = Px(11f, 400);
+        FIcon = Pt(new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" }, 16f, FontStyle.Regular);
+        F10 = Px(10f, 400); F9 = Px(9f, 400); F95b = Px(10f, 700); F10b = Px(10f, 700); F105b = Px(11f, 700); F11 = Px(11f, 400); F115 = Px(12f, 400);
+        F12 = Px(12f, 400); F12s = Px(12f, 600); F125 = Px(13f, 400); F13 = Px(13f, 400); F14s = Px(15f, 600); F16b = Px(17f, 700);
+        F19b = Px(20f, 700); F22b = Px(23f, 700);
         SF = new StringFormat(StringFormat.GenericTypographic);
         SF.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap;
 
@@ -238,8 +285,8 @@ static class Uplink
         side = new Surface { Location = new Point(0, 0), Size = new Size(SB, MH) };
         side.Look = delegate(Graphics g) {
             g.Clear(CPanel);
-            using (Pen p = new Pen(CLine)) g.DrawLine(p, SB - 1, 0, SB - 1, side.Height);
-            Spaced(g, "TERRA NOVA", F16b, COrange, 18, 17, 1f);
+            using (Brush p = new SolidBrush(CLine)) g.FillRectangle(p, SB - 1, 0, 1, side.Height / K + 1);
+            Spaced(g, "TERRA NOVA", F16b, COrange, 18, 16, 0.8f);
             Str(g, "Uplink " + VERSION, F11, CDim, 18, 42);
             using (Brush b = new SolidBrush(CBlue)) g.FillRectangle(b, 18, 64, 66, 2);
         };
@@ -273,13 +320,13 @@ static class Uplink
         LoadHeroes();
 
         // over the pages: the progress of a download, a thin line at the foot; under them, the log when it is asked for
-        bar = new Panel { Location = new Point(SB, MH - 3), Size = new Size(MW, 3), BackColor = CLine, Visible = false };
+        bar = new Panel { Location = new Point(SB, MH - 3), Size = new Size(MW, 3), BackColor = CLine, Visible = false };      // (its fill: see Progress)
         barFill = new Panel { Location = new Point(0, 0), Size = new Size(0, 3), BackColor = COrange };
         bar.Controls.Add(barFill);
         form.Controls.Add(bar);
         bar.BringToFront();
         logBox = new TextBox { Location = new Point(SB + 18, MH + 6), Size = new Size(MW - 36, 140), Multiline = true, ReadOnly = true, Visible = false,
-            ScrollBars = ScrollBars.Vertical, BackColor = CPanel, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
+            ScrollBars = ScrollBars.Vertical, BackColor = CPanel, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = Pt(new[] { "Consolas" }, 8.5f, FontStyle.Regular) };
         form.Controls.Add(logBox);
         try { SetWindowTheme(logBox.Handle, "DarkMode_Explorer", null); } catch { }
         toast = new Toast();
@@ -289,6 +336,7 @@ static class Uplink
         KeyLabels();
         LoadOptions();
         ShowGame();
+        if (K != 1f) { ScaleTree(form); foreach (Surface s in pages) s.Dirty(); side.Dirty(); }
         loading = false;
         int pg0;
         ShowPage(int.TryParse(Cfg("page"), out pg0) && pg0 >= 0 && pg0 < PAGES.Length ? pg0 : 0);
@@ -317,7 +365,7 @@ static class Uplink
         Btn saves = Ghost("Saves", MW - 18 - 60, MH - 16 - 30, 60);
         saves.Click += delegate { Saves(); };
         pg.Controls.Add(saves);
-        pg.Look = delegate(Graphics g) { Hero(g, heroes[0]); if (!playBtn.Stop) Glow(g, playBtn.Bounds, COrange); };
+        pg.Look = delegate(Graphics g) { Hero(g, heroes[0]); if (!playBtn.Stop) Glow(g, Rectangle.Round(Logical(playBtn)), COrange); };
     }
 
     // ---- Co-op: host or join, the guest's gamepad; the session's line while one runs. (The 1v1 mode of Terra Nova
@@ -374,7 +422,7 @@ static class Uplink
         editTick = new Switch { Text = "Mission editor", PillOnly = true, Location = new Point(304 - 12 - 34, 16), Size = new Size(34, 20) };
         editTick.CheckedChanged += delegate { SaveOptions(); };
         ed.Controls.Add(editTick);
-        pg.Look = delegate(Graphics g) { Hero(g, heroes[2]); if (!mapBtn.Stop) Glow(g, mapBtn.Bounds, CBlue); };
+        pg.Look = delegate(Graphics g) { Hero(g, heroes[2]); if (!mapBtn.Stop) Glow(g, Rectangle.Round(Logical(mapBtn)), CBlue); };
     }
 
     // ---- In game: what shows and how it plays in a mission, in four cards
@@ -388,7 +436,7 @@ static class Uplink
         oldBox = Row(c, "Old school look", X, y, IW, COrange, save);
         oldKeyBtn = Key(c, X + IW - 38 - 62, y, 62); oldKeyBtn.Click += delegate { AskKey(false); };
         y += RH;
-        c.Controls.Add(new Txt { Text = "Pixels", Ink = Color.FromArgb(185, 199, 193), Location = new Point(X + 12, y), Size = new Size(46, RH) });
+        c.Controls.Add(new Txt { Text = "Pixels", Ink = Color.FromArgb(185, 199, 193), Location = new Point(X + 8, y), Size = new Size(46, RH) });
         sharpSeg = new Seg { Items = new[] { "1×", "2×", "3×", "Max" }, Text = "Pixels", Location = new Point(X + IW - 137, y + 3), Size = new Size(137, 23) };
         sharpSeg.Changed += delegate { WriteSharp(); };
         c.Controls.Add(sharpSeg);
@@ -717,6 +765,7 @@ static class Uplink
             Controls.Add(no);
             Shown += delegate { box.SelectAll(); box.Focus(); };
         }
+        protected override void OnLoad(EventArgs e) { Dpi(this); base.OnLoad(e); }
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == Keys.Enter) { DialogResult = DialogResult.OK; return true; }
@@ -809,8 +858,11 @@ static class Uplink
                 g.FillPolygon(d, new[] { new PointF(x, t.Top), new PointF(x + 12.73f, t.Top), new PointF(x + 12.73f + 15, t.Bottom), new PointF(x + 15, t.Bottom) });
         using (Brush y = new SolidBrush(CTape)) g.FillRectangle(y, -46, t.Top + 1, 92, t.Height - 2);
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-        float w = SpacedPlus(g, "VERSUS · WIP", F95b, Color.Empty, 0, 0, 1.2f);
-        SpacedPlus(g, "VERSUS · WIP", F95b, CTapeInk, -w / 2, -6.5f, 1.2f);
+        using (Font tf = new Font(F95b.FontFamily, 10f, FontStyle.Bold, GraphicsUnit.Pixel))
+        {
+            float w = SpacedPlus(g, "VERSUS · WIP", tf, Color.Empty, 0, 0, 1.0f);
+            SpacedPlus(g, "VERSUS · WIP", tf, CTapeInk, -w / 2, -6f, 1.0f);
+        }
         g.Restore(st);
     }
 
@@ -823,7 +875,7 @@ static class Uplink
             using (Brush b = new SolidBrush(CPanel))
             using (Pen l = new Pen(CLine))
             { g.FillPath(b, p); g.DrawPath(l, p); }
-            float tw = Spaced(g, title, F10b, accent, 13, 11, 1.6f);
+            float tw = Spaced(g, title, F10b, accent, 13, 11, 1.2f);
             if (hint != null) Str(g, hint, F11, CDim, 13 + tw + 10, 10);
         };
         on.Controls.Add(c);
@@ -873,21 +925,26 @@ static class Uplink
         TFRight = TFLeft | TextFormatFlags.Right, TFPath = TF | TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis,
         TFWrap = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak;
 
-    static void Str(Graphics g, string s, Font f, Color c, float x, float y) { TextRenderer.DrawText(g, s, f, new Point((int)Math.Round(x), (int)Math.Round(y)), c, TF); }
-    static float StrW(Graphics g, string s, Font f) { return TextRenderer.MeasureText(g, s, f, new Size(4000, 100), TF).Width; }
-    static void StrIn(Graphics g, string s, Font f, Color c, RectangleF r, TextFormatFlags tf) { TextRenderer.DrawText(g, s, f, Rectangle.Round(r), c, tf); }
+    // (places and sizes are given as at 100 %; the fonts are already at the screen's scale)
+    static void Str(Graphics g, string s, Font f, Color c, float x, float y) { TextRenderer.DrawText(g, s, f, new Point(S(x), S(y)), c, TF); }
+    static float StrW(Graphics g, string s, Font f) { return TextRenderer.MeasureText(g, s, f, new Size(8000, 200), TF).Width / K; }
+    static void StrIn(Graphics g, string s, Font f, Color c, RectangleF r, TextFormatFlags tf)
+    {
+        TextRenderer.DrawText(g, s, f, Rectangle.FromLTRB(S(r.Left), S(r.Top), S(r.Right), S(r.Bottom)), c, tf);
+    }
 
-    // letters set apart (the titles); its width, and nothing drawn when the colour is Color.Empty
+    // letters set apart (the titles), each on a whole pixel, the same gap between all; its width, and nothing drawn
+    // when the colour is Color.Empty
     static float Spaced(Graphics g, string s, Font f, Color c, float x, float y, float gap)
     {
-        float x0 = x;
+        int px = S(x), x0 = px, py = S(y), gi = Math.Max(1, S(gap));
         foreach (char ch in s)
         {
             string t = ch.ToString();
-            if (c != Color.Empty && ch != ' ') TextRenderer.DrawText(g, t, f, new Point((int)Math.Round(x), (int)Math.Round(y)), c, TF);
-            x += TextRenderer.MeasureText(g, t, f, new Size(400, 100), TF).Width + gap;
+            if (c != Color.Empty && ch != ' ') TextRenderer.DrawText(g, t, f, new Point(px, py), c, TF);
+            px += TextRenderer.MeasureText(g, t, f, new Size(800, 200), TF).Width + gi;
         }
-        return x - x0 - gap;
+        return (px - x0 - gi) / K;
     }
 
     // the same through GDI+, for text that is turned (the tape)
@@ -953,6 +1010,7 @@ static class Uplink
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     PaintBack(this, g);
+                    g.ScaleTransform(K, K);
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                     if (Look != null) Look(g);
@@ -985,9 +1043,12 @@ static class Uplink
             if (acts) Cursor = Cursors.Hand;
         }
         protected bool Cue { get { return Focused && ShowFocusCues; } }
+        protected float W { get { return Width / K; } }        // (its size as at 100 %: what its drawing counts in)
+        protected float H { get { return Height / K; } }
         protected Graphics Begin(PaintEventArgs e)
         {
             PaintBack(this, e.Graphics);
+            e.Graphics.ScaleTransform(K, K);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             return e.Graphics;
@@ -1022,8 +1083,8 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            StrIn(g, Text, F, Ink, new RectangleF(0, 0, Width, Height), Mid ? TFMid : TFLeft);
-            if (Em != null) StrIn(g, Em, F11, CDim, new RectangleF(StrW(g, Text, F) + 8, 1, Width, Height), TFLeft);
+            StrIn(g, Text, F, Ink, new RectangleF(0, 0, W, H), Mid ? TFMid : TFLeft);
+            if (Em != null) StrIn(g, Em, F11, CDim, new RectangleF(StrW(g, Text, F) + 8, 1, W, H), TFLeft);
         }
     }
 
@@ -1036,8 +1097,8 @@ static class Uplink
         {
             Graphics g = Begin(e);
             Color c = over ? Mix(Ink, Color.White, 0.45f) : Ink;
-            StrIn(g, Text, F, c, new RectangleF(2, 0, Width, Height), TFLeft);
-            if (Cue) using (Pen p = new Pen(c)) g.DrawLine(p, 2, Height - 2, 2 + StrW(g, Text, F), Height - 2);
+            StrIn(g, Text, F, c, new RectangleF(2, 0, W, H), TFLeft);
+            if (Cue) using (Pen p = new Pen(c)) g.DrawLine(p, 2, H - 2, 2 + StrW(g, Text, F), H - 2);
         }
     }
 
@@ -1050,12 +1111,12 @@ static class Uplink
         {
             Graphics g = Begin(e);
             if (On || over || Cue)
-                using (GraphicsPath p = Round(new Rectangle(0, 0, Width - 1, Height - 1), 5))
+                using (GraphicsPath p = Round(new RectangleF(0, 0, W - 1, H - 1), 5))
                 using (Brush b = new SolidBrush(On ? Color.FromArgb(19, 38, 31) : Color.FromArgb(16, 31, 27))) g.FillPath(b, p);
             if (On)
-                using (GraphicsPath p = Round(new RectangleF(12, (Height - 14) / 2f, 4, 14), 2))
+                using (GraphicsPath p = Round(new RectangleF(12, (H - 14) / 2f, 4, 14), 2))
                 using (Brush b = new SolidBrush(COrange)) g.FillPath(b, p);
-            StrIn(g, Text, F, On ? Color.White : over || Cue ? CText : CDim, new RectangleF(25, 0, Width - 25, Height - 1), TFLeft);
+            StrIn(g, Text, F, On ? Color.White : over || Cue ? CText : CDim, new RectangleF(25, 0, W - 25, H - 1), TFLeft);
         }
     }
 
@@ -1068,14 +1129,14 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+            RectangleF r = new RectangleF(0.5f, 0.5f, W - 1, H - 1);
             using (GraphicsPath p = Round(r, Radius))
             {
                 using (Brush b = new SolidBrush(Fill)) g.FillPath(b, p);
                 if (over && Enabled) using (Brush b = new SolidBrush(Color.FromArgb(22, 255, 255, 255))) g.FillPath(b, p);
                 using (Pen l = new Pen(Cue ? Color.FromArgb(200, 255, 255, 255) : over && Enabled ? Mix(Line, Color.White, 0.3f) : Line)) g.DrawPath(l, p);
             }
-            StrIn(g, Text, F, Enabled ? Ink : Mix(Ink, CBack, 0.55f), new RectangleF(3, 0, Width - 6, Height - 1), TFMid);
+            StrIn(g, Text, F, Enabled ? Ink : Mix(Ink, CBack, 0.55f), new RectangleF(3, 0, W - 6, H - 1), TFMid);
         }
     }
 
@@ -1090,18 +1151,18 @@ static class Uplink
             Graphics g = Begin(e);
             Color f = Stop ? Color.FromArgb(236, 14, 26, 24) : Fill, ink = Stop ? Color.White : Ink;
             if (over) f = Mix(f, Color.White, Stop ? 0.06f : 0.12f);
-            using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 6))
+            using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, W - 1, H - 1), 6))
             {
                 using (Brush b = new SolidBrush(f)) g.FillPath(b, p);
                 if (Stop) using (Pen l = new Pen(Fill, 1.5f)) g.DrawPath(l, p);
                 else if (Cue) using (Pen l = new Pen(Color.White, 1.5f)) g.DrawPath(l, p);
             }
             string t = Stop ? "STOP" : Text;
-            float tw = Spaced(g, t, F, Color.Empty, 0, 0, 3f), icon = Stop || Arrow ? 34 : 0, x = (Width - tw - icon) / 2f - (Arrow && !Stop ? 4 : 0), cy = Height / 2f;
+            float tw = Spaced(g, t, F, Color.Empty, 0, 0, 1.6f), icon = Stop || Arrow ? 34 : 0, x = (W - tw - icon) / 2f - (Arrow && !Stop ? 4 : 0), cy = H / 2f;
             using (Brush b = new SolidBrush(Stop ? Fill : ink))
                 if (Stop) g.FillRectangle(b, x + 2, cy - 7, 14, 14);
                 else if (Arrow) g.FillPolygon(b, new[] { new PointF(x + 4, cy - 8), new PointF(x + 17, cy), new PointF(x + 4, cy + 8) });
-            Spaced(g, t, F, ink, x + icon, cy - F.GetHeight(g) / 2f - 0.5f, 3f);
+            Spaced(g, t, F, ink, x + icon, cy - F.Height / K / 2f, 1.6f);
         }
     }
 
@@ -1116,16 +1177,16 @@ static class Uplink
         {
             Graphics g = Begin(e);
             Color a = Enabled ? Accent : Mix(Accent, CBack, 0.6f);
-            using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 7))
+            using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, W - 1, H - 1), 7))
             {
                 using (Brush b = new SolidBrush(over && Enabled ? Color.FromArgb(232, 18, 34, 31) : Color.FromArgb(216, 8, 17, 15))) g.FillPath(b, p);
                 GraphicsState st = g.Save();
                 g.SetClip(p);
-                using (Brush b = new SolidBrush(a)) g.FillRectangle(b, 0, 0, 4, Height);
+                using (Brush b = new SolidBrush(a)) g.FillRectangle(b, 0, 0, 4, H);
                 g.Restore(st);
                 using (Pen l = new Pen(Cue ? Color.White : a)) g.DrawPath(l, p);
             }
-            Spaced(g, Stop ? "STOP" : Text, F16b, Enabled ? Color.White : CDim, 19, 17, 2f);
+            Spaced(g, Stop ? "STOP" : Text, F16b, Enabled ? Color.White : CDim, 19, 17, 1.2f);
             Str(g, Stop ? "Close this session." : Desc, F115, Enabled ? CSoft : Mix(CSoft, CBack, 0.5f), 19, 44);
         }
     }
@@ -1150,10 +1211,10 @@ static class Uplink
             Graphics g = Begin(e);
             if (!PillOnly)
             {
-                StrIn(g, Text, F, CText, new RectangleF(0, 0, Width - 36, Height), TFLeft);
-                if (Em != null) StrIn(g, Em, F11, CDim, new RectangleF(StrW(g, Text, F) + 8, 1, Width, Height), TFLeft);
+                StrIn(g, Text, F, CText, new RectangleF(0, 0, W - 36, H), TFLeft);
+                if (Em != null) StrIn(g, Em, F11, CDim, new RectangleF(StrW(g, Text, F) + 8, 1, W, H), TFLeft);
             }
-            RectangleF r = new RectangleF(Width - 32, (Height - 16) / 2f, 30, 16);
+            RectangleF r = new RectangleF(W - 32, (H - 16) / 2f, 30, 16);
             using (GraphicsPath p = Round(r, 8))
             using (Brush b = new SolidBrush(on ? Accent : over ? Mix(COff, CKnob, 0.25f) : COff)) g.FillPath(b, p);
             using (Brush b = new SolidBrush(on ? Color.White : CKnob)) g.FillEllipse(b, r.X + (on ? 16 : 2), r.Y + 2, 12, 12);
@@ -1187,7 +1248,7 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+            RectangleF r = new RectangleF(0.5f, 0.5f, W - 1, H - 1);
             float w = r.Width / Items.Length;
             using (GraphicsPath p = Round(r, 4))
             {
@@ -1201,7 +1262,7 @@ static class Uplink
                 using (Pen l = new Pen(Cue ? Color.FromArgb(200, 255, 255, 255) : CButtonLine)) g.DrawPath(l, p);
             }
             for (int i = 0; i < Items.Length; i++)
-                StrIn(g, Items[i], i == sel ? F10b : F, i == sel ? Color.FromArgb(30, 14, 0) : CDim, new RectangleF(r.X + w * i, 0, w, Height - 1), TFMid);
+                StrIn(g, Items[i], i == sel ? F10b : F, i == sel ? Color.FromArgb(30, 14, 0) : CDim, new RectangleF(r.X + w * i, 0, w, H - 1), TFMid);
         }
     }
 
@@ -1218,7 +1279,7 @@ static class Uplink
             get { return val; }
             set { value = Math.Max(Minimum, Math.Min(Maximum, value)); if (val == value) return; val = value; Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty); }
         }
-        void At(int x) { Value = Minimum + (int)Math.Round((x - 6) * (Maximum - Minimum) / (double)Math.Max(1, Width - 12)); }
+        void At(int x) { Value = Minimum + (int)Math.Round((x / K - 6) * (Maximum - Minimum) / (double)Math.Max(1, W - 12)); }
         protected override bool IsInputKey(Keys k) { return k == Keys.Left || k == Keys.Right || base.IsInputKey(k); }
         protected override void OnKeyDown(KeyEventArgs e)
         {
@@ -1232,8 +1293,8 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            float cy = Height / 2f, x = 6 + (Width - 12) * (val - Minimum) / (float)Math.Max(1, Maximum - Minimum);
-            using (GraphicsPath p = Round(new RectangleF(6, cy - 2, Width - 12, 4), 2))
+            float cy = H / 2f, x = 6 + (W - 12) * (val - Minimum) / (float)Math.Max(1, Maximum - Minimum);
+            using (GraphicsPath p = Round(new RectangleF(6, cy - 2, W - 12, 4), 2))
             using (Brush b = new SolidBrush(COff)) g.FillPath(b, p);
             if (x > 8)
                 using (GraphicsPath p = Round(new RectangleF(6, cy - 2, x - 6, 4), 2))
@@ -1272,7 +1333,7 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+            RectangleF r = new RectangleF(0.5f, 0.5f, W - 1, H - 1);
             string t = sel < Items.Count ? Items[sel] : "";
             using (GraphicsPath p = Round(r, Caption != null ? 6 : 4))
             {
@@ -1283,16 +1344,16 @@ static class Uplink
             if (Caption != null)
             {
                 Spaced(g, Caption, Px10, CDim, 12, 8, 1f);
-                StrIn(g, t, F13, CText, new RectangleF(12, 22, Width - 40, 22), TFLeft);
-                Arrow(g, Width - 19, 33);
+                StrIn(g, t, F13, CText, new RectangleF(12, 22, W - 40, 22), TFLeft);
+                Arrow(g, W - 19, 33);
             }
             else
             {
-                StrIn(g, t, F, CText, new RectangleF(9, 0, Width - 26, Height - 1), TFLeft);
-                Arrow(g, Width - 14, Height / 2f);
+                StrIn(g, t, F, CText, new RectangleF(9, 0, W - 26, H - 1), TFLeft);
+                Arrow(g, W - 14, H / 2f);
             }
         }
-        static readonly Font Px10 = Px(10f, 400);
+        static Font Px10 { get { return F10; } }
         static void Arrow(Graphics g, float x, float y)
         {
             using (Brush b = new SolidBrush(CDim)) g.FillPolygon(b, new[] { new PointF(x - 3.5f, y - 2), new PointF(x + 3.5f, y - 2), new PointF(x, y + 2.5f) });
@@ -1303,8 +1364,9 @@ static class Uplink
     // and Enter; Esc or a click elsewhere closes it
     static void Popup(Control anchor, int width, IList<string> items, int selected, int rowH, int rows, DrawItemEventHandler paint, Action<int> picked)
     {
+        rowH = S(rowH);
         if (paint == null)                                    // (as wide as its longest line)
-            foreach (string s in items) width = Math.Max(width, TextRenderer.MeasureText(s, FBody).Width + 16 + (items.Count > rows ? 18 : 0));
+            foreach (string s in items) width = Math.Max(width, TextRenderer.MeasureText(s, FBody).Width + S(16 + (items.Count > rows ? 18 : 0)));
         ListBox lb = new ListBox { DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = rowH, BorderStyle = BorderStyle.None, BackColor = CButton, ForeColor = CText,
             IntegralHeight = false, Font = FBody, Size = new Size(width - 2, Math.Min(items.Count, rows) * rowH), Cursor = Cursors.Hand };
         foreach (string s in items) lb.Items.Add(s);
@@ -1322,7 +1384,7 @@ static class Uplink
         lb.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { e.Handled = e.SuppressKeyPress = true; pick(lb.SelectedIndex); } };
         dd.Opened += delegate { try { SetWindowTheme(lb.Handle, "DarkMode_Explorer", null); } catch { } lb.Focus(); };
         dd.Closed += delegate { if (anchor.CanFocus) anchor.Focus(); };
-        dd.Show(anchor, new Point(0, anchor.Height + 2));
+        dd.Show(anchor, new Point(0, anchor.Height + S(2)));
     }
 
     static void DrawRow(object s, DrawItemEventArgs e)
@@ -1330,7 +1392,7 @@ static class Uplink
         bool sel = (e.State & DrawItemState.Selected) != 0;
         using (Brush b = new SolidBrush(sel ? Color.FromArgb(30, 62, 56) : CButton)) e.Graphics.FillRectangle(b, e.Bounds);
         if (e.Index < 0) return;
-        TextRenderer.DrawText(e.Graphics, (string)((ListBox)s).Items[e.Index], FBody, new Rectangle(e.Bounds.X + 7, e.Bounds.Y, e.Bounds.Width - 9, e.Bounds.Height),
+        TextRenderer.DrawText(e.Graphics, (string)((ListBox)s).Items[e.Index], FBody, new Rectangle(e.Bounds.X + S(7), e.Bounds.Y, e.Bounds.Width - S(9), e.Bounds.Height),
             sel ? Color.White : CText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
 
@@ -1363,15 +1425,15 @@ static class Uplink
         {
             Graphics g = Begin(e);
             if (On || over || Cue)
-                using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 4))
+                using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, W - 1, H - 1), 4))
                 using (Brush b = new SolidBrush(On ? Color.FromArgb(16, 42, 74) : Color.FromArgb(17, 34, 40))) g.FillPath(b, p);
-            RectangleF c = new RectangleF(8, (Height - 10) / 2f, 10, 10);
+            RectangleF c = new RectangleF(8, (H - 10) / 2f, 10, 10);
             if (On) using (Brush b = new SolidBrush(CBlue)) { g.FillEllipse(b, c); using (Pen r = new Pen(Color.FromArgb(16, 42, 74), 1.6f)) g.DrawEllipse(r, RectangleF.Inflate(c, -2.2f, -2.2f)); }
             else using (Pen l = new Pen(Color.FromArgb(74, 106, 98), 1.5f)) g.DrawEllipse(l, c);
-            StrIn(g, Text, F, On ? Color.White : Color.FromArgb(185, 199, 193), new RectangleF(27, 0, Width - 27, Height - 1), TFLeft);
-            if (Em != null) StrIn(g, Em, Px105, CDim, new RectangleF(0, 0, Width - 8, Height - 1), TFRight);
+            StrIn(g, Text, F, On ? Color.White : Color.FromArgb(185, 199, 193), new RectangleF(27, 0, W - 27, H - 1), TFLeft);
+            if (Em != null) StrIn(g, Em, Px105, CDim, new RectangleF(0, 0, W - 8, H - 1), TFRight);
         }
-        static readonly Font Px105 = Px(10.5f, 400);
+        static Font Px105 { get { return F11; } }
     }
 
     // a status light, alone or with its line
@@ -1382,7 +1444,7 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            using (Brush b = new SolidBrush(On)) g.FillEllipse(b, 0, 0, Width - 1, Height - 1);
+            using (Brush b = new SolidBrush(On)) g.FillEllipse(b, 0, 0, W - 1, H - 1);
         }
     }
 
@@ -1393,11 +1455,11 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            float cy = Height / 2f;
+            float cy = H / 2f;
             bool lit = On != CLedOff;
             if (lit) using (Brush h = new SolidBrush(Color.FromArgb(46, On))) g.FillEllipse(h, -2, cy - 7, 14, 14);
             using (Brush b = new SolidBrush(On)) g.FillEllipse(b, 1, cy - 4, 8, 8);
-            StrIn(g, Text, F, lit ? CText : CDim, new RectangleF(17, 0, Width - 17, Height - 1), TFLeft);
+            StrIn(g, Text, F, lit ? CText : CDim, new RectangleF(17, 0, W - 17, H - 1), TFLeft);
         }
     }
 
@@ -1409,9 +1471,9 @@ static class Uplink
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
-            float x = Badge(g, Dir, 0, Height / 2f);
+            float x = Badge(g, Dir, 0, H / 2f);
             StrIn(g, Dir ?? "No Terra Nova found: Change, then pick the folder that contains TNOVA", F, Dir == null ? CSoft : over || Cue ? Color.White : CText,
-                new RectangleF(x + 10, 0, Width - x - 10, Height - 1), TFPath);
+                new RectangleF(x + 10, 0, W - x - 10, H - 1), TFPath);
         }
         public static float Badge(Graphics g, string dir, float x, float cy)
         {
@@ -1459,18 +1521,20 @@ static class Uplink
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            int p = PaneAt(e.Location);
+            Point here = new Point((int)(e.X / K), (int)(e.Y / K));
+            int p = PaneAt(here);
             if (e.Button != MouseButtons.Left || p < 0) return;
-            Sel = drag = p; hot = -1; moved = false; from = at = e.Location; Invalidate();
+            Sel = drag = p; hot = -1; moved = false; from = at = here; Invalidate();
             if (Picked != null) Picked(this, EventArgs.Empty);
         }
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            int p = PaneAt(e.Location);
+            Point here = new Point((int)(e.X / K), (int)(e.Y / K));
+            int p = PaneAt(here);
             Cursor = p >= 0 || drag >= 0 ? Cursors.Hand : Cursors.Default;
             if (drag < 0) return;
-            at = e.Location;
+            at = here;
             if (Math.Abs(at.X - from.X) + Math.Abs(at.Y - from.Y) > 6) moved = true;
             hot = moved && p != drag ? p : -1;
             Invalidate();
@@ -1553,8 +1617,8 @@ static class Uplink
             msg = s; Text = s;
             edge = c == CRed ? CRed : c == CAmber ? CAmber : CBlue;
             stays = c == CRed || c == CAmber;
-            Size sz = TextRenderer.MeasureText(GM, s, F12, new Size(330, 600), TFWrap);
-            ClientSize = new Size(sz.Width + 28, sz.Height + 17);
+            Size sz = TextRenderer.MeasureText(GM, s, F12, new Size(S(330), 2000), TFWrap);
+            ClientSize = new Size(sz.Width + S(28), sz.Height + S(17));
             using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), 5)) Region = new Region(p);
             Place();
             Opacity = 0.96;
@@ -1567,15 +1631,15 @@ static class Uplink
         {
             if (form == null || !form.Visible || form.WindowState == FormWindowState.Minimized) return;
             // (under the top line of a page with a picture; over the cards' titles on the others: no switch is covered)
-            Location = form.PointToScreen(new Point(SB + MW - 18 - Width, pageNow <= 2 ? 56 : 7));
+            Location = form.PointToScreen(new Point(S(SB + MW - 18) - Width, S(pageNow <= 2 ? 56 : 7)));
         }
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.Clear(CPanel);
             using (Pen l = new Pen(CLine)) g.DrawRectangle(l, 0, 0, Width - 1, Height - 1);
-            using (Brush b = new SolidBrush(edge)) g.FillRectangle(b, 0, 0, 3, Height);
-            RectangleF r = new RectangleF(15, 8, Width - 26, Height - 8);
+            using (Brush b = new SolidBrush(edge)) g.FillRectangle(b, 0, 0, S(3), Height);
+            RectangleF r = new RectangleF(15, 8, Width / K - 26, Height / K - 8);
             StrIn(g, msg, F12, CText, r, TFWrap);
             int cut = msg.IndexOf(": ");                      // "Photo mode: O ..." : its first words in the edge's colour
             if (cut > 0 && cut < 28) StrIn(g, msg.Substring(0, cut), F12, edge == CBlue ? Color.FromArgb(120, 176, 250) : edge, r, TFWrap);
@@ -1609,7 +1673,7 @@ static class Uplink
         Form f = new Form { Text = "What's new", StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(600, 470), BackColor = CBack,
             FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false };
         try { f.Icon = form.Icon; } catch { }
-        Font head = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 18f, FontStyle.Regular);
+        Font head = Px(24f, 600);
         f.Controls.Add(new Label { Text = "WHAT'S NEW", Font = head, ForeColor = CAmber, AutoSize = true, Location = new Point(22, 16) });
         f.Controls.Add(new Panel { BackColor = CAmber, Location = new Point(24, 54), Size = new Size(90, 2) });
         Box box = new Box { Location = new Point(20, 70), Size = new Size(560, 334) };
@@ -1618,12 +1682,12 @@ static class Uplink
             Location = new Point(16, 12), Size = new Size(536, 310), ScrollBars = RichTextBoxScrollBars.Vertical, TabStop = false, Cursor = Cursors.Default };
         box.Controls.Add(rt);
         try { SetWindowTheme(rt.Handle, "DarkMode_Explorer", null); } catch { }   // (its scrollbar: dark, not Windows' white one)
-        Font fVer = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 13f, FontStyle.Regular), fItem = new Font("Segoe UI", 10f);
+        Font fVer = Px(17f, 600), fItem = Px(13f, 400);
         List<string> items = new List<string>();
         Action flush = delegate {
             foreach (string it in items)
             {
-                rt.SelectionFont = fItem; rt.SelectionColor = CText; rt.SelectionIndent = 8; rt.SelectionHangingIndent = 16;
+                rt.SelectionFont = fItem; rt.SelectionColor = CText; rt.SelectionIndent = S(8); rt.SelectionHangingIndent = S(16);
                 rt.AppendText("\u2022  " + it + "\n");
             }
             items.Clear();
@@ -1638,7 +1702,7 @@ static class Uplink
             {
                 flush();
                 rt.SelectionIndent = 0; rt.SelectionHangingIndent = 0;
-                if (any) { rt.SelectionFont = new Font("Segoe UI", 5f); rt.AppendText("\n"); }
+                if (any) { rt.SelectionFont = Px(7f, 400); rt.AppendText("\n"); }
                 rt.SelectionFont = fVer; rt.SelectionColor = CAmber; rt.AppendText("Version " + l + "\n");
                 any = true;
             }
@@ -1651,12 +1715,13 @@ static class Uplink
         f.Controls.Add(ok);
         f.Shown += delegate { rt.SelectionStart = 0; rt.ScrollToCaret(); ok.Focus(); };
         Set("news_seen", Cfg("uplink_sha")); SaveCfg();
+        Dpi(f);
         f.ShowDialog(form);
     }
 
     static void Fit()
     {
-        form.ClientSize = new Size(SB + MW, MH + (logBox.Visible ? 152 : 0));
+        form.ClientSize = new Size(S(SB + MW), S(MH + (logBox.Visible ? 152 : 0)));
         side.Height = form.ClientSize.Height;
         toast.Place();
     }
@@ -1743,7 +1808,7 @@ static class Uplink
 
     // what is going on: said in the toast (top right of the page), and kept in the log
     static void Status(string s, Color c) { Ui(delegate { if (toast != null) toast.Say(s, c); }); Log("== " + s); }
-    static void Progress(int pct) { Ui(delegate { barFill.Width = MW * Math.Max(0, Math.Min(100, pct)) / 100; bar.Visible = pct > 0; }); }
+    static void Progress(int pct) { Ui(delegate { barFill.Size = new Size(bar.Width * Math.Max(0, Math.Min(100, pct)) / 100, bar.Height); bar.Visible = pct > 0; }); }
 
     // the session line (co-op only), at the top of the Co-op page while a session runs
     static void Session(string s, Color c)
@@ -2023,7 +2088,7 @@ static class Uplink
         string g = Game();
         if (g != null && !l.Exists(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase))) l.Insert(0, g);
         l.Add("");
-        Popup(line, MW - 36, l, l.FindIndex(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase)), 26, 12, DrawGame, delegate(int i) {
+        Popup(line, S(MW - 36), l, l.FindIndex(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase)), 26, 12, DrawGame, delegate(int i) {
             if (l[i] == "") { PickGame(); return; }
             if (string.Equals(l[i], Cfg("game_dir"), StringComparison.OrdinalIgnoreCase)) return;
             Set("game_dir", l[i]); SaveCfg(); FillMissions(); ShowGame(); RefreshUi();
@@ -2038,12 +2103,14 @@ static class Uplink
         using (Brush b = new SolidBrush(sel ? Color.FromArgb(30, 62, 56) : CButton)) e.Graphics.FillRectangle(b, e.Bounds);
         if (e.Index < 0) return;
         string d = (string)((ListBox)s).Items[e.Index];
-        int x = e.Bounds.X + 7;
+        int x = e.Bounds.X + S(7);
         if (d != "")
         {
+            GraphicsState st = e.Graphics.Save();             // (the badge is drawn as on the pages: sizes as at 100 %)
+            e.Graphics.ScaleTransform(K, K);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-            x = (int)GameLine.Badge(e.Graphics, d, x, e.Bounds.Y + e.Bounds.Height / 2f) + 8;
+            x = S(GameLine.Badge(e.Graphics, d, x / K, (e.Bounds.Y + e.Bounds.Height / 2f) / K) + 8);
+            e.Graphics.Restore(st);
         }
         TextRenderer.DrawText(e.Graphics, d == "" ? "Another folder... (the one that contains TNOVA)" : d, FBody,
             new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x - 4, e.Bounds.Height), d == "" ? CSoft : sel ? Color.White : CText,
@@ -2678,7 +2745,7 @@ static class Uplink
             MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, BackColor = CBack, ForeColor = CText,
             Font = form.Font, ShowInTaskbar = false };
         ListBox list = new ListBox { Location = new Point(12, 12), Size = new Size(436, 220), BackColor = CPanel, ForeColor = CText,
-            BorderStyle = BorderStyle.None, Font = new Font("Consolas", 10f) };
+            BorderStyle = BorderStyle.None, Font = Pt(new[] { "Consolas" }, 10f, FontStyle.Regular) };
         d.Controls.Add(list);
         Action fill = delegate {
             list.Items.Clear();
@@ -2723,6 +2790,7 @@ static class Uplink
         Tile close = new Tile("Close", null, CButton, CButtonLine, CText) { Location = new Point(328, 250), Size = new Size(120, 34), Small = true };
         close.Click += delegate { d.Close(); };
         d.Controls.Add(close);
+        Dpi(d);
         d.ShowDialog(form);
         d.Dispose();
     }
@@ -3395,12 +3463,13 @@ static class Uplink
             MaximizeBox = false; MinimizeBox = false; StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText;
             Font = form.Font; ShowInTaskbar = false; KeyPreview = true;
             Controls.Add(new Label { Text = "Press the key for " + what + ".", Location = new Point(16, 18), Size = new Size(388, 22),
-                Font = new Font("Segoe UI Semibold", 10.5f), ForeColor = CAmber });
+                Font = Px(14f, 600), ForeColor = CAmber });
             Controls.Add(new Label { Text = "Now: " + now + ".  Alone, or with Shift, Ctrl or Alt held.", Location = new Point(16, 48), Size = new Size(388, 20) });
             Controls.Add(new Label { Text = "Esc: change nothing.    Del: the key it came with.", Location = new Point(16, 72), Size = new Size(388, 20), ForeColor = CDim });
             note = new Label { Location = new Point(16, 108), Size = new Size(388, 20), ForeColor = CRed };
             Controls.Add(note);
         }
+        protected override void OnLoad(EventArgs e) { Dpi(this); base.OnLoad(e); }
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (msg.Msg != 0x100 && msg.Msg != 0x104) return base.ProcessCmdKey(ref msg, keyData);      // WM_KEYDOWN, WM_SYSKEYDOWN

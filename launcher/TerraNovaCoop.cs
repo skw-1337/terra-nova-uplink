@@ -1002,6 +1002,7 @@ static class Uplink
                 // came out in the picture Uplink copies, pixelated. The output is named too: TN+'s own conf says opengl when
                 // its scaling is "sharp", and the texture renderer is then ignored)
                 "[sdl]", "fullscreen = false", "output = texturenb", "texture_renderer = software", "windowresolution = " + (Cfg("window") == "native" || Cfg("window") == "" ? "1696x960" : Cfg("window")) });
+            PruneMstat(Game(), host);
             tnp = Run(exe, "--launch --conf \"" + conf + "\"", dir, null, false);
         }
         else Log("the game is already running: Uplink attaches to it (it needs TN+ Display HD 848x480)");
@@ -1313,15 +1314,36 @@ static class Uplink
                     Process d = Process.GetProcessById(p.Id);
                     Log("closing the game (DOSBox " + p.Id + ")");
                     d.CloseMainWindow();
-                    if (!d.WaitForExit(3000)) d.Kill();
+                    if (!d.WaitForExit(3000)) { d.Kill(); d.WaitForExit(3000); }
                 }
                 catch { }
             }
         Thread.Sleep(500);
+        if (any) PruneMstat(Game(), true);
         foreach (Proc p in Procs())
             if (p.Name == "TNPlus.exe" && (p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                            p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0)) Kill(p.Id);
         return any;
+    }
+
+    // The game makes a scratch file TNOVA\MSTATnnn.RES at each start (the first free name, octal 000 to 777) and only
+    // removes it when it is left by its own menu: closed with its window, as from here, the file stays, and with all
+    // 512 names taken the game stays on a black screen. No save needs them. Only with no game running (a running game
+    // needs its own), and without insisting where Windows refuses (Program Files)
+    static void PruneMstat(string game, bool coop)
+    {
+        if (string.IsNullOrEmpty(game) || Process.GetProcessesByName("dosbox-staging").Length > 0) return;
+        int n = 0;
+        foreach (string dir in new[] { Path.Combine(game, "TNOVA"), coop ? Path.Combine(TnpCoopDir, "coop_overlay", "TNOVA") : null })
+            try
+            {
+                if (dir == null || !Directory.Exists(dir)) continue;
+                foreach (string f in Directory.GetFiles(dir, "MSTAT???.RES"))
+                    if (Regex.IsMatch(Path.GetFileName(f), @"^MSTAT[0-7]{3}\.RES$", RegexOptions.IgnoreCase))
+                        try { File.Delete(f); n++; } catch { }
+            }
+            catch { }
+        if (n > 0) Log("removed " + n + " leftover MSTAT file(s) of the game");
     }
 
     static void Kill(int id)

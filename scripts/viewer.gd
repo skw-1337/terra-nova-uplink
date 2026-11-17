@@ -1686,7 +1686,7 @@ class SuitParts:
 	var margin := PackedFloat64Array()      # its cull margin, the same
 
 
-const LIMB_PULL := 0.05          # a standing suit's feet drawn this much nearer the camera (_add_soldier)
+const LIMB_PULL := 0.05          # a standing suit's limbs drawn this much nearer the camera (_add_soldier)
 
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
 # Joints of skeletons 884 / 885: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 pelvis, 9 neck,
@@ -1717,10 +1717,12 @@ func _add_soldier(holder: Node3D, suit: int, arms := 0) -> float:
 		seg.material_override = _limb_mat(lsuit[k], sg[2], ld)
 		# a left limb: the right one's sprite, mirrored (per instance: both sides share the material)
 		seg.set_instance_shader_parameter("mirror", 1.0 if int(sg[3]) & 1 else 0.0)
-		# drawn nearer the camera than they are (limb.gdshader pull): the feet only, a sole reaching under the ground
-		# (0.25 for the whole suit: one just behind a wall showed through it; the shins too: they covered the knee
-		# caps seen from the front, which the game shows)
-		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 3 else 0.0)
+		# drawn a little nearer the camera than they are (limb.gdshader pull), every limb by the same amount: their
+		# order is the game's, by the depth of each bone's middle (its sort 0x315E60: the sum of the two joints' depths,
+		# far to near; feet or shins pulled more than the rest covered what the game paints over them). (0.25 for
+		# the whole suit: one just behind a wall showed through it.) A foot reaching under the ground: lifted, there
+		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL)
+		seg.set_instance_shader_parameter("foot", 1.0 if maxi(sg[0], sg[1]) <= 3 else 0.0)
 		seg.set_instance_shader_parameter("bone_px", float(ld["len"]))   # (its depth: the middle of its bone, limb.gdshader)
 		holder.add_child(seg)
 		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2]), int(sg[4])])
@@ -1779,6 +1781,21 @@ func _pose_eye(holder: Node3D, refs: Array) -> Variant:
 	return e
 
 
+# A pose without the game's reference vectors (live: the co-op host's suit in the guest's window, a rest pose): the
+# ones the game's walk gives a suit standing straight, its side vector for every chain (suit_gait.gd refs), so that
+# its limbs take their views by the game's rule too (the feet above all: by the shader's own rule a foot pointing
+# at the camera took any view).
+const REFS_OWN := [-1.0, Vector3(-1, 0, 0), Vector3(-1, 0, 0), Vector3(-1, 0, 0), Vector3(-1, 0, 0), Vector3(-1, 0, 0)]
+
+
+func _pose_refs(holder: Node3D) -> Array:
+	var refs: Array = holder.get_meta("refs", [])
+	holder.remove_meta("refs")
+	if refs.size() != 6 and live and not holder.has_meta("corpse"):
+		return REFS_OWN
+	return refs
+
+
 # Poses given but not yet put on the limbs (_pose_later): holder -> [joints, refs, eye]. Live, a suit is given the
 # game's pose (_live_units) and, right after, its eased one (_unit_smooth): the first one never showed and cost as
 # much as the second. It now waits here: thrown away when another pose takes its place, put on the limbs otherwise
@@ -1797,8 +1814,7 @@ func _pose_soldier(holder: Node3D, p: Array, knees_given := false) -> float:
 		_pose_flush(holder)
 		return -1.0
 	pose_pending.erase(holder)
-	var refs: Array = holder.get_meta("refs", [])
-	holder.remove_meta("refs")
+	var refs := _pose_refs(holder)
 	return _pose_apply(holder, p, refs, _pose_eye(holder, refs))
 
 
@@ -1809,8 +1825,7 @@ func _pose_later(holder: Node3D, p: Array, knees_given := false) -> void:
 	if _bones_long(holder, p):
 		_pose_flush(holder)
 		return
-	var refs: Array = holder.get_meta("refs", [])
-	holder.remove_meta("refs")
+	var refs := _pose_refs(holder)
 	pose_pending[holder] = [p, refs, _pose_eye(holder, refs)]
 
 

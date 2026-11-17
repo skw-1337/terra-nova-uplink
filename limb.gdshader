@@ -38,6 +38,7 @@ instance uniform float spin = -1.0;  // >= 0: a fixed angle on the screen (radia
 instance uniform vec2 game_view = vec2(-1.0, 1.0);
 instance uniform float mirror = 0.0; // 1: segment flag bit 0, a left limb drawn from the right one's sprites: the game
                                      // takes the view (16 - v) & 15 and mirrors it (no change on the 9-view torsos)
+instance uniform float foot = 0.0;      // 1: a foot (lifted onto the ground where it reaches under it, see vertex)
 instance uniform float bone_px = 0.0;   // > 0: the sprite pixels between its two joints (a standing suit): its depth
                                      // is the middle of its bone, not its first joint (see vertex)
 
@@ -114,10 +115,10 @@ void vertex() {
 		vec2 across = right * (VERTEX.x * wx * widen);
 		v = av + vec3(along_v.x, along_v.y * pixel_aspect, 0.0) + vec3(across, 0.0);
 	}
-	// which limb covers which: the game paints a suit limb by limb, the nearer ones last (seen from the front the knee
-	// caps and the toes over the shins, from behind the calves over them). All drawn at their first joint's depth, the
-	// hip, the knee and the neck stood a few thousandths of a unit apart in the wrong order: each limb at the depth of
-	// the middle of its bone, same place on the screen
+	// which limb covers which: the game sorts a suit's limbs by the sum of their two joints' depths (0x315E60, an
+	// insertion sort, far to near) and paints them in that order, each whole over the ones before. The same here: each
+	// limb flat at the depth of the middle of its bone (all at their first joint's depth, the hip, the knee and the neck
+	// stood a few thousandths of a unit apart in the wrong order), same place on the screen
 	if (spin < 0.0 && bone_px > 0.0) {
 		float mz = av.z + (VIEW_MATRIX * vec4(ax, 0.0)).z * (0.5 * bone_px * s);
 		if (mz < -0.02 && av.z < -0.02) {
@@ -127,7 +128,7 @@ void vertex() {
 	// a foot (pull > 0): the game lays its sprite down the screen from the ankle, as long as ever when the toes point at
 	// the camera, and paints it over the ground: the toe caps show under the suit. Here the ground hid what reached
 	// under it: those points come up the camera's ray to the height of the toe joint
-	if (spin < 0.0 && bone_px > 0.0 && pull > 0.0) {
+	if (spin < 0.0 && bone_px > 0.0 && foot > 0.5) {
 		float g = min(origin.y, origin.y + ax.y * s * bone_px) + 0.012;
 		float wy = (INV_VIEW_MATRIX * vec4(v, 1.0)).y;
 		if (wy < g && CAMERA_POSITION_WORLD.y > g + 0.02) {

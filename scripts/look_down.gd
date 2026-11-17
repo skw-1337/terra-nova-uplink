@@ -15,7 +15,8 @@ const LIMIT := 0x2000                        # the game's head: 45 degrees down 
 const UNIT := 8                              # the bridge: units of the game's angle per mouse count (SENS_Y)
 const RAD := TAU / 65536.0 * UNIT            # radians per mouse count
 const MAX := 0.75                            # how far past the limit (rad): 43 degrees, 88 down in all
-const LEAN := 0.05                           # the eye leans this far forward at the lowest (a head bending down)
+const EYE_CLEAR := 0.07                      # a leg piece whose bone passes this close to the eye: not drawn
+const BACK := 0.9                            # at the lowest, the eye this far back from the game's to over the hips
 const TEST := "TN_LOOK_DOWN_TEST"            # tests: "start,rate[,hold]" = from that second on, the mouse pulled down for
                                              # 3 s at that many counts a second, held 3 s (or hold), pulled back up 3 s
 
@@ -29,6 +30,24 @@ var legs := []                               # their solids (children of the bod
 var legs_of: Node3D                          # the body they were made for
 var mark: Control
 var test_t := -1.0
+
+# the co-op guest's window (setup_guest): his look is his bridge's own (coop_guest.py: 0.003 rad a mouse count, stopped 0.9
+# rad down), not the game's head; his head is then counted here in mouse counts and set again from his view's pitch
+# whenever the mouse rests (his gamepad turns it too)
+var guest := false
+var lim := LIMIT                             # the head's stop, in its units
+var unit := UNIT                             # its units a mouse count
+var rad := RAD                               # radians a mouse count
+var max_extra := MAX
+
+
+func setup_guest() -> void:
+	guest = true
+	unit = 1
+	rad = 0.003
+	lim = int(round(0.9 / rad))
+	max_extra = minf(MAX, PI / 2.0 - 0.04 - 0.9)       # (down to nearly straight under him, as the host)
+	known = true
 
 
 func _ready() -> void:
@@ -57,14 +76,14 @@ func take(dy: float) -> float:
 		return dy
 	moved = Time.get_ticks_msec() / 1000.0
 	if dy > 0.0:
-		var room := maxf(0.0, float(LIMIT - head) / UNIT - maxf(v.play_dy, 0.0))   # counts left before the limit
+		var room := maxf(0.0, float(lim - head) / unit - maxf(v.play_dy, 0.0))   # counts left before the limit
 		var to_game := minf(dy, room)
-		extra = maxf(extra - (dy - to_game) * RAD, -MAX)
+		extra = maxf(extra - (dy - to_game) * rad, -max_extra)
 		return to_game
 	if extra < 0.0:
-		extra -= dy * RAD
+		extra -= dy * rad
 		if extra > 0.0:
-			var back := -extra / RAD             # what is left of the move once the view is back at the limit
+			var back := -extra / rad             # what is left of the move once the view is back at the limit
 			extra = 0.0
 			return back
 		return 0.0
@@ -73,21 +92,29 @@ func take(dy: float) -> float:
 
 # what the viewer sent the bridge (whole counts): the head moves as the bridge moves it
 func sent(dy: int) -> void:
-	head = clampi(head + dy * UNIT, -LIMIT, LIMIT)
+	head = clampi(head + dy * unit, -lim, lim)
 
 
 func _process(dt: float) -> void:
 	if v == null or not v.live:
 		return
+	if guest and Time.get_ticks_msec() / 1000.0 - moved > 0.2:
+		head = clampi(int(round(-float(v.cam_to[2]) / rad)), -lim, lim)
 	if OS.has_environment(TEST) and known:
 		_test(dt)
 	if extra < 0.0 and (v.menu_mode or v.current.is_empty()):
 		extra = 0.0                              # one of the game's screens: the view as the game's
 	var on := extra < -0.001
 	if on:
-		var k := -extra / MAX
-		var fwd := Vector3(-sin(v.yaw), 0.0, -cos(v.yaw))
-		v.camera.position += fwd * LEAN * k      # (the viewer puts the camera back on the game's eye every frame)
+		var k := -extra / max_extra
+		# the game's eye is ahead of the suit (its cockpit): looking down from there the legs stood behind the view, at
+		# the bottom edge, under the cockpit (two knee tops). The eye comes back over the hips as the view goes down
+		# (the viewer puts the camera back on the game's eye every frame)
+		var body: Node3D = v.live_player_node
+		if body != null and is_instance_valid(body):
+			var over := body.global_position
+			var cp: Vector3 = v.camera.position
+			v.camera.position = Vector3(lerpf(cp.x, over.x, k * BACK), cp.y, lerpf(cp.z, over.z, k * BACK))
 	if on or shown:
 		_legs(on)
 	mark.visible = on
@@ -115,9 +142,20 @@ func _legs(on: bool) -> void:
 			return
 		legs_of = node
 		_build(node)
+	# a leg piece the eye is inside of (walking, a thigh swings up under the eye brought back over the hips) filled
+	# the whole view with its dark inside: hidden while the eye is that close to its bone
+	var eye: Vector3 = v.camera.global_position
 	for l in legs:
 		if is_instance_valid(l):
-			l.visible = on
+			var near := false
+			var seg := l.get_parent() as Node3D
+			if on and seg != null:
+				var a: Vector3 = seg.global_position
+				var b: Vector3 = a + seg.global_transform.basis.y * float(l.get_meta("bone_px", 0.0))
+				var ab := b - a
+				var s := clampf((eye - a).dot(ab) / maxf(ab.length_squared(), 1e-8), 0.0, 1.0)
+				near = eye.distance_to(a + ab * s) < EYE_CLEAR
+			l.visible = on and not near
 
 
 func _build(node: Node3D) -> void:
@@ -148,6 +186,7 @@ func _build(node: Node3D) -> void:
 		mi.set_instance_shader_parameter("mirror", seg.get_instance_shader_parameter("mirror"))
 		mi.set_instance_shader_parameter("fade_top", 0.6 if maxi(part[1], part[2]) >= 6 else 0.0)   # (a thigh: hip to knee)
 		mi.extra_cull_margin = 2.0
+		mi.set_meta("bone_px", float(ld["len"]))
 		seg.add_child(mi)
 		legs.append(mi)
 

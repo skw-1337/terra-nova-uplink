@@ -170,7 +170,7 @@ func _ready() -> void:
 		add_child(chat_edit)
 	_build_friends()
 	_show("STEAM...", "", warn_col)
-	if fake_steam == null and "--fake-steam" in OS.get_cmdline_user_args():
+	if fake_steam == null and ("--fake-steam" in OS.get_cmdline_user_args() or OS.get_environment("TN_TEST_STEAM_FAILS") != ""):
 		fake_steam = load("res://scripts/fake_steam.gd").new()
 	if fake_steam:
 		steam = fake_steam
@@ -178,14 +178,15 @@ func _ready() -> void:
 		if not Engine.has_singleton("Steam"):
 			var r := GDExtensionManager.load_extension("res://addons/godotsteam/godotsteam.gdextension")
 			if r != GDExtensionManager.LOAD_STATUS_OK and r != GDExtensionManager.LOAD_STATUS_ALREADY_LOADED:
-				_show("OFFLINE", "GodotSteam not loaded (%d)" % r, bad_col)
+				_steam_offline("GodotSteam not loaded (%d)" % r, false)
 				return
 		steam = Engine.get_singleton("Steam")
-	var init: Dictionary = steam.steamInitEx(APP_ID, false)
-	if int(init.get("status", 1)) != 0:
-		_show("OFFLINE", "Steam: %s" % init.get("verbal", "?"), bad_col)
-		steam = null
-		return
+	steam_api = steam                                    # (OFFLINE: tried again, see _steam_start)
+	steam = null
+	_steam_start()
+
+
+func _steam_online() -> void:
 	steam.connect("lobby_created", _on_lobby_created)
 	steam.connect("lobby_chat_update", _on_lobby_update)
 	steam.connect("lobby_joined", _on_lobby_joined)
@@ -223,6 +224,7 @@ func _process(delta: float) -> void:
 	if wait_panel:
 		_waiting()
 	if not steam:
+		_steam_tick()
 		return
 	steam.run_callbacks()
 	if clock - friends_t > 3.0:
@@ -611,6 +613,8 @@ func wants_keys() -> bool:
 
 func owns_point(p: Vector2) -> bool:
 	# a click here is for these buttons, not the game (viewer.gd asks before sending the mouse to the game)
+	if _steam_owns(p):
+		return true
 	for c in [friends_panel, friends_open, lock_btn, chat_edit]:
 		if c and c.is_visible_in_tree() and c.get_global_rect().has_point(p):
 			return true
@@ -891,7 +895,7 @@ func _waiting() -> void:
 	var dots := ".".repeat(1 + int(clock * 2.0) % 3)
 	wait_text.add_theme_color_override("font_color", bad_col if version_msg != "" and peer == 0 else Color(0.8, 0.85, 0.9))
 	if steam == null:
-		wait_text.text = "Steam is not available: start Steam, then this window again."
+		wait_text.text = "Steam: %s\n%s" % [steam_err, _steam_hint()]
 	elif peer == 0 and version_msg != "":
 		wait_text.text = version_msg
 	elif peer == 0:
@@ -949,3 +953,115 @@ func _show(t: String, d: String, c: Color) -> void:
 		_log("%s  %s" % [t, d])
 	label.text = "● " + t + ("\n   " + d if d != "" else "")
 	label.add_theme_color_override("font_color", c)
+
+
+# ---------------------------------------------------------------- Steam not there (yet)
+# Steam closed, still starting, not logged in, or too old for this window ("No SteamUtils011"): OFFLINE with what to
+# do, and Retry / Exit buttons (the window had no way out but the launcher's STOP). Steam is tried again every few
+# seconds meanwhile: the launcher may have just started it. Test switch: TN_TEST_STEAM_FAILS=N (N:old for the "too
+# old" error) fails the first N tries, then a fake Steam answers (a test never reaches the real one).
+const STEAM_RETRY_S := 4.0
+var steam_api: Object = null          # GodotSteam (or the fake), kept while steam is null (OFFLINE)
+var steam_err := ""
+var steam_old := false               # Steam answered too old for this window: update it
+var steam_tries := 0
+var steam_next := 0.0
+var steam_box: HBoxContainer          # Retry, Exit
+
+
+func _steam_start() -> void:
+	steam_tries += 1
+	var init := _steam_init()
+	var st := int(init.get("status", 1))
+	if st != 0:
+		var verbal := str(init.get("verbal", "?"))
+		# (EAPIInitResult 3 = version mismatch; "No SteamUtils011" and such: an interface this Steam doesn't have)
+		_steam_offline(verbal, st == 3 or verbal.contains("SteamUtils") or verbal.contains("out of date") or verbal.contains("version"))
+		return
+	steam = steam_api
+	if steam_tries > 1:
+		_log("Steam up at try %d" % steam_tries)
+	_steam_buttons(false)
+	_steam_online()
+
+
+func _steam_init() -> Dictionary:
+	var test := OS.get_environment("TN_TEST_STEAM_FAILS")
+	if test != "":
+		if steam_tries <= int(test.get_slice(":", 0)):
+			if test.ends_with(":old"):
+				return {"status": 3, "verbal": "No SteamUtils011 (test)"}
+			return {"status": 2, "verbal": "Cannot connect to Steam, client probably isn't running (test)"}
+		if not (steam_api is RefCounted):                # (the fake is one, GodotSteam's singleton isn't)
+			steam_api = load("res://scripts/fake_steam.gd").new()
+	if steam_api == null:                                # (GodotSteam not loaded)
+		return {"status": 1, "verbal": steam_err}
+	return steam_api.steamInitEx(APP_ID, false)
+
+
+func _steam_offline(err: String, old: bool) -> void:
+	steam = null
+	steam_err = err
+	steam_old = old
+	steam_next = clock + STEAM_RETRY_S
+	_show("OFFLINE", "Steam: %s\n   %s" % [err, _steam_hint()], bad_col)
+	_steam_buttons(true)
+
+
+func _steam_hint() -> String:
+	if steam_api == null:
+		return "Uplink's Steam files are missing: install Uplink again."
+	if steam_old:
+		return "Update Steam: Steam menu > Check for Steam Client Updates, restart it, then Retry."
+	return "Start Steam and log in, then Retry (it is tried again every few seconds)."
+
+
+func _steam_tick() -> void:
+	if steam_api != null and steam_box != null and steam_box.visible and clock >= steam_next:
+		_steam_start()
+
+
+func _steam_buttons(on: bool) -> void:
+	if steam_box == null:
+		if not on:
+			return
+		steam_box = HBoxContainer.new()
+		steam_box.add_theme_constant_override("separation", 16)
+		for b in [["Retry", _steam_retry], ["Exit", _steam_exit]]:
+			var btn := Button.new()
+			btn.text = b[0]
+			btn.focus_mode = Control.FOCUS_NONE
+			btn.custom_minimum_size = Vector2(120, 40)
+			btn.add_theme_font_size_override("font_size", 18)
+			btn.pressed.connect(b[1])
+			steam_box.add_child(btn)
+		if wait_panel:                                   # guest: under the waiting screen's text
+			steam_box.alignment = BoxContainer.ALIGNMENT_CENTER
+			wait_text.get_parent().add_child(steam_box)
+			wait_text.get_parent().move_child(steam_box, wait_text.get_index() + 1)
+		else:                                            # host: under the OFFLINE line
+			steam_box.position = Vector2(12, 84)
+			add_child(steam_box)
+	steam_box.visible = on
+	if lock_btn:
+		lock_btn.visible = not on
+
+
+func _steam_retry() -> void:
+	_show("STEAM...", "", warn_col)
+	_steam_start()
+
+
+func _steam_exit() -> void:
+	var m: Node = get_parent().get("uplink_menu") if get_parent() else null
+	if not host_mode and m and m.has_method("leave"):
+		m.leave()                                        # (as the guest's Leave: his launcher then as after STOP)
+	else:
+		get_tree().quit()
+
+
+func _steam_owns(p: Vector2) -> bool:
+	# OFFLINE: its buttons, and for a guest the whole waiting screen (no game behind it to click)
+	if steam_box == null or not steam_box.is_visible_in_tree():
+		return false
+	return wait_panel != null or steam_box.get_global_rect().has_point(p)

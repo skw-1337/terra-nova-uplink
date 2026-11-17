@@ -130,6 +130,14 @@ CLEAR = [((17, 277, 99, 380), 60, 255),      # COMM panel, ENTIRE SQUAD box incl
 # the two top bars: only their leds are put out (colour 0, as the game's own unlit ones), their frame stays; the
 # guest's window lights them again in the game's cells. Rows 30-33; left bar x 73-148 (separators every 5 from 75),
 # right bar (energy) x 165-247 (separators every 4 from 168)
+# The cockpit's own regions (the table 0x389DF8: 8 pointers, x0, y0, x1, y1 at +8, built by the game for the cockpit of
+# the suit worn): the panels move with the cockpit (the training suit's: COMM, map and WEAPON panels 8 lower and the
+# WEAPON panel 8 further left than the boxes above, measured on the game's usual one). The boxes above are for that
+# usual cockpit (COMM 17, 276; map 118, 264; WEAPON 217, 264; compass 33, 6); each is moved by its region's corner
+# from there, and the corners are sent after the picture ('RGN' + 4 x <2h: COMM, map, WEAPON, compass) for the
+# guest's window to draw where they are (coop_hud.gd)
+REGIONS = 0x389DF8
+REG_HOME = ((17, 276), (118, 264), (217, 264), (33, 6))
 BAR_ROWS = (30, 34)
 BAR_LEDS = [x for x in range(73, 149) if (x - 75) % 5] + [x for x in range(165, 248) if (x - 165) % 4 != 3]
 # His map panel and the small box over it (coop_hud.gd), as the game draws the host's. The box (the HUD's region at
@@ -1076,6 +1084,20 @@ class Guest:
                 pass
         return None if self.ind is False else self.ind
 
+    def regions(self):
+        """the cockpit's COMM, map and WEAPON panels and its compass strip (x0, y0, x1, y1), as the game has them now;
+        those it does not show: where the usual cockpit has them"""
+        rs = []
+        for k in range(8):
+            p = struct.unpack('<I', self.g.read(REGIONS + 4 * k, 4))[0]
+            if 0x380000 <= p < 0x3A0000:
+                rs.append(struct.unpack('<4h', self.g.read(p + 8, 8)))
+        low = sorted(r for r in rs if r[1] > 200 and 40 < r[2] - r[0] < 120)
+        top = [r for r in rs if r[1] < 30 and r[2] - r[0] > 200]
+        home = [(x, y, x + 1, y + 1) for x, y in REG_HOME]
+        return (low if len(low) == 3 else home[:3]) + [top[0] if top else home[3]]
+
+
     def cockpit(self):
         src = self.hud_src() if self.hud_src else None
         if not src:
@@ -1131,11 +1153,18 @@ class Guest:
             at = np.argwhere(ok)
             if len(at) == 1:
                 self.ind_at = (fx0 + int(at[0][1]), fy0 + int(at[0][0]))
-        for (x0, y0, x1, y1), c, a in CLEAR:
+        reg = self.regions()
+        moves = [(reg[k][0] - REG_HOME[k][0], reg[k][1] - REG_HOME[k][1]) for k in range(4)]
+        for i, ((x0, y0, x1, y1), c, a) in enumerate(CLEAR):
+            dx, dy = moves[i] if i < 4 else (0, 0)          # (CLEAR: COMM, WEAPON, map, compass, rear view)
+            if i in (1, 2):
+                dx, dy = moves[3 - i]
+            x0, x1, y0, y1 = max(0, x0 + dx), min(320, x1 + dx), max(0, y0 + dy), min(400, y1 + dy)
             scr[y0:y1, x0:x1] = c
             alpha[y0:y1, x0:x1] = a
         scr[BAR_ROWS[0]:BAR_ROWS[1], BAR_LEDS] = 0
-        pk = b'GCK' + struct.pack('<4h', fx0, fy0, fw, fh) + pal + zlib.compress(np.dstack([scr, alpha]).tobytes(), 6)
+        pk = b'GCK' + struct.pack('<4h', fx0, fy0, fw, fh) + pal + zlib.compress(np.dstack([scr, alpha]).tobytes() +
+                                                                       b'RGN' + b''.join(struct.pack('<2h', *r[:2]) for r in reg), 6)
         if len(pk) < 60000:
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 

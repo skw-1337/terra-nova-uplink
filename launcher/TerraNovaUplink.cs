@@ -62,6 +62,10 @@ static class Uplink
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] static extern bool IsProcessDPIAware();
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern int GetDeviceCaps(IntPtr dc, int what);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string ids);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -120,13 +124,22 @@ static class Uplink
         { Res.Load(args[2]).Save(args[3]); Environment.Exit(0); }
         try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
         // The window is drawn at the screen's own scale (100, 125, 150 %...): every size below is for 100 % and
-        // multiplied by K, the text set on whole pixels at that scale. (Before, Windows stretched the 100 % picture.)
+        // multiplied by K, the text set on whole pixels at that scale. The process says it handles the scale in its
+        // manifest (dpiAware: in force before any code, GDI+ included, which keeps the scale it first saw; called here
+        // too for a launcher built without it). The scale is read from GDI, which draws the text, and the fonts are
+        // made from that same DPI (ScaleFonts): a 13-pixel line is 13 x K pixels whatever GDI+ believes.
         try { SetProcessDPIAware(); } catch { }
         Application.EnableVisualStyles();
-        using (Graphics g0 = Graphics.FromHwnd(IntPtr.Zero)) K = g0.DpiX / 96f;
-        float forced;
-        if (float.TryParse(Environment.GetEnvironmentVariable("TN_LAUNCHER_SCALE"), NumberStyles.Float, CultureInfo.InvariantCulture, out forced) && forced >= 1f && forced <= 3f)
-            K = forced;                                           // (checks: the window as on a screen at that scale)
+        ReadScale();
+        if (args.Length > 1 && args[1] == "--dpi")             // checks: what this PC's scale gives
+        {
+            using (Graphics g0 = Graphics.FromHwnd(IntPtr.Zero))
+            using (Font f13 = Px(13f, 400))
+                Console.WriteLine("aware " + IsProcessDPIAware() + ", GDI dpi " + DpiGdi + ", GDI+ dpi " + g0.DpiX + ", K " + K.ToString(CultureInfo.InvariantCulture) +
+                    ", a 13 px line: " + TextRenderer.MeasureText("Hg", f13, new Size(500, 100), TextFormatFlags.NoPadding).Height + " px high (expected about " +
+                    Math.Round(13 * K * 1.2) + "), font " + f13.Name + " " + f13.SizeInPoints.ToString("0.##", CultureInfo.InvariantCulture) + " pt");
+            Environment.Exit(0);
+        }
         Build();
         form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
         form.FormClosing += delegate { loading = false; SaveOptions(); stopping = true; };
@@ -195,6 +208,26 @@ static class Uplink
     static StringFormat SF;
     static readonly Graphics GM = Graphics.FromImage(new Bitmap(1, 1));
     static float K = 1f;                                      // the screen's scale: 1 at 100 %, 1.25, 1.5...
+    static int DpiGdi = 96;                                   // the screen's DPI as GDI gives it (what draws the text)
+
+    static void ReadScale()
+    {
+        try
+        {
+            IntPtr dc = GetDC(IntPtr.Zero);
+            if (dc != IntPtr.Zero) { int d = GetDeviceCaps(dc, 88); ReleaseDC(IntPtr.Zero, dc); if (d >= 48 && d <= 960) DpiGdi = d; }   // LOGPIXELSX
+        }
+        catch { }
+        K = DpiGdi / 96f;
+        float forced;
+        if (float.TryParse(Environment.GetEnvironmentVariable("TN_LAUNCHER_SCALE"), NumberStyles.Float, CultureInfo.InvariantCulture, out forced) && forced >= 1f && forced <= 3f)
+            K = forced;                                           // (checks: the window as on a screen at that scale)
+    }
+
+    // A font of so many pixels at this scale, in points from GDI's own DPI: drawn by GDI (TextRenderer: the size in
+    // points times the DC's DPI) it is exactly that many pixels; a font in pixels went through GDI+'s idea of the
+    // DPI on its way, and came out too big where the two differ.
+    static Font Sized(string name, float px, FontStyle style) { return new Font(name, px * 72f / DpiGdi, style, GraphicsUnit.Point); }
     static int S(float v) { return (int)Math.Round(v * K); }
 
     static int pageNow;
@@ -225,11 +258,11 @@ static class Uplink
         foreach (string[] fam in new[] { FAMILIES[Cfg("font").ToLowerInvariant() == "segoe" ? 1 : 0], FAMILIES[1] })
         {
             string name = fam[weight >= 700 ? 2 : weight >= 600 ? 1 : 0];
-            Font f = new Font(name, size, FontStyle.Regular, GraphicsUnit.Pixel);
+            Font f = Sized(name, size, FontStyle.Regular);
             if (f.Name == name) return f;
             f.Dispose();
         }
-        return new Font("Segoe UI", size, weight >= 600 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
+        return Sized("Segoe UI", size, weight >= 600 ? FontStyle.Bold : FontStyle.Regular);
     }
 
     // a dialog's font: a size in points as at 100 %, set in pixels at the screen's scale
@@ -237,9 +270,9 @@ static class Uplink
     {
         float size = (float)Math.Round(pt * 96f / 72f * K);
         foreach (string f in families)
-            using (Font t = new Font(f, size, style, GraphicsUnit.Pixel))
-                if (t.Name == f) return new Font(f, size, style, GraphicsUnit.Pixel);
-        return new Font("Segoe UI", size, style, GraphicsUnit.Pixel);
+            using (Font t = Sized(f, size, style))
+                if (t.Name == f) return Sized(f, size, style);
+        return Sized("Segoe UI", size, style);
     }
 
     // a dialog built for 100 %: its sizes at the screen's scale
@@ -527,7 +560,7 @@ static class Uplink
         c = Card(pg, "UPDATES", COrange, null, 18, 331, CW, 153);
         verLabel = new LedLine { Text = "Uplink " + VERSION, Location = new Point(X, 32), Size = new Size(IW, 27) };
         c.Controls.Add(verLabel);
-        c.Controls.Add(new Txt { Text = "Looked for at each start, and before each game.", F = F115, Ink = CDim, Location = new Point(X, 61), Size = new Size(IW, RH) });
+        c.Controls.Add(new Txt { Text = "Looked for at each start and each game.", F = F115, Ink = CDim, Location = new Point(X, 61), Size = new Size(IW, RH) });
         checkBtn = Key(c, X, 112, 123, 28, "Check now");
         checkBtn.Click += delegate { Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); };
         Key(c, X + 123 + 9, 112, 123, 28, "What's new").Click += delegate { WhatsNew(); };
@@ -858,7 +891,7 @@ static class Uplink
                 g.FillPolygon(d, new[] { new PointF(x, t.Top), new PointF(x + 12.73f, t.Top), new PointF(x + 12.73f + 15, t.Bottom), new PointF(x + 15, t.Bottom) });
         using (Brush y = new SolidBrush(CTape)) g.FillRectangle(y, -46, t.Top + 1, 92, t.Height - 2);
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-        using (Font tf = new Font(F95b.FontFamily, 10f, FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font tf = new Font(F95b.FontFamily, 10f, FontStyle.Bold, GraphicsUnit.Pixel))   // (GDI+ under the scale: pixels as at 100 %)
         {
             float w = SpacedPlus(g, "VERSUS · WIP", tf, Color.Empty, 0, 0, 1.0f);
             SpacedPlus(g, "VERSUS · WIP", tf, CTapeInk, -w / 2, -6f, 1.0f);
@@ -1729,8 +1762,8 @@ static class Uplink
     static Font Pick(string[] families, float size, FontStyle style)
     {
         foreach (string f in families)
-            using (Font t = new Font(f, size, style))
-                if (t.Name == f) return new Font(f, size, style);
+            using (Font t = Sized(f, size * DpiGdi / 72f, style))
+                if (t.Name == f) return Sized(f, size * DpiGdi / 72f, style);
         return null;
     }
 

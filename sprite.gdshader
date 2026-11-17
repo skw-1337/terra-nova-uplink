@@ -44,7 +44,8 @@ void fragment() {
 	} else if (use_vcol) {
 		c *= COLOR;
 	}
-	ALBEDO = ir ? c.rgb : tn_haze(c.rgb, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	ALBEDO = ir ? c.rgb : tn_haze(c.rgb * (1.0 + tn_shot_light(wp)), wp, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 	ALPHA = c.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.5;
 }

@@ -50,3 +50,35 @@ tn_ir={
 "type": "float",
 "value": 0.0
 }
+tn_shot_p0={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_p1={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_p2={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_p3={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_c0={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_c1={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_c2={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+tn_shot_c3={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}

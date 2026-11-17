@@ -929,6 +929,7 @@ def articulations(tab):
 #        answered on the viewer's port by 'ORDR' + number, result (0: taken), the game's order code (u16)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -0x2000, 0x2000
+LOOK_DOWN = PLAY and os.environ.get('TN_FX_LOOK_DOWN') == '1'   # (an extra of Uplink's: nothing of it otherwise)
 if PLAY:
     import ctypes
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -2528,6 +2529,8 @@ while True:
         s.sendto(pk, ('127.0.0.1', 47821))    # (+ the desert clouds' sway phase, +193 a tick)
         if guest: guest.relay(pk)              # (the coop guest's window too: his sky, waypoint, haze; not the IR view)
         s.sendto(b'IRVW' + bytes([1 if g.read(VISION, 1)[0] in (1, 2) else 0]), ('127.0.0.1', 47821))
+        if LOOK_DOWN:                          # (Uplink's look past the game's limit, look_down.gd: the head's pitch)
+            s.sendto(b'HPIT' + g.read(A_PITCH, 2), ('127.0.0.1', 47821))
         if ordres is None or not ordres.nav_set:     # (not while an order borrows the marker: it is not the player's)
             pk = b'WAYP' + struct.pack('<2fI', *(v / 65536 for v in struct.unpack('<2i', g.read(BALISE, 8))),
                                        struct.unpack('<H', g.read(BALISE_ANGLE, 2))[0])

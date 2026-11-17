@@ -431,6 +431,7 @@ func _ready() -> void:
 			versus_btn.add_theme_font_size_override("font_size", 16)
 			versus_btn.pressed.connect(_host_online.bind(true))
 			bl.add_child(versus_btn)
+	_extras()
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8
@@ -1179,6 +1180,7 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 		sm.set_shader_parameter("has_ir", true)
 	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
+	sm.set_shader_parameter("cliffs", OS.get_environment("TN_FX_CLIFFS") == "1")   # (an extra: steep faces textured from the side)
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
@@ -1258,6 +1260,12 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("sun_dir", sun_to)
 	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
+	if fx_cloud_shadows:                              # (an extra: the clouds' shadows on the ground, _cloud_cover)
+		sm.set_shader_parameter("cloud_shadows", cloud_cover != null)
+		if cloud_cover != null:
+			sm.set_shader_parameter("cloud_cover", cloud_cover)
+			sm.set_shader_parameter("cloud_sun", Vector4(sun_to.x, maxf(sun_to.y, 0.15), sun_to.z,
+					sky_ref_y + 0.0478 * (float(mis_params.get("cloud_h", 1024)) - 8.0 * sky_ref_y)))
 
 
 # The planet's IR colours (RESPLNT 66 through tables 59-62) to the passes over the view (old school, infrared): in IR,
@@ -1384,6 +1392,10 @@ func _sky_rows() -> void:
 	sm.set_shader_parameter("row_up", b.y)
 	sm.set_shader_parameter("row_fwd", -b.z)
 	sm.set_shader_parameter("row_edge", 1.0 / px if px > 0.0 else 0.0)
+	if fx_stars and px > 0.0:                         # (an extra: sharp stars, sky.gdshader star_scale)
+		# pixels of the picture (the old school's own, when it is on) per pixel of the game's star map (TAU / 4 / 512)
+		var wide := _old_grid(old_sharp).x if oldschool_rect != null and oldschool_rect.visible else get_viewport().get_visible_rect().size.x
+		sm.set_shader_parameter("star_scale", (TAU / 2048.0) / (2.0 / (px * maxf(wide, 1.0))))
 
 
 func _clouds_update() -> void:
@@ -2890,6 +2902,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 	var to_light := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
 	sun_to = to_light
+	cloud_cover = null
 	if sk.is_empty():
 		var sm := ProceduralSkyMaterial.new()
 		sm.sky_top_color = Color(0.32, 0.5, 0.78)
@@ -2898,6 +2911,8 @@ func _set_sky(path: String, light: Vector2) -> void:
 		env.sky.sky_material = sm
 		env.fog_light_color = Color(0.7, 0.76, 0.84)
 		_haze_globals()
+		for gm in ground_mats:
+			gm.set_shader_parameter("cloud_shadows", false)
 		return
 	var mat := ShaderMaterial.new()
 	mat.shader = SKY_SHADER
@@ -2936,6 +2951,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
+	cloud_cover = _cloud_cover(sk["clouds"]) if fx_cloud_shadows else null
 	mat.set_shader_parameter("has_ir", false)
 	if live and cur_ir.has(60) and sk.get("cloud_idx") != null:   # infrared: the cloud layer through table 60 (0x2A7654)
 		var c60: PackedColorArray = cur_ir[60]
@@ -4782,7 +4798,8 @@ func _input(event: InputEvent) -> void:
 			look_off.y = clampf(look_off.y - event.relative.y * 0.004, -1.05, 1.05)
 		elif captured:
 			play_dx += event.relative.x * mouse_sens
-			play_dy += event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
+			var down: float = event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
+			play_dy += look_dn.take(down) if look_dn != null else down   # (past the game's limit: look_down.gd)
 		elif play_started:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()
@@ -4866,6 +4883,8 @@ func _live_update() -> void:
 		b.encode_s16(1, dx)
 		b.encode_s16(3, dy)
 		_play_send(b)
+		if look_dn != null:
+			look_dn.sent(dy)
 	if play and play_cursor != play_cursor_sent and play_cursor.x >= 0 and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		var c := PackedByteArray([0x50, 0, 0, 0, 0])
 		c.encode_s16(1, play_cursor.x)
@@ -4979,6 +4998,9 @@ func _live_update() -> void:
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
 		elif q.size() > 6 and q.slice(0, 4).get_string_from_ascii() == "TEXL":
 			_live_tiles(q)                                  # the ground tiles as the game holds them (its snow)
+		elif q.size() == 6 and q.slice(0, 4).get_string_from_ascii() == "HPIT":
+			if look_dn != null:
+				look_dn.head_is(q.decode_s16(4))            # the game's head pitch (look_down.gd)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
 			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
@@ -5203,11 +5225,16 @@ func _live_units(pk: PackedByteArray) -> void:
 	var ei := eblock.to_int32_array()
 	var ef := eblock.to_float32_array()
 	var fx_at := PackedInt32Array()
+	if fx_shots != null:
+		fx_shots.ents = {}
 	for k in ne:
 		var o := 8 * k
 		var cls := ei[o + 1]
 		if cls == 5 or cls == 6:
 			fx_at.append(o)
+			# (the extras that follow the shots, fx_shots.gd: the shots and the game's animated effects, not the dust)
+			if fx_shots != null and ei[o + 3] != 0 and (cls == 5 or not FX_NOT_FOLLOWED.has(ei[o + 2])):
+				fx_shots.ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 		else:
 			ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 	var joints := {}                                   # game index -> 16 joints (after the entities)
@@ -5614,7 +5641,7 @@ func _live_smooth() -> void:
 	camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
 	yaw = lerp_angle(cam_from[1], cam_to[1], a)
 	pitch = lerpf(cam_from[2], cam_to[2], a)
-	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
+	camera.rotation = Vector3(pitch + look_off.y + (look_dn.extra if look_dn != null else 0.0), yaw + look_off.x, 0)
 	for node in smooth_nodes:
 		if is_instance_valid(node):
 			_unit_smooth(node, now)
@@ -7372,3 +7399,87 @@ func _process(delta: float) -> void:
 	if move != Vector3.ZERO:
 		var fast := 4.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 1.0
 		camera.position += move.normalized() * speed * fast * delta
+
+
+# ------------------------------------------------------------------ optional extras
+# Novelties on top of the game's look, each off unless asked for (the launcher's "In game" switches, or the
+# environment), each in its own script, nothing of them made when off:
+# TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
+# TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
+# TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
+# TN_FX_LOOK_DOWN=1 the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
+# TN_FX_CLIFFS=1    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
+# TN_FX_STARS=1     the space skies' stars as sharp points at the window's resolution (sky.gdshader star_scale)
+var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
+var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
+const FX_NOT_FOLLOWED := [28, 29, 31, 32, 33]   # class 6: beams, particles, lightning, debris, burst suits
+
+
+func _extras() -> void:
+	if live and not guest_win and OS.get_environment("TN_FX_MARKS") == "1":
+		var mk: Node = load("res://scripts/fx_marks.gd").new()
+		mk.v = self
+		mk.shots = _fx_shots()
+		add_child(mk)
+	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") == "1":
+		var lt: Node = load("res://scripts/fx_lights.gd").new()
+		lt.v = self
+		lt.shots = _fx_shots()
+		add_child(lt)
+	if live and not guest_win and OS.get_environment("TN_FX_LOOK_DOWN") == "1":
+		look_dn = load("res://scripts/look_down.gd").new()
+		look_dn.v = self
+		add_child(look_dn)
+
+
+func _fx_shots() -> Node:
+	if fx_shots == null:
+		fx_shots = load("res://scripts/fx_shots.gd").new()
+		fx_shots.v = self
+		add_child(fx_shots)
+	return fx_shots
+
+
+# Cloud shadows (TN_FX_CLOUD_SHADOWS=1): how thick the sky's cloud layer is, texel by texel, for the ground's shader
+# (terrain.gdshader cloud_shadows), which looks it up where the sun's ray from the ground meets the cloud ceiling
+# (the height the sky is drawn with at the drop zone: 0.0478 x (the mission's cloud height - 8 x the eye's), _sky_to)
+# and darkens by rows of the planet's light table. The sky's wind offset moves it (_clouds_update gives the ground's
+# materials the sky's cloud_off): the shadows drift with the clouds. On the planets' skies the clouds are the light,
+# pale texels on a deeper sky (thick = light); a storm sky is grey all over, its darker texels the thicker cloud,
+# and shades half as much. No clouds (the space skies): no shadows.
+var fx_cloud_shadows := OS.get_environment("TN_FX_CLOUD_SHADOWS") == "1"
+var fx_stars := OS.get_environment("TN_FX_STARS") == "1"
+var cloud_cover: ImageTexture
+
+
+func _cloud_cover(clouds: Texture2D) -> ImageTexture:
+	if clouds == null:
+		return null
+	var img := clouds.get_image()
+	if img == null or img.get_width() != 256 or img.get_height() != 256:
+		return null
+	img.convert(Image.FORMAT_RGB8)
+	var d := img.get_data()
+	var lum := PackedFloat32Array()
+	lum.resize(65536)
+	var sat := 0.0
+	for i in 65536:
+		var r := d[3 * i] / 255.0
+		var g := d[3 * i + 1] / 255.0
+		var b := d[3 * i + 2] / 255.0
+		lum[i] = 0.3 * r + 0.59 * g + 0.11 * b
+		sat += maxf(r, maxf(g, b)) - minf(r, minf(g, b))
+	var sorted := lum.duplicate()
+	sorted.sort()
+	var lo: float = sorted[6553]
+	var hi: float = sorted[58982]
+	if hi - lo < 0.02:
+		return null                                     # (a plain sky: nothing to cast)
+	var grey := sat / 65536.0 < 0.04                    # a storm's ceiling
+	lum = _box_blur(lum, 256, 2)
+	var out := PackedByteArray()
+	out.resize(65536)
+	for i in 65536:
+		var c := clampf((lum[i] - lo) / (hi - lo), 0.0, 1.0)
+		out[i] = int((0.4 + 0.25 * (1.0 - c) if grey else c) * 255.0)   # (a storm: 0.4 to 0.65, a row at most)
+	return ImageTexture.create_from_image(Image.create_from_data(256, 256, false, Image.FORMAT_R8, out))

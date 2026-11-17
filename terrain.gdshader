@@ -31,6 +31,14 @@ uniform bool has_haze_lut = false;
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of tables 59, 60, 61, 62
 uniform bool has_ir = false;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
+// cloud shadows (an extra, off unless TN_FX_CLOUD_SHADOWS=1: viewer.gd _cloud_cover): the sky's cloud layer seen from
+// the ground along the sun's direction, where it stands over the map (its texels are a world unit, shifted by the
+// same wind offset as the sky's: cloud_off), takes up to cloud_rows rows of the planet's light table away
+uniform bool cloud_shadows = false;
+uniform sampler2D cloud_cover : filter_linear, repeat_enable;   // 256 x 256: how thick the cloud is (0: clear sky)
+uniform vec2 cloud_off = vec2(0.0);            // texels (column, row), as the sky's
+uniform vec4 cloud_sun = vec4(0.0, 1.0, 0.0, 50.0);   // xyz towards the sun, w the ceiling's height
+uniform float cloud_rows = 2.2;
 // burnt ground (live: a tree destroyed, a blast): the game stamps one of its 4 burn pictures over the whole square of a
 // burnt point, as part of the ground (lit and hazed with it). burn_map: one texel per point, 0 or 1 + its picture;
 // burn_idx: the pictures' palette indices (0 = the ground shows through); burn_pal: the planet's palette (viewer.gd
@@ -149,6 +157,32 @@ vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
 		return tile_px(uv, tile + loff, dx, dy);
 	}
 	return textureGrad(tiles_soft, vec3(uv, tile), dx, dy).rgb;
+}
+
+// cliffs (an extra, off unless TN_FX_CLIFFS=1): the tiles are laid on the map from above, one a cell: on a steep
+// face a cell's 64 texels run down the whole height of the cliff, stretched into streaks. With this on, the faces
+// steeper than CLIFF_FROM are textured from the side instead, along the slope (the same tile of the cell, a texel as
+// big as on flat ground, across the face and up it, from the side the face looks to: both sides weighed by the
+// normal), blended in up to CLIFF_FULL; flat ground and gentle slopes are untouched. The light row, the burn, the
+// haze: the same as the ground's.
+uniform bool cliffs = false;
+const float CLIFF_FROM = 0.74;        // the normal's height where it begins (a 42 degree slope)
+const float CLIFF_FULL = 0.56;        // and where the face is all side-textured (56 degrees)
+
+// a coordinate folded into 0..1 and back (no seam where a tile meets itself)
+vec2 cliff_fold(vec2 q) {
+	return 1.0 - abs(1.0 - mod(q, 2.0));
+}
+
+// the tile of a cell seen from the side: q = (along the face, up it) in cells, dq its derivatives
+vec3 cliff_tile(vec2 cell, vec2 q, vec2 dqx, vec2 dqy, float loff) {
+	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
+	float tile = floor(texture(tilemap, (cell + 0.5) / grid_n).r * 255.0 + 0.5);
+	vec2 uv = cliff_fold(q) * (63.0 / 64.0) + 0.5 / 64.0;
+	if (per_index) {
+		return textureGrad(tiles_lit_soft, vec3(uv, tile + loff), dqx, dqy).rgb;
+	}
+	return textureGrad(tiles_soft, vec3(uv, tile), dqx, dqy).rgb;
 }
 
 uniform float blend_width = 0.3;      // blend between two cells (share of a cell each side)
@@ -279,6 +313,10 @@ void vertex() {
 void light() {
 	if (LIGHT_IS_DIRECTIONAL) {
 		DIFFUSE_LIGHT += vec3(ATTENUATION - 1.0);
+	} else if (tn_ir < 0.5) {
+		// the lights of the shots (an extra, fx_lights.gd: no other light stands on a map), on the ground's own colour
+		// (ALBEDO holds shadow_dark of it)
+		DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * max(dot(NORMAL, LIGHT), 0.0) / (PI * shadow_dark);
 	}
 }
 
@@ -288,7 +326,12 @@ void fragment() {
 	vec2 dx = dFdx(g);
 	vec2 dy = dFdy(g);
 	vec3 n_geo = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-	int frow = 15 - clamp(int(floor(vlight)), 0, 15);       // the row's file row (0 = full light)
+	float vl = vlight;
+	if (cloud_shadows) {
+		vec3 up = wpos + cloud_sun.xyz * max(cloud_sun.w - wpos.y, 0.0) / cloud_sun.y;   // where the sun's ray meets the ceiling
+		vl -= cloud_rows * smoothstep(0.4, 0.9, texture(cloud_cover, (up.zx + cloud_off) / 256.0).r);
+	}
+	int frow = 15 - clamp(int(floor(vl)), 0, 15);           // the row's file row (0 = full light)
 	float row_light = per_index ? 1.0 : light_rows[frow];
 	float loff = float(frow) * tile_count;
 	bool ir = tn_ir > 0.5 && has_ir;
@@ -309,11 +352,20 @@ void fragment() {
 		// the texels this pixel covers (an old school pixel: about 2 window pixels): its level from the footprint's
 		// narrow side, up to 4 texels along its long side, their palette colours averaged (one level from its long side,
 		// as before, made the far ground one flat colour per cell at a grazing angle: the far hills simplified)
-		vec2 ex = dFdx(g) * 128.0;
-		vec2 ey = dFdy(g) * 128.0;
+		// (cliffs, an extra: a steep face takes its texels from the side, see cliff_tile; one or the other here, every
+		// pixel a colour of the palette)
+		bool side = cliffs && n_geo.y < 0.5 * (CLIFF_FROM + CLIFF_FULL);
+		vec2 pq = g;
+		if (side) {
+			pq = vec2(abs(n_geo.x) > abs(n_geo.z) ? g.y : g.x, wpos.y / step_size);
+		}
+		vec2 pdx = dFdx(pq);
+		vec2 pdy = dFdy(pq);
+		vec2 ex = pdx * 128.0;
+		vec2 ey = pdy * 128.0;
 		float lx = length(ex);
 		float ly = length(ey);
-		vec2 major = lx > ly ? dFdx(g) : dFdy(g);
+		vec2 major = lx > ly ? pdx : pdy;
 		float n = clamp(ceil(max(lx, ly) / max(min(lx, ly), 1e-6)), 1.0, 4.0);
 		int lod = clamp(int(floor(log2(max(max(lx, ly) / n, 1.0)))), 0, 6);
 		int sz = 64 >> lod;
@@ -322,12 +374,12 @@ void fragment() {
 			if (float(s) >= n) {
 				break;
 			}
-			vec2 q = g + major * ((float(s) + 0.5) / n - 0.5);
-			vec2 cell = clamp(floor(q), vec2(0.0), vec2(grid_n - 2.0));
-			vec2 f = clamp(q - cell, 0.0, 0.99999);
+			vec2 q = pq + major * ((float(s) + 0.5) / n - 0.5);
+			vec2 cell = clamp(floor(side ? g : q), vec2(0.0), vec2(grid_n - 2.0));
+			vec2 f = clamp(side ? cliff_fold(q) : q - cell, 0.0, 0.99999);
 			vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
 			int tile = int(floor(t.r * 255.0 + 0.5));
-			int rot = int(floor(t.g * 255.0 + 0.5));
+			int rot = side ? 0 : int(floor(t.g * 255.0 + 0.5));
 			vec2 uv = f;
 			if (rot == 1) {
 				uv = vec2(f.y, 1.0 - f.x);
@@ -338,7 +390,7 @@ void fragment() {
 			}
 			ivec2 tx = clamp(ivec2(floor(uv * float(sz))), ivec2(0), ivec2(sz - 1));
 			int i0 = int(texelFetch(tiles_idx, ivec3(tx, tile), lod).r * 255.0 + 0.5);
-			int bi = burn_at(q);
+			int bi = burn_at(side ? g : q);
 			if (bi != 0) {
 				i0 = bi;                  // (a burnt square: the burn picture's texel, through the same rows)
 			}
@@ -365,6 +417,32 @@ void fragment() {
 		// only added noise that shimmered as the view moved)
 		float tpp = max(length(dFdx(g)), length(dFdy(g))) * 64.0;
 		col = cells_blend(g, dx, dy, wpos, loff);       // cells blended
+		float cliff = 0.0;                   // how much of this pixel is a cliff textured from the side
+		if (cliffs) {
+			float steep = 1.0 - smoothstep(CLIFF_FULL, CLIFF_FROM, n_geo.y);
+			cliff = steep;
+			if (steep > 0.0) {
+				float up = wpos.y / step_size;
+				vec2 qx = vec2(g.y, up);                // a face looking along x: across it runs the map's y
+				vec2 qz = vec2(g.x, up);
+				float wz = n_geo.z * n_geo.z / max(n_geo.x * n_geo.x + n_geo.z * n_geo.z, 1e-6);
+				// the four cells around, blended as on the flat (cells_blend), each seen from both sides
+				vec2 qc = g - 0.5;
+				vec2 c0 = floor(qc);
+				vec2 jit = vec2(detail_noised(wpos.xz * 0.7).x, detail_noised(wpos.xz * 0.7 + 31.7).x) - 0.5;
+				vec2 fw = smoothstep(0.5 - blend_width, 0.5 + blend_width, clamp(fract(qc) + jit * 0.5, 0.0, 1.0));
+				vec3 side = vec3(0.0);
+				for (int k = 0; k < 4; k++) {
+					vec2 o = vec2(float(k & 1), float(k >> 1));
+					float wk = (o.x > 0.5 ? fw.x : 1.0 - fw.x) * (o.y > 0.5 ? fw.y : 1.0 - fw.y);
+					if (wk > 0.003) {
+						side += wk * mix(cliff_tile(c0 + o, qx, dFdx(qx), dFdy(qx), loff),
+								cliff_tile(c0 + o, qz, dFdx(qz), dFdy(qz), loff), wz);
+					}
+				}
+				col = mix(col, side, steep);
+			}
+		}
 		int bi = burn_at(g);
 		if (bi != 0) {                       // a burnt square: the burn picture's colour, lit by the same row
 			int bl = per_index ? int(texelFetch(shade_idx, ivec2(bi, frow), 0).r * 255.0 + 0.5) : bi;
@@ -376,7 +454,7 @@ void fragment() {
 				: textureGrad(tiles, vec3(fract(uv * 4.0), tile), du * 4.0, dv * 4.0).rgb;
 		vec3 avg = textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
 		float gain = dot(fine, vec3(0.3, 0.59, 0.11)) / max(dot(avg, vec3(0.3, 0.59, 0.11)), 0.02);
-		col *= mix(1.0, clamp(gain, 0.4, 1.8), GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)));
+		col *= mix(1.0, clamp(gain, 0.4, 1.8), GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)) * (1.0 - cliff));   // (the grain is laid from above too)
 		if (has_relief && modern) {          // (modern look only: the game's ground has no light but its levels)
 			col *= texture(relief, (g + 0.5) / grid_n).r + 0.5;
 		}
@@ -400,7 +478,7 @@ void fragment() {
 		}
 		ALBEDO = col;
 		ROUGHNESS = 1.0;
-		float bump_k = modern ? bump * (1.0 - smoothstep(0.25, 0.5, tpp)) : 0.0;
+		float bump_k = modern ? bump * (1.0 - smoothstep(0.25, 0.5, tpp)) * (1.0 - cliff) : 0.0;
 		if (modern) {        // across a cell border the next tile's texels made a step: a line along every border
 			vec2 fe = fract(g);
 			bump_k *= smoothstep(0.0, 0.06, min(min(fe.x, 1.0 - fe.x), min(fe.y, 1.0 - fe.y)));

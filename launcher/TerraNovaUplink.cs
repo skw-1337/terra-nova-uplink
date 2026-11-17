@@ -932,14 +932,15 @@ static class Uplink
         sessionName = sessionPing = "";
         coopRun = m == Mode.Host || m == Mode.Join;
         Background(delegate {
-            if (m == Mode.Play || m == Mode.Host) Live(m == Mode.Host);
+            if (m == Mode.Play || m == Mode.Host) Live(m == Mode.Host, 0);
             else if (m == Mode.Join) Join();
             else Maps();
         });
     }
 
     // PLAY and HOST A GAME: the game through TN+ (its co-op build to host), then the bridge, which opens Uplink live
-    static void Live(bool host)
+    // playMission > 0 (the mission editor's "Play this mission", see Maps): the game is then taken into that mission
+    static void Live(bool host, int playMission)
     {
         Status("Getting things ready...", CAmber);
         Install(host ? Mode.Host : Mode.Play);
@@ -949,7 +950,7 @@ static class Uplink
         wholeMenus = !running || (ownGame && WholeMenusIni(dir));   // (see Env)
         string load = null;
         int pick;
-        if (int.TryParse(Cfg("start_at"), out pick) && pick > 0)
+        if (playMission <= 0 && int.TryParse(Cfg("start_at"), out pick) && pick > 0)
         {
             load = MakeSave(Game(), pick - 1, host ? COOP_SAVE : PLAY_SAVE);
             if (load == null) return;
@@ -990,7 +991,18 @@ static class Uplink
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
         }
         if (stopping || bridge == null) return;
-        if (host)
+        Process starter = null;
+        if (playMission > 0)
+        {   // a save of ours set on the mission, then the game's menus driven into it (live\mission_play.py)
+            Status("Starting mission " + playMission + " in the game...", CAmber);
+            Dictionary<string, string> penv = new Dictionary<string, string>();
+            penv["PYTHONIOENCODING"] = "utf-8";
+            Proc game = Procs().Find(p => p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(dir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+            playError = "";
+            starter = Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "mission_play.py") + "\" --game \"" + Game() +
+                "\" --mission " + playMission + " --start" + (game != null ? " --pid " + game.Id : ""), UplinkDir, penv, true);
+        }
+        else if (host)
             Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\". Invite your friend from Uplink's list (top right)." :
                 "Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.", CGreen);
         else
@@ -1002,6 +1014,14 @@ static class Uplink
         {
             Thread.Sleep(500);
             if (tnp != null && ++n % 4 == 0) KeepGameBehind();
+            if (starter != null && starter.HasExited)
+            {
+                if (starter.ExitCode == 0)
+                    Status("Mission " + playMission + " started." + (playMission == 18 || playMission == 28 ?
+                        " (In a mission of your own the game drops the player alone, in a standard suit.)" : ""), CGreen);
+                else Status(playError != "" ? playError : "The mission could not be started: see the log (Log).", CRed);
+                starter = null;
+            }
         }
         if (!stopping)
         {
@@ -1106,10 +1126,41 @@ static class Uplink
         Status("Opening the map viewer...", CAmber);
         string size = Cfg("window");
         string win = size == "native" ? "" : "--resolution " + size + " ";
-        Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + (size == "native" ? "-- --native" : ""), UplinkDir, Env(), true);
-        Status("Map viewer open: right mouse button to look, WASD to move, Tab for the mission list.", CGreen);
-        while (!stopping && !g.HasExited) Thread.Sleep(500);
+        // the mission editor's "Play this mission": the map viewer writes the mission's number in this file; the game
+        // is then started from here as PLAY does and taken into that mission
+        Dictionary<string, string> env = Env();
+        string req = Path.Combine(Comp, "play_request.txt");
+        try { File.Delete(req); } catch { }
+        env["TN_PLAY_REQUEST"] = req;
+        if (Cfg("mission_editor") == "1") env["TN_EDITOR"] = "1";         // the mission editor: off unless asked for in the ini
+        Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + (size == "native" ? "-- --native" : ""), UplinkDir, env, true);
+        string open = "Map viewer open: right mouse button to look, WASD to move, Tab for the mission list.";
+        Status(open, CGreen);
+        while (!stopping && !g.HasExited)
+        {
+            Thread.Sleep(500);
+            int play = PlayRequest(req);
+            if (play <= 0) continue;
+            Live(false, play);
+            if (!stopping && !g.HasExited) Status(open, CGreen);
+        }
         if (!stopping) Status("Uplink was closed.", CText);
+    }
+
+    // the mission the map viewer asked to play (first line of the request file, which is taken away), else 0
+    static string playError = "";
+
+    static int PlayRequest(string req)
+    {
+        try
+        {
+            if (!File.Exists(req)) return 0;
+            string[] l = File.ReadAllLines(req);
+            File.Delete(req);
+            int n;
+            return l.Length > 0 && int.TryParse(l[0].Trim(), out n) && n > 0 && n < 128 ? n : 0;
+        }
+        catch { return 0; }
     }
 
     // The game's menus come whole in its picture when this launcher started the game (wide_menus = 1 in its TNPlus.ini,
@@ -1289,6 +1340,7 @@ static class Uplink
     {
         if (l.StartsWith("x ") || l.Trim() == "" || l.StartsWith("Godot Engine") || l.StartsWith("Vulkan")) return;
         Log(tag + ": " + l);
+        if (l.StartsWith("ERROR: ")) playError = l.Substring(7);          // (live\mission_play.py: why the mission did not start)
         if (!coopRun) return;                                              // PLAY, MAP VIEWER: no session to show
         Match m = COOP.Match(l);
         string t = m.Success ? m.Groups[1].Value : l;

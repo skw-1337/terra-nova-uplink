@@ -13,6 +13,7 @@ const MissionScript := preload("res://scripts/mission_script.gd")
 const MissionBuild := preload("res://scripts/mission_build.gd")
 const ResFile := preload("res://scripts/res_file.gd")
 const MissionNew := preload("res://scripts/mission_new.gd")
+const Mod := preload("res://scripts/mission_mod.gd")
 const TNData := preload("res://scripts/tn_data.gd")
 
 var fails := 0
@@ -98,6 +99,18 @@ func _synthetic() -> void:
 	_check(moved and st2[1]["at"] == before, "every branch target moved by 5")
 	_check(Babl.walk(PackedByteArray([0x01, 0x02, 0x47])) == null, "an unknown opcode is refused")
 	_check(Babl.walk(PackedByteArray([0x03, 0x02])) == null, "an instruction cut short is refused")
+	# the share format carries a script part and a new mission
+	var base := {"tnmod": 1, "base": {"file": "MISS37.RES", "units": 4, "sum": "0123456789abcdef"}}
+	var with_script: Dictionary = base.duplicate(true)
+	with_script["script"] = {"patch": [{"res": 1071, "frame": 1, "off": 69, "n": 1, "sum": "x", "old": 100, "new": 80}]}
+	_check(Mod.check(with_script) == "" and not Mod.is_empty(with_script) and Mod.summary(with_script) == "1 script number changed"
+		and Mod.script_of(with_script)["patch"].size() == 1, "a creation carries a script part: %s" % Mod.summary(with_script))
+	var round_trip: Dictionary = Mod.from_text(Mod.to_code(with_script))
+	_check(Mod.script_of(round_trip)["patch"][0]["new"] == 80, "and keeps it through its code form")
+	var bad_script: Dictionary = base.duplicate(true)
+	bad_script["script"] = [1, 2]
+	_check(Mod.check(bad_script) != "" and Mod.check(base.duplicate(true)) == "" and Mod.is_empty(base.duplicate(true)),
+		"a script part that is not one is refused; a creation without one is as before")
 	# an LG Res file: built, read, changed, built again
 	var rf := ResFile.empty()
 	ResFile.add(rf, 170, 0, 0, "map5.res".to_ascii_buffer())
@@ -162,6 +175,28 @@ func _game(data_dir: String) -> void:
 		"8: groups 9 and 10 go to zone 9, group 11 to zone 18")
 	_check(s8["objectives"][0]["kind"] == "none" and s8["objectives"][2]["kind"] == "none",
 		"8: objectives 1 and 3 are not used")
+
+
+# numbers as integers and lists sorted, to compare a table read from JSON with one made here
+func _norm(d) -> Dictionary:
+	var out := {}
+	for key in ["kill", "alive"]:
+		var o := {}
+		var ks: Array = d.get(key, {}).keys()
+		ks.sort()
+		for k in ks:
+			var l := []
+			for v in d[key][k]:
+				l.append(int(v))
+			o[str(k)] = l
+		out[key] = o
+	for key in ["follow", "attack", "count", "groups"]:
+		var l := []
+		for v in d.get(key, []):
+			l.append(int(v))
+		l.sort()
+		out[key] = l
+	return out
 
 
 func _patrol(s: Dictionary, g: int) -> Array:
@@ -368,6 +403,16 @@ func _write(game_data: String) -> void:
 	var r37: Dictionary = mo.refs_of_file("miss37.res")
 	_check(r37["kill"] == {"2": [0, 0, 100]} and r37["groups"] == [1, 2, 3, 4] and r8["groups"].has(11) and r8["kill"].is_empty(),
 		"refs(): what the editor's table says of 37 and 8")
+	# the table the editor shipped (scanned from the decompiled scripts) against the reader, mission by mission
+	var shipped = JSON.parse_string(FileAccess.get_file_as_string("res://data/mission_refs.json"))
+	if shipped is Dictionary and shipped.get("missions") is Dictionary:
+		var differ := []
+		for f in shipped["missions"]:
+			if JSON.stringify(_norm(shipped["missions"][f])) != JSON.stringify(_norm(mo.refs_of_file(f))):
+				differ.append(f)
+		_check(differ == ["MISS12.RES"] or differ.is_empty(), "refs() says what data/mission_refs.json says (but %s)" % str(differ))
+		var m12: Dictionary = mo.refs(12)
+		_check(m12["kill"].get("1", []) == [50, 100, 0], "12: label 1 is asked twice, both kept (%s)" % str(m12["kill"]))
 	_new_mission(dir, game_data)
 	# --- the script against the mission's units and zones
 	var m37 := ResFile.read(game_data.path_join("MISS37.RES"))

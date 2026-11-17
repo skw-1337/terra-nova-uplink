@@ -419,6 +419,7 @@ func _ready() -> void:
 			versus_btn.add_theme_font_size_override("font_size", 16)
 			versus_btn.pressed.connect(_host_online.bind(true))
 			bl.add_child(versus_btn)
+	_extras()
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8
@@ -6684,3 +6685,26 @@ func _process(delta: float) -> void:
 	if move != Vector3.ZERO:
 		var fast := 4.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 1.0
 		camera.position += move.normalized() * speed * fast * delta
+
+
+# ------------------------------------------------------------------ optional extras
+# Novelties on top of the game's look, each off unless asked for (the launcher's "In game" switches, or the
+# environment), each in its own script, nothing of them made when off:
+# TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
+var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
+
+
+func _extras() -> void:
+	if live and not guest_win and OS.get_environment("TN_FX_MARKS") == "1":
+		var mk: Node = load("res://scripts/fx_marks.gd").new()
+		mk.v = self
+		mk.shots = _fx_shots()
+		add_child(mk)
+
+
+func _fx_shots() -> Node:
+	if fx_shots == null:
+		fx_shots = load("res://scripts/fx_shots.gd").new()
+		fx_shots.v = self
+		add_child(fx_shots)
+	return fx_shots

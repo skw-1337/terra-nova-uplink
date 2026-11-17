@@ -146,6 +146,7 @@ func _build(node: Node3D) -> void:
 		mi.material_override = mat
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		mi.set_instance_shader_parameter("mirror", seg.get_instance_shader_parameter("mirror"))
+		mi.set_instance_shader_parameter("fade_top", 0.6 if maxi(part[1], part[2]) >= 6 else 0.0)   # (a thigh: hip to knee)
 		mi.extra_cull_margin = 2.0
 		seg.add_child(mi)
 		legs.append(mi)

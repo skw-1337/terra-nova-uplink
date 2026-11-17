@@ -293,6 +293,8 @@ REGIONS = 0x389EA8 if FR else 0x389DF8   # table des cadres des panneaux du cock
 # game's own picture: the HUD thread then sends the 3D window as it is, carte_hud)
 PANNEAUX = MODES - 0x12
 carte_hud = False
+echange_hud = False          # a panel shows the HUD's own view (mode 8): something is swapped with the HUD
+hud_carte_n = 0              # pictures running whose 3D window is not the game's 3D (send_hud)
 
 
 def cadres():
@@ -1427,7 +1429,7 @@ def hud_places(win):
 
 def send_hud():
     import numpy as np
-    global hud_n, hud_copies, hud_rate, hud_rect, hud_mobile
+    global hud_n, hud_copies, hud_rate, hud_rect, hud_mobile, hud_carte_n
     sbuf = d32(SB)
     if sbuf <= 0: return False
     # l'ecran du jeu et l'image HD doivent etre de la MEME image : juste apres un affichage (compteur qui avance),
@@ -1439,8 +1441,26 @@ def send_hud():
     alpha = np.full((400, 320), 255, np.uint8)
     still = None
     fx0, fy0, fw, fh, fww, fside = d32(FX), d32(FY), d32(FWV), d32(FHV), d32(FWWV), d32(FSI)
-    if carte_hud and 0 < fw <= 320 and 0 < fh <= 400:
-        pass                                  # the map in the HUD: nothing of the 3D there, the game's picture whole
+    # the map in the HUD: nothing of the 3D there, the game's picture whole. The panels' modes alone do not tell it
+    # (carte_hud: a panel in mode 8 and the main view not a drone's): a drone recalled while the player looks through
+    # it leaves its panel in mode 8 with the main view back on the player (the game's own 3D was then sent whole, the
+    # old pixels over Uplink's view), and the map called while he looks through the drone has the main view still on
+    # it (every picture was then refused as torn until the game's state settled: the map came late). What the game
+    # shows decides: its 3D window equal to its HD picture = the 3D, whatever the panels say; not equal twice running
+    # with a panel swapped = the map
+    carte = carte_hud
+    if echange_hud and 0 < fw <= 320 and 0 < fh <= 400 and fww > 0:
+        hd0 = np.frombuffer(g.read(d32(HB), fww * fh), np.uint8).reshape(fh, fww)
+        if d32(COPIES) != c or d32(0x466104): return False
+        cols0 = np.arange(fx0, fx0 + fw); idx0 = 2 * cols0 - 2 * fx0 + fside; ok0 = (idx0 >= 0) & (idx0 < fww)
+        pareil = float((scr[fy0:fy0 + fh, fx0:fx0 + fw][:, ok0] == hd0[:, idx0[ok0]]).mean()) if ok0.any() else 0.0
+        hud_carte_n = 0 if pareil >= 0.7 else hud_carte_n + 1
+        carte = hud_carte_n >= 2
+        if not carte and pareil < 0.7: return False     # (once: a torn read, or the first picture of the map)
+    else:
+        hud_carte_n = 0
+    if carte and 0 < fw <= 320 and 0 < fh <= 400:
+        pass
     elif 0 < fw <= 320 and 0 < fh <= 400 and fww > 0:
         hd = np.frombuffer(g.read(d32(HB), fww * fh), np.uint8).reshape(fh, fww)
         if d32(COPIES) != c or d32(0x466104): return False
@@ -2376,6 +2396,7 @@ while True:
     pmode = [pan[0x12 + 32 * k] for k in range(3)]
     echange = next((k for k in range(3) if pmode[k] == 8), None)
     carte_hud = echange is not None and not sonde
+    echange_hud = echange is not None
     if sonde: vues.pop(3, None)                   # (the drone's panel shows one or the other)
     if echange is None: vues.pop(4, None)
     if PORTEES:                               # what the game draws, every frame (its table re-read every 2 s)
@@ -2556,6 +2577,9 @@ while True:
     for k, v in vues.items():
         if time.time() - v[0] > 0.4 or not tab[0x25 * v[1]]: continue
         if pmode[ou[k]] in (13, 14, 15): continue     # (its panel is one of the 360 view's now)
+        # the drone's camera only while its panel shows it (mode 17; 16: LAUNCH DRONE, 18: its map, SELECT DESTINATION,
+        # which came a second late: the camera was kept over it until its last capture was 0.4 s old and the viewer let go)
+        if k == 3 and pmode[2] in (16, 18): continue
         ex_, ey_, ez_ = (c / 65536 for c in struct.unpack_from('<3i', tab, 0x25 * v[1] + 0x0F))
         ecap = struct.unpack_from('<H', tab, 0x25 * v[1] + 0x1B)[0] / 65536 * 2 * math.pi
         sv.append((k, (v[0], v[1], ex_ + v[2], ey_ + v[3], ez_ + v[4], v[5] if k == 2 else ecap + v[5], v[6], v[7])))

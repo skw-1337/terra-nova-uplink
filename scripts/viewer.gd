@@ -6202,9 +6202,10 @@ func _sub_views(q: PackedByteArray) -> void:
 		sv["seen"] = now
 	for panel in sub_views:
 		var sv: Dictionary = sub_views[panel]
-		# kept half a second without news (the bridge catches their viewpoint when it can); the 360 view's, which it
+		# kept 0.15 s without news (the bridge itself keeps a viewpoint it caught for 0.4 s and sends it every turn: half a
+		# second more here left a camera over what its panel showed next, the drone's map); the 360 view's, which it
 		# sends every time while they are there: a tenth
-		var on: bool = now - int(sv["seen"]) < (100 if panel in [5, 6, 7] else 500) and not menu_mode
+		var on: bool = now - int(sv["seen"]) < (100 if panel in [5, 6, 7] else 150) and not menu_mode
 		if on and int(sv["seen"]) != now:                # not in this packet: off at once if another one, which is, has
 			for other in sub_views:                      # its place (a panel shows one view at a time)
 				var so: Dictionary = sub_views[other]

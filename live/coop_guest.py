@@ -72,9 +72,10 @@ HMAP, HMAP_N = 0x36F50A, 513
 # for the entity of word 0x441350 only, a body higher than the ground (0x2949C4) + 0x1E0000 is put back at that
 # height, its vertical speed at 0, the rest of its motion kept (0x2F09E3, 0x2F0BC8). His suit is not the player's:
 # jets held, it went on up (121 units in a test), and the host's game stopped for good when it came down, at over
-# 20 units a second. The same limit for it here, each tick: from 30 units it lands at 10 units a second. A body: the entity's byte +0x22 = its handle, dword 0x44B9E4 + 4 x handle = its slot (under
-# 0x60), its state at 0x44E0DD + 0x30 x slot: for x, y, z (0x10 apart) the position (6 x the entity's, 16.16), the
-# speed, the acceleration
+# 20 units a second. The same limit for it here, each tick: from 30 units it lands at 10 units a second. A body:
+# the entity's byte +0x22 = its handle, dword 0x44B9E4 + 4 x handle = its slot (under 0x60), its state at
+# 0x44E0DD + 0x30 x slot: for x, y, z (0x10 apart) the position (6 x the entity's, 16.16), the speed, the
+# acceleration
 CEILING = 0x1E0000
 BODY, BODY_SLOT, BODY_STATE, BODY_N, BODY_Z = 0x22, 0x44B9E4, 0x44E0DD, 0x30, 0x20
 MISSION, NO_JETS, NO_FUEL, ENERGY_F = 0x359708, 0x2E, 0x2F, 0x442439

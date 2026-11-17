@@ -1686,7 +1686,7 @@ class SuitParts:
 	var margin := PackedFloat64Array()      # its cull margin, the same
 
 
-const LIMB_PULL := 0.05          # a standing suit's feet and shins drawn this much nearer the camera (_add_soldier)
+const LIMB_PULL := 0.05          # a standing suit's feet drawn this much nearer the camera (_add_soldier)
 
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
 # Joints of skeletons 884 / 885: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 pelvis, 9 neck,
@@ -1717,9 +1717,11 @@ func _add_soldier(holder: Node3D, suit: int, arms := 0) -> float:
 		seg.material_override = _limb_mat(lsuit[k], sg[2], ld)
 		# a left limb: the right one's sprite, mirrored (per instance: both sides share the material)
 		seg.set_instance_shader_parameter("mirror", 1.0 if int(sg[3]) & 1 else 0.0)
-		# drawn nearer the camera than they are (limb.gdshader pull): the feet and shins only, a sole reaching under
-		# the ground (0.25 for the whole suit: one just behind a wall showed through it)
-		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 5 else 0.0)
+		# drawn nearer the camera than they are (limb.gdshader pull): the feet only, a sole reaching under the ground
+		# (0.25 for the whole suit: one just behind a wall showed through it; the shins too: they covered the knee
+		# caps seen from the front, which the game shows)
+		(seg.material_override as ShaderMaterial).set_shader_parameter("pull", LIMB_PULL if maxi(sg[0], sg[1]) <= 3 else 0.0)
+		seg.set_instance_shader_parameter("bone_px", float(ld["len"]))   # (its depth: the middle of its bone, limb.gdshader)
 		holder.add_child(seg)
 		parts.append([seg, sg[0], sg[1], float(ld["len"]), float(ld["size"].x), _part_scale(suit, sg[2]), int(sg[4])])
 	var sp := SuitParts.new()
@@ -1859,7 +1861,9 @@ func _pose_apply(holder: Node3D, p: Array, refs: Array, eye) -> float:
 	var hand := 0.0
 	if views:
 		e = eye
-		hand = -float(refs[0])
+		# (the sign: seen from the front the game shows the chest, the toes and the muzzles, view 8; with the other
+		# sign every limb took view 0, its back, and its front from behind: fronts and backs swapped, sides right)
+		hand = float(refs[0])
 	for i in segs.size():
 		var ai := ja[i]
 		var bi := jb[i]

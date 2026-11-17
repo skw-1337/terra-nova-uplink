@@ -59,6 +59,7 @@ const MAP_LIGHT_8 := "0404040404040404040404040404040404040404040404040404040404
 enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE }   # the marks' kinds (coop_guest.py)
 
 const LOCK_SOUND := 2021                     # the game's sound when its player locks a target (0x262BBF)
+const LOCK_SEEN := 2028                      # ... and when it first draws the new target's box (0x26A309)
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
 const WEAPONS := ["", "Flare Launcher", "Smoke Grenade", "Grenade Launcher", "Laser", "Multipulsar", "Particle Beam",
@@ -77,6 +78,7 @@ var entity := 0
 var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
+var lock_info := PackedByteArray()     # what the host's bridge says of his target: armour %, beyond range, metres
 var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
@@ -112,7 +114,7 @@ var ground_of := ""                  # ... of which map file
 var map_img: Image                   # the panel's picture: the ground around him and the marks
 var map_tex: ImageTexture
 var map_dirty := true
-var big_font := PackedByteArray()     # the game's big HUD letters (the lock's lines)
+var big_font := PackedByteArray()     # the game's small HUD letters, for the panel (the lock's lines)
 var note_font := PackedByteArray()    # the game's small letters (the map's written notes)
 var pal_map := ""                    # the map file the palette was taken with (another planet: other ground colours)
 var map_from := Vector2i.ZERO        # its top left corner in the world, and the world units of a pixel
@@ -337,8 +339,12 @@ func _process(delta: float) -> void:
 					if sound == null:
 						sound = preload("res://scripts/coop_sound.gd").new()
 						add_child(sound)
-					sound.play_own(LOCK_SOUND, 64)                    # (the game's lock sound, at its volume)
+					sound.play_own(LOCK_SOUND, 64)                    # (the game's two lock sounds, at their volume:
+					sound.play_own(LOCK_SEEN, 64)                     # set, 0x262BBF; first drawn, 0x26A309)
 				lock_heard = lock
+				lock_info = PackedByteArray()
+				if lock != 0 and pk.size() >= 7 and pk.slice(pk.size() - 7, pk.size() - 4).get_string_from_ascii() == "LCK":
+					lock_info = pk.slice(pk.size() - 4)                   # (armour %, beyond range, metres: lock_info)
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true
@@ -1079,43 +1085,75 @@ func _drawn(idx: int) -> Node3D:
 	return n if n != null and is_instance_valid(n) and n.visible else null
 
 
-# the lock, as the game marks its player's target: a green box around it and, to its right, in the game's big
-# letters and its red, what it is (a word a line) and how far (the game's metres: 6 a unit). (Not drawn: the game's
-# "OUT OF RANGE" line and its target camera.)
+# His target, drawn as the game marks its player's (the game's screen units; read from its code):
+# - brackets (0x26A380): around the middle of the target on the screen, x - 5 to x + 5, y - 9 to y + 8 (the 400-row
+#   screen), each corner a quarter of the box's width and of its height (2 at least), in the game's green (0x84);
+# - under it (0x26A7C8), 12 rows below the middle: its armour, a bar from x - 6 to x + 6 in green, the part lost in red
+#   (0x44) from its right end, a white (0x1D) dot at each end;
+# - beside it, from x + 12 and 5 rows above the middle, in the game's small letters (RESHLMHI.RES 503) and its red
+#   (0x44): what it is (a word a line), a blank line, its distance ("%d m", the game's metres), a blank line, then
+#   "LOCKED", or "Out of" "Range" when it is beyond his weapon's range (the game's own texts, RESGAME.RES 369 / 370).
+# The host's bridge says the armour, the range and the distance (lock_info). Not drawn: the game's target camera.
 func _draw_lock() -> void:
 	var cam := get_viewport().get_camera_3d()
-	if lock == 0 or cam == null:
+	if lock == 0 or cam == null or hud_pal.size() < 256:
 		return
 	var n := _drawn(lock)
 	var at := n.global_position + Vector3(0, 0.35, 0) if n else lock_pos   # its middle, as the bridge's lock_pos
 	if cam.is_position_behind(at):
 		return
 	var c := _pixel(cam, at)
-	var g := Vector2(c.x * 320.0 / root.size.x, c.y * 400.0 / root.size.y)   # (in the game's screen)
-	var green: Color = hud_pal[0x84] if hud_pal.size() > 0x84 else Color(0.0, 0.9, 0.0)
-	var red: Color = hud_pal[0x44] if hud_pal.size() > 0x44 else Color(0.9, 0.0, 0.0)
-	var box := Rect2(g - Vector2(6, 11), Vector2(12, 22))
-	for r in [Rect2(box.position, Vector2(box.size.x, 2)), Rect2(box.position + Vector2(0, box.size.y - 2), Vector2(box.size.x, 2)),
-			Rect2(box.position, Vector2(1, box.size.y)), Rect2(box.position + Vector2(box.size.x - 1, 0), Vector2(1, box.size.y))]:
-		panel.draw_rect(_grect(r.position.x, r.position.y, r.end.x, r.end.y), green)
+	var cx := floorf(c.x * 320.0 / root.size.x)
+	var cy := floorf(c.y * 400.0 / root.size.y)
+	var green: Color = hud_pal[0x84]
+	var red: Color = hud_pal[0x44]
+	var white: Color = hud_pal[0x1D]
+	# the brackets
+	var x0 := cx - 5.0
+	var x1 := cx + 5.0
+	var y0 := cy - 9.0
+	var y1 := cy + 8.0
+	var aw := maxf(2.0, floorf((x1 - x0) / 4.0))
+	var ah := maxf(2.0, floorf((y1 - y0) / 4.0))
+	for corner in [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]:
+		var px: float = corner[0]
+		var py: float = corner[1]
+		_gline(px, py, px + corner[2] * aw, py, green)
+		_gline(px, py, px, py + corner[3] * ah, green)
+	# the armour bar
+	var arm: int = lock_info[0] if lock_info.size() >= 4 else 100
+	var by := cy + 12.0
+	_gline(cx - 7.0, by, cx - 7.0, by, white)
+	_gline(cx + 7.0, by, cx + 7.0, by, white)
+	_gline(cx - 6.0, by, cx + 6.0, by, green)
+	var keep := maxi(1, arm * 12 / 100)
+	if keep < 12:
+		_gline(cx - 6.0 + keep, by, cx + 6.0, by, red)
+	# the text
+	var name := "Unknown"
 	var vp := get_parent()
-	var lines: Array = []
 	if vp and "live_ents" in vp and vp.live_ents.has(lock) and "data" in vp:
 		var e: Array = vp.live_ents[lock]
-		lines = vp.data.type_name(e[0], e[1]).to_upper().split(" ", false)
-	lines.append("")
-	lines.append("%d M" % int(round(cam.global_position.distance_to(at) * 6.0)))
-	var y := box.position.y
+		name = vp.data.type_name(e[0], e[1])
+	var metres: int = lock_info.decode_u16(2) if lock_info.size() >= 4 else int(round(cam.global_position.distance_to(at) * 6.0))
+	var far := lock_info.size() >= 4 and lock_info[1] != 0
+	var lines: Array = Array(name.to_upper().split(" ", false)) + ["", "%d M" % metres, ""] + (["OUT OF", "RANGE"] if far else ["LOCKED"])
+	var y := cy - 5.0
 	for t in lines:
-		_glyphs(str(t), box.end.x + 4.0, y, red)
-		y += 16.0
+		_glyphs(str(t), cx + 12.0, y, red)
+		y += 12.0
 
 
-# a text in the game's big HUD letters (RESHLMHI.RES 504, as _write's small ones), drawn at x, y of the game's screen
+# a line of the game's screen, a game pixel thick, from (ax, ay) to (bx, by), ends included
+func _gline(ax: float, ay: float, bx: float, by: float, col: Color) -> void:
+	panel.draw_rect(_grect(minf(ax, bx), minf(ay, by), maxf(ax, bx) + 1.0, maxf(ay, by) + 1.0), col)
+
+
+# a text in the game's small HUD letters (RESHLMHI.RES 503, as _write's), drawn at x, y of the game's screen
 func _glyphs(text: String, x: float, y: float, col: Color) -> void:
 	if big_font.is_empty():
 		_helmet_frames(0)
-		big_font = hl_res.data(504) if hl_res and hl_res.has(504) else PackedByteArray([0])
+		big_font = hl_res.data(503) if hl_res and hl_res.has(503) else PackedByteArray([0])
 	var f := big_font
 	if f.size() < 88 or text == "":
 		return

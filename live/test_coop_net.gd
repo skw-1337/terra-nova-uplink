@@ -330,6 +330,35 @@ func _run() -> void:
 			at += 1
 			there += 1
 	check(there == sent.size(), "the guest's keys and his map marker reach the bridge as sent, in order", "%d / %d" % [there, sent.size()])
+	# how late his input comes (40 ms one way and 20 ms of jitter here): 3 s of keys and mouse moves at 60 a second,
+	# each one's delay at the bridge, the first second against the last (a queue would grow)
+	var lat := []
+	var t_lat := now()
+	var sent_at := {}
+	for k in 180:
+		var kp := PackedByteArray([0x4B, 0, 0, k & 1])
+		kp.encode_u16(1, 0x100 + k)                        # (a scan code no test uses: its number is its index)
+		sent_at[0x100 + k] = now()
+		play.put_packet(kp)
+		play.put_packet(PackedByteArray([0x4D, 1, 0, 0, 0]))
+		await wait(1.0 / 60.0)
+	await wait(0.5)
+	for e in inputs:
+		var ip: PackedByteArray = e[1]
+		if e[0] >= t_lat and ip.size() >= 4 and ip[0] == 0x4B and sent_at.has(ip.decode_u16(1)):
+			lat.append([sent_at[ip.decode_u16(1)], e[0] - sent_at[ip.decode_u16(1)]])
+	var first := 0.0
+	var last := 0.0
+	var worst := 0.0
+	for l in lat:
+		worst = maxf(worst, l[1])
+		if l[0] - t_lat < 1.0:
+			first = maxf(first, l[1])
+		elif l[0] - t_lat > 2.0:
+			last = maxf(last, l[1])
+	check(lat.size() == 180 and worst < 0.04 + 0.02 + 0.05 and last < first + 0.03,
+		"the guest's input at the bridge within the network's delay and a frame or two, no queue growing",
+		"%d / 180, worst %d ms, first second %d ms, last second %d ms" % [lat.size(), worst * 1000, first * 1000, last * 1000])
 
 	# --- the guest's own 'R': its decor table lost (a new decoder), it must ask again
 	var r_before := count(resyncs, 0.0)

@@ -2165,7 +2165,7 @@ guest = None
 if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop build): a teammate played by a second player
     import coop_guest                           # (--guest-remote: online, through the host window's Steam link)
     guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote='--guest-remote' in sys.argv,
-                             view_hz=arg('--view-hz', 20.0),   # online: views a second to the guest
+                             view_hz=arg('--view-hz', 40.0),   # online: views a second to the guest
                              versus='--versus' in sys.argv,     # 1v1 (Terra Nova Coop's mode)
                              eye_fixed='--eye' in sys.argv, oeil=OEIL)   # (his suit's eye: the game's, as the host's)
     guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)

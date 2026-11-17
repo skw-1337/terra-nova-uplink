@@ -91,6 +91,8 @@ var src_cache := {}                  # mission file (upper case) -> its original
 var mission_files := {}              # mission file (upper case) -> its path
 var refs := {}                       # what this mission's script does with labels and groups (data/mission_refs.json)
 var all_refs = null
+var script_reader = null             # (hook: mission scripts) the game's own scripts, read once (mission_script.gd)
+var script_tried := false
 var weapon_names := {}               # weapon id -> text (the properties panel)
 var slot_weapons := {}               # class * 256 + record offset -> {weapon id: true}: what the game's units carry there
 var next_uid := 1
@@ -700,6 +702,15 @@ func _guess_source(r: PackedByteArray) -> Dictionary:
 
 # what the mission's script does with labels and groups (scanned from the game's scripts): {} when not known
 func _mission_refs(file: String) -> Dictionary:
+	# (hook: mission scripts) the game's own RESBABL2.RES read by mission_script.gd; the table scanned once from
+	# the decompiled scripts stays as the fallback when the file is not there
+	if not script_tried:
+		script_tried = true
+		script_reader = load("res://scripts/mission_script.gd").open(viewer.data.data_dir(), true)
+	if script_reader != null:
+		var own: Dictionary = script_reader.refs_of_file(file)
+		if not own.is_empty():
+			return own
 	if all_refs == null:
 		all_refs = {}
 		var j = JSON.parse_string(FileAccess.get_file_as_string("res://data/mission_refs.json"))

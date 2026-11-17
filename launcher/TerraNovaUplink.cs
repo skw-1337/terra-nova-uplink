@@ -151,13 +151,17 @@ static class Uplink
     static Panel[] pages;
     static Tile[] navs;
     static Tile helpBtn;
-    static Tick fpsBox, oldBox, runTick, introBox, wheelTick;
+    static Tick fpsBox, oldBox, runTick, introBox, wheelTick, subsTick;
     static Tile wheelKeyBtn;
+    // Uplink's extras on top of the game's look, each off unless ticked (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
+    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars" };
+    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars" };
+    static Tick[] fxTicks = new Tick[6];
     static Label fpsKeyLabel, shotKeyLabel;
     static ComboBox capBox;
     static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Settings" };
     static readonly string[] PAGE_ICONS = { "", "", "", "", "" };
-    const int SB = 150, PW = 520, PH = 334;        // the side bar's width, a page's inner width and height
+    const int SB = 150, PW = 520, PH = 456;        // the side bar's width, a page's inner width and height
 
     static void ShowPage(int k)
     {
@@ -268,7 +272,7 @@ static class Uplink
 
         // ---- In game: what shows and how it plays in a mission, one switch a line
         pg = pages[3];
-        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 288) };
+        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 410) };
         pg.Controls.Add(ig);
         int ry = 10, RH = 34;
         fpsBox = new Tick { Text = "Frame counter (top right)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
@@ -311,7 +315,17 @@ static class Uplink
         ig.Controls.Add(wheelTick);
         wheelKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(270, ry), Size = new Size(238, 28), Small = true };
         wheelKeyBtn.Click += delegate { AskOrderKey(); };
-        ig.Controls.Add(wheelKeyBtn);
+        ig.Controls.Add(wheelKeyBtn); ry += RH;
+        // what a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
+        subsTick = new Tick { Text = "Subtitles (what the squad says)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(subsTick); ry += RH;
+        ig.Controls.Add(new Label { Text = "Extras (Uplink's own, not in the game):", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CDim, BackColor = CPanel, Font = FSmall });
+        ry += 20;
+        for (int i = 0; i < FX.Length; i++)
+        {
+            fxTicks[i] = new Tick { Text = FX_NAMES[i], AutoSize = true, Location = new Point(12 + 168 * (i % 3), ry + 4 + RH * (i / 3)), ForeColor = CText, BackColor = CPanel };
+            ig.Controls.Add(fxTicks[i]);
+        }
         runBox = new ComboBox();                                 // (kept for the code that reads it: the switch drives it)
         runBox.Items.AddRange(new object[] { "Bound", "Run" });
         runTick.CheckedChanged += delegate { runBox.SelectedIndex = runTick.Checked ? 1 : 0; };
@@ -688,6 +702,8 @@ static class Uplink
         introBox.Checked = Cfg("skip_intro") == "1";
         oldBox.Checked = Cfg("old_school") != "0";
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
+        subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
+        for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) == "1";   // (the extras: off unless asked for)
         int cap;
         capBox.Text = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap.ToString() : "Unlimited";
         padBox.Checked = Cfg("gamepad") != "0";
@@ -709,6 +725,8 @@ static class Uplink
         Set("skip_intro", introBox.Checked ? "1" : "0");
         Set("old_school", oldBox.Checked ? "1" : "0");
         Set("order_wheel", wheelTick.Checked ? "1" : "0");
+        Set("subtitles", subsTick.Checked ? "1" : "0");
+        for (int i = 0; i < FX.Length; i++) Set("fx_" + FX[i], fxTicks[i].Checked ? "1" : "0");
         int cap;
         Set("fps_cap", int.TryParse(capBox.Text.Trim(), out cap) && cap > 0 ? Math.Max(20, Math.Min(1000, cap)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
@@ -1153,7 +1171,9 @@ static class Uplink
         env["TN_OLDSCHOOL"] = Cfg("old_school") == "0" ? "0" : "1";
         env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
+        env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";
         env["TN_ORDER_KEY"] = OrderKey();
+        foreach (string fx in FX) env["TN_FX_" + fx.ToUpperInvariant()] = Cfg("fx_" + fx) == "1" ? "1" : "0";
         return env;
     }
 

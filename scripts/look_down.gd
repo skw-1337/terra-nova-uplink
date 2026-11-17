@@ -1,0 +1,249 @@
+# Looking down past the game's limit (an extra on top of the game's look: off unless TN_FX_LOOK_DOWN=1). The game
+# stops the head 45 degrees down (0x2c9254; the bridge's look does the same). With this on, the mouse pulled further
+# down turns Uplink's camera alone, down to nearly straight under the player: he sees the ground at his feet and his
+# own suit's legs and feet (his body, drawn from his own joints: it already stands there for the cockpit's side
+# views; here its legs get a round solid each for the main view, legs.gdshader). The game knows nothing of it: its head stays at its limit, its aim and its shots too. A mark shows where
+# the game aims (where the shots go) while the view is turned past it. Pulled back up, the view first comes back to
+# the game's limit, then the mouse turns the game's head again.
+# The bridge says where the game's head is ('HPIT', sent only with the option on); between two of them the head is
+# followed here as the bridge moves it (8 units of the game's angle a mouse count, stopped at +/-0x2000).
+extends Node
+
+const LEGS = preload("res://legs.gdshader")
+
+const LIMIT := 0x2000                        # the game's head: 45 degrees down (its angle units, 65536 a turn)
+const UNIT := 8                              # the bridge: units of the game's angle per mouse count (SENS_Y)
+const RAD := TAU / 65536.0 * UNIT            # radians per mouse count
+const MAX := 0.75                            # how far past the limit (rad): 43 degrees, 88 down in all
+const LEAN := 0.05                           # the eye leans this far forward at the lowest (a head bending down)
+const TEST := "TN_LOOK_DOWN_TEST"            # tests: "start,rate[,hold]" = from that second on, the mouse pulled down for
+                                             # 3 s at that many counts a second, held 3 s (or hold), pulled back up 3 s
+
+var v: Node                                  # the viewer
+var extra := 0.0                             # the camera's turn past the game's limit (rad, <= 0: down)
+var head := 0                                # the game's head as followed here (its units, > 0: down)
+var known := false                           # the bridge told it once
+var moved := -1000.0                         # when the mouse last moved it (s)
+var shown := false                           # the legs are shown
+var legs := []                               # their solids (children of the body's leg pieces)
+var legs_of: Node3D                          # the body they were made for
+var mark: Control
+var test_t := -1.0
+
+
+func _ready() -> void:
+	var cl := CanvasLayer.new()
+	cl.layer = 19                            # over the game's HUD, under Uplink's own lines
+	add_child(cl)
+	mark = Control.new()
+	mark.set_anchors_preset(Control.PRESET_FULL_RECT)
+	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mark.draw.connect(_draw_mark)
+	mark.visible = false
+	cl.add_child(mark)
+
+
+# the bridge: the game's head pitch (its units)
+func head_is(units: int) -> void:
+	if not known or Time.get_ticks_msec() / 1000.0 - moved > 0.2:
+		head = units
+	known = true
+
+
+# The mouse moved dy counts down (< 0: up) in the look mode. Returns what goes to the game; the rest turns the
+# camera past the limit.
+func take(dy: float) -> float:
+	if not known or v.menu_mode:
+		return dy
+	moved = Time.get_ticks_msec() / 1000.0
+	if dy > 0.0:
+		var room := maxf(0.0, float(LIMIT - head) / UNIT - maxf(v.play_dy, 0.0))   # counts left before the limit
+		var to_game := minf(dy, room)
+		extra = maxf(extra - (dy - to_game) * RAD, -MAX)
+		return to_game
+	if extra < 0.0:
+		extra -= dy * RAD
+		if extra > 0.0:
+			var back := -extra / RAD             # what is left of the move once the view is back at the limit
+			extra = 0.0
+			return back
+		return 0.0
+	return dy
+
+
+# what the viewer sent the bridge (whole counts): the head moves as the bridge moves it
+func sent(dy: int) -> void:
+	head = clampi(head + dy * UNIT, -LIMIT, LIMIT)
+
+
+func _process(dt: float) -> void:
+	if v == null or not v.live:
+		return
+	if OS.has_environment(TEST) and known:
+		_test(dt)
+	if extra < 0.0 and (v.menu_mode or v.current.is_empty()):
+		extra = 0.0                              # one of the game's screens: the view as the game's
+	var on := extra < -0.001
+	if on:
+		var k := -extra / MAX
+		var fwd := Vector3(-sin(v.yaw), 0.0, -cos(v.yaw))
+		v.camera.position += fwd * LEAN * k      # (the viewer puts the camera back on the game's eye every frame)
+	if on or shown:
+		_legs(on)
+	mark.visible = on
+	if on:
+		mark.queue_redraw()
+
+
+# The player's own legs and feet (joints 0 to 7: toes, ankles, knees, hips) for the main view while it looks past the
+# limit. His body's limbs are the game's flat pictures, taken all around each bone and none from above: they stay the
+# side views' alone. Each leg piece gets a round solid around its bone instead (legs.gdshader), a child of the limb
+# (it takes every pose with it), as thick as the limb's front picture and dressed in it; a foot is flatter than wide.
+# The rest of the body (torso, head, arms: around the eye) is not shown.
+func _legs(on: bool) -> void:
+	shown = on
+	var node: Node3D = v.live_player_node
+	var ok := node != null and is_instance_valid(node) and node.has_meta("soldier") and node.has_meta("player_body")
+	if not ok or node != legs_of:
+		for l in legs:
+			if is_instance_valid(l):
+				l.queue_free()
+		legs.clear()
+		legs_of = null
+		if not ok or not on:
+			shown = false
+			return
+		legs_of = node
+		_build(node)
+	for l in legs:
+		if is_instance_valid(l):
+			l.visible = on
+
+
+func _build(node: Node3D) -> void:
+	var suit: int = node.get_meta("suit", 0)
+	var segs: Array = v.objects.skeleton(suit)
+	var parts: Array = node.get_meta("soldier")
+	for k in mini(segs.size(), parts.size()):
+		var part: Array = parts[k]
+		if maxi(part[1], part[2]) > 7:
+			continue
+		var seg: MeshInstance3D = part[0]
+		var ld: Dictionary = v.objects.limb(suit, segs[k][2], v.pal, v.pal_key)
+		if ld.is_empty() or not is_instance_valid(seg):
+			continue
+		var foot: bool = maxi(part[1], part[2]) <= 3
+		if not ld.has("solid"):
+			ld["solid"] = _solid(ld, foot)
+		var mat := ShaderMaterial.new()
+		mat.shader = LEGS
+		mat.set_shader_parameter("views", ld["tex"])
+		mat.set_shader_parameter("front", float(mini(8, int(ld["views"]) - 1)))
+		v._limb_light_set(mat)
+		var mi := MeshInstance3D.new()
+		mi.set_meta("shadow_twin", true)             # (the viewer's passes over a unit's pieces leave it alone)
+		mi.mesh = ld["solid"]
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.set_instance_shader_parameter("mirror", seg.get_instance_shader_parameter("mirror"))
+		mi.extra_cull_margin = 2.0
+		seg.add_child(mi)
+		legs.append(mi)
+
+
+# A limb's solid, in its picture's own space (the limb's node: x its front, y along the bone from joint a, z its
+# side, in picture pixels): rings as wide as the picture's opaque part at that height, a foot 0.6 as thick as wide
+func _solid(ld: Dictionary, foot: bool) -> ArrayMesh:
+	var w := int(ld["size"].x)
+	var h := int(ld["size"].y)
+	var a1: float = ld["a1"]
+	var img: Image = (ld["tex"] as Texture2DArray).get_layer_data(mini(8, int(ld["views"]) - 1))
+	var rings := []                                # [y, half width, the middle's z]
+	const N := 7
+	for r in N:
+		var row := clampi(int(lerpf(1.0, h - 2.0, float(r) / (N - 1))), 0, h - 1)
+		var lo := w
+		var hi := -1
+		for x in w:
+			if img != null and img.get_pixel(x, row).a > 0.5:
+				lo = mini(lo, x)
+				hi = maxi(hi, x)
+		if hi < lo:
+			continue
+		rings.append([row - a1, (hi - lo + 1) * 0.5, (lo + hi + 1) * 0.5 - w * 0.5])
+	if rings.size() < 2:
+		rings = [[0.0, w * 0.25, 0.0], [float(ld["len"]), w * 0.25, 0.0]]
+	const SIDES := 10
+	var thick := 0.6 if foot else 1.0
+	# closed at both ends: a narrower ring, then a point, just beyond
+	var first: Array = rings[0]
+	var last: Array = rings[-1]
+	var ends := [[first[0] - first[1] * 0.35, 0.0, first[2]], [first[0] - first[1] * 0.25, first[1] * 0.6, first[2]]]
+	var ends2 := [[last[0] + last[1] * 0.25, last[1] * 0.6, last[2]], [last[0] + last[1] * 0.35, 0.0, last[2]]]
+	rings = ends + rings + ends2
+	# the picture's rows the solid is dressed in: a little inside its opaque part (its first and last rows are the
+	# picture's dark outline: the ends were black lids)
+	var inset: float = 0.12 * (last[0] - first[0])
+	var v0: float = (first[0] + inset + a1 + 0.5) / h
+	var v1: float = (last[0] - inset + a1 + 0.5) / h
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for r in rings.size() - 1:
+		for s in SIDES:
+			var quad := []
+			for c in [[0, 0], [1, 0], [1, 1], [0, 1]]:
+				var ring: Array = rings[r + c[1]]
+				var ang := TAU * float(s + c[0]) / SIDES
+				var n := Vector3(cos(ang) / thick, 0.0, sin(ang)).normalized()
+				var p := Vector3(cos(ang) * ring[1] * thick, ring[0], ring[2] + sin(ang) * ring[1])
+				quad.append([p, n, Vector2(0.5 + p.z / w, clampf((p.y + a1) / h, v0, v1))])
+			for i in [0, 1, 2, 0, 2, 3]:
+				st.set_normal(quad[i][1])
+				st.set_uv(quad[i][2])
+				st.add_vertex(quad[i][0])
+	return st.commit()
+
+
+# Where the game aims (its head, at the limit): a small ring there; beyond the top of the view, an arrow at its edge
+func _draw_mark() -> void:
+	var cam: Camera3D = v.camera
+	var dir := Basis.from_euler(Vector3(v.pitch, v.yaw, 0.0)) * Vector3(0.0, 0.0, -1.0)
+	var at := cam.global_position + dir * 200.0
+	var vs := mark.get_viewport_rect().size
+	var top := 0.0
+	var bottom := vs.y
+	if v.hud_win.size.y > 0:                     # the game's 3D window in its cockpit
+		top = v.hud_win.position.y / 400.0 * vs.y
+		bottom = (v.hud_win.position.y + v.hud_win.size.y) / 400.0 * vs.y
+	var s := maxf(1.0, vs.y / 540.0)
+	var col := Color(0.3, 1.0, 0.4, 0.95)
+	var rim := Color(0.0, 0.0, 0.0, 0.7)
+	var p := cam.unproject_position(at)
+	if not cam.is_position_behind(at) and p.y > top + 10.0 * s and p.y < bottom:
+		mark.draw_arc(p, 7.0 * s, 0.0, TAU, 24, rim, 3.5 * s, true)
+		mark.draw_arc(p, 7.0 * s, 0.0, TAU, 24, col, 1.6 * s, true)
+		mark.draw_circle(p, 1.6 * s, col)
+		return
+	var x := clampf(p.x, 20.0 * s, vs.x - 20.0 * s) if not cam.is_position_behind(at) else vs.x * 0.5
+	var c := Vector2(x, top + 14.0 * s)
+	var tri := PackedVector2Array([c + Vector2(0.0, -8.0 * s), c + Vector2(8.0 * s, 4.0 * s), c + Vector2(-8.0 * s, 4.0 * s)])
+	mark.draw_colored_polygon(tri, col)
+	mark.draw_polyline(tri + PackedVector2Array([tri[0]]), rim, 1.5 * s, true)
+
+
+func _test(dt: float) -> void:
+	var a := OS.get_environment(TEST).split_floats(",")
+	if a.size() < 2:
+		return
+	test_t += dt if test_t >= 0.0 else dt + 1.0
+	var t := test_t - a[0]
+	var rate := 0.0
+	var hold := a[2] if a.size() > 2 else 3.0
+	if t >= 0.0 and t < 3.0:
+		rate = a[1]
+	elif t >= 3.0 + hold and t < 6.0 + hold:
+		rate = -a[1]
+	if rate != 0.0:
+		v.play_dy += take(rate * dt)
+	if int(t * 2.0) != int((t - dt) * 2.0) and t > -1.0 and t < 7.0 + hold:
+		print("look down test: t %.1f head %d extra %.3f rad, view pitch %.1f deg" % [t, head, extra, rad_to_deg(v.camera.rotation.x)])

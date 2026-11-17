@@ -10,7 +10,14 @@
 #    "add":    [{"from": "MISS17.RES", "rec": 22, "sum": "<8 hex>", <fields>}],   new units: each a copy of a unit
 #                                                                       record of one of the game's missions (file,
 #                                                                       record index, checksum of that record)
-#    "zones":  [[3, x, y]]}                                             zones moved (number, x, y in 16.16)
+#    "zones":  [[3, x, y]],                                             zones moved (number, x, y in 16.16)
+#    "script": {"patch": [...], "build": [...]},                        (optional) the mission's script changed: numbers
+#                                                                       replaced in place, or the script rebuilt from
+#                                                                       blocks (scripts/mission_build.gd, which checks
+#                                                                       and installs it: set_mission_script())
+#    "new":    {"slot": 18, "like": "MISS37.RES", ...}}                 (optional) a brand new mission in one of the
+#                                                                       game's two empty slots (scripts/mission_new.gd):
+#                                                                       base.file is then MISS18.RES or MISS28.RES
 # <fields>: only what differs from the record it starts from: "g" group, "l" label (what the mission's scripts know
 # the unit by), "x" "y" "z" position and height above the ground (16.16), "h" heading (1/65536 turn), "p" pitch,
 # and "o": [offset, value, offset, value...] for any other byte of the 50-byte record from +6 on (the state
@@ -167,7 +174,20 @@ static func make(file: String, orig: Array, orig_zones: PackedByteArray, st: Dic
 
 static func is_empty(mod: Dictionary) -> bool:
 	return mod.get("remove", []).is_empty() and mod.get("edit", []).is_empty() and mod.get("add", []).is_empty() \
-		and mod.get("zones", []).is_empty()
+		and mod.get("zones", []).is_empty() and script_of(mod).is_empty() and not (mod.get("new") is Dictionary)
+
+
+# (hook: mission scripts) the script part of a creation, {} when it has none: what mission_build.gd's
+# check_for() and set_mission_script() take
+static func script_of(mod: Dictionary) -> Dictionary:
+	var s = mod.get("script")
+	if not (s is Dictionary):
+		return {}
+	var patch = s.get("patch", [])
+	var build = s.get("build", [])
+	if not (patch is Array) or not (build is Array) or (patch.is_empty() and build.is_empty()):
+		return {}
+	return {"patch": patch, "build": build}
 
 
 # what a creation holds, in a few words
@@ -180,6 +200,12 @@ static func summary(mod: Dictionary) -> String:
 	var z: int = mod.get("zones", []).size()
 	if z > 0:
 		parts.append("%d zone%s moved" % [z, "" if z == 1 else "s"])
+	var sc := script_of(mod)                         # (hook: mission scripts)
+	if not sc.is_empty():
+		var n: int = sc["patch"].size()
+		parts.append("script rebuilt" if not sc["build"].is_empty() else "%d script number%s changed" % [n, "" if n == 1 else "s"])
+	if mod.get("new") is Dictionary:
+		parts.append("a new mission")
 	return ", ".join(parts) if not parts.is_empty() else "no change"
 
 
@@ -277,6 +303,13 @@ static func check(mod: Dictionary) -> String:
 	for z in mod["zones"]:
 		if not (z is Array) or z.size() != 3 or not _is_int(z[0]) or not _is_int(z[1]) or not _is_int(z[2]):
 			return "its list \"zones\" can't be read"
+	# (hook: mission scripts) only their shape here: mission_build.gd and mission_new.gd check what they hold
+	if mod.has("script"):
+		var s = mod["script"]
+		if not (s is Dictionary) or not (s.get("patch", []) is Array) or not (s.get("build", []) is Array):
+			return "its script part can't be read"
+	if mod.has("new") and not (mod["new"] is Dictionary):
+		return "its new mission can't be read"
 	return ""
 
 

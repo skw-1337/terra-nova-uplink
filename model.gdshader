@@ -53,6 +53,6 @@ void fragment() {
 	int row = clamp(int(floor(i * 16.0)), 0, 23);
 	int frow = max(0, 15 - row);
 	int j = int(texelFetch(shade_idx, ivec2(idx, frow), 0).r * 255.0 + 0.5);
-	ALBEDO = tn_game_colour(texelFetch(pal_tex, ivec2(j, 0), 0).rgb);
+	ALBEDO = tn_game_colour(texelFetch(pal_tex, ivec2(j, 0), 0).rgb) * (1.0 + tn_shot_light((INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz));
 	}
 }

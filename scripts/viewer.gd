@@ -431,6 +431,7 @@ func _ready() -> void:
 			versus_btn.add_theme_font_size_override("font_size", 16)
 			versus_btn.pressed.connect(_host_online.bind(true))
 			bl.add_child(versus_btn)
+	_extras()
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8
@@ -1179,6 +1180,7 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 		sm.set_shader_parameter("has_ir", true)
 	sm.set_shader_parameter("game_colours", live)
 	sm.set_shader_parameter("tilemap", ImageTexture.create_from_image(grid["tilemap"]))
+	sm.set_shader_parameter("cliffs", OS.get_environment("TN_FX_CLIFFS") == "1")   # (an extra: steep faces textured from the side)
 	sm.set_shader_parameter("origin", origin)
 	sm.set_shader_parameter("step_size", step)
 	sm.set_shader_parameter("grid_n", float(grid["n"]))
@@ -1258,6 +1260,12 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("sun_dir", sun_to)
 	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
+	if fx_cloud_shadows:                              # (an extra: the clouds' shadows on the ground, _cloud_cover)
+		sm.set_shader_parameter("cloud_shadows", cloud_cover != null)
+		if cloud_cover != null:
+			sm.set_shader_parameter("cloud_cover", cloud_cover)
+			sm.set_shader_parameter("cloud_sun", Vector4(sun_to.x, maxf(sun_to.y, 0.15), sun_to.z,
+					sky_ref_y + 0.0478 * (float(mis_params.get("cloud_h", 1024)) - 8.0 * sky_ref_y)))
 
 
 # The planet's IR colours (RESPLNT 66 through tables 59-62) to the passes over the view (old school, infrared): in IR,
@@ -1384,6 +1392,10 @@ func _sky_rows() -> void:
 	sm.set_shader_parameter("row_up", b.y)
 	sm.set_shader_parameter("row_fwd", -b.z)
 	sm.set_shader_parameter("row_edge", 1.0 / px if px > 0.0 else 0.0)
+	if fx_stars and px > 0.0:                         # (an extra: sharp stars, sky.gdshader star_scale)
+		# pixels of the picture (the old school's own, when it is on) per pixel of the game's star map (TAU / 4 / 512)
+		var wide := _old_grid(old_sharp).x if oldschool_rect != null and oldschool_rect.visible else get_viewport().get_visible_rect().size.x
+		sm.set_shader_parameter("star_scale", (TAU / 2048.0) / (2.0 / (px * maxf(wide, 1.0))))
 
 
 func _clouds_update() -> void:
@@ -2890,6 +2902,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 	var to_light := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
 	sun_to = to_light
+	cloud_cover = null
 	if sk.is_empty():
 		var sm := ProceduralSkyMaterial.new()
 		sm.sky_top_color = Color(0.32, 0.5, 0.78)
@@ -2898,6 +2911,8 @@ func _set_sky(path: String, light: Vector2) -> void:
 		env.sky.sky_material = sm
 		env.fog_light_color = Color(0.7, 0.76, 0.84)
 		_haze_globals()
+		for gm in ground_mats:
+			gm.set_shader_parameter("cloud_shadows", false)
 		return
 	var mat := ShaderMaterial.new()
 	mat.shader = SKY_SHADER
@@ -2936,6 +2951,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
+	cloud_cover = _cloud_cover(sk["clouds"]) if fx_cloud_shadows else null
 	mat.set_shader_parameter("has_ir", false)
 	if live and cur_ir.has(60) and sk.get("cloud_idx") != null:   # infrared: the cloud layer through table 60 (0x2A7654)
 		var c60: PackedColorArray = cur_ir[60]
@@ -3839,13 +3855,20 @@ func _order_sight(m: Dictionary, from: Vector3, to: Vector3) -> bool:
 	return true
 
 
-# what the player aims at: the crosshair (the look mode; the game's cursor on the 3D view in the cursor mode)
+# what the player aims at: the crosshair (the look mode; the game's cursor on the 3D view in the cursor mode); with
+# the game's map in the HUD, what its cursor is on there (_map_pick)
 func _order_pick() -> Dictionary:
 	var vs := get_viewport().get_visible_rect().size
 	var at := (Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		if hud_win.size.y > 0 and hud_win.has_point(_play_game_pos(order_mouse)):
 			at = order_mouse
+	if _map_on():                                          # (the cursor's, wherever it is: off the map, nothing)
+		var on_map := {} if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else _map_pick(order_mouse)
+		if on_map.is_empty():
+			return {"ent": -1, "point": null}
+		order_centre = order_mouse                         # (the wheel opens there)
+		return on_map
 	var m: Dictionary = current["map"]
 	var from := camera.global_position
 	var dir := _order_ray(at)
@@ -3909,6 +3932,7 @@ func _order_button(down: bool) -> void:
 	if down:
 		if order_state != 0 or not _order_ready():
 			return
+		order_centre = null
 		order_aim = _order_pick()
 		order_t = Time.get_ticks_msec()
 		order_ptr = Vector2.ZERO
@@ -3995,6 +4019,15 @@ func _order_send(order: int, who: int) -> void:
 func _order_on_screen(tg: Array) -> Array:
 	if tg.is_empty() or int(tg[0]) == 0 or current.is_empty():
 		return [0, Vector2.ZERO]
+	if _map_on():                                          # the game's map in the HUD: where the map has it
+		var w: Vector2 = tg[1] if int(tg[0]) == 1 else Vector2.ZERO
+		if int(tg[0]) == 2:
+			var u = live_ents.get(int(tg[1]))
+			if u == null:
+				return [0, Vector2.ZERO]
+			w = Vector2(u[3], u[4])
+		var px := _map_pixel(w)
+		return [int(tg[0]), px] if _map_rect().has_point(px) else [0, Vector2.ZERO]
 	var p: Vector3
 	if int(tg[0]) == 2:
 		var e = live_ents.get(int(tg[1]))
@@ -4033,6 +4066,11 @@ func _order_update() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	w.k = _order_scale()
 	w.centre = ((Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs).round()
+	if order_state == 2 and order_centre != null:          # on the map: at the cursor, the whole wheel in the window
+		var room := Vector2(OrderWheel.RF + 8.0, OrderWheel.RF + 8.0) * w.k
+		var low := vs - Vector2(OrderWheel.RF + 8.0, OrderWheel.RF + 72.0) * w.k
+		w.centre = (order_centre as Vector2).clamp(room, low.max(room)).round()
+	w.marker_k = 0.5 if _map_on() else 1.0
 	w.shown = order_state == 2
 	var mark := [0, Vector2.ZERO]
 	if order_state == 2:
@@ -4060,6 +4098,8 @@ func _order_input(event: InputEvent) -> bool:
 		return false
 	if event is InputEventMouse:
 		order_mouse = event.position
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and _map_click(event):
+		return true
 	if event is InputEventMouseButton:
 		if int(order_key[0]) != 0 and event.button_index == int(order_key[0]):
 			_order_button(event.pressed)
@@ -4098,6 +4138,182 @@ func _order_input(event: InputEvent) -> bool:
 		_order_button(true)
 		return true
 	return false
+
+
+# ------------------------------------------------------------------ orders on the map
+# With the order wheel on, the game's map shown in the HUD (its full screen map: key M, the MAP button) takes orders
+# too. A click on it sends the entire squad to that place (MOVE THERE), a click on an enemy's mark orders the attack
+# on it (ATTACK TARGET; the units the map shows and the game lets be attacked: the bridge's 'MAPV' and 'ORDS'). The
+# wheel's button held on the map opens the wheel at the cursor, on that place or unit (who gets the order: the mouse
+# wheel, as ever); a short press is the click. The order's mark is drawn on the map. A click with Shift, Ctrl or Alt
+# held is the game's own, as without the option (it puts the player's nav marker there), and so are a click on the
+# map's box of switches and any click while the game itself waits for one on its map (an order of its COMM menu that
+# asks for a place or a target).
+const MAP_NEAR := 5.0                    # an enemy's mark is clicked within that of it (pixels of the game's screen)
+var map_news := -100000                  # when the bridge last said the map is in the HUD
+var map_wait := false                    # the game itself waits for a click on its map
+var map_box := Rect2()                   # the map on the game's 320 x 400 screen
+var map_origin := Vector2.ZERO           # the world's x, y at its top left corner
+var map_step := Vector2.ONE              # the world's length of one of its columns, of one of its rows
+var map_keys := Rect2()                  # its box of switches (the game's own: what the map shows), on the game's screen
+var map_ents := {}                       # the units it shows (the game's contacts)
+var map_click := false                   # the left button went down on it for an order
+var order_centre = null                  # the wheel's middle when it opened on the map (else: the crosshair)
+
+
+# the bridge's 'MAPV': flags, the map's rectangle, its corner in the world, a column's and a row's length, its box of
+# switches, the contacts
+func _map_status(q: PackedByteArray) -> void:
+	if q.size() < 39:
+		return
+	if q[4] & 1 == 0:
+		map_news = -100000
+		return
+	map_news = Time.get_ticks_msec()
+	map_wait = q[4] & 2 != 0
+	map_box = Rect2(q.decode_s16(5), q.decode_s16(7), q.decode_s16(9) - q.decode_s16(5), q.decode_s16(11) - q.decode_s16(7))
+	map_origin = Vector2(q.decode_float(13), q.decode_float(17))
+	map_step = Vector2(maxf(q.decode_float(21), 0.0001), maxf(q.decode_float(25), 0.0001))
+	map_keys = Rect2(q.decode_s16(29), q.decode_s16(31), q.decode_s16(33) - q.decode_s16(29), q.decode_s16(35) - q.decode_s16(31))
+	map_ents.clear()
+	for i in mini(q.decode_u16(37), (q.size() - 39) / 2):
+		map_ents[q.decode_u16(39 + 2 * i)] = true
+
+
+# the game's map is in the HUD and orders can be given on it
+func _map_on() -> bool:
+	return order_on and Time.get_ticks_msec() - map_news < 600 and not menu_mode and map_box.size.x > 0.0
+
+
+# the map in the window
+func _map_rect() -> Rect2:
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	return Rect2(map_box.position * s, map_box.size * s)
+
+
+# a place of the world -> where the map shows it in the window, and back
+func _map_pixel(w: Vector2) -> Vector2:
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	return (map_box.position + (w - map_origin) / map_step) * s
+
+
+func _map_world(at: Vector2) -> Vector2:
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	return map_origin + (at / s - map_box.position) * map_step
+
+
+# what a point of the window is on, on the map: the enemy whose mark is nearest within MAP_NEAR, else the place (a
+# point of the world inside the mission's ground). Empty: not on the map.
+func _map_pick(at: Vector2) -> Dictionary:
+	if not _map_rect().has_point(at):
+		return {}
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	if map_keys.has_point(at / s):
+		return {}                                          # (its box of switches: the game's)
+	var ent := -1
+	var best := MAP_NEAR
+	for id in order_enemies:
+		var e = live_ents.get(id)
+		if e == null or int(e[2]) & 1 == 0 or not map_ents.has(id):
+			continue
+		var d := ((_map_pixel(Vector2(e[3], e[4])) - at) / s).length()
+		if d <= best:
+			best = d
+			ent = id
+	var w := _map_world(at)
+	var point = w if w.x >= 10.0 and w.y >= 10.0 and w.x <= 502.0 and w.y <= 502.0 else null
+	return {"ent": ent, "point": point}
+
+
+# the left button on the map: an order for the entire squad when it is let go (true: the click was the order's)
+func _map_click(event: InputEventMouseButton) -> bool:
+	if not event.pressed:
+		if not map_click:
+			return false
+		map_click = false
+		if order_state == 0 and _order_ready() and _map_on():
+			if int(order_aim.get("ent", -1)) >= 0:
+				_order_send(0, 0)
+			elif order_aim.get("point") != null:
+				_order_send(1, 0)
+		return true
+	if order_state != 0 or play_hold or map_wait or not _map_on() or not _order_ready() \
+			or Input.mouse_mode == Input.MOUSE_MODE_CAPTURED or event.shift_pressed or event.ctrl_pressed or event.alt_pressed:
+		return false
+	var aim := _map_pick(event.position)
+	if aim.is_empty():
+		return false
+	order_aim = aim
+	map_click = true
+	return true
+
+
+# ------------------------------------------------------------------ the squadmates' subtitles
+# What a squadmate says, written (the launcher's "Subtitles": TN_SUBTITLES = 1; off unless asked). The game plays a
+# voice clip and shows nothing; the bridge says who plays which clip and what it means (live_bridge.py 'SUBT',
+# subtitles.py: the game's own reply texts where it has them), again every fifth of a second while the clip plays.
+# One line a speaker (subtitles.gd), kept as long as he speaks and no less than SUBS_MIN_MS. Not on a game screen,
+# not for a coop guest.
+const Subtitles = preload("res://scripts/subtitles.gd")
+const SUBS_MIN_MS := 1500                # a line stays at least that long (a one-word answer lasts half a second)
+const SUBS_LATE_MS := 450                # no news of a clip for that long: it is over
+var subs_on := OS.get_environment("TN_SUBTITLES") == "1"
+var subs := {}                           # squadmate (1-3) -> {n, pilot, text, since, seen, playing, ms, clip, event}
+var subs_view: Subtitles
+
+
+# the bridge's 'SUBT': number, squadmate, pilot, event, flags (bit 0: playing), clip, length (ms), text
+func _subs_packet(q: PackedByteArray) -> void:
+	if not subs_on or q.size() < 13 or guest_win:
+		return
+	var mate := int(q[5])
+	var now := Time.get_ticks_msec()
+	var s = subs.get(mate)
+	if s == null or int(s["n"]) != int(q[4]):
+		if q[8] & 1 == 0:
+			return                                         # (the end of a line never shown)
+		s = {"n": int(q[4]), "pilot": int(q[6]), "event": int(q[7]), "clip": q.decode_u16(9), "ms": q.decode_u16(11),
+				"text": q.slice(13).get_string_from_utf8(), "since": now}
+		subs[mate] = s
+	s["seen"] = now
+	s["playing"] = q[8] & 1 == 1
+
+
+func _subs_update() -> void:
+	if not subs_on:
+		return
+	var now := Time.get_ticks_msec()
+	var shown := []
+	for mate in subs.keys():
+		var s: Dictionary = subs[mate]
+		var end := int(s["seen"]) + (SUBS_LATE_MS if bool(s["playing"]) else 0)
+		if now >= maxi(end, int(s["since"]) + SUBS_MIN_MS):
+			subs.erase(mate)
+		else:
+			shown.append([int(s["since"]), mate])
+	if subs_view == null:
+		if shown.is_empty():
+			return
+		var sl := CanvasLayer.new()
+		sl.layer = 4                                       # over the game's HUD and the old school look, under the order wheel
+		add_child(sl)
+		subs_view = Subtitles.new()
+		sl.add_child(subs_view)
+	shown.sort()                                           # the newest line lowest
+	var lines := []
+	for it in shown:
+		var s: Dictionary = subs[it[1]]
+		var text := str(s["text"])
+		lines.append([_order_name([it[1], 0, int(s["pilot"])]), it[1], text, text.begins_with("[")])
+	var vs := get_viewport().get_visible_rect().size
+	var v := subs_view
+	v.k = vs.y / 1080.0
+	# at the bottom of the game's 3D window (its cockpit's dashboard rises in the middle), far under the crosshair
+	var win := Rect2(hud_win) if hud_win.size.y > 0 else Rect2(11, 42, 298, 199)
+	v.foot = Vector2((win.position.x + win.size.x * 0.5) / 320.0 * vs.x, (win.position.y + win.size.y * 0.89) / 400.0 * vs.y).round()
+	v.lines = lines
+	v.visible = not lines.is_empty() and not menu_mode
+	v.queue_redraw()
 
 
 # look <-> cursor (the look key, Pause, or a bind): the cursor starts on the view's centre
@@ -4189,6 +4405,7 @@ func _play_release_all() -> void:
 	bind_tap = ""
 	order_state = 0                                      # (the order wheel closes, nothing sent)
 	order_rmb = false
+	map_click = false
 	for bt in [1, 2]:                                    # a button let go elsewhere (alt-tab) would fire forever
 		_play_send(PackedByteArray([0x42, bt, 0]))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -4581,7 +4798,8 @@ func _input(event: InputEvent) -> void:
 			look_off.y = clampf(look_off.y - event.relative.y * 0.004, -1.05, 1.05)
 		elif captured:
 			play_dx += event.relative.x * mouse_sens
-			play_dy += event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
+			var down: float = event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
+			play_dy += look_dn.take(down) if look_dn != null else down   # (past the game's limit: look_down.gd)
 		elif play_started:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()
@@ -4665,6 +4883,8 @@ func _live_update() -> void:
 		b.encode_s16(1, dx)
 		b.encode_s16(3, dy)
 		_play_send(b)
+		if look_dn != null:
+			look_dn.sent(dy)
 	if play and play_cursor != play_cursor_sent and play_cursor.x >= 0 and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		var c := PackedByteArray([0x50, 0, 0, 0, 0])
 		c.encode_s16(1, play_cursor.x)
@@ -4682,6 +4902,7 @@ func _live_update() -> void:
 		_play_cursor()
 		_bind_taps()
 		_order_update()
+		_subs_update()
 	if host_btn:
 		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 		if versus_btn:
@@ -4725,6 +4946,10 @@ func _live_update() -> void:
 			_order_status(q)                                # the squad and who can be attacked (live_bridge.py, orders.py)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "ORDR":
 			_order_result(q)
+		elif q.size() >= 39 and q.slice(0, 4).get_string_from_ascii() == "MAPV":
+			_map_status(q)                                  # the game's map in the HUD, for the orders given on it
+		elif q.size() >= 13 and q.slice(0, 4).get_string_from_ascii() == "SUBT":
+			_subs_packet(q)                                 # a squadmate speaks (live_bridge.py, subtitles.py)
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)
@@ -4773,6 +4998,9 @@ func _live_update() -> void:
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
 		elif q.size() > 6 and q.slice(0, 4).get_string_from_ascii() == "TEXL":
 			_live_tiles(q)                                  # the ground tiles as the game holds them (its snow)
+		elif q.size() == 6 and q.slice(0, 4).get_string_from_ascii() == "HPIT":
+			if look_dn != null:
+				look_dn.head_is(q.decode_s16(4))            # the game's head pitch (look_down.gd)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
 			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
@@ -4997,11 +5225,16 @@ func _live_units(pk: PackedByteArray) -> void:
 	var ei := eblock.to_int32_array()
 	var ef := eblock.to_float32_array()
 	var fx_at := PackedInt32Array()
+	if fx_shots != null:
+		fx_shots.ents = {}
 	for k in ne:
 		var o := 8 * k
 		var cls := ei[o + 1]
 		if cls == 5 or cls == 6:
 			fx_at.append(o)
+			# (the extras that follow the shots, fx_shots.gd: the shots and the game's animated effects, not the dust)
+			if fx_shots != null and ei[o + 3] != 0 and (cls == 5 or not FX_NOT_FOLLOWED.has(ei[o + 2])):
+				fx_shots.ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 		else:
 			ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 	var joints := {}                                   # game index -> 16 joints (after the entities)
@@ -5409,7 +5642,7 @@ func _live_smooth() -> void:
 	camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
 	yaw = lerp_angle(cam_from[1], cam_to[1], a)
 	pitch = lerpf(cam_from[2], cam_to[2], a)
-	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
+	camera.rotation = Vector3(pitch + look_off.y + (look_dn.extra if look_dn != null else 0.0), yaw + look_off.x, 0)
 	for node in smooth_nodes:
 		if is_instance_valid(node):
 			_unit_smooth(node, now)
@@ -7167,3 +7400,87 @@ func _process(delta: float) -> void:
 	if move != Vector3.ZERO:
 		var fast := 4.0 if Input.is_physical_key_pressed(KEY_SHIFT) else 1.0
 		camera.position += move.normalized() * speed * fast * delta
+
+
+# ------------------------------------------------------------------ optional extras
+# Novelties on top of the game's look, each off unless asked for (the launcher's "In game" switches, or the
+# environment), each in its own script, nothing of them made when off:
+# TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
+# TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
+# TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
+# TN_FX_LOOK_DOWN=1 the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
+# TN_FX_CLIFFS=1    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
+# TN_FX_STARS=1     the space skies' stars as sharp points at the window's resolution (sky.gdshader star_scale)
+var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
+var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
+const FX_NOT_FOLLOWED := [28, 29, 31, 32, 33]   # class 6: beams, particles, lightning, debris, burst suits
+
+
+func _extras() -> void:
+	if live and not guest_win and OS.get_environment("TN_FX_MARKS") == "1":
+		var mk: Node = load("res://scripts/fx_marks.gd").new()
+		mk.v = self
+		mk.shots = _fx_shots()
+		add_child(mk)
+	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") == "1":
+		var lt: Node = load("res://scripts/fx_lights.gd").new()
+		lt.v = self
+		lt.shots = _fx_shots()
+		add_child(lt)
+	if live and not guest_win and OS.get_environment("TN_FX_LOOK_DOWN") == "1":
+		look_dn = load("res://scripts/look_down.gd").new()
+		look_dn.v = self
+		add_child(look_dn)
+
+
+func _fx_shots() -> Node:
+	if fx_shots == null:
+		fx_shots = load("res://scripts/fx_shots.gd").new()
+		fx_shots.v = self
+		add_child(fx_shots)
+	return fx_shots
+
+
+# Cloud shadows (TN_FX_CLOUD_SHADOWS=1): how thick the sky's cloud layer is, texel by texel, for the ground's shader
+# (terrain.gdshader cloud_shadows), which looks it up where the sun's ray from the ground meets the cloud ceiling
+# (the height the sky is drawn with at the drop zone: 0.0478 x (the mission's cloud height - 8 x the eye's), _sky_to)
+# and darkens by rows of the planet's light table. The sky's wind offset moves it (_clouds_update gives the ground's
+# materials the sky's cloud_off): the shadows drift with the clouds. On the planets' skies the clouds are the light,
+# pale texels on a deeper sky (thick = light); a storm sky is grey all over, its darker texels the thicker cloud,
+# and shades half as much. No clouds (the space skies): no shadows.
+var fx_cloud_shadows := OS.get_environment("TN_FX_CLOUD_SHADOWS") == "1"
+var fx_stars := OS.get_environment("TN_FX_STARS") == "1"
+var cloud_cover: ImageTexture
+
+
+func _cloud_cover(clouds: Texture2D) -> ImageTexture:
+	if clouds == null:
+		return null
+	var img := clouds.get_image()
+	if img == null or img.get_width() != 256 or img.get_height() != 256:
+		return null
+	img.convert(Image.FORMAT_RGB8)
+	var d := img.get_data()
+	var lum := PackedFloat32Array()
+	lum.resize(65536)
+	var sat := 0.0
+	for i in 65536:
+		var r := d[3 * i] / 255.0
+		var g := d[3 * i + 1] / 255.0
+		var b := d[3 * i + 2] / 255.0
+		lum[i] = 0.3 * r + 0.59 * g + 0.11 * b
+		sat += maxf(r, maxf(g, b)) - minf(r, minf(g, b))
+	var sorted := lum.duplicate()
+	sorted.sort()
+	var lo: float = sorted[6553]
+	var hi: float = sorted[58982]
+	if hi - lo < 0.02:
+		return null                                     # (a plain sky: nothing to cast)
+	var grey := sat / 65536.0 < 0.04                    # a storm's ceiling
+	lum = _box_blur(lum, 256, 2)
+	var out := PackedByteArray()
+	out.resize(65536)
+	for i in 65536:
+		var c := clampf((lum[i] - lo) / (hi - lo), 0.0, 1.0)
+		out[i] = int((0.4 + 0.25 * (1.0 - c) if grey else c) * 255.0)   # (a storm: 0.4 to 0.65, a row at most)
+	return ImageTexture.create_from_image(Image.create_from_data(256, 256, false, Image.FORMAT_R8, out))

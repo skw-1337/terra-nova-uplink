@@ -21,6 +21,13 @@ uniform vec2 cloud_off = vec2(0.0);        // texels (column, row): the game's w
 uniform float desat = 1.0;                 // live mode: undoes the view's saturation boost (the game's own colours)
 uniform float gain = 1.0;                  // live mode: the game's sky is brighter than this viewer's
 uniform float star_pixel = 0.00307;        // radians per star map pixel (TAU / 4 / 512)
+// sharp stars (an extra, off unless TN_FX_STARS=1): star_scale = pixels of the picture per pixel of the star map
+// (viewer.gd _sky_rows; 0: off, the map's own pixels as blocks). Each lit pixel of the game's map is then a round
+// point of its own colour at the pixel's place, as big on the screen whatever the picture's size (the brighter the
+// bigger: 2 to 4 pixels across in a 1280 pixel wide picture, growing as the square root of the picture's width: far
+// slower than the map's blocks, and never much bigger than the map's own pixel), with a smooth edge. Where a map
+// pixel is under 1.5 pixels of the picture (the old school's grid of the game's own pixels) the map is drawn as it is.
+uniform float star_scale = 0.0;
 const float HORIZON_GLOW = 0.3;            // skies without clouds, modern look: share of the haze colour at the horizon
 
 float hash(vec3 p) {
@@ -79,6 +86,24 @@ vec3 band_at(sampler2D b, float r) {
 	return mix(c2, c3, smoothstep(C2, C3, lr));
 }
 
+vec3 stars_sharp(vec2 px, float el) {
+	vec2 base = floor(px);
+	vec3 best = vec3(0.0);
+	float across = max(cos(el), 0.2);         // (the map's columns come closer together up the sky)
+	for (int j = -1; j <= 1; j++) {
+		for (int i = -1; i <= 1; i++) {
+			vec2 t = base + vec2(float(i), float(j));
+			vec4 st = texelFetch(stars, ivec2(mod(t, vec2(512.0, 320.0))), 0);
+			if (st.a > 0.5) {
+				float dist = length((px - (t + 0.5)) * vec2(across, 1.0)) * star_scale;   // pixels of the picture
+				float r = min(0.9 + 1.2 * max(st.r, max(st.g, st.b)), 0.62 * star_scale) * sqrt(max(star_scale / 1.9, 1.0));
+				best = max(best, st.rgb * (1.0 - smoothstep(r - 0.6, r + 0.6, dist)));
+			}
+		}
+	}
+	return best;
+}
+
 vec3 planet_sky(vec3 d, vec3 eye, bool per_row) {
 	if (d.y <= 0.0) {                     // the game: band 3 down to the ground; where no ground is drawn (beyond
 		// the outer map), the hazed ground instead (bands texel 4), from the horizon down over ~2 degrees
@@ -124,8 +149,12 @@ void sky() {
 			float az = atan(d.z, d.x) + PI;
 			float el = asin(clamp(d.y, 0.0, 1.0));
 			vec2 px = vec2(az / star_pixel, 320.0 - el / star_pixel);
-			vec4 st = texelFetch(stars, ivec2(mod(floor(px), vec2(512.0, 320.0))), 0);
-			top = st.a > 0.5 ? st.rgb : vec3(0.0);
+			if (star_scale > 1.5) {            // (a map pixel no bigger than 1.5 of the picture's: sharp as it is)
+				top = stars_sharp(px, el);
+			} else {
+				vec4 st = texelFetch(stars, ivec2(mod(floor(px), vec2(512.0, 320.0))), 0);
+				top = st.a > 0.5 ? st.rgb : vec3(0.0);
+			}
 		} else {
 			float s2 = hash(floor(d * 420.0));
 			top = s2 > 0.9975 ? vec3(0.55 + 0.45 * fract(s2 * 97.0)) : vec3(0.0);

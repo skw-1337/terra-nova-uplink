@@ -4259,7 +4259,8 @@ func _input(event: InputEvent) -> void:
 			look_off.y = clampf(look_off.y - event.relative.y * 0.004, -1.05, 1.05)
 		elif captured:
 			play_dx += event.relative.x * mouse_sens
-			play_dy += event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
+			var down: float = event.relative.y * mouse_sens * (-1.0 if invert_y else 1.0)
+			play_dy += look_dn.take(down) if look_dn != null else down   # (past the game's limit: look_down.gd)
 		elif play_started:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()
@@ -4343,6 +4344,8 @@ func _live_update() -> void:
 		b.encode_s16(1, dx)
 		b.encode_s16(3, dy)
 		_play_send(b)
+		if look_dn != null:
+			look_dn.sent(dy)
 	if play and play_cursor != play_cursor_sent and play_cursor.x >= 0 and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		var c := PackedByteArray([0x50, 0, 0, 0, 0])
 		c.encode_s16(1, play_cursor.x)
@@ -4440,6 +4443,9 @@ func _live_update() -> void:
 			_live_weather(q)                                # snow / rain (live_bridge.py, meteo)
 		elif q.size() > 6 and q.slice(0, 4).get_string_from_ascii() == "TEXL":
 			_live_tiles(q)                                  # the ground tiles as the game holds them (its snow)
+		elif q.size() == 6 and q.slice(0, 4).get_string_from_ascii() == "HPIT":
+			if look_dn != null:
+				look_dn.head_is(q.decode_s16(4))            # the game's head pitch (look_down.gd)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "HAZE":
 			_haze_fog(q.decode_float(4))                   # the haze the game draws with (live_bridge.py, hazing.py)
 		elif (q.size() == 12 or q.size() == 16) and q.slice(0, 4).get_string_from_ascii() == "WAYP":
@@ -5024,7 +5030,7 @@ func _live_smooth() -> void:
 	camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
 	yaw = lerp_angle(cam_from[1], cam_to[1], a)
 	pitch = lerpf(cam_from[2], cam_to[2], a)
-	camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
+	camera.rotation = Vector3(pitch + look_off.y + (look_dn.extra if look_dn != null else 0.0), yaw + look_off.x, 0)
 	for node in smooth_nodes:
 		if is_instance_valid(node):
 			_unit_smooth(node, now)
@@ -6703,7 +6709,9 @@ func _process(delta: float) -> void:
 # TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
 # TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
 # TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
+# TN_FX_LOOK_DOWN=1 the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
+var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
 
 
 func _extras() -> void:
@@ -6717,6 +6725,10 @@ func _extras() -> void:
 		lt.v = self
 		lt.shots = _fx_shots()
 		add_child(lt)
+	if live and not guest_win and OS.get_environment("TN_FX_LOOK_DOWN") == "1":
+		look_dn = load("res://scripts/look_down.gd").new()
+		look_dn.v = self
+		add_child(look_dn)
 
 
 func _fx_shots() -> Node:

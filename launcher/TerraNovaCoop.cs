@@ -413,7 +413,7 @@ static class Uplink
         c.Controls.Add(new Txt { Text = "Photo mode", Location = new Point(X, y), Size = new Size(120, RH) });
         photoKeyBtn = Key(c, X + IW - 104, y, 104); photoKeyBtn.Click += delegate { AskPhotoKey(); };
         y += RH;
-        c.Controls.Add(new Txt { Text = "Screenshot", Location = new Point(X, y), Size = new Size(120, RH) });      // (saved in Pictures)
+        c.Controls.Add(new Txt { Text = "Screenshot", Em = "to Pictures", Location = new Point(X, y), Size = new Size(140, RH) });
         shotKeyBtn = Key(c, X + IW - 104, y, 104); shotKeyBtn.Click += delegate { AskShotKey(); };
 
         // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY); what

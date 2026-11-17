@@ -47,6 +47,7 @@ LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 120.0   #
 # terraces put the host 30 degrees below him at 8 units)
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
 LIVE_PORT, PLAY_PORT = 47831, 47834
+HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 # online: the bridge's packets about the picture relayed to the guest (relay), and their least gap (s): the sky's
 # drift 5 a second (it moves slowly), the waypoint (its angle word turns every frame) twice; the rest when it changes
@@ -140,7 +141,14 @@ NOTES, NOTES_END, NOTE_ZOOM = 0x39A510, 0x39A518, 4   # (the panel's zoom 4: bit
 CONTACTS_AT = {1: (PBA, PBA_N, 0xB2), 2: (0x3A19E8, 0x128, 0x4D), 3: (0x39E590, 0x14F, 0x62)}
 SQUAD_COLOURS, DRONE, FOOTPRINTS, WAYPOINTS = 0x35B3ED, 0x396868, 0x3C5DD0, 0x392170
 WAYPOINT_COLOURS = (0x38, 0x3F, 0x7E, 0x84)
-M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT = range(8)
+M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = range(9)
+# A map marker for each player. The host's is the game's own nav marker. The guest's is Uplink's: his window asks for
+# it ('W' + world x, y, floats; x = 0: none), the bridge keeps it (the game is not told: it has one marker only) and
+# says it back to both windows: to his in the marks of his map (M_MATE), to the host's as 'GNAV' + x, y (floats; x = 0:
+# none) + the number of maps on the host's game screen, then for each its rectangle (4 words), the world x, y of its
+# corner and the world length of a column and of a row (4 floats): a cockpit panel showing the map (mode 9; its view:
+# the pointer at +0x20 of the panel) or the full screen map (a panel in mode 8, the view at 0x38FB20).
+PANELS, PANEL_N, PANEL_MODE, PANEL_VIEW, FULL_MAP, MAP_ROWS = 0x38FC00, 32, 0x12, 0x20, 0x38FB20, 0x35A544
 
 
 _LOG = None
@@ -214,6 +222,7 @@ class Guest:
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
+        self.gnav, self.gnav_t, self.gnav_told, self.gnav_mis = None, 0.0, False, None   # his map marker (world x, y)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
         self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
@@ -762,6 +771,8 @@ class Guest:
         nx, ny = struct.unpack('<2i', g.read(NAV, 8))
         if nx and ny:
             marks.append((M_NAV, 0x9C, pt(nx, ny)))
+        if self.gnav:                                          # his own marker (an older window draws nothing of it)
+            marks.append((M_MATE, 0, pt(*(int(v * 65536) for v in self.gnav))))
         marks = marks[:255]
         tables = b''
         if time.time() - self.tint_t > 5.0:                    # the weapon box's two colour tables, now and then
@@ -772,6 +783,44 @@ class Guest:
         state, ammo = self.weapon_state()
         return b'M' + struct.pack('<BBHB', 1 if tables else 0, state, ammo, len(marks)) + tables + \
             b''.join(bytes([k, c, len(d)]) + d for k, c, d in marks)
+
+    def host_maps(self):
+        """the maps on the host's game screen now: [(x0, y0, x1, y1, world x, y of the corner, world length of a
+        column, of a row)]"""
+        g = self.g
+        modes = [g.read(PANELS + PANEL_N * k + PANEL_MODE, 1)[0] for k in range(3)]
+        if 8 in modes:
+            views = [self.i32(FULL_MAP)]
+        else:
+            views = [self.i32(PANELS + PANEL_N * k + PANEL_VIEW) for k in range(3) if modes[k] == 9]
+        out = []
+        for v in views:
+            if not 0x300000 <= v < 0x500000:
+                continue
+            x, y, _, step, _, canvas = struct.unpack('<iiHiiI', g.read(v, 0x16))
+            if not (0x300000 <= canvas < 0x500000 and step > 0):
+                continue
+            x0, y0, x1, y1 = struct.unpack('<4h', g.read(canvas - 0x22 + 8, 8))
+            if 0 <= x0 < x1 <= 320 and 0 <= y0 < y1 <= 400:
+                out.append(struct.pack('<4h4f', x0, y0, x1, y1, x / 65536, y / 65536, step / 65536,
+                                       step / 65536 / (1 << (g.read(MAP_ROWS, 1)[0] & 3))))
+        return out
+
+    def host_marker(self, in_mission):
+        """the guest's map marker for the host's window, 5 times a second while there is one (and once when it goes);
+        gone with the mission"""
+        mis = self.i32(MISSION) if in_mission else None
+        if mis != self.gnav_mis:
+            self.gnav, self.gnav_mis = None, mis
+        if time.time() - self.gnav_t < 0.2 or not (self.gnav or self.gnav_told):
+            return
+        self.gnav_t, self.gnav_told = time.time(), bool(self.gnav)
+        try:
+            maps = self.host_maps() if self.gnav else []
+        except (OSError, struct.error):
+            maps = []
+        self.s.sendto(b'GNAV' + struct.pack('<2fB', *(self.gnav or (0.0, 0.0)), len(maps)) + b''.join(maps),
+                      ('127.0.0.1', HOST_LIVE))
 
     def energy_pct(self, e):
         """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power
@@ -979,6 +1028,7 @@ class Guest:
             if not self.ready:
                 return
         me = self.u16(self.pid_addr + 2)
+        self.host_marker(g.read(M + me * 0x25, 2) == b'\x01\x01')
         if g.read(M + me * 0x25, 2) != b'\x01\x01':          # not in a mission
             if self.gid:
                 self.take(0)
@@ -1115,6 +1165,7 @@ class Guest:
                 if self.joined:
                     self.joined = False
                     print('guest: left', flush=True)
+                self.gnav = None                               # (his map marker goes with him)
                 continue
             if not self.joined:
                 self.joined = True
@@ -1148,6 +1199,9 @@ class Guest:
                     self.lock_req = True
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
+            elif pk[:1] == b'W' and len(pk) == 9:                # his map marker: put there, or (x = 0) taken away
+                x, y = struct.unpack('<2f', pk[1:])
+                self.gnav = (x, y) if active and 1.0 <= x <= 511.0 and 1.0 <= y <= 511.0 else None
             elif pk[:1] == b'N' and len(pk) > 1:                 # his Steam name (host coop_net.gd): on the host's HUD
                 name = pk[1:33].decode('utf-8', 'ignore')
                 if name != self.name:

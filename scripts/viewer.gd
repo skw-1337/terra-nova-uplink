@@ -425,6 +425,9 @@ func _ready() -> void:
 	if live and ("--coop-hud" in args or "--coop-guest" in args):  # the coop guest's HUD (coop_hud.gd)
 		add_child(load("res://scripts/coop_hud.gd").new())
 		guest_win = true
+		# his views come over the network, 40 a second at best and unevenly: his camera eased from one to the next (the
+		# host's stays the game's: TN_SMOOTH); TN_SMOOTH=0 for none
+		smooth = OS.get_environment("TN_SMOOTH") != "0"
 	if live and "--hud" in args:
 		_hud_setup()
 	if live and "--play" in args:

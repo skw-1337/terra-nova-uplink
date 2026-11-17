@@ -233,7 +233,10 @@ func _process(delta: float) -> void:
 				var tag := pk.slice(0, 3).get_string_from_ascii()
 				if tag == "GLB" and lobby_label:
 					_lobby_seen(pk)
-				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS") and pk.size() <= UNRELIABLE_MAX   # a lost delta (or a moment's beams) breaks nothing
+				# a lost delta, a moment's beams, a HUD state (10 a second) or a sound (the bridge says the voices still
+				# playing twice a second: a lost end is caught up) breaks nothing; sent reliable, they waited behind the
+				# big reliable messages (the cockpit's picture, keyframes, decor) and came late, more and more so
+				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS" or tag == "GHD" or tag == "SND") and pk.size() <= UNRELIABLE_MAX
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
 					guest_ent = pk.decode_u16(8)

@@ -21,12 +21,14 @@ const OFF_LINE := Color8(34, 40, 120)
 const YELLOW := Color8(255, 205, 70)
 const RED := Color8(255, 70, 50)
 const HINT := Color8(176, 186, 255)
-# clockwise from the top; opposite orders face each other: attack / retreat, go there / come to me, cover / hold
-const LABELS := ["ATTACK TARGET", "MOVE THERE", "TAKE COVER", "RETREAT", "FOLLOW ME", "HOLD POSITION"]
+# the orders, by their number (orders.py); as the wheel comes, the first six clockwise from the top, opposite orders
+# facing each other: attack / retreat, go there / come to me, cover / hold
+const LABELS := ["ATTACK TARGET", "MOVE THERE", "TAKE COVER", "RETREAT", "FOLLOW ME", "HOLD POSITION", "ASSUME FORMATION"]
 
 var shown := false                     # the wheel itself
 var centre := Vector2.ZERO             # its middle, window pixels
 var k := 1.0                           # window rows / 1080
+var panes := [0, 1, 2, 3, 4, 5]         # the order on each pane, clockwise from the top (-1: an empty pane)
 var picked := -1                       # the pane under the hand (-1: none)
 var off := {}                          # panes that cannot be picked: pane -> the small line under its name
 var who := "ENTIRE SQUAD"
@@ -117,6 +119,9 @@ func _icon(i: int, at: Vector2, col: Color) -> void:
 			for sx in [-1, 1]:
 				for sy in [-1, 1]:
 					_stroke([p.call(sx * 10, sy * 4), p.call(sx * 10, sy * 10), p.call(sx * 4, sy * 10)], col, w)
+		6:                                               # assume formation: three in a wedge
+			for d in [Vector2(0, -6), Vector2(-9, 7), Vector2(9, 7)]:
+				draw_circle(at + d * s, 2.2 * s + w * k * 0.5, col, true, -1.0, true)
 
 
 func _draw() -> void:
@@ -159,13 +164,16 @@ func _draw_wheel() -> void:
 		_stroke([_vert(RF, i), _vert(RF, i + 1)], METAL_HI if v > 0.3 else (METAL_LO if v < -0.3 else METAL), lw)
 		_stroke([_vert(R_IN, i), _vert(R_IN, i + 1)], METAL_LO if v > 0.3 else (METAL_HI if v < -0.3 else METAL), lw)
 		_stroke([_vert(R_HUB, i), _vert(R_HUB, i + 1)], METAL_LO, lw)
-	for i in 6:                                           # an icon over each name
+	for i in 6:                                           # an icon over each name (an empty pane: nothing)
+		var o := int(panes[i])
+		if o < 0 or o >= LABELS.size():
+			continue
 		var a := deg_to_rad(-90.0 + 60.0 * i)
 		var at := centre + Vector2(cos(a), sin(a)) * (R + R_IN) * 0.5 * 0.90 * k
 		var col: Color = GREEN if i == picked else (OFF_TEXT if off.has(i) else WHITE)
-		var words: PackedStringArray = (LABELS[i] as String).split(" ")
+		var words: PackedStringArray = (LABELS[o] as String).split(" ")
 		var top := at.y - (22.0 + 14.0 * words.size()) * k
-		_icon(i, Vector2(roundf(at.x), roundf(top)), col)
+		_icon(o, Vector2(roundf(at.x), roundf(top)), col)
 		for j in words.size():
 			_text(bold, words[j], at.x, top + (24.0 + 27.0 * j) * k, 25.0, col)
 		if off.has(i) and str(off[i]) != "":

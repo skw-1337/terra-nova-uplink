@@ -5,6 +5,8 @@
 //   HOST A GAME: the same with the TN+ co-op build and Uplink's Steam lobby (the host plays, a friend joins).
 //   JOIN A FRIEND: Uplink's guest window, where the friends hosting a game show up with a JOIN button.
 //   MAP VIEWER: Uplink's map viewer, every map of the game.
+// The pages' pictures (bg_play.jpg, bg_coop.jpg, bg_maps.jpg, next to this file) are built into the exe by build.bat;
+// a launcher built without them (a 2.7 launcher updating itself) reads them from Uplink's files: see LoadHeroes.
 // Since 2.0 it replaces Terra Nova Coop too (launcher\TerraNovaCoop.cs is a copy of this file, so that Coop launchers
 // update themselves into this one). Built with the C# compiler that comes with Windows (.NET Framework 4.5+): build.bat.
 using System;
@@ -54,8 +56,9 @@ static class Uplink
     static readonly Color CBack = Color.FromArgb(8, 17, 16), CPanel = Color.FromArgb(13, 26, 24), CLine = Color.FromArgb(29, 53, 49);
     static readonly Color CButton = Color.FromArgb(17, 34, 31), CButtonLine = Color.FromArgb(42, 74, 68), CTeal = Color.FromArgb(47, 106, 94);
     static readonly Color CText = Color.FromArgb(214, 226, 220), CDim = Color.FromArgb(122, 150, 142), CAmber = Color.FromArgb(240, 178, 48);
-    static readonly Color CGreen = Color.FromArgb(56, 214, 92), CRed = Color.FromArgb(236, 72, 60), COrange = Color.FromArgb(214, 122, 28);
-    static readonly Color CBlue = Color.FromArgb(32, 65, 143), CLedOff = Color.FromArgb(40, 64, 58);
+    // (orange and blue: the two players' colours on the co-op HUD)
+    static readonly Color CGreen = Color.FromArgb(56, 214, 92), CRed = Color.FromArgb(236, 72, 60), COrange = Color.FromArgb(232, 134, 42);
+    static readonly Color CBlue = Color.FromArgb(61, 139, 240), CLedOff = Color.FromArgb(40, 64, 58);
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
@@ -71,24 +74,12 @@ static class Uplink
     static Dictionary<string, string> cfg = new Dictionary<string, string>();
     static Form form;
     static Font FHead, FBody, FSmall, FIcon;
-    static Label statusLabel, verLabel, sessionLabel, sensLabel, newsLink;
-    static Led sessionLed;
-    static Led[] leds;
-    static Label[] ledText;
-    static Tile playBtn, hostBtn, joinBtn, mapBtn, stopBtn, gameBtn, toolsBtn, reportBtn, logBtn, oldKeyBtn, sharpKeyBtn;
-    static RadioButton modeCoop, modeVs;
-    static ComboBox gameBox, sizeBox, missionBox, crossBox, runBox;
-    static TrackBar sensBar;
-    static CheckBox invertBox, padBox;
-    static ProgressBar bar;
-    static TextBox logBox;
-    static Panel sessionRow, lower;
-    static int sessionTop;
     static volatile bool busy, stopping, coopRun;
     static readonly List<Process> mine = new List<Process>();
     static string sessionName = "", sessionPing = "";
 
     enum Mode { Play, Host, Join, Maps }
+    static Mode? running;                                     // what PLAY, HOST, JOIN or MAP VIEWER started, while it runs
 
     [STAThread]
     static void Main()
@@ -115,6 +106,8 @@ static class Uplink
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
         if (args.Length > 1 && args[1] == "--binds")       // checks: TN+'s second binds, as Uplink is told them
         { Console.WriteLine(Binds()); Environment.Exit(0); }
+        if (args.Length > 1 && args[1] == "--env")         // checks: what Uplink is told when it starts (the options)
+        { foreach (KeyValuePair<string, string> kv in Env()) Console.WriteLine(kv.Key + "=" + kv.Value); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
         { foreach (string d in Installs()) Console.WriteLine(Edition(d) + (IsEnglish(d) ? " EN  " : "     ") + d); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
@@ -123,7 +116,7 @@ static class Uplink
         Application.EnableVisualStyles();
         Build();
         form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
-        form.FormClosing += delegate { SaveOptions(); stopping = true; };
+        form.FormClosing += delegate { loading = false; SaveOptions(); stopping = true; };
         Application.Run(form);
     }
 
@@ -148,31 +141,69 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ window
-    static Panel[] pages;
-    static Tile[] navs;
-    static Tile helpBtn;
-    static Tick fpsBox, oldBox, runTick, introBox, wheelTick, subsTick;
-    static Tile wheelKeyBtn;
-    // Uplink's extras on top of the game's look, each off unless ticked (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
+    // A side bar (the five pages, What's new and Help at its foot) and one page at a time, 610 x 500. Play, Co-op and
+    // Maps lie on a picture of Uplink's own (bg_play.jpg, bg_coop.jpg, bg_maps.jpg: see LoadHero); In game and
+    // Settings are cards. Everything is drawn here (switches, lists, sliders, key buttons): no Windows control shows.
+    static Surface[] pages;
+    static Surface side;
+    static Nav[] navs;
+    static Switch fpsBox, oldBox, runTick, introBox, wheelTick, subsTick, invertBox, padBox, hudTick, editTick;
+    static Btn wheelKeyBtn, photoKeyBtn, shotKeyBtn, oldKeyBtn, sharpKeyBtn, gameBtn, gameBtn2, toolsBtn, keysBtn, checkBtn;
+    static Big playBtn, mapBtn;
+    static CoopTile hostBtn, joinBtn;
+    static GameLine gameLine, gameLine2;
+    static Drop sizeBox, missionBox, crossBox, capBox, tapGround, tapEnemy;
+    static Seg sharpSeg;
+    static Slide sensBar, tapBar, deadBar;
+    static Txt sensLabel, tapLabel, sessionLabel;
+    static LedLine[] leds;
+    static LedLine verLabel;
+    static Led sessionLed;
+    static Surface sessionRow;
+    static Panel bar, barFill;
+    static TextBox logBox;
+    static WheelPad wheel;
+    static Radio[] wheelPicks;
+    static Toast toast;
+    static bool loading;                                      // the options are being put on the pages: nothing is saved
+    static int capValue;                                      // the frame limit (0: none)
+    // Uplink's extras on top of the game's look, each off unless switched on (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
     static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars" };
     static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars" };
-    static Tick[] fxTicks = new Tick[6];
-    static Label fpsKeyLabel, shotKeyLabel;
-    static ComboBox capBox;
+    static Switch[] fxTicks = new Switch[6];
     static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Settings" };
-    static readonly string[] PAGE_ICONS = { "", "", "", "", "" };
-    const int SB = 150, PW = 520, PH = 456;        // the side bar's width, a page's inner width and height
+    const int SB = 150, MW = 610, MH = 500;                   // the side bar's width, a page's size
+    const int P_WHEEL = 5;                                    // the order wheel's page (opened from In game)
+    // the squad's orders, by their number (as Uplink and its bridge count them: scripts\order_wheel.gd, live\orders.py)
+    static readonly string[] ORDERS = { "Attack target", "Move there", "Take cover", "Retreat", "Follow me", "Hold position", "Assume formation" };
+    static readonly Color CSoft = Color.FromArgb(157, 176, 169), CTape = Color.FromArgb(242, 194, 26), CTapeInk = Color.FromArgb(21, 20, 15);
+    static readonly Color COff = Color.FromArgb(34, 51, 47), CKnob = Color.FromArgb(108, 133, 125);
+    static Font F9, F95b, F10b, F105b, F11, F115, F12, F12s, F125, F13, F14s, F16b, F19b, F22b;
+    static StringFormat SF;
+    static readonly Graphics GM = Graphics.FromImage(new Bitmap(1, 1));
+
+    static int pageNow;
 
     static void ShowPage(int k)
     {
-        for (int i = 0; i < pages.Length; i++)
+        pageNow = k;
+        for (int i = 0; i < pages.Length; i++) pages[i].Visible = i == k;
+        int nav = k == P_WHEEL ? 3 : k;
+        for (int i = 0; i < navs.Length; i++) { navs[i].On = i == nav; navs[i].Invalidate(); }
+        Set("page", nav.ToString());
+        if (k == 3) ReadSharp();
+        if (k == P_WHEEL) WheelUi();
+        if (toast != null) toast.Place();
+    }
+
+    static Font Px(float px, int weight)
+    {
+        if (weight == 600)
         {
-            pages[i].Visible = i == k;
-            navs[i].Fill = navs[i].Line = i == k ? Color.FromArgb(18, 51, 43) : CPanel;
-            navs[i].Ink = i == k ? Color.FromArgb(93, 202, 165) : CDim;
-            navs[i].Invalidate();
+            Font s = new Font("Segoe UI Semibold", px, FontStyle.Regular, GraphicsUnit.Pixel);
+            if (s.Name == "Segoe UI Semibold") return s;
         }
-        Set("page", k.ToString());
+        return new Font("Segoe UI", px, weight >= 600 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
     }
 
     static void Build()
@@ -181,6 +212,11 @@ static class Uplink
         FBody = new Font("Segoe UI", 9.5f);
         FSmall = new Font("Segoe UI", 8.5f);
         FIcon = Pick(new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" }, 16f, FontStyle.Regular);
+        F9 = Px(9f, 400); F95b = Px(9.5f, 700); F10b = Px(10f, 700); F105b = Px(10.5f, 700); F11 = Px(11f, 400); F115 = Px(11.5f, 400);
+        F12 = Px(12f, 400); F12s = Px(12f, 600); F125 = Px(12.5f, 400); F13 = Px(13f, 400); F14s = Px(14f, 600); F16b = Px(16f, 700);
+        F19b = Px(19f, 700); F22b = Px(22f, 700);
+        SF = new StringFormat(StringFormat.GenericTypographic);
+        SF.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap;
 
         form = new Form();
         form.Text = TITLE + " " + VERSION;
@@ -191,227 +227,1356 @@ static class Uplink
         form.ForeColor = CText;
         form.Font = FBody;
         try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        int W = PW, X = 20;
+        loading = true;
 
-        // the side bar: the title, then one entry per page
-        side = new Panel { Location = new Point(0, 0), Size = new Size(SB, PH + 106), BackColor = CPanel };
+        // the side bar: the title, one entry per page, What's new and Help at its foot
+        side = new Surface { Location = new Point(0, 0), Size = new Size(SB, MH) };
+        side.Look = delegate(Graphics g) {
+            g.Clear(CPanel);
+            using (Pen p = new Pen(CLine)) g.DrawLine(p, SB - 1, 0, SB - 1, side.Height);
+            Spaced(g, "TERRA NOVA", F16b, COrange, 18, 17, 1f);
+            Str(g, "Uplink " + VERSION, F11, CDim, 18, 42);
+            using (Brush b = new SolidBrush(CBlue)) g.FillRectangle(b, 18, 64, 66, 2);
+        };
         form.Controls.Add(side);
-        side.Controls.Add(new Label { Text = "TERRA NOVA", Font = Pick(new[] { "Bahnschrift SemiBold", "Bahnschrift", "Segoe UI Semibold" }, 14f, FontStyle.Regular),
-            ForeColor = CAmber, BackColor = CPanel, AutoSize = true, Location = new Point(12, 14) });
-        side.Controls.Add(new Label { Text = "Uplink " + VERSION, Font = FSmall, ForeColor = CDim, BackColor = CPanel, AutoSize = true, Location = new Point(14, 40) });
-        side.Controls.Add(new Panel { BackColor = CAmber, Location = new Point(14, 62), Size = new Size(60, 2) });
-        pages = new Panel[PAGES.Length]; navs = new Tile[PAGES.Length];
+        pages = new Surface[PAGES.Length + 1]; navs = new Nav[PAGES.Length];
+        for (int i = 0; i < pages.Length; i++)
+        {
+            pages[i] = new Surface { Location = new Point(SB, 0), Size = new Size(MW, MH), Visible = false };
+            form.Controls.Add(pages[i]);
+        }
         for (int i = 0; i < PAGES.Length; i++)
         {
             int k = i;
-            navs[i] = new Tile(PAGES[i], PAGE_ICONS[i], CPanel, CPanel, CDim) { Location = new Point(8, 80 + i * 38), Size = new Size(SB - 16, 32), Small = true };
+            navs[i] = new Nav { Text = PAGES[i], Location = new Point(10, 86 + i * 39), Size = new Size(SB - 20, 35) };
             navs[i].Click += delegate { ShowPage(k); };
             side.Controls.Add(navs[i]);
-            pages[i] = new Panel { Location = new Point(SB, 0), Size = new Size(W + 2 * X, PH), BackColor = CBack, Visible = false };
-            form.Controls.Add(pages[i]);
         }
+        Link news = new Link { Text = "What's new", Ink = CBlue, Location = new Point(20, 442), Size = new Size(90, 18) };
+        news.Click += delegate { WhatsNew(); };
+        side.Controls.Add(news);
+        Link help = new Link { Text = "Help", Ink = CDim, Location = new Point(20, 461), Size = new Size(60, 18) };
+        help.Click += delegate { HelpMenu().Show(help, new Point(0, 0), ToolStripDropDownDirection.AboveRight); };
+        side.Controls.Add(help);
 
-        // ---- Play: the game (every Terra Nova found on the PC, one picked), the one big button, where to start
-        Panel pg = pages[0];
-        Box gp = new Box { Location = new Point(X, 16), Size = new Size(W, 40) };
-        pg.Controls.Add(gp);
-        gameBox = Combo(new Point(10, 8), W - 116);
-        gameBox.DrawMode = DrawMode.OwnerDrawFixed;
-        gameBox.ItemHeight = 18;
-        gameBox.MaxDropDownItems = 12;
-        gameBox.DrawItem += DrawGame;
-        gameBox.DropDown += delegate { FillGames(); };          // looked for again each time it opens
-        gameBox.SelectionChangeCommitted += delegate { PickInstall(); };
-        gp.Controls.Add(gameBox);
-        gameBtn = new Tile("Browse", null, CButton, CButtonLine, CText) { Location = new Point(W - 94, 5), Size = new Size(86, 30), Small = true };
-        gameBtn.Click += delegate { PickGame(); };
-        gp.Controls.Add(gameBtn);
-        FillGames();
-        playBtn = new Tile("PLAY", "", COrange, Color.FromArgb(236, 146, 44), Color.FromArgb(30, 14, 0)) { Location = new Point(X, 68), Size = new Size(W, 92) };
-        playBtn.Click += delegate { Start(Mode.Play); };
-        pg.Controls.Add(playBtn);
-        Box sp = new Box { Location = new Point(X, 172), Size = new Size(W, 44) };
-        pg.Controls.Add(sp);
-        sp.Controls.Add(Caption("START AT", 12, 15));
-        missionBox = Combo(new Point(96, 10), W - 210);
-        missionBox.MaxDropDownItems = 20;
-        sp.Controls.Add(missionBox);
-        FillMissions();
-        Tile savesBtn = new Tile("Saves", null, CButton, CButtonLine, CText) { Location = new Point(W - 104, 8), Size = new Size(94, 28), Small = true };
-        savesBtn.Click += delegate { Saves(); };
-        sp.Controls.Add(savesBtn);
+        BuildPlay(pages[0]);
+        BuildCoop(pages[1]);
+        BuildMaps(pages[2]);
+        BuildInGame(pages[3]);
+        BuildSettings(pages[4]);
+        BuildWheel(pages[P_WHEEL]);
+        LoadHeroes();
 
-        // ---- Co-op: host or join, the mode, the guest's gamepad; the session's line while one runs
-        pg = pages[1];
-        Box cp = new Box { Location = new Point(X, 16), Size = new Size(W, 118) };
-        pg.Controls.Add(cp);
-        int half = (W - 24) / 2;
-        hostBtn = new Tile("HOST A GAME", "", CButton, CTeal, CText) { Location = new Point(8, 8), Size = new Size(half, 72), IconColor = Color.FromArgb(93, 202, 165) };
-        hostBtn.Click += delegate { Start(Mode.Host); };
-        cp.Controls.Add(hostBtn);
-        joinBtn = new Tile("JOIN A FRIEND", "", CButton, CTeal, CText) { Location = new Point(16 + half, 8), Size = new Size(half, 72), IconColor = Color.FromArgb(93, 202, 165) };
-        joinBtn.Click += delegate { Start(Mode.Join); };
-        cp.Controls.Add(joinBtn);
-        modeCoop = new Dot { Text = "Squad", AutoSize = true, Location = new Point(14, 90), ForeColor = CDim, BackColor = CPanel };
-        modeVs = new Dot { Text = "1v1", AutoSize = true, Location = new Point(92, 90), ForeColor = CDim, BackColor = CPanel };
-        padBox = new Tick { Text = "Gamepad (guest)", AutoSize = true, Location = new Point(160, 90), ForeColor = CDim, BackColor = CPanel };
-        cp.Controls.Add(modeCoop); cp.Controls.Add(modeVs); cp.Controls.Add(padBox);
-        sessionRow = new Box { Location = new Point(X, 146), Size = new Size(W, 34), Visible = false };
-        pg.Controls.Add(sessionRow);
-        sessionLed = new Led { Location = new Point(12, 12), Size = new Size(10, 10), On = CDim };
-        sessionRow.Controls.Add(sessionLed);
-        sessionLabel = new Label { Location = new Point(30, 8), Size = new Size(W - 40, 20), ForeColor = CText, BackColor = CPanel, Text = "No session." };
-        sessionRow.Controls.Add(sessionLabel);
+        // over the pages: the progress of a download, a thin line at the foot; under them, the log when it is asked for
+        bar = new Panel { Location = new Point(SB, MH - 3), Size = new Size(MW, 3), BackColor = CLine, Visible = false };
+        barFill = new Panel { Location = new Point(0, 0), Size = new Size(0, 3), BackColor = COrange };
+        bar.Controls.Add(barFill);
+        form.Controls.Add(bar);
+        bar.BringToFront();
+        logBox = new TextBox { Location = new Point(SB + 18, MH + 6), Size = new Size(MW - 36, 140), Multiline = true, ReadOnly = true, Visible = false,
+            ScrollBars = ScrollBars.Vertical, BackColor = CPanel, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
+        form.Controls.Add(logBox);
+        try { SetWindowTheme(logBox.Handle, "DarkMode_Explorer", null); } catch { }
+        toast = new Toast();
+        form.Move += delegate { toast.Place(); };
+        form.Activated += delegate { ReadSharp(); };          // (the pixel size may have been changed in the game meanwhile)
 
-        // ---- Maps
-        pg = pages[2];
-        mapBtn = new Tile("MAP VIEWER", "", CBlue, Color.FromArgb(47, 92, 196), Color.FromArgb(230, 238, 252)) { Location = new Point(X, 16), Size = new Size(W, 92) };
-        mapBtn.Click += delegate { Start(Mode.Maps); };
-        pg.Controls.Add(mapBtn);
-        pg.Controls.Add(new Label { Text = "Every map of the game in 3D, without starting the game.", AutoSize = true, Location = new Point(X + 2, 118), ForeColor = CDim, Font = FSmall });
-        // the map viewer's mission editor (a prototype: off unless asked; TN_EDITOR)
-        editTick = new Tick { Text = "Mission editor (prototype): F6 in the map viewer", AutoSize = false, Size = new Size(W - 4, 22), Location = new Point(X + 2, 150), ForeColor = CText, BackColor = CBack };
-        pg.Controls.Add(editTick);
-
-        // ---- In game: what shows and how it plays in a mission, one switch a line
-        pg = pages[3];
-        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 410) };
-        pg.Controls.Add(ig);
-        int ry = 10, RH = 34;
-        fpsBox = new Tick { Text = "Frame counter (top right)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(fpsBox);
-        fpsKeyLabel = new Label { AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
-        ig.Controls.Add(fpsKeyLabel); ry += RH;
-        ig.Controls.Add(Caption("FRAME LIMIT", 12, ry + 6));
-        capBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Location = new Point(120, ry + 1), Size = new Size(130, 24), BackColor = CButton, ForeColor = CText, FlatStyle = FlatStyle.Flat };
-        capBox.Items.AddRange(new object[] { "Unlimited", "60", "120", "144", "240" });
-        ig.Controls.Add(capBox);
-        ig.Controls.Add(new Label { Text = "pictures a second (or type your own)", AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall });
-        ry += RH;
-        ig.Controls.Add(Caption("CROSSHAIR", 12, ry + 6));       // (the look mode's: the game's own, a dot, or none)
-        crossBox = Combo(new Point(120, ry + 1), 130);
-        crossBox.Items.AddRange(new object[] { "The game's", "A dot", "None" });
-        ig.Controls.Add(crossBox);
-        // Uplink's own colours on the cockpit: orange energy bar, light blue armour indicator (off: the game's; TN_HUD_COLOURS)
-        hudTick = new Tick { Text = "Uplink HUD colours", AutoSize = false, Size = new Size(230, 22), Location = new Point(270, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(hudTick); ry += RH;
-        oldBox = new Tick { Text = "Old school look at start", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(oldBox);
-        shotKeyLabel = new Label { AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
-        ig.Controls.Add(shotKeyLabel); ry += RH;
-        // Uplink's own two keys (the old school look and its pixel size: click, press the key)
-        ig.Controls.Add(Caption("ITS KEYS", 30, ry + 6));          // (the old school look's, right under its switch)
-        oldKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(120, ry), Size = new Size(190, 28), Small = true };
-        oldKeyBtn.Click += delegate { AskKey(false); };
-        ig.Controls.Add(oldKeyBtn);
-        sharpKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(318, ry), Size = new Size(190, 28), Small = true };
-        sharpKeyBtn.Click += delegate { AskKey(true); };
-        ig.Controls.Add(sharpKeyBtn); ry += RH;
-        // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
-        // leap at the same pace (Uplink's bridge: TN_RUN)
-        runTick = new Tick { Text = "Run instead of Bound (Shift + move, no leap)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(runTick);
-        // the photo mode's key (TN_KEY_PHOTO): the game paused, a free camera, pictures
-        photoKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(330, ry), Size = new Size(178, 28), Small = true };
-        photoKeyBtn.Click += delegate { AskPhotoKey(); };
-        ig.Controls.Add(photoKeyBtn); ry += RH;
-        invertBox = new Tick { Text = "Invert mouse (up / down)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(invertBox);
-        // the Looking Glass logo and the opening film skipped at the game's start (the bridge presses Esc on them, once each)
-        introBox = new Tick { Text = "Skip the intro videos", AutoSize = true, Location = new Point(270, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(introBox); ry += RH;
-        // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY)
-        wheelTick = new Tick { Text = "Order wheel (squad orders)", AutoSize = false, Size = new Size(250, 22), Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(wheelTick);
-        wheelKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(270, ry), Size = new Size(238, 28), Small = true };
-        wheelKeyBtn.Click += delegate { AskOrderKey(); };
-        ig.Controls.Add(wheelKeyBtn); ry += RH;
-        // what a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
-        subsTick = new Tick { Text = "Subtitles (what the squad says)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(subsTick); ry += RH;
-        ig.Controls.Add(new Label { Text = "Extras (Uplink's own, not in the game):", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CDim, BackColor = CPanel, Font = FSmall });
-        ry += 20;
-        for (int i = 0; i < FX.Length; i++)
-        {
-            fxTicks[i] = new Tick { Text = FX_NAMES[i], AutoSize = true, Location = new Point(12 + 168 * (i % 3), ry + 4 + RH * (i / 3)), ForeColor = CText, BackColor = CPanel };
-            ig.Controls.Add(fxTicks[i]);
-        }
-        runBox = new ComboBox();                                 // (kept for the code that reads it: the switch drives it)
-        runBox.Items.AddRange(new object[] { "Bound", "Run" });
-        runTick.CheckedChanged += delegate { runBox.SelectedIndex = runTick.Checked ? 1 : 0; };
-
-        // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed
-        pg = pages[4];
-        Box st = new Box { Location = new Point(X, 16), Size = new Size(W, 116) };
-        pg.Controls.Add(st);
-        st.Controls.Add(Caption("WINDOW", 12, 15));
-        sizeBox = Combo(new Point(96, 10), W - 106);
-        sizeBox.Items.AddRange(new object[] { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" });
-        st.Controls.Add(sizeBox);
-        st.Controls.Add(Caption("MOUSE", 12, 50));
-        sensBar = new TrackBar { Minimum = 2, Maximum = 30, TickStyle = TickStyle.None, Location = new Point(90, 44), Size = new Size(W - 170, 30),
-            BackColor = CPanel, AutoSize = false };
-        sensBar.ValueChanged += delegate { sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture); };
-        st.Controls.Add(sensBar);
-        sensLabel = new Label { ForeColor = CText, BackColor = CPanel, AutoSize = true, Location = new Point(W - 70, 50) };
-        st.Controls.Add(sensLabel);
-        Tile keysBtn = new Tile("Game keys", null, CButton, CButtonLine, CText) { Location = new Point(96, 78), Size = new Size(120, 28), Small = true };
-        keysBtn.Click += delegate { GameKeys(); };
-        st.Controls.Add(keysBtn);
-        toolsBtn = new Tile("Tools", "", CButton, CButtonLine, CText) { Location = new Point(224, 78), Size = new Size(110, 28), Small = true };
-        toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height)); };
-        st.Controls.Add(toolsBtn);
         KeyLabels();
         LoadOptions();
-        // what is installed: green lights
-        string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus", "TN+ co-op build", "Python", "Steam (co-op only)" };
-        leds = new Led[names.Length]; ledText = new Label[names.Length];
-        for (int i = 0; i < names.Length; i++)
-        {
-            int cx = X + 2 + (i % 3) * (W / 3), cy = 148 + (i / 3) * 22;
-            leds[i] = new Led { Location = new Point(cx, cy + 5), Size = new Size(9, 9) };
-            ledText[i] = new Label { AutoSize = true, Location = new Point(cx + 14, cy), ForeColor = CDim, Font = FSmall, Tag = names[i], Text = names[i] };
-            pg.Controls.Add(leds[i]); pg.Controls.Add(ledText[i]);
-        }
-
-        // under the pages, always there: the status, the footer (update state | Help, Stop), the log
-        lower = new Panel { Location = new Point(SB, PH), Size = new Size(W + 2 * X, 106), BackColor = CBack };
-        form.Controls.Add(lower);
-        statusLabel = new Label { Location = new Point(X, 0), Size = new Size(W, 40), ForeColor = CAmber, Font = new Font("Segoe UI Semibold", 10f) };
-        lower.Controls.Add(statusLabel);
-        bar = new ProgressBar { Location = new Point(X, 42), Size = new Size(W, 4), Style = ProgressBarStyle.Continuous, Visible = false };
-        lower.Controls.Add(bar);
-        lower.Controls.Add(new Panel { BackColor = CLine, Location = new Point(X, 52), Size = new Size(W, 1) });
-        verLabel = new Label { AutoSize = true, Location = new Point(X, 68), ForeColor = CDim, Font = FSmall };
-        lower.Controls.Add(verLabel);
-        // What's new, right beside the update state (in the Help menu only, nobody saw it)
-        newsLink = new Label { Text = "What's new", AutoSize = true, Location = new Point(X + 14, 68), ForeColor = CAmber,
-            Font = new Font(FSmall, FontStyle.Underline), Cursor = Cursors.Hand };
-        newsLink.Click += delegate { WhatsNew(); };
-        lower.Controls.Add(newsLink);
-        verLabel.SizeChanged += delegate { newsLink.Left = verLabel.Right + 14; };
-        helpBtn = new Tile("Help", "", CButton, CButtonLine, CText) { Location = new Point(X + W - 196, 62), Size = new Size(92, 30), Small = true };
-        helpBtn.Click += delegate { HelpMenu().Show(helpBtn, new Point(0, -helpBtn.Height * 4 - 8)); };
-        lower.Controls.Add(helpBtn);
-        logBtn = new Tile("Log", null, CButton, CButtonLine, CText);      // (not shown: in Help)
-        reportBtn = new Tile("Report a bug", null, CButton, CButtonLine, CText);
-        stopBtn = new Tile("Stop", null, CButton, CButtonLine, CText) { Location = new Point(X + W - 96, 62), Size = new Size(96, 30), Small = true };
-        stopBtn.Click += delegate { new Thread(StopAll) { IsBackground = true }.Start(); };
-        lower.Controls.Add(stopBtn);
-        logBox = new TextBox { Location = new Point(X, 106), Size = new Size(W, 140), Multiline = true, ReadOnly = true, Visible = false,
-            ScrollBars = ScrollBars.Vertical, BackColor = CPanel, ForeColor = CDim, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 8.5f) };
-        lower.Controls.Add(logBox);
+        ShowGame();
+        loading = false;
         int pg0;
         ShowPage(int.TryParse(Cfg("page"), out pg0) && pg0 >= 0 && pg0 < PAGES.Length ? pg0 : 0);
         Fit();
-        // a new Uplink since the last look at What's new: said once, on the status line
+        // a new Uplink since the last look at What's new: said once
         if (Cfg("uplink_sha") != "" && Cfg("news_seen") != Cfg("uplink_sha") && File.Exists(NewsFile))
+            form.Shown += delegate { toast.Say("Updated: see What's new, bottom left.", CGreen); };
+    }
+
+    // ---- Play: the game (every Terra Nova found on the PC, one picked), the one big button, where to start
+    static void BuildPlay(Surface pg)
+    {
+        gameLine = new GameLine { Location = new Point(18, 14), Size = new Size(MW - 36 - 78, 30) };
+        gameLine.Click += delegate { GamesMenu(gameLine); };
+        pg.Controls.Add(gameLine);
+        gameBtn = Ghost("Change", MW - 18 - 68, 14, 68);
+        gameBtn.Click += delegate { GamesMenu(gameLine); };
+        pg.Controls.Add(gameBtn);
+        playBtn = new Big { Text = "PLAY", Fill = COrange, Ink = Color.FromArgb(30, 14, 0), Arrow = true, F = F22b, Location = new Point(18, MH - 16 - 62), Size = new Size(187, 62) };
+        playBtn.Click += delegate { if (busy) StopNow(); else Start(Mode.Play); };
+        pg.Controls.Add(playBtn);
+        missionBox = new Drop { Caption = "START AT", Location = new Point(18 + 187 + 14, MH - 16 - 51), Size = new Size(230, 51), Rows = 14 };
+        missionBox.Changed += delegate { SaveOptions(); };
+        pg.Controls.Add(missionBox);
+        FillMissions();
+        Btn saves = Ghost("Saves", MW - 18 - 60, MH - 16 - 30, 60);
+        saves.Click += delegate { Saves(); };
+        pg.Controls.Add(saves);
+        pg.Look = delegate(Graphics g) { Hero(g, heroes[0]); if (!playBtn.Stop) Glow(g, playBtn.Bounds, COrange); };
+    }
+
+    // ---- Co-op: host or join, the guest's gamepad; the session's line while one runs. (The 1v1 mode of Terra Nova
+    // Coop is being redone: its place is kept, taped off, and nothing here starts it.)
+    static void BuildCoop(Surface pg)
+    {
+        pg.Controls.Add(new Txt { Text = "Two players, one squad. Steam friends only.", Location = new Point(18, 14), Size = new Size(MW - 36, 20) });
+        sessionRow = GhostBox(18, 44, MW - 36, 30, Color.FromArgb(48, 255, 255, 255), null);
+        sessionRow.Visible = false;
+        pg.Controls.Add(sessionRow);
+        sessionLed = new Led { Location = new Point(12, 10), Size = new Size(10, 10), On = CDim };
+        sessionRow.Controls.Add(sessionLed);
+        sessionLabel = new Txt { Text = "No session.", Location = new Point(30, 0), Size = new Size(MW - 36 - 40, 30) };
+        sessionRow.Controls.Add(sessionLabel);
+        int ty = MH - 16 - 77, ry = ty - 12 - 30, tw = (MW - 36 - 12) / 2;
+        Surface mode = GhostBox(18, ry, 122, 30, Color.FromArgb(48, 255, 255, 255), delegate(Graphics g) {
+            Str(g, "Mode", F12, CSoft, 14, 7); Str(g, "Campaign", F12s, Color.White, 14 + StrW(g, "Mode", F12) + 8, 7); });
+        pg.Controls.Add(mode);
+        Rectangle slot = new Rectangle(18 + 122 + 12, ry, 128, 30);
+        Surface pad = GhostBox(slot.Right + 12, ry, 188, 30, Color.FromArgb(48, 255, 255, 255), null);
+        pg.Controls.Add(pad);
+        // the guest's gamepad (TN_NO_PAD for the guest's Uplink): off unless asked for, a trigger that does not come
+        // back to zero keeps firing
+        padBox = new Switch { Text = "Gamepad for the guest", F = F12, Location = new Point(14, 1), Size = new Size(188 - 26, 28) };
+        padBox.CheckedChanged += delegate { SaveOptions(); };
+        pad.Controls.Add(padBox);
+        hostBtn = new CoopTile { Text = "HOST A GAME", Desc = "Your campaign, your saves. Invite a friend.", Accent = COrange, Location = new Point(18, ty), Size = new Size(tw, 77) };
+        hostBtn.Click += delegate { if (busy) StopNow(); else Start(Mode.Host); };
+        pg.Controls.Add(hostBtn);
+        joinBtn = new CoopTile { Text = "JOIN A FRIEND", Desc = "Take a seat in their squad.", Accent = CBlue, Location = new Point(18 + tw + 12, ty), Size = new Size(tw, 77) };
+        joinBtn.Click += delegate { if (busy) StopNow(); else Start(Mode.Join); };
+        pg.Controls.Add(joinBtn);
+        pg.Look = delegate(Graphics g) { Hero(g, heroes[1]); Tape(g, slot); };
+    }
+
+    // ---- Maps: the map viewer; its mission editor, a prototype (TN_EDITOR), off unless asked for
+    static void BuildMaps(Surface pg)
+    {
+        pg.Controls.Add(new Txt { Text = "Every map of the game in 3D, without starting the game.", F = F12, Location = new Point(18, 14), Size = new Size(MW - 36, 20) });
+        mapBtn = new Big { Text = "MAP VIEWER", Fill = CBlue, Ink = Color.FromArgb(2, 20, 46), F = F19b, Location = new Point(18, MH - 16 - 58), Size = new Size(239, 58) };
+        mapBtn.Click += delegate { if (busy) StopNow(); else Start(Mode.Maps); };
+        pg.Controls.Add(mapBtn);
+        Surface ed = GhostBox(18 + 239 + 14, MH - 16 - 52, 304, 52, Color.FromArgb(144, CTape), delegate(Graphics g) {
+            using (Brush y = new SolidBrush(CTape)) g.FillPolygon(y, new[] { new PointF(22, 17), new PointF(31, 34), new PointF(13, 34) });
+            using (Brush d = new SolidBrush(CTapeInk)) { g.FillRectangle(d, 21, 23, 2, 5.5f); g.FillRectangle(d, 21, 30, 2, 2); }
+            Str(g, "Mission editor", F125, CText, 44, 9);
+            float x = 44 + StrW(g, "Mission editor", F125) + 8, w = Spaced(g, "EXPERIMENTAL", F95b, Color.Empty, 0, 0, 1.2f);
+            using (GraphicsPath p = Round(new RectangleF(x, 10, w + 10, 14), 2))
+            using (Brush y = new SolidBrush(CTape)) g.FillPath(y, p);
+            Spaced(g, "EXPERIMENTAL", F95b, CTapeInk, x + 5, 11, 1.2f);
+            Str(g, "F6 in the map viewer. Can break a mission.", F11, CSoft, 44, 28);
+        });
+        pg.Controls.Add(ed);
+        editTick = new Switch { Text = "Mission editor", PillOnly = true, Location = new Point(304 - 12 - 34, 16), Size = new Size(34, 20) };
+        editTick.CheckedChanged += delegate { SaveOptions(); };
+        ed.Controls.Add(editTick);
+        pg.Look = delegate(Graphics g) { Hero(g, heroes[2]); if (!mapBtn.Stop) Glow(g, mapBtn.Bounds, CBlue); };
+    }
+
+    // ---- In game: what shows and how it plays in a mission, in four cards
+    static void BuildInGame(Surface pg)
+    {
+        const int CW = 281, RH = 29, X = 13, IW = CW - 26;
+        EventHandler save = delegate { SaveOptions(); };
+        Surface c = Card(pg, "DISPLAY", COrange, null, 18, 16, CW, 220);
+        int y = 32;
+        // the old school look (TN_OLDSCHOOL) and its key; its pixel size, kept by Uplink itself (see ReadSharp)
+        oldBox = Row(c, "Old school look", X, y, IW, COrange, save);
+        oldKeyBtn = Key(c, X + IW - 38 - 62, y, 62); oldKeyBtn.Click += delegate { AskKey(false); };
+        y += RH;
+        c.Controls.Add(new Txt { Text = "Pixels", Ink = Color.FromArgb(185, 199, 193), Location = new Point(X + 12, y), Size = new Size(46, RH) });
+        sharpSeg = new Seg { Items = new[] { "1×", "2×", "3×", "Max" }, Text = "Pixels", Location = new Point(X + IW - 137, y + 3), Size = new Size(137, 23) };
+        sharpSeg.Changed += delegate { WriteSharp(); };
+        c.Controls.Add(sharpSeg);
+        sharpKeyBtn = Key(c, X + IW - 137 - 8 - 62, y, 62); sharpKeyBtn.Click += delegate { AskKey(true); };
+        y += RH;
+        // Uplink's own colours on the cockpit: orange energy bar, light blue armour indicator (off: the game's; TN_HUD_COLOURS)
+        hudTick = Row(c, "Uplink HUD colours", X, y, IW, COrange, save); y += RH;
+        c.Controls.Add(new Txt { Text = "Crosshair", Location = new Point(X, y), Size = new Size(120, RH) });      // (the look mode's)
+        crossBox = new Drop { Text = "Crosshair", Items = new List<string> { "The game's", "A dot", "None" }, Location = new Point(X + IW - 104, y + 3), Size = new Size(104, 23) };
+        crossBox.Changed += save;
+        c.Controls.Add(crossBox); y += RH;
+        c.Controls.Add(new Txt { Text = "Frame limit", Location = new Point(X, y), Size = new Size(120, RH) });
+        capBox = new Drop { Text = "Frame limit", Location = new Point(X + IW - 104, y + 3), Size = new Size(104, 23) };
+        capBox.Changed += delegate { PickCap(); };
+        c.Controls.Add(capBox); y += RH;
+        fpsBox = Row(c, "Frame counter", X, y, IW, COrange, save);
+
+        c = Card(pg, "CONTROLS", COrange, null, 18 + CW + 12, 16, CW, 220);
+        y = 32;
+        // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
+        // leap at the same pace (Uplink's bridge: TN_RUN)
+        runTick = Row(c, "Run instead of Bound", X, y, IW, COrange, save); y += RH;
+        invertBox = Row(c, "Invert mouse", X, y, IW, COrange, save); y += RH;
+        // the Looking Glass logo and the opening film skipped at the game's start (the bridge presses Esc on them, once each)
+        introBox = Row(c, "Skip the intro videos", X, y, IW, COrange, save); y += RH;
+        // the photo mode's key (TN_KEY_PHOTO): the game paused, a free camera, pictures
+        c.Controls.Add(new Txt { Text = "Photo mode", Location = new Point(X, y), Size = new Size(120, RH) });
+        photoKeyBtn = Key(c, X + IW - 104, y, 104); photoKeyBtn.Click += delegate { AskPhotoKey(); };
+        y += RH;
+        c.Controls.Add(new Txt { Text = "Screenshot", Em = "to Pictures", Location = new Point(X, y), Size = new Size(140, RH) });
+        shotKeyBtn = Key(c, X + IW - 104, y, 104); shotKeyBtn.Click += delegate { AskShotKey(); };
+
+        // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY); what
+        // a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
+        c = Card(pg, "SQUAD", CBlue, null, 18, 268, MW - 36, 74);
+        wheelTick = Row(c, "Order wheel", X, 32, 296, CBlue, save);
+        wheelKeyBtn = Key(c, X + 296 - 38 - 92, 32, 92); wheelKeyBtn.Click += delegate { AskOrderKey(); };
+        Btn custom = Key(c, X + 296 - 38 - 92 - 8 - 74, 32, 74);
+        custom.Text = "Customise"; custom.Line = CBlue; custom.Ink = Color.FromArgb(156, 196, 255);
+        custom.Click += delegate { ShowPage(P_WHEEL); };
+        subsTick = Row(c, "Squadmates' subtitles", X + 296 + 16, 32, MW - 36 - 26 - 296 - 16, CBlue, save);
+
+        c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 376, MW - 36, 104);
+        for (int i = 0; i < FX.Length; i++)
+            fxTicks[i] = Row(c, FX_NAMES[i], X + 190 * (i % 3), 32 + RH * (i / 3), 168, COrange, save);
+    }
+
+    // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed; the folder; updates; links
+    static void BuildSettings(Surface pg)
+    {
+        const int CW = 281, RH = 29, X = 13, IW = CW - 26;
+        Surface c = Card(pg, "WINDOW", COrange, null, 18, 16, CW, 108);
+        c.Controls.Add(new Txt { Text = "Mode", Location = new Point(X, 32), Size = new Size(100, RH) });
+        sizeBox = new Drop { Text = "Mode", Items = new List<string> { "1280 x 720", "1696 x 960", "1920 x 1080", "Fullscreen" }, Location = new Point(X + IW - 130, 35), Size = new Size(130, 23) };
+        sizeBox.Changed += delegate { SaveOptions(); };
+        c.Controls.Add(sizeBox);
+        sensLabel = new Txt { Text = "Mouse speed", Location = new Point(X, 61), Size = new Size(118, RH) };
+        c.Controls.Add(sensLabel);
+        sensBar = new Slide { Text = "Mouse speed", Minimum = 2, Maximum = 30, Value = 10, Location = new Point(X + IW - 130 - 6, 61 + 4), Size = new Size(142, 21) };
+        sensBar.Changed += delegate { SensLabel(); SaveOptions(); };
+        c.Controls.Add(sensBar);
+
+        c = Card(pg, "KEYS AND TOOLS", COrange, null, 18 + CW + 12, 16, CW, 108);
+        c.Controls.Add(new Txt { Text = "The game's own keys, saves folder, repair.", F = F115, Ink = CDim, Location = new Point(X, 32), Size = new Size(IW, RH) });
+        keysBtn = Key(c, X, 64, 123, 28, "Game keys");
+        keysBtn.Click += delegate { GameKeys(); };
+        toolsBtn = Key(c, X + 123 + 9, 64, 123, 28, "Tools");
+        toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height + 2)); };
+
+        // what is installed: green lights
+        c = Card(pg, "INSTALLED", CBlue, null, 18, 136, MW - 36, 98);
+        string[] names = { "Uplink", "Godot " + GODOT_VER, "Terra Nova Plus", "TN+ co-op build", "Python", "Steam (co-op only)" };
+        int[] cell = { 0, 1, 2, 4, 3, 5 };
+        leds = new LedLine[names.Length];
+        for (int i = 0; i < names.Length; i++)
         {
-            statusLabel.Text = "Updated: see What's new, below."; statusLabel.ForeColor = CGreen;
+            leds[i] = new LedLine { Text = names[i], Tag = names[i], Location = new Point(X + 190 * (cell[i] % 3), 32 + 27 * (cell[i] / 3)), Size = new Size(176, 27) };
+            c.Controls.Add(leds[i]);
+        }
+
+        c = Card(pg, "GAME FOLDER", COrange, null, 18, 246, MW - 36, 73);
+        gameLine2 = new GameLine { Location = new Point(X, 32), Size = new Size(MW - 36 - 26 - 78, RH) };
+        gameLine2.Click += delegate { GamesMenu(gameLine2); };
+        c.Controls.Add(gameLine2);
+        gameBtn2 = Key(c, MW - 36 - 13 - 70, 32, 70, 23, "Change");
+        gameBtn2.Click += delegate { GamesMenu(gameLine2); };
+
+        c = Card(pg, "UPDATES", COrange, null, 18, 331, CW, 153);
+        verLabel = new LedLine { Text = "Uplink " + VERSION, Location = new Point(X, 32), Size = new Size(IW, 27) };
+        c.Controls.Add(verLabel);
+        c.Controls.Add(new Txt { Text = "Looked for at each start, and before each game.", F = F115, Ink = CDim, Location = new Point(X, 61), Size = new Size(IW, RH) });
+        checkBtn = Key(c, X, 112, 123, 28, "Check now");
+        checkBtn.Click += delegate { Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); };
+        Key(c, X + 123 + 9, 112, 123, 28, "What's new").Click += delegate { WhatsNew(); };
+
+        c = Card(pg, "COMMUNITY", CBlue, null, 18 + CW + 12, 331, CW, 153);
+        c.Controls.Add(new Txt { Text = "Questions, co-op partners, bug reports.", F = F115, Ink = CDim, Location = new Point(X, 32), Size = new Size(IW, RH) });
+        Key(c, X, 112, 79, 28, "Discord").Click += delegate { Open(DISCORD); };
+        Key(c, X + 88, 112, 79, 28, "GitHub").Click += delegate { Open("https://github.com/" + UPLINK_REPO); };
+        Key(c, X + 176, 112, 79, 28, "Report a bug").Click += delegate { Report(); };
+    }
+
+    static void Open(string url) { try { Process.Start(url); } catch { } }
+
+    static void SensLabel()
+    {
+        sensLabel.Em = "× " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture);
+        sensLabel.Invalidate();
+    }
+
+    // ---- the order wheel's page (In game, Customise): which order on which pane, the short press, its time, the
+    // middle where nothing is picked. Kept in the ini (wheel_panes, tap_ground, tap_enemy, tap_ms, wheel_dead) and
+    // given to Uplink when it starts (TN_ORDER_PANES, TN_ORDER_TAP_GROUND, TN_ORDER_TAP_ENEMY, TN_ORDER_TAP_MS,
+    // TN_ORDER_DEAD); as the wheel comes: the six orders around, attack on an enemy, move on the ground, 0.20 s, 48
+    static readonly int[] PANES0 = { 0, 1, 2, 3, 4, 5 };
+    const int TAP_MS0 = 200, DEAD0 = 48;
+
+    static int[] Panes()
+    {
+        string[] p = Cfg("wheel_panes").Split(',');
+        int[] o = new int[6];
+        if (p.Length != 6) return (int[])PANES0.Clone();
+        for (int i = 0; i < 6; i++)
+            if (!int.TryParse(p[i].Trim(), out o[i]) || o[i] < -1 || o[i] >= ORDERS.Length) return (int[])PANES0.Clone();
+        return o;
+    }
+
+    static int Num(string key, int def, int lo, int hi)
+    {
+        int v;
+        return int.TryParse(Cfg(key).Trim(), out v) ? Math.Max(lo, Math.Min(hi, v)) : def;
+    }
+
+    static void BuildWheel(Surface pg)
+    {
+        Link back = new Link { Text = "‹ In game", Ink = CDim, F = F12, Location = new Point(18, 16), Size = new Size(64, 20) };
+        back.Click += delegate { ShowPage(3); };
+        pg.Controls.Add(back);
+        pg.Controls.Add(new Txt { Text = "Order wheel", F = F14s, Location = new Point(86, 15), Size = new Size(140, 22) });
+        wheel = new WheelPad { Text = "Order wheel", Location = new Point(26, 44), Size = new Size(300, 300), Panes = Panes() };
+        wheel.Picked += delegate { WheelUi(); };
+        wheel.Changed += delegate { SaveWheel(); };
+        pg.Controls.Add(wheel);
+        pg.Controls.Add(new Txt { Text = "Click a pane, then choose its order.", F = F11, Ink = CDim, Mid = true, Location = new Point(18, 350), Size = new Size(316, 16) });
+        pg.Controls.Add(new Txt { Text = "Drag one pane onto another to swap them.", F = F11, Ink = CDim, Mid = true, Location = new Point(18, 366), Size = new Size(316, 16) });
+        Btn reset = new Btn { Text = "Back to the default wheel", F = F115, Fill = Color.Transparent, Line = CButtonLine, Ink = CDim, Radius = 5, Location = new Point(18 + 79, 394), Size = new Size(158, 28) };
+        reset.Click += delegate {
+            wheel.Panes = (int[])PANES0.Clone();
+            Set("tap_ground", "1"); Set("tap_enemy", "0"); Set("tap_ms", TAP_MS0.ToString()); Set("wheel_dead", DEAD0.ToString());
+            SaveWheel(); wheel.Invalidate();
+        };
+        pg.Controls.Add(reset);
+        const int X = 13, CX = 348, CW = MW - 18 - 348, IW = CW - 26;
+        Surface c = Card(pg, "THIS PANE", CBlue, null, CX, 16, CW, 252);
+        wheelPicks = new Radio[ORDERS.Length + 1];
+        for (int i = 0; i < wheelPicks.Length; i++)
+        {
+            int k = i < ORDERS.Length ? i : -1;
+            wheelPicks[i] = new Radio { Text = k < 0 ? "Nothing" : ORDERS[i], Location = new Point(X, 32 + 26 * i), Size = new Size(IW, 26) };
+            wheelPicks[i].Click += delegate { SetPane(k); };
+            c.Controls.Add(wheelPicks[i]);
+        }
+        c = Card(pg, "QUICK TAP", CBlue, null, CX, 280, CW, 204);
+        List<string> orders = new List<string>(ORDERS);
+        orders.Add("Nothing");
+        c.Controls.Add(new Txt { Text = "On the ground", Location = new Point(X, 32), Size = new Size(100, 29) });
+        tapGround = new Drop { Text = "On the ground", Items = orders, Location = new Point(X + IW - 118, 35), Size = new Size(118, 23) };
+        tapGround.Changed += delegate { if (loading) return; Set("tap_ground", (tapGround.Selected < ORDERS.Length ? tapGround.Selected : -1).ToString()); SaveWheel(); };
+        c.Controls.Add(tapGround);
+        c.Controls.Add(new Txt { Text = "On an enemy", Location = new Point(X, 61), Size = new Size(100, 29) });
+        tapEnemy = new Drop { Text = "On an enemy", Items = orders, Location = new Point(X + IW - 118, 64), Size = new Size(118, 23) };
+        tapEnemy.Changed += delegate { if (loading) return; Set("tap_enemy", (tapEnemy.Selected < ORDERS.Length ? tapEnemy.Selected : -1).ToString()); SaveWheel(); };
+        c.Controls.Add(tapEnemy);
+        tapLabel = new Txt { Text = "Tap time", Location = new Point(X, 90), Size = new Size(110, 29) };
+        c.Controls.Add(tapLabel);
+        tapBar = new Slide { Text = "Tap time", Minimum = 10, Maximum = 35, Value = 20, Accent = CBlue, Location = new Point(X + IW - 104 - 6, 94), Size = new Size(116, 21) };
+        tapBar.Changed += delegate { if (loading) return; Set("tap_ms", (tapBar.Value * 10).ToString()); SaveWheel(); };
+        c.Controls.Add(tapBar);
+        c.Controls.Add(new Txt { Text = "Dead zone", Location = new Point(X, 119), Size = new Size(110, 29) });
+        deadBar = new Slide { Text = "Dead zone", Minimum = 6, Maximum = 26, Value = 12, Accent = CBlue, Location = new Point(X + IW - 104 - 6, 123), Size = new Size(116, 21) };
+        deadBar.Changed += delegate { if (loading) return; Set("wheel_dead", (deadBar.Value * 4).ToString()); SaveWheel(); };
+        c.Controls.Add(deadBar);
+        c.Controls.Add(new Txt { Text = "A short press: that order at once.", F = F11, Ink = CDim, Location = new Point(X, 152), Size = new Size(IW, 18) });
+        c.Controls.Add(new Txt { Text = "Held longer: the wheel opens.", F = F11, Ink = CDim, Location = new Point(X, 168), Size = new Size(IW, 18) });
+    }
+
+    // an order for the pane picked; the pane that had it takes this one's (an order is on one pane at most)
+    static void SetPane(int order)
+    {
+        int[] p = wheel.Panes;
+        int was = p[wheel.Sel], other = order >= 0 ? Array.IndexOf(p, order) : -1;
+        if (was == order) return;
+        if (other >= 0) p[other] = was;
+        p[wheel.Sel] = order;
+        SaveWheel();
+        wheel.Invalidate();
+    }
+
+    static void SaveWheel()
+    {
+        if (loading) return;
+        string[] s = new string[6];
+        for (int i = 0; i < 6; i++) s[i] = wheel.Panes[i].ToString();
+        Set("wheel_panes", string.Join(",", s));
+        SaveCfg();
+        WheelUi();
+    }
+
+    static void WheelUi()
+    {
+        bool was = loading;
+        loading = true;
+        int[] p = wheel.Panes;
+        for (int i = 0; i < wheelPicks.Length; i++)
+        {
+            int k = i < ORDERS.Length ? i : -1;
+            wheelPicks[i].On = p[wheel.Sel] == k;
+            wheelPicks[i].Em = wheelPicks[i].On ? "here" : k >= 0 && Array.IndexOf(p, k) < 0 ? "unused" : null;
+            wheelPicks[i].Invalidate();
+        }
+        int tg = Num("tap_ground", 1, -1, ORDERS.Length - 1), te = Num("tap_enemy", 0, -1, ORDERS.Length - 1);
+        tapGround.Selected = tg < 0 ? ORDERS.Length : tg;
+        tapEnemy.Selected = te < 0 ? ORDERS.Length : te;
+        tapBar.Value = Num("tap_ms", TAP_MS0, 100, 350) / 10;
+        deadBar.Value = Num("wheel_dead", DEAD0, 24, 104) / 4;
+        tapLabel.Em = (tapBar.Value / 100.0).ToString("0.00", CultureInfo.InvariantCulture) + " s";
+        tapLabel.Invalidate();
+        loading = was;
+    }
+
+    // ---- the old school look's pixel size. Uplink keeps it itself (viewer.cfg in its own folder: [look] old_sharp =
+    // 1, 2, 3 times the game's pixels, 0 the window's own) and changes it in game with its key (Shift+F12). That file
+    // is the one place it is written: the launcher shows what it holds (read again each time the window comes to
+    // the front) and writes the choice made here straight into it; Uplink reads it when it starts.
+    static readonly int[] SHARP = { 1, 2, 3, 0 };
+    static string ViewerCfg { get { return Path.Combine(GodotData, "viewer.cfg"); } }
+
+    static void ReadSharp()
+    {
+        int k = 1;
+        try
+        {
+            bool look = false;
+            if (File.Exists(ViewerCfg))
+                foreach (string raw in File.ReadAllLines(ViewerCfg))
+                {
+                    string l = raw.Trim();
+                    Match m = Regex.Match(l, @"^old_sharp\s*=\s*(-?\d+)\s*$");
+                    if (l.StartsWith("[")) look = l == "[look]";
+                    else if (look && m.Success) k = int.Parse(m.Groups[1].Value);
+                }
+        }
+        catch { }
+        bool was = loading;
+        loading = true;
+        sharpSeg.Selected = Math.Max(0, Array.IndexOf(SHARP, k));
+        loading = was;
+    }
+
+    static void WriteSharp()
+    {
+        if (loading) return;
+        try
+        {
+            string line = "old_sharp=" + SHARP[sharpSeg.Selected];
+            List<string> ls = File.Exists(ViewerCfg) ? new List<string>(File.ReadAllLines(ViewerCfg)) : new List<string>();
+            int head = ls.FindIndex(l => l.Trim() == "[look]"), at = -1;
+            for (int i = head + 1; head >= 0 && i < ls.Count && !ls[i].TrimStart().StartsWith("["); i++)
+                if (Regex.IsMatch(ls[i], @"^\s*old_sharp\s*=")) at = i;
+            if (at >= 0) ls[at] = line;
+            else if (head >= 0) ls.Insert(head + 1, line);
+            else { if (ls.Count > 0 && ls[ls.Count - 1].Trim() != "") ls.Add(""); ls.Add("[look]"); ls.Add(""); ls.Add(line); }
+            Directory.CreateDirectory(GodotData);
+            File.WriteAllLines(ViewerCfg, ls);
+            Status("Old school pixels: " + sharpSeg.Items[sharpSeg.Selected] + " (from the next time Uplink starts).", CGreen);
+        }
+        catch (Exception e) { Status("The pixel size could not be saved: " + e.Message, CRed); }
+    }
+
+    // ---- the frame limit: none, a usual one, or one's own number
+    static void FillCap()
+    {
+        List<string> l = new List<string> { "Unlimited", "60", "120", "144", "240" };
+        if (capValue > 0 && !l.Contains(capValue.ToString())) l.Add(capValue.ToString());
+        l.Add("Other...");
+        bool was = loading;
+        loading = true;
+        capBox.Items = l;
+        capBox.Selected = capValue > 0 ? l.IndexOf(capValue.ToString()) : 0;
+        loading = was;
+    }
+
+    static void PickCap()
+    {
+        if (loading) return;
+        string s = capBox.Items[capBox.Selected];
+        int v = 0;
+        if (s == "Other...")
+        {
+            using (NumAsk d = new NumAsk("Frame limit", "Pictures a second, 20 to 1000:", capValue > 0 ? capValue.ToString() : "90"))
+                v = d.ShowDialog(form) == DialogResult.OK && int.TryParse(d.Value.Trim(), out v) && v > 0 ? Math.Max(20, Math.Min(1000, v)) : capValue;
+        }
+        else int.TryParse(s, out v);
+        capValue = v;
+        FillCap();
+        SaveOptions();
+    }
+
+    // a number asked for, in the launcher's colours
+    class NumAsk : Form
+    {
+        TextBox box;
+        public string Value { get { return box.Text; } }
+        public NumAsk(string title, string what, string now)
+        {
+            Text = title; ClientSize = new Size(320, 124); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText; Font = form.Font; ShowInTaskbar = false;
+            Controls.Add(new Label { Text = what, Location = new Point(16, 16), Size = new Size(288, 20) });
+            box = new TextBox { Text = now, Location = new Point(16, 42), Size = new Size(120, 24), BackColor = CButton, ForeColor = CText, BorderStyle = BorderStyle.FixedSingle, MaxLength = 4 };
+            Controls.Add(box);
+            Tile ok = new Tile("OK", null, CButton, CButtonLine, CText) { Location = new Point(96, 80), Size = new Size(100, 30), Small = true };
+            ok.Click += delegate { DialogResult = DialogResult.OK; };
+            Controls.Add(ok);
+            Tile no = new Tile("Cancel", null, CButton, CButtonLine, CText) { Location = new Point(204, 80), Size = new Size(100, 30), Small = true };
+            no.Click += delegate { DialogResult = DialogResult.Cancel; };
+            Controls.Add(no);
+            Shown += delegate { box.SelectAll(); box.Focus(); };
+        }
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Enter) { DialogResult = DialogResult.OK; return true; }
+            if (keyData == Keys.Escape) { DialogResult = DialogResult.Cancel; return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
     }
 
-    static Panel side;
+    // ---- the pictures behind Play, Co-op and Maps: one JPEG each, screenshots of Uplink itself. Taken from Uplink's
+    // own files when they are there (components\uplink\launcher\bg_*.jpg: a new picture comes with an Uplink update,
+    // no new launcher needed), else from the copy built into this exe (build.bat), else none: the page stays dark.
+    static readonly string[] HEROES = { "bg_play.jpg", "bg_coop.jpg", "bg_maps.jpg" };
+    static Image[] heroes = new Image[3];
+
+    static void LoadHeroes()
+    {
+        for (int i = 0; i < HEROES.Length; i++)
+        {
+            if (heroes[i] != null) continue;
+            try
+            {
+                string f = Path.Combine(UplinkDir, "launcher", HEROES[i]);
+                if (File.Exists(f)) heroes[i] = Image.FromStream(new MemoryStream(File.ReadAllBytes(f)));
+            }
+            catch { }
+            try
+            {
+                Stream s = heroes[i] == null ? typeof(Uplink).Assembly.GetManifestResourceStream(HEROES[i]) : null;
+                if (s != null) heroes[i] = Image.FromStream(s);
+            }
+            catch { }
+            if (heroes[i] != null) pages[i].Dirty();
+        }
+    }
+
+    // the picture over the whole page (cut, not squeezed), under the dark veil that lets the page's lines be read
+    static void Hero(Graphics g, Image img)
+    {
+        g.Clear(CBack);
+        if (img != null)
+        {
+            float k = Math.Max(MW / (float)img.Width, MH / (float)img.Height), w = img.Width * k, h = img.Height * k;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            using (System.Drawing.Imaging.ImageAttributes ia = new System.Drawing.Imaging.ImageAttributes())
+            {
+                ia.SetWrapMode(WrapMode.TileFlipXY);          // (no pale line where the picture ends)
+                g.DrawImage(img, Rectangle.Round(new RectangleF((MW - w) / 2, 0, w, h)), 0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
+            }
+        }
+        using (LinearGradientBrush b = new LinearGradientBrush(new Rectangle(0, -1, MW, MH + 2), Color.Black, Color.Black, 90f))
+        {
+            b.InterpolationColors = new ColorBlend { Positions = new[] { 0f, 0.24f, 0.55f, 0.92f, 1f }, Colors = new[] {
+                Color.FromArgb(224, 8, 17, 15), Color.FromArgb(32, 8, 17, 15), Color.FromArgb(48, 8, 17, 15), Color.FromArgb(245, 8, 17, 15), Color.FromArgb(245, 8, 17, 15) } };
+            g.FillRectangle(b, 0, 0, MW, MH);
+        }
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+    }
+
+    // the light a big button throws under itself
+    static void Glow(Graphics g, Rectangle r, Color c)
+    {
+        r.Offset(0, 6);
+        for (int i = 11; i >= 1; i--)
+        {
+            Rectangle q = r;
+            q.Inflate(i * 2, i * 2);
+            using (GraphicsPath p = Round(q, 6 + i * 2))
+            using (Brush b = new SolidBrush(Color.FromArgb(7, c))) g.FillPath(b, p);
+        }
+    }
+
+    // the 1v1 mode's place on the Co-op page: a dashed slot, a construction tape across it
+    static void Tape(Graphics g, Rectangle slot)
+    {
+        using (GraphicsPath p = Round(slot, 5))
+        using (Brush b = new SolidBrush(Color.FromArgb(176, 8, 17, 15)))
+        using (Pen l = new Pen(Color.FromArgb(48, 255, 255, 255)) { DashStyle = DashStyle.Dash })
+        { g.FillPath(b, p); g.DrawPath(l, p); }
+        GraphicsState st = g.Save();
+        g.TranslateTransform(slot.X + slot.Width / 2f, slot.Y + slot.Height / 2f);
+        g.RotateTransform(-7f);
+        RectangleF t = new RectangleF(-slot.Width / 2f - 7, -7.5f, slot.Width + 14, 15);
+        for (int i = 3; i >= 1; i--)
+            using (Brush sh = new SolidBrush(Color.FromArgb(40, 0, 0, 0))) g.FillRectangle(sh, t.X - i, t.Y + 2 - i, t.Width + 2 * i, t.Height + 2 * i);
+        g.SetClip(t);
+        using (Brush y = new SolidBrush(CTape)) g.FillRectangle(y, t);
+        using (Brush d = new SolidBrush(CTapeInk))
+            for (float x = t.Left - 30; x < t.Right + 30; x += 25.46f)
+                g.FillPolygon(d, new[] { new PointF(x, t.Top), new PointF(x + 12.73f, t.Top), new PointF(x + 12.73f + 15, t.Bottom), new PointF(x + 15, t.Bottom) });
+        using (Brush y = new SolidBrush(CTape)) g.FillRectangle(y, -46, t.Top + 1, 92, t.Height - 2);
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+        float w = SpacedPlus(g, "VERSUS · WIP", F95b, Color.Empty, 0, 0, 1.2f);
+        SpacedPlus(g, "VERSUS · WIP", F95b, CTapeInk, -w / 2, -6.5f, 1.2f);
+        g.Restore(st);
+    }
+
+    // ---- small builders
+    static Surface Card(Control on, string title, Color accent, string hint, int x, int y, int w, int h)
+    {
+        Surface c = new Surface { Location = new Point(x, y), Size = new Size(w, h) };
+        c.Look = delegate(Graphics g) {
+            using (GraphicsPath p = Round(new Rectangle(0, 0, w - 1, h - 1), 7))
+            using (Brush b = new SolidBrush(CPanel))
+            using (Pen l = new Pen(CLine))
+            { g.FillPath(b, p); g.DrawPath(l, p); }
+            float tw = Spaced(g, title, F10b, accent, 13, 11, 1.6f);
+            if (hint != null) Str(g, hint, F11, CDim, 13 + tw + 10, 10);
+        };
+        on.Controls.Add(c);
+        return c;
+    }
+
+    static Surface GhostBox(int x, int y, int w, int h, Color line, Action<Graphics> more)
+    {
+        Surface c = new Surface { Location = new Point(x, y), Size = new Size(w, h) };
+        c.Look = delegate(Graphics g) {
+            using (GraphicsPath p = Round(new Rectangle(0, 0, w - 1, h - 1), 5))
+            using (Brush b = new SolidBrush(Color.FromArgb(144, 8, 17, 15)))
+            using (Pen l = new Pen(line))
+            { g.FillPath(b, p); g.DrawPath(l, p); }
+            if (more != null) more(g);
+        };
+        return c;
+    }
+
+    static Switch Row(Control on, string text, int x, int y, int w, Color accent, EventHandler changed)
+    {
+        Switch s = new Switch { Text = text, Accent = accent, Location = new Point(x, y), Size = new Size(w, 29) };
+        s.CheckedChanged += changed;
+        on.Controls.Add(s);
+        return s;
+    }
+
+    static Btn Key(Control on, int x, int y, int w) { return Key(on, x, y + 3, w, 23, ""); }
+
+    static Btn Key(Control on, int x, int y, int w, int h, string text)
+    {
+        Btn b = new Btn { Text = text, F = h > 24 ? F12 : F11, Fill = CButton, Line = CButtonLine, Ink = CText, Radius = 4, Location = new Point(x, y), Size = new Size(w, h) };
+        on.Controls.Add(b);
+        b.BringToFront();                                     // (over the switch whose line it sits on)
+        return b;
+    }
+
+    static Btn Ghost(string text, int x, int y, int w)
+    {
+        return new Btn { Text = text, F = F12, Fill = Color.FromArgb(144, 8, 17, 15), Line = Color.FromArgb(48, 255, 255, 255), Ink = CText, Radius = 5,
+            Location = new Point(x, y), Size = new Size(w, 30) };
+    }
+
+    // ---- drawing: text, sizes in pixels, as Windows draws it (GDI; the surfaces have no alpha, so it can lie on a picture)
+    const TextFormatFlags TF = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+    const TextFormatFlags TFLeft = TF | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis, TFMid = TFLeft | TextFormatFlags.HorizontalCenter,
+        TFRight = TFLeft | TextFormatFlags.Right, TFPath = TF | TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis,
+        TFWrap = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak;
+
+    static void Str(Graphics g, string s, Font f, Color c, float x, float y) { TextRenderer.DrawText(g, s, f, new Point((int)Math.Round(x), (int)Math.Round(y)), c, TF); }
+    static float StrW(Graphics g, string s, Font f) { return TextRenderer.MeasureText(g, s, f, new Size(4000, 100), TF).Width; }
+    static void StrIn(Graphics g, string s, Font f, Color c, RectangleF r, TextFormatFlags tf) { TextRenderer.DrawText(g, s, f, Rectangle.Round(r), c, tf); }
+
+    // letters set apart (the titles); its width, and nothing drawn when the colour is Color.Empty
+    static float Spaced(Graphics g, string s, Font f, Color c, float x, float y, float gap)
+    {
+        float x0 = x;
+        foreach (char ch in s)
+        {
+            string t = ch.ToString();
+            if (c != Color.Empty && ch != ' ') TextRenderer.DrawText(g, t, f, new Point((int)Math.Round(x), (int)Math.Round(y)), c, TF);
+            x += TextRenderer.MeasureText(g, t, f, new Size(400, 100), TF).Width + gap;
+        }
+        return x - x0 - gap;
+    }
+
+    // the same through GDI+, for text that is turned (the tape)
+    static float SpacedPlus(Graphics g, string s, Font f, Color c, float x, float y, float gap)
+    {
+        float x0 = x;
+        using (Brush b = new SolidBrush(c))
+            foreach (char ch in s)
+            {
+                string t = ch.ToString();
+                if (c != Color.Empty) g.DrawString(t, f, b, x, y, SF);
+                x += g.MeasureString(t, f, 4000, SF).Width + gap;
+            }
+        return x - x0 - gap;
+    }
+
+    static GraphicsPath Round(RectangleF r, float rad)
+    {
+        GraphicsPath p = new GraphicsPath();
+        float d = rad * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+
+    static GraphicsPath Round(Rectangle r, int rad) { return Round(new RectangleF(r.X, r.Y, r.Width, r.Height), rad); }
+
+    static Color Mix(Color a, Color b, float k)
+    {
+        return Color.FromArgb((int)(a.A + (b.A - a.A) * k), (int)(a.R + (b.R - a.R) * k), (int)(a.G + (b.G - a.G) * k), (int)(a.B + (b.B - a.B) * k));
+    }
+
+    // what lies under a control: the nearest surface above it (a page's picture, a card), at the control's place
+    static void PaintBack(Control c, Graphics g)
+    {
+        int x = c.Left, y = c.Top;
+        for (Control p = c.Parent; p != null; x += p.Left, y += p.Top, p = p.Parent)
+        {
+            Surface s = p as Surface;
+            if (s == null) continue;
+            g.DrawImageUnscaled(s.Bmp, -x, -y);
+            return;
+        }
+        g.Clear(CBack);
+    }
+
+    // a panel drawn once into a picture of its own (Look), which the controls on it take as their background
+    class Surface : Panel
+    {
+        public Action<Graphics> Look;
+        Bitmap bmp;
+        public Surface() { BackColor = CBack; DoubleBuffered = true; ResizeRedraw = true; }
+        public Bitmap Bmp
+        {
+            get
+            {
+                if (bmp != null && bmp.Size == ClientSize) return bmp;
+                if (bmp != null) bmp.Dispose();
+                bmp = new Bitmap(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height), System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    PaintBack(this, g);
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                    if (Look != null) Look(g);
+                }
+                return bmp;
+            }
+        }
+        public void Dirty()
+        {
+            if (bmp != null) bmp.Dispose();
+            bmp = null;
+            foreach (Control c in Controls) { Surface s = c as Surface; if (s != null) s.Dirty(); }
+            Invalidate(true);
+        }
+        protected override void OnPaintBackground(PaintEventArgs e) { e.Graphics.DrawImageUnscaled(Bmp, 0, 0); }
+    }
+
+    // a control drawn here. One that acts takes the keyboard too: Tab reaches it, Space or Enter is its click
+    class Drawn : Control
+    {
+        protected bool over;
+        protected bool acts;
+        public Font F = F125;
+        public Drawn(bool acts)
+        {
+            this.acts = acts;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.Selectable, acts);
+            TabStop = acts;
+            if (acts) Cursor = Cursors.Hand;
+        }
+        protected bool Cue { get { return Focused && ShowFocusCues; } }
+        protected Graphics Begin(PaintEventArgs e)
+        {
+            PaintBack(this, e.Graphics);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            return e.Graphics;
+        }
+        protected override void OnMouseEnter(EventArgs e) { over = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { over = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { if (acts && CanFocus) Focus(); base.OnMouseDown(e); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (acts && !e.Handled && (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) && e.Modifiers == Keys.None) { e.Handled = true; OnClick(EventArgs.Empty); }
+        }
+        protected void Ring(Graphics g, RectangleF r, float rad)
+        {
+            if (!Cue) return;
+            using (GraphicsPath p = Round(r, rad))
+            using (Pen l = new Pen(Color.FromArgb(200, 255, 255, 255))) g.DrawPath(l, p);
+        }
+    }
+
+    // a line of text (and a dimmer word after it)
+    class Txt : Drawn
+    {
+        public Color Ink = CText;
+        public string Em;
+        public bool Mid;
+        public Txt() : base(false) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            StrIn(g, Text, F, Ink, new RectangleF(0, 0, Width, Height), Mid ? TFMid : TFLeft);
+            if (Em != null) StrIn(g, Em, F11, CDim, new RectangleF(StrW(g, Text, F) + 8, 1, Width, Height), TFLeft);
+        }
+    }
+
+    // a word that is clicked
+    class Link : Drawn
+    {
+        public Color Ink = CDim;
+        public Link() : base(true) { F = F11; }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color c = over ? Mix(Ink, Color.White, 0.45f) : Ink;
+            StrIn(g, Text, F, c, new RectangleF(2, 0, Width, Height), TFLeft);
+            if (Cue) using (Pen p = new Pen(c)) g.DrawLine(p, 2, Height - 2, 2 + StrW(g, Text, F), Height - 2);
+        }
+    }
+
+    // a page's entry in the side bar: an orange bar and a lit line for the one shown
+    class Nav : Drawn
+    {
+        public bool On;
+        public Nav() : base(true) { F = F13; }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            if (On || over || Cue)
+                using (GraphicsPath p = Round(new Rectangle(0, 0, Width - 1, Height - 1), 5))
+                using (Brush b = new SolidBrush(On ? Color.FromArgb(19, 38, 31) : Color.FromArgb(16, 31, 27))) g.FillPath(b, p);
+            if (On)
+                using (GraphicsPath p = Round(new RectangleF(12, (Height - 14) / 2f, 4, 14), 2))
+                using (Brush b = new SolidBrush(COrange)) g.FillPath(b, p);
+            StrIn(g, Text, F, On ? Color.White : over || Cue ? CText : CDim, new RectangleF(25, 0, Width - 25, Height - 1), TFLeft);
+        }
+    }
+
+    // a flat button: a key's name, a tool, a link on a picture
+    class Btn : Drawn
+    {
+        public Color Fill, Line, Ink;
+        public int Radius = 4;
+        public Btn() : base(true) { F = F11; }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+            using (GraphicsPath p = Round(r, Radius))
+            {
+                using (Brush b = new SolidBrush(Fill)) g.FillPath(b, p);
+                if (over && Enabled) using (Brush b = new SolidBrush(Color.FromArgb(22, 255, 255, 255))) g.FillPath(b, p);
+                using (Pen l = new Pen(Cue ? Color.FromArgb(200, 255, 255, 255) : over && Enabled ? Mix(Line, Color.White, 0.3f) : Line)) g.DrawPath(l, p);
+            }
+            StrIn(g, Text, F, Enabled ? Ink : Mix(Ink, CBack, 0.55f), new RectangleF(3, 0, Width - 6, Height - 1), TFMid);
+        }
+    }
+
+    // PLAY, MAP VIEWER; STOP while something of theirs runs
+    class Big : Drawn
+    {
+        public Color Fill, Ink;
+        public bool Arrow, Stop;
+        public Big() : base(true) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color f = Stop ? Color.FromArgb(236, 14, 26, 24) : Fill, ink = Stop ? Color.White : Ink;
+            if (over) f = Mix(f, Color.White, Stop ? 0.06f : 0.12f);
+            using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 6))
+            {
+                using (Brush b = new SolidBrush(f)) g.FillPath(b, p);
+                if (Stop) using (Pen l = new Pen(Fill, 1.5f)) g.DrawPath(l, p);
+                else if (Cue) using (Pen l = new Pen(Color.White, 1.5f)) g.DrawPath(l, p);
+            }
+            string t = Stop ? "STOP" : Text;
+            float tw = Spaced(g, t, F, Color.Empty, 0, 0, 3f), icon = Stop || Arrow ? 34 : 0, x = (Width - tw - icon) / 2f - (Arrow && !Stop ? 4 : 0), cy = Height / 2f;
+            using (Brush b = new SolidBrush(Stop ? Fill : ink))
+                if (Stop) g.FillRectangle(b, x + 2, cy - 7, 14, 14);
+                else if (Arrow) g.FillPolygon(b, new[] { new PointF(x + 4, cy - 8), new PointF(x + 17, cy), new PointF(x + 4, cy + 8) });
+            Spaced(g, t, F, ink, x + icon, cy - F.GetHeight(g) / 2f - 0.5f, 3f);
+        }
+    }
+
+    // HOST A GAME, JOIN A FRIEND: a name, a line under it, the edge in the player's colour
+    class CoopTile : Drawn
+    {
+        public Color Accent;
+        public string Desc;
+        public bool Stop;
+        public CoopTile() : base(true) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            Color a = Enabled ? Accent : Mix(Accent, CBack, 0.6f);
+            using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 7))
+            {
+                using (Brush b = new SolidBrush(over && Enabled ? Color.FromArgb(232, 18, 34, 31) : Color.FromArgb(216, 8, 17, 15))) g.FillPath(b, p);
+                GraphicsState st = g.Save();
+                g.SetClip(p);
+                using (Brush b = new SolidBrush(a)) g.FillRectangle(b, 0, 0, 4, Height);
+                g.Restore(st);
+                using (Pen l = new Pen(Cue ? Color.White : a)) g.DrawPath(l, p);
+            }
+            Spaced(g, Stop ? "STOP" : Text, F16b, Enabled ? Color.White : CDim, 19, 17, 2f);
+            Str(g, Stop ? "Close this session." : Desc, F115, Enabled ? CSoft : Mix(CSoft, CBack, 0.5f), 19, 44);
+        }
+    }
+
+    // a switch: its name on the left, the pill on the right (PillOnly: the pill alone)
+    class Switch : Drawn
+    {
+        bool on;
+        public Color Accent = COrange;
+        public string Em;
+        public bool PillOnly;
+        public event EventHandler CheckedChanged;
+        public Switch() : base(true) { }
+        public bool Checked
+        {
+            get { return on; }
+            set { if (on == value) return; on = value; Invalidate(); if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty); }
+        }
+        protected override void OnClick(EventArgs e) { Checked = !Checked; base.OnClick(e); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            if (!PillOnly)
+            {
+                StrIn(g, Text, F, CText, new RectangleF(0, 0, Width - 36, Height), TFLeft);
+                if (Em != null) StrIn(g, Em, F11, CDim, new RectangleF(StrW(g, Text, F) + 8, 1, Width, Height), TFLeft);
+            }
+            RectangleF r = new RectangleF(Width - 32, (Height - 16) / 2f, 30, 16);
+            using (GraphicsPath p = Round(r, 8))
+            using (Brush b = new SolidBrush(on ? Accent : over ? Mix(COff, CKnob, 0.25f) : COff)) g.FillPath(b, p);
+            using (Brush b = new SolidBrush(on ? Color.White : CKnob)) g.FillEllipse(b, r.X + (on ? 16 : 2), r.Y + 2, 12, 12);
+            Ring(g, RectangleF.Inflate(r, 1.5f, 1.5f), 9.5f);
+        }
+    }
+
+    // one of a few, side by side (the pixel size)
+    class Seg : Drawn
+    {
+        public string[] Items = new string[0];
+        int sel;
+        public event EventHandler Changed;
+        public Seg() : base(true) { F = F11; }
+        public int Selected
+        {
+            get { return sel; }
+            set { value = Math.Max(0, Math.Min(Items.Length - 1, value)); if (sel == value) return; sel = value; Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty); }
+        }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Left || k == Keys.Right || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Left) Selected = sel - 1;
+            else if (e.KeyCode == Keys.Right) Selected = sel + 1;
+        }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Left) Selected = e.X * Items.Length / Math.Max(1, Width);
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+            float w = r.Width / Items.Length;
+            using (GraphicsPath p = Round(r, 4))
+            {
+                GraphicsState st = g.Save();
+                g.SetClip(p);
+                using (Brush b = new SolidBrush(CButton)) g.FillRectangle(b, r);
+                using (Brush b = new SolidBrush(COrange)) g.FillRectangle(b, r.X + w * sel, r.Y, w, r.Height);
+                using (Pen l = new Pen(CButtonLine))
+                    for (int i = 1; i < Items.Length; i++) g.DrawLine(l, r.X + w * i, r.Y, r.X + w * i, r.Bottom);
+                g.Restore(st);
+                using (Pen l = new Pen(Cue ? Color.FromArgb(200, 255, 255, 255) : CButtonLine)) g.DrawPath(l, p);
+            }
+            for (int i = 0; i < Items.Length; i++)
+                StrIn(g, Items[i], i == sel ? F10b : F, i == sel ? Color.FromArgb(30, 14, 0) : CDim, new RectangleF(r.X + w * i, 0, w, Height - 1), TFMid);
+        }
+    }
+
+    // a slider: a thin line, a round handle (the mouse, or the arrow keys)
+    class Slide : Drawn
+    {
+        public int Minimum, Maximum = 10;
+        public Color Accent = CBlue;
+        int val;
+        public event EventHandler Changed;
+        public Slide() : base(true) { }
+        public int Value
+        {
+            get { return val; }
+            set { value = Math.Max(Minimum, Math.Min(Maximum, value)); if (val == value) return; val = value; Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty); }
+        }
+        void At(int x) { Value = Minimum + (int)Math.Round((x - 6) * (Maximum - Minimum) / (double)Math.Max(1, Width - 12)); }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Left || k == Keys.Right || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Left) Value = val - 1;
+            else if (e.KeyCode == Keys.Right) Value = val + 1;
+            else if (e.KeyCode == Keys.Home) Value = Minimum;
+            else if (e.KeyCode == Keys.End) Value = Maximum;
+        }
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) At(e.X); }
+        protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (e.Button == MouseButtons.Left) At(e.X); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            float cy = Height / 2f, x = 6 + (Width - 12) * (val - Minimum) / (float)Math.Max(1, Maximum - Minimum);
+            using (GraphicsPath p = Round(new RectangleF(6, cy - 2, Width - 12, 4), 2))
+            using (Brush b = new SolidBrush(COff)) g.FillPath(b, p);
+            if (x > 8)
+                using (GraphicsPath p = Round(new RectangleF(6, cy - 2, x - 6, 4), 2))
+                using (Brush b = new SolidBrush(Accent)) g.FillPath(b, p);
+            using (Brush b = new SolidBrush(Color.White)) g.FillEllipse(b, x - 6, cy - 6, 12, 12);
+            if (Cue) using (Pen l = new Pen(Accent, 1.5f)) g.DrawEllipse(l, x - 8, cy - 8, 16, 16);
+        }
+    }
+
+    // a list that drops down (Caption: the big one of the Play page, its name over its value)
+    class Drop : Drawn
+    {
+        public List<string> Items = new List<string>();
+        public string Caption;
+        public int Rows = 12;
+        int sel;
+        public event EventHandler Changed;
+        public Drop() : base(true) { F = F115; }
+        public int Selected
+        {
+            get { return sel; }
+            set { value = Math.Max(0, Math.Min(Items.Count - 1, value)); if (sel == value) { Invalidate(); return; } sel = value; Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty); }
+        }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Up || k == Keys.Down || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Up && !e.Alt) Selected = sel - 1;
+            else if (e.KeyCode == Keys.Down && !e.Alt) Selected = sel + 1;
+            else if (e.KeyCode == Keys.F4 || e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter || e.KeyCode == Keys.Down) OnClick(EventArgs.Empty);
+        }
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            Popup(this, Math.Max(Width, 60), Items, sel, Caption != null ? 24 : 22, Rows, null, delegate(int i) { Selected = i; });
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+            string t = sel < Items.Count ? Items[sel] : "";
+            using (GraphicsPath p = Round(r, Caption != null ? 6 : 4))
+            {
+                using (Brush b = new SolidBrush(Caption != null ? Color.FromArgb(200, 8, 17, 15) : CButton)) g.FillPath(b, p);
+                if (over && Enabled) using (Brush b = new SolidBrush(Color.FromArgb(16, 255, 255, 255))) g.FillPath(b, p);
+                using (Pen l = new Pen(Cue ? Color.FromArgb(200, 255, 255, 255) : Caption != null ? Color.FromArgb(40, 255, 255, 255) : CButtonLine)) g.DrawPath(l, p);
+            }
+            if (Caption != null)
+            {
+                Spaced(g, Caption, Px10, CDim, 12, 8, 1f);
+                StrIn(g, t, F13, CText, new RectangleF(12, 22, Width - 40, 22), TFLeft);
+                Arrow(g, Width - 19, 33);
+            }
+            else
+            {
+                StrIn(g, t, F, CText, new RectangleF(9, 0, Width - 26, Height - 1), TFLeft);
+                Arrow(g, Width - 14, Height / 2f);
+            }
+        }
+        static readonly Font Px10 = Px(10f, 400);
+        static void Arrow(Graphics g, float x, float y)
+        {
+            using (Brush b = new SolidBrush(CDim)) g.FillPolygon(b, new[] { new PointF(x - 3.5f, y - 2), new PointF(x + 3.5f, y - 2), new PointF(x, y + 2.5f) });
+        }
+    }
+
+    // the list of a Drop (and of Change, the game's folder): a dark box under its control; the mouse, or the arrows
+    // and Enter; Esc or a click elsewhere closes it
+    static void Popup(Control anchor, int width, IList<string> items, int selected, int rowH, int rows, DrawItemEventHandler paint, Action<int> picked)
+    {
+        if (paint == null)                                    // (as wide as its longest line)
+            foreach (string s in items) width = Math.Max(width, TextRenderer.MeasureText(s, FBody).Width + 16 + (items.Count > rows ? 18 : 0));
+        ListBox lb = new ListBox { DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = rowH, BorderStyle = BorderStyle.None, BackColor = CButton, ForeColor = CText,
+            IntegralHeight = false, Font = FBody, Size = new Size(width - 2, Math.Min(items.Count, rows) * rowH), Cursor = Cursors.Hand };
+        foreach (string s in items) lb.Items.Add(s);
+        if (selected >= 0 && selected < items.Count) lb.SelectedIndex = selected;
+        lb.DrawItem += paint ?? DrawRow;
+        ToolStripControlHost host = new ToolStripControlHost(lb) { Margin = Padding.Empty, Padding = Padding.Empty, AutoSize = false, Size = lb.Size };
+        ToolStripDropDown dd = new ToolStripDropDown { Padding = new Padding(1), Margin = Padding.Empty, BackColor = CButtonLine, DropShadowEnabled = false };
+        dd.Renderer = new ToolStripProfessionalRenderer(new DarkColors());
+        dd.Items.Add(host);
+        bool done = false;
+        Action<int> pick = delegate(int i) { if (done || i < 0) return; done = true; dd.Close(); picked(i); };
+        lb.MouseMove += delegate(object s, MouseEventArgs e) { int i = lb.IndexFromPoint(e.Location); if (i >= 0 && i != lb.SelectedIndex) lb.SelectedIndex = i; };
+        lb.MouseUp += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) pick(lb.IndexFromPoint(e.Location)); };
+        lb.PreviewKeyDown += delegate(object s, PreviewKeyDownEventArgs e) { if (e.KeyCode == Keys.Enter) e.IsInputKey = true; };
+        lb.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { e.Handled = e.SuppressKeyPress = true; pick(lb.SelectedIndex); } };
+        dd.Opened += delegate { try { SetWindowTheme(lb.Handle, "DarkMode_Explorer", null); } catch { } lb.Focus(); };
+        dd.Closed += delegate { if (anchor.CanFocus) anchor.Focus(); };
+        dd.Show(anchor, new Point(0, anchor.Height + 2));
+    }
+
+    static void DrawRow(object s, DrawItemEventArgs e)
+    {
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        using (Brush b = new SolidBrush(sel ? Color.FromArgb(30, 62, 56) : CButton)) e.Graphics.FillRectangle(b, e.Bounds);
+        if (e.Index < 0) return;
+        TextRenderer.DrawText(e.Graphics, (string)((ListBox)s).Items[e.Index], FBody, new Rectangle(e.Bounds.X + 7, e.Bounds.Y, e.Bounds.Width - 9, e.Bounds.Height),
+            sel ? Color.White : CText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    // the menus (Help, Tools) and the lists, dark
+    class DarkColors : ProfessionalColorTable
+    {
+        public override Color MenuItemSelected { get { return Color.FromArgb(30, 62, 56); } }
+        public override Color MenuItemBorder { get { return Color.FromArgb(30, 62, 56); } }
+        public override Color MenuBorder { get { return CButtonLine; } }
+        public override Color ToolStripDropDownBackground { get { return CButton; } }
+        public override Color ImageMarginGradientBegin { get { return CButton; } }
+        public override Color ImageMarginGradientMiddle { get { return CButton; } }
+        public override Color ImageMarginGradientEnd { get { return CButton; } }
+        public override Color SeparatorDark { get { return CButtonLine; } }
+        public override Color SeparatorLight { get { return CButton; } }
+    }
+
+    static ContextMenuStrip Menu()
+    {
+        return new ContextMenuStrip { Renderer = new ToolStripProfessionalRenderer(new DarkColors()), BackColor = CButton, ForeColor = CText, ShowImageMargin = false, Font = FBody };
+    }
+
+    // one of several (the order of a pane): a round mark, a word on the right (here / unused)
+    class Radio : Drawn
+    {
+        public bool On;
+        public string Em;
+        public Radio() : base(true) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            if (On || over || Cue)
+                using (GraphicsPath p = Round(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 4))
+                using (Brush b = new SolidBrush(On ? Color.FromArgb(16, 42, 74) : Color.FromArgb(17, 34, 40))) g.FillPath(b, p);
+            RectangleF c = new RectangleF(8, (Height - 10) / 2f, 10, 10);
+            if (On) using (Brush b = new SolidBrush(CBlue)) { g.FillEllipse(b, c); using (Pen r = new Pen(Color.FromArgb(16, 42, 74), 1.6f)) g.DrawEllipse(r, RectangleF.Inflate(c, -2.2f, -2.2f)); }
+            else using (Pen l = new Pen(Color.FromArgb(74, 106, 98), 1.5f)) g.DrawEllipse(l, c);
+            StrIn(g, Text, F, On ? Color.White : Color.FromArgb(185, 199, 193), new RectangleF(27, 0, Width - 27, Height - 1), TFLeft);
+            if (Em != null) StrIn(g, Em, Px105, CDim, new RectangleF(0, 0, Width - 8, Height - 1), TFRight);
+        }
+        static readonly Font Px105 = Px(10.5f, 400);
+    }
+
+    // a status light, alone or with its line
+    class Led : Drawn
+    {
+        public Color On = CLedOff;
+        public Led() : base(false) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            using (Brush b = new SolidBrush(On)) g.FillEllipse(b, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
+    class LedLine : Drawn
+    {
+        public Color On = CLedOff;
+        public LedLine() : base(false) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            float cy = Height / 2f;
+            bool lit = On != CLedOff;
+            if (lit) using (Brush h = new SolidBrush(Color.FromArgb(46, On))) g.FillEllipse(h, -2, cy - 7, 14, 14);
+            using (Brush b = new SolidBrush(On)) g.FillEllipse(b, 1, cy - 4, 8, 8);
+            StrIn(g, Text, F, lit ? CText : CDim, new RectangleF(17, 0, Width - 17, Height - 1), TFLeft);
+        }
+    }
+
+    // the game's folder: GOG / STEAM on green, then where it is
+    class GameLine : Drawn
+    {
+        public string Dir;
+        public GameLine() : base(true) { F = F12; }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            float x = Badge(g, Dir, 0, Height / 2f);
+            StrIn(g, Dir ?? "No Terra Nova found: Change, then pick the folder that contains TNOVA", F, Dir == null ? CSoft : over || Cue ? Color.White : CText,
+                new RectangleF(x + 10, 0, Width - x - 10, Height - 1), TFPath);
+        }
+        public static float Badge(Graphics g, string dir, float x, float cy)
+        {
+            string t = dir == null ? "NONE" : Edition(dir);
+            float w = Spaced(g, t, F10b, Color.Empty, 0, 0, 0.6f) + 16;
+            using (GraphicsPath p = Round(new RectangleF(x, cy - 9, w, 18), 3))
+            using (Brush b = new SolidBrush(dir == null ? Color.FromArgb(70, 24, 20) : Color.FromArgb(18, 58, 34))) g.FillPath(b, p);
+            Spaced(g, t, F10b, dir == null ? CRed : Color.FromArgb(95, 220, 134), x + 8, cy - 7, 0.6f);
+            return x + w;
+        }
+    }
+
+    // the order wheel as the game shows it: a flat-top hexagon of six panes. A click picks a pane (the arrow keys:
+    // the next one), a pane dragged onto another swaps their orders
+    class WheelPad : Drawn
+    {
+        public int[] Panes = (int[])PANES0.Clone();
+        public int Sel;
+        public event EventHandler Picked, Changed;
+        int drag = -1, hot = -1;
+        bool moved;
+        Point from, at;
+        public WheelPad() : base(true) { Cursor = Cursors.Default; }
+        static PointF V(float r, int i) { double a = (-120 + 60 * i) * Math.PI / 180; return new PointF(150 + r * (float)Math.Cos(a), 150 + r * (float)Math.Sin(a)); }
+        static PointF[] Pane(int i)
+        {
+            PointF a = V(134, i), b = V(134, i + 1), c = V(48, i + 1), d = V(48, i);
+            float ux = (b.X - a.X) / 134 * 4.3f, uy = (b.Y - a.Y) / 134 * 4.3f;
+            return new[] { new PointF(a.X + ux, a.Y + uy), new PointF(b.X - ux, b.Y - uy), new PointF(c.X - ux, c.Y - uy), new PointF(d.X + ux, d.Y + uy) };
+        }
+        int PaneAt(Point p)
+        {
+            for (int i = 0; i < 6; i++)
+                using (GraphicsPath gp = new GraphicsPath()) { gp.AddPolygon(Pane(i)); if (gp.IsVisible(p)) return i; }
+            return -1;
+        }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Left || k == Keys.Right || k == Keys.Up || k == Keys.Down || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            int step = e.KeyCode == Keys.Right || e.KeyCode == Keys.Down ? 1 : e.KeyCode == Keys.Left || e.KeyCode == Keys.Up ? 5 : 0;
+            if (step == 0) return;
+            Sel = (Sel + step) % 6; Invalidate();
+            if (Picked != null) Picked(this, EventArgs.Empty);
+        }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            int p = PaneAt(e.Location);
+            if (e.Button != MouseButtons.Left || p < 0) return;
+            Sel = drag = p; hot = -1; moved = false; from = at = e.Location; Invalidate();
+            if (Picked != null) Picked(this, EventArgs.Empty);
+        }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int p = PaneAt(e.Location);
+            Cursor = p >= 0 || drag >= 0 ? Cursors.Hand : Cursors.Default;
+            if (drag < 0) return;
+            at = e.Location;
+            if (Math.Abs(at.X - from.X) + Math.Abs(at.Y - from.Y) > 6) moved = true;
+            hot = moved && p != drag ? p : -1;
+            Invalidate();
+        }
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (drag >= 0 && moved && hot >= 0)
+            {
+                int t = Panes[drag]; Panes[drag] = Panes[hot]; Panes[hot] = t;
+                Sel = hot;
+                if (Changed != null) Changed(this, EventArgs.Empty);
+            }
+            drag = hot = -1; moved = false; Invalidate();
+        }
+        static void Words(Graphics g, string name, float cx, float cy, Color c)
+        {
+            string[] w = name.ToUpperInvariant().Split(' ');
+            for (int j = 0; j < w.Length; j++)
+            {
+                float tw = Spaced(g, w[j], F105b, Color.Empty, 0, 0, 0.6f);
+                Spaced(g, w[j], F105b, c, cx - tw / 2, cy - 6.5f * w.Length + 13 * j, 0.6f);
+            }
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            for (int i = 0; i < 6; i++)
+            {
+                bool sel = i == Sel, empty = Panes[i] < 0, target = i == hot;
+                PointF[] p = Pane(i);
+                using (Brush b = new SolidBrush(sel ? Color.FromArgb(18, 58, 102) : empty ? Color.FromArgb(9, 20, 26) : Color.FromArgb(11, 29, 44))) g.FillPolygon(b, p);
+                using (Pen l = new Pen(target ? COrange : sel ? CBlue : Color.FromArgb(39, 66, 92), target || sel ? 2f : 1f))
+                {
+                    if (empty && !sel && !target) l.DashStyle = DashStyle.Dash;
+                    g.DrawPolygon(l, p);
+                }
+                if (empty || (i == drag && moved)) continue;
+                double a = (-90 + 60 * i) * Math.PI / 180;
+                Words(g, ORDERS[Panes[i]], 150 + 80.5f * (float)Math.Cos(a), 150 + 80.5f * (float)Math.Sin(a), sel ? Color.White : Color.FromArgb(185, 201, 216));
+            }
+            float w1 = Spaced(g, "ENTIRE", F9, Color.Empty, 0, 0, 1f), w2 = Spaced(g, "SQUAD", F9, Color.Empty, 0, 0, 1f);
+            Spaced(g, "ENTIRE", F9, CDim, 150 - w1 / 2, 138, 1f);
+            Spaced(g, "SQUAD", F9, CDim, 150 - w2 / 2, 151, 1f);
+            if (Cue) using (Pen l = new Pen(Color.FromArgb(90, 255, 255, 255)) { DashStyle = DashStyle.Dot }) g.DrawPolygon(l, new[] { V(140, 0), V(140, 1), V(140, 2), V(140, 3), V(140, 4), V(140, 5) });
+            if (drag >= 0 && moved && Panes[drag] >= 0) Words(g, ORDERS[Panes[drag]], at.X, at.Y - 14, COrange);
+        }
+    }
+
+    // what the launcher has to say: a small box at the top right of the page, gone by itself after a few seconds.
+    // What went wrong (red) or is still going on (amber) stays until the next one, or a click on it.
+    class Toast : Form
+    {
+        string msg = "";
+        Color edge = CBlue;
+        bool stays;
+        DateTime until;
+        readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 40 };
+        public Toast()
+        {
+            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual; BackColor = CPanel;
+            DoubleBuffered = true; Cursor = Cursors.Hand; Text = "";
+            timer.Tick += delegate {
+                double left = (until - DateTime.Now).TotalSeconds;
+                if (stays || !Visible) return;
+                if (left <= 0) { timer.Stop(); Hide(); }
+                else if (left < 0.6) Opacity = 0.96 * left / 0.6;
+            };
+            Click += delegate { timer.Stop(); Hide(); };
+        }
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override CreateParams CreateParams
+        {
+            get { CreateParams p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x80; return p; }      // never the active window, no button of its own
+        }
+        public string Now { get { return Visible ? msg : ""; } }
+        public void Say(string s, Color c)
+        {
+            if (form == null || form.IsDisposed || !form.Visible) return;
+            msg = s; Text = s;
+            edge = c == CRed ? CRed : c == CAmber ? CAmber : CBlue;
+            stays = c == CRed || c == CAmber;
+            Size sz = TextRenderer.MeasureText(GM, s, F12, new Size(330, 600), TFWrap);
+            ClientSize = new Size(sz.Width + 28, sz.Height + 17);
+            using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), 5)) Region = new Region(p);
+            Place();
+            Opacity = 0.96;
+            until = DateTime.Now.AddSeconds(Math.Min(12, 4 + s.Length * 0.05));
+            if (!Visible && form.WindowState != FormWindowState.Minimized) Show(form);
+            Invalidate();
+            timer.Start();
+        }
+        public void Place()
+        {
+            if (form == null || !form.Visible || form.WindowState == FormWindowState.Minimized) return;
+            // (under the top line of a page with a picture; over the cards' titles on the others: no switch is covered)
+            Location = form.PointToScreen(new Point(SB + MW - 18 - Width, pageNow <= 2 ? 56 : 7));
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(CPanel);
+            using (Pen l = new Pen(CLine)) g.DrawRectangle(l, 0, 0, Width - 1, Height - 1);
+            using (Brush b = new SolidBrush(edge)) g.FillRectangle(b, 0, 0, 3, Height);
+            RectangleF r = new RectangleF(15, 8, Width - 26, Height - 8);
+            StrIn(g, msg, F12, CText, r, TFWrap);
+            int cut = msg.IndexOf(": ");                      // "Photo mode: O ..." : its first words in the edge's colour
+            if (cut > 0 && cut < 28) StrIn(g, msg.Substring(0, cut), F12, edge == CBlue ? Color.FromArgb(120, 176, 250) : edge, r, TFWrap);
+        }
+    }
+
     static string NewsFile { get { return Path.Combine(UplinkDir, "WHATSNEW.txt"); } }
 
     static void ToggleLog()
@@ -422,11 +1587,11 @@ static class Uplink
 
     static ContextMenuStrip HelpMenu()
     {
-        ContextMenuStrip m = new ContextMenuStrip();
+        ContextMenuStrip m = Menu();
         m.Items.Add("What's new", null, delegate { WhatsNew(); });
         m.Items.Add(logBox.Visible ? "Hide the log" : "Show the log", null, delegate { ToggleLog(); });
         m.Items.Add("Report a bug (makes a zip with the logs)", null, delegate { Report(); });
-        m.Items.Add("Discord", null, delegate { try { Process.Start(DISCORD); } catch { } });
+        m.Items.Add("Discord", null, delegate { Open(DISCORD); });
         return m;
     }
 
@@ -486,9 +1651,9 @@ static class Uplink
 
     static void Fit()
     {
-        lower.Height = 106 + (logBox.Visible ? 152 : 0);
-        form.ClientSize = new Size(SB + lower.Width, PH + lower.Height);
+        form.ClientSize = new Size(SB + MW, MH + (logBox.Visible ? 152 : 0));
         side.Height = form.ClientSize.Height;
+        toast.Place();
     }
 
     static Font Pick(string[] families, float size, FontStyle style)
@@ -499,18 +1664,7 @@ static class Uplink
         return null;
     }
 
-    static Label Caption(string text, int x, int y)
-    {
-        return new Label { Text = text, AutoSize = true, Location = new Point(x, y), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
-    }
-
-    static ComboBox Combo(Point at, int w)
-    {
-        return new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = at, Size = new Size(w, 24),
-            BackColor = CButton, ForeColor = CText, FlatStyle = FlatStyle.Flat };
-    }
-
-    // a panel with rounded corners and a thin border
+    // a panel with rounded corners and a thin border (the dialogs')
     class Box : Panel
     {
         public Box() { BackColor = CPanel; DoubleBuffered = true; ResizeRedraw = true; }
@@ -525,10 +1679,10 @@ static class Uplink
         }
     }
 
-    // a flat rounded button: an icon (Segoe's icon font) above its label, or the label alone (Small)
+    // a flat rounded button of the dialogs: an icon (Segoe's icon font) above its label, or the label alone (Small)
     class Tile : Control
     {
-        public string Icon; public Color Fill, Line, Ink; public Color? IconColor; public bool Small; bool over;
+        public string Icon; public Color Fill, Line, Ink; public bool Small; bool over;
         public Tile(string text, string icon, Color fill, Color line, Color ink)
         {
             Text = text; Icon = icon; Fill = fill; Line = line; Ink = ink; Cursor = Cursors.Hand;
@@ -558,67 +1712,14 @@ static class Uplink
             }
             Size isz = TextRenderer.MeasureText(Icon, FIcon);
             int top = (Height - isz.Height - ts.Height + 2) / 2;
-            TextRenderer.DrawText(g, Icon, FIcon, new Rectangle(0, top, Width, isz.Height), IconColor.HasValue && Enabled ? IconColor.Value : ink,
-                TextFormatFlags.HorizontalCenter);
+            TextRenderer.DrawText(g, Icon, FIcon, new Rectangle(0, top, Width, isz.Height), ink, TextFormatFlags.HorizontalCenter);
             TextRenderer.DrawText(g, Text, tf, new Rectangle(0, top + isz.Height - 2, Width, ts.Height), ink, TextFormatFlags.HorizontalCenter);
         }
     }
 
-    // a check box and a radio button in the cockpit's colours (amber when on)
-    class Tick : CheckBox { protected override void OnPaint(PaintEventArgs e) { PaintTick(this, e.Graphics, Checked, false); } }
-    class Dot : RadioButton { protected override void OnPaint(PaintEventArgs e) { PaintTick(this, e.Graphics, Checked, true); } }
-
-    static void PaintTick(Control c, Graphics g, bool on, bool round)
-    {
-        g.Clear(c.BackColor);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        Rectangle r = new Rectangle(1, (c.Height - 14) / 2, 13, 13);
-        using (Brush b = new SolidBrush(on ? CAmber : CButton))
-        using (Pen l = new Pen(on ? CAmber : CButtonLine))
-        using (GraphicsPath p = Round(r, 3))
-        {
-            if (round) { g.FillEllipse(b, r); g.DrawEllipse(l, r); }
-            else { g.FillPath(b, p); g.DrawPath(l, p); }
-        }
-        if (on && round) using (Brush d = new SolidBrush(CBack)) g.FillEllipse(d, r.X + 4, r.Y + 4, 5, 5);
-        if (on && !round) using (Pen d = new Pen(CBack, 2f)) g.DrawLines(d, new[] { new Point(r.X + 3, r.Y + 7), new Point(r.X + 5, r.Y + 10), new Point(r.X + 10, r.Y + 3) });
-        TextRenderer.DrawText(g, c.Text, c.Font, new Rectangle(19, 0, c.Width - 19, c.Height), on ? CText : CDim,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
-    }
-
-    // a status light
-    class Led : Control
-    {
-        public Color On = CLedOff;
-        public Led() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true); }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            e.Graphics.Clear(Parent != null ? Parent.BackColor : CBack);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (Brush b = new SolidBrush(On)) e.Graphics.FillEllipse(b, 0, 0, Width - 1, Height - 1);
-        }
-    }
-
-    static GraphicsPath Round(Rectangle r, int rad)
-    {
-        GraphicsPath p = new GraphicsPath();
-        int d = rad * 2;
-        p.AddArc(r.X, r.Y, d, d, 180, 90);
-        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        p.CloseFigure();
-        return p;
-    }
-
-    static Color Mix(Color a, Color b, float k)
-    {
-        return Color.FromArgb((int)(a.R + (b.R - a.R) * k), (int)(a.G + (b.G - a.G) * k), (int)(a.B + (b.B - a.B) * k));
-    }
-
     static ContextMenuStrip ToolsMenu()
     {
-        ContextMenuStrip m = new ContextMenuStrip();
+        ContextMenuStrip m = Menu();
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
         m.Items.Add("Check for updates now", null, delegate {
             Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); });
@@ -635,17 +1736,17 @@ static class Uplink
         try { if (form.InvokeRequired) form.BeginInvoke(a); else a(); } catch { }
     }
 
-    static void Status(string s, Color c) { Ui(delegate { statusLabel.Text = s; statusLabel.ForeColor = c; }); Log("== " + s); }
-    static void Progress(int pct) { Ui(delegate { bar.Value = Math.Max(0, Math.Min(100, pct)); bar.Visible = pct > 0; }); }
+    // what is going on: said in the toast (top right of the page), and kept in the log
+    static void Status(string s, Color c) { Ui(delegate { if (toast != null) toast.Say(s, c); }); Log("== " + s); }
+    static void Progress(int pct) { Ui(delegate { barFill.Width = MW * Math.Max(0, Math.Min(100, pct)) / 100; bar.Visible = pct > 0; }); }
 
-    // the session line (co-op only): it takes the status line's place while a session runs
+    // the session line (co-op only), at the top of the Co-op page while a session runs
     static void Session(string s, Color c)
     {
         Ui(delegate {
             sessionLabel.Text = s + (sessionPing != "" && c == CGreen ? "   ·   " + sessionPing : "");
             sessionLed.On = c; sessionLed.Invalidate();
-            bool on = s != "No session.";
-            if (sessionRow.Visible != on) { sessionRow.Visible = on; Fit(); }
+            sessionRow.Visible = s != "No session.";
         });
     }
 
@@ -662,16 +1763,21 @@ static class Uplink
                         File.Exists(PythonExe), Process.GetProcessesByName("steam").Length > 0 };
         for (int i = 0; i < leds.Length; i++)
         {
-            leds[i].On = have[i] ? CGreen : CLedOff; leds[i].Invalidate();
-            ledText[i].ForeColor = have[i] ? Color.FromArgb(159, 182, 175) : CDim;
-            ledText[i].Text = (string)ledText[i].Tag + (i == 0 && have[0] && Cfg("uplink_sha").Length >= 7 ? " " + Cfg("uplink_sha").Substring(0, 7) : "");
+            leds[i].On = have[i] ? CGreen : CLedOff;
+            leds[i].Text = (string)leds[i].Tag + (i == 0 && have[0] && Cfg("uplink_sha").Length >= 7 ? " " + Cfg("uplink_sha").Substring(0, 7) : "");
+            leds[i].Invalidate();
         }
-        playBtn.Enabled = hostBtn.Enabled = joinBtn.Enabled = mapBtn.Enabled = gameBtn.Enabled = toolsBtn.Enabled = gameBox.Enabled = !busy;
-        if (statusLabel.Text == "")
-        {
-            statusLabel.Text = "Ready.";
-            statusLabel.ForeColor = CText;
-        }
+        // while something runs, the button that started it stops it (PLAY and MAP VIEWER: whatever runs)
+        bool b = busy, glow = playBtn.Stop != b;
+        playBtn.Stop = mapBtn.Stop = b;
+        hostBtn.Stop = b && running == Mode.Host;
+        joinBtn.Stop = b && running == Mode.Join;
+        hostBtn.Enabled = !b || hostBtn.Stop;
+        joinBtn.Enabled = !b || joinBtn.Stop;
+        gameBtn.Enabled = gameBtn2.Enabled = gameLine.Enabled = gameLine2.Enabled = toolsBtn.Enabled = keysBtn.Enabled = checkBtn.Enabled = !b;
+        if (glow) { pages[0].Dirty(); pages[2].Dirty(); }
+        foreach (Control c in new Control[] { playBtn, mapBtn, hostBtn, joinBtn }) c.Invalidate();
+        LoadHeroes();                                         // (a first installation: the pictures have just come)
     }
 
     // ------------------------------------------------------------------ settings
@@ -697,17 +1803,15 @@ static class Uplink
 
     static void LoadOptions()
     {
-        (Cfg("mode") == "versus" ? modeVs : modeCoop).Checked = true;
         int s = Array.IndexOf(SIZES, Cfg("window"));
-        sizeBox.SelectedIndex = s >= 0 ? s : 3;                  // (nothing chosen yet, a new installation: Fullscreen)
+        sizeBox.Selected = s >= 0 ? s : 3;                       // (nothing chosen yet, a new installation: Fullscreen)
         double sens;
         sensBar.Value = double.TryParse(Cfg("mouse"), NumberStyles.Float, CultureInfo.InvariantCulture, out sens) ?
             Math.Max(2, Math.Min(30, (int)Math.Round(sens * 10))) : 10;
-        sensLabel.Text = "x " + (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture);
+        SensLabel();
         invertBox.Checked = Cfg("invert_y") == "1";
-        crossBox.SelectedIndex = Math.Max(0, Array.IndexOf(CROSSHAIRS, Cfg("crosshair")));
-        runBox.SelectedIndex = Cfg("shift_run") == "1" ? 1 : 0;
-        runTick.Checked = runBox.SelectedIndex == 1;
+        crossBox.Selected = Math.Max(0, Array.IndexOf(CROSSHAIRS, Cfg("crosshair")));
+        runTick.Checked = Cfg("shift_run") == "1";
         fpsBox.Checked = Cfg("fps_counter") == "1";              // (off unless asked for: ticket #13)
         hudTick.Checked = Cfg("hud_colours") != "0";             // (on unless turned off)
         editTick.Checked = Cfg("mission_editor") == "1";         // (off unless asked for)
@@ -717,22 +1821,25 @@ static class Uplink
         subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
         for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) == "1";   // (the extras: off unless asked for)
         int cap;
-        capBox.Text = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap.ToString() : "Unlimited";
-        padBox.Checked = Cfg("gamepad") != "0";
+        capValue = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap : 0;
+        FillCap();
+        padBox.Checked = Cfg("gamepad") == "1";                  // (off unless asked for; up to 2.7 it was on unless turned off)
         int mi;
         string start = Cfg("start_at") != "" ? Cfg("start_at") : Cfg("lab_mission");   // (1.x: the lab's selector)
-        missionBox.SelectedIndex = int.TryParse(start, out mi) && mi >= 0 && mi < missionBox.Items.Count ? mi : 0;
+        missionBox.Selected = int.TryParse(start, out mi) && mi >= 0 && mi < missionBox.Items.Count ? mi : 0;
+        ReadSharp();
     }
 
+    // every option of the pages into the ini (at each change, before each start, when the window closes)
     static void SaveOptions()
     {
-        if (sizeBox == null) return;
-        Set("mode", modeVs.Checked ? "versus" : "coop");
-        Set("window", SIZES[Math.Max(0, sizeBox.SelectedIndex)]);
+        if (sizeBox == null || loading) return;
+        Set("mode", "coop");                                     // (the 1v1 mode is being redone: nothing here asks for it)
+        Set("window", SIZES[sizeBox.Selected]);
         Set("mouse", (sensBar.Value / 10.0).ToString("0.0", CultureInfo.InvariantCulture));
         Set("invert_y", invertBox.Checked ? "1" : "0");
-        Set("crosshair", CROSSHAIRS[Math.Max(0, crossBox.SelectedIndex)]);
-        Set("shift_run", runBox.SelectedIndex == 1 ? "1" : "0");
+        Set("crosshair", CROSSHAIRS[crossBox.Selected]);
+        Set("shift_run", runTick.Checked ? "1" : "0");
         Set("fps_counter", fpsBox.Checked ? "1" : "0");
         Set("hud_colours", hudTick.Checked ? "1" : "0");
         Set("mission_editor", editTick.Checked ? "1" : "0");
@@ -741,10 +1848,9 @@ static class Uplink
         Set("order_wheel", wheelTick.Checked ? "1" : "0");
         Set("subtitles", subsTick.Checked ? "1" : "0");
         for (int i = 0; i < FX.Length; i++) Set("fx_" + FX[i], fxTicks[i].Checked ? "1" : "0");
-        int cap;
-        Set("fps_cap", int.TryParse(capBox.Text.Trim(), out cap) && cap > 0 ? Math.Max(20, Math.Min(1000, cap)).ToString() : "0");
+        Set("fps_cap", capValue > 0 ? Math.Max(20, Math.Min(1000, capValue)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
-        Set("start_at", Math.Max(0, missionBox.SelectedIndex).ToString());
+        Set("start_at", missionBox.Selected.ToString());
         SaveCfg();
     }
 
@@ -755,7 +1861,16 @@ static class Uplink
     static string TnpCoopDir { get { return Path.Combine(Comp, "tnplus_coop"); } }       // TN+ co-op build: HOST
     static string TnpCoopExe { get { return Path.Combine(TnpCoopDir, "TNPlus.exe"); } }
     static string PythonExe { get { return Path.Combine(Comp, "python", "python.exe"); } }
-    static string GodotData { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Godot", "app_userdata", "Terra Nova Uplink"); } }
+    // Uplink's own folder (Godot's user://: under %APPDATA%, which Godot reads from the environment)
+    static string GodotData
+    {
+        get
+        {
+            string a = Environment.GetEnvironmentVariable("APPDATA");
+            if (string.IsNullOrEmpty(a)) a = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(a, "Godot", "app_userdata", "Terra Nova Uplink");
+        }
+    }
 
     // ------------------------------------------------------------------ the game folder (GOG, Steam, or picked)
     static bool IsGame(string d) { return !string.IsNullOrEmpty(d) && File.Exists(Path.Combine(d, "TNOVA", "DATA", "RESMISS.RES")); }
@@ -870,40 +1985,45 @@ static class Uplink
         return l;
     }
 
-    static void FillGames()
+    static void ShowGame()
     {
+        gameLine.Dir = gameLine2.Dir = Game();
+        gameLine.Invalidate(); gameLine2.Invalidate();
+    }
+
+    // Change (and a click on the folder's line): every Terra Nova found on the PC, looked for again each time, the
+    // one in use picked; the last line takes any other folder
+    static void GamesMenu(Control line)
+    {
+        if (busy) return;
         List<string> l = Installs();
         string g = Game();
         if (g != null && !l.Exists(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase))) l.Insert(0, g);
-        gameBox.Items.Clear();
-        foreach (string d in l) gameBox.Items.Add(d);
-        if (l.Count == 0) gameBox.Items.Add("");
-        int at = l.FindIndex(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase));
-        gameBox.SelectedIndex = Math.Max(0, at);
-    }
-
-    static void PickInstall()
-    {
-        string d = gameBox.SelectedItem as string;
-        if (string.IsNullOrEmpty(d) || string.Equals(d, Cfg("game_dir"), StringComparison.OrdinalIgnoreCase)) return;
-        Set("game_dir", d); SaveCfg(); FillMissions(); RefreshUi();
-        Log("game: " + d);
+        l.Add("");
+        Popup(line, MW - 36, l, l.FindIndex(x => string.Equals(x, g, StringComparison.OrdinalIgnoreCase)), 26, 12, DrawGame, delegate(int i) {
+            if (l[i] == "") { PickGame(); return; }
+            if (string.Equals(l[i], Cfg("game_dir"), StringComparison.OrdinalIgnoreCase)) return;
+            Set("game_dir", l[i]); SaveCfg(); FillMissions(); ShowGame(); RefreshUi();
+            Log("game: " + l[i]);
+        });
     }
 
     // an install: GOG / STEAM on green, then its folder
     static void DrawGame(object s, DrawItemEventArgs e)
     {
-        ComboBox c = (ComboBox)s;
-        bool edit = (e.State & DrawItemState.ComboBoxEdit) != 0, sel = (e.State & DrawItemState.Selected) != 0 && !edit;
-        using (Brush b = new SolidBrush(sel ? CTeal : CButton)) e.Graphics.FillRectangle(b, e.Bounds);
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        using (Brush b = new SolidBrush(sel ? Color.FromArgb(30, 62, 56) : CButton)) e.Graphics.FillRectangle(b, e.Bounds);
         if (e.Index < 0) return;
-        string d = (string)c.Items[e.Index];
-        Rectangle tag = new Rectangle(e.Bounds.X + 3, e.Bounds.Y + 2, 58, e.Bounds.Height - 4);
-        using (Brush b = new SolidBrush(d == "" ? Color.FromArgb(70, 24, 20) : Color.FromArgb(18, 58, 34))) e.Graphics.FillRectangle(b, tag);
-        TextRenderer.DrawText(e.Graphics, d == "" ? "NONE" : Edition(d), FSmall, tag, d == "" ? CRed : CGreen,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        TextRenderer.DrawText(e.Graphics, d == "" ? "No Terra Nova found: Browse, then pick the folder that contains TNOVA" : d, c.Font,
-            new Rectangle(tag.Right + 8, e.Bounds.Y, e.Bounds.Right - tag.Right - (edit ? 28 : 10), e.Bounds.Height), d == "" ? CDim : CText,
+        string d = (string)((ListBox)s).Items[e.Index];
+        int x = e.Bounds.X + 7;
+        if (d != "")
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            x = (int)GameLine.Badge(e.Graphics, d, x, e.Bounds.Y + e.Bounds.Height / 2f) + 8;
+        }
+        TextRenderer.DrawText(e.Graphics, d == "" ? "Another folder... (the one that contains TNOVA)" : d, FBody,
+            new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x - 4, e.Bounds.Height), d == "" ? CSoft : sel ? Color.White : CText,
             TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis | TextFormatFlags.NoPrefix);
     }
 
@@ -918,7 +2038,7 @@ static class Uplink
             if (!IsGame(p)) { MessageBox.Show(form, "No TNOVA\\DATA\\RESMISS.RES in that folder.", TITLE); return; }
             if (!Installs().Exists(x => string.Equals(x, p, StringComparison.OrdinalIgnoreCase)))
                 Set("game_dirs", (Cfg("game_dirs") + "|" + p).Trim('|'));          // kept in the list
-            Set("game_dir", p); SaveCfg(); FillGames(); FillMissions(); RefreshUi();
+            Set("game_dir", p); SaveCfg(); ShowGame(); FillMissions(); RefreshUi();
         }
     }
 
@@ -939,6 +2059,7 @@ static class Uplink
             try { a(); }
             catch (Exception e) { Status("Stopped: " + e.Message, CRed); Log(e.ToString()); }
             busy = false;
+            running = null;
             Progress(0);
             Ui(RefreshUi);
         }) { IsBackground = true }.Start();
@@ -955,14 +2076,15 @@ static class Uplink
             string en = Installs().Find(IsEnglish);
             if (en == null)
             {
-                MessageBox.Show(form, "Hosting needs the English version of the game (Steam's, or GOG's in English), and none was found. Add one with Browse.", TITLE);
+                MessageBox.Show(form, "Hosting needs the English version of the game (Steam's, or GOG's in English), and none was found. Add one with Change.", TITLE);
                 return;
             }
-            Set("game_dir", en); SaveCfg(); FillGames(); FillMissions(); RefreshUi();
+            Set("game_dir", en); SaveCfg(); ShowGame(); FillMissions(); RefreshUi();
             Log("hosting: the English game, " + en);
         }
         sessionName = sessionPing = "";
         coopRun = m == Mode.Host || m == Mode.Join;
+        running = m;
         Background(delegate {
             if (m == Mode.Play || m == Mode.Host) Live(m == Mode.Host, 0);
             else if (m == Mode.Join) Join();
@@ -1015,7 +2137,7 @@ static class Uplink
             if ((tnp == null || tnp.HasExited) && Process.GetProcessesByName("dosbox-staging").Length == 0)
             { Status("The game was closed.", CText); Session("No session.", CDim); return; }
             if ((DateTime.Now - t0).TotalMinutes > 5)
-            { Status("The game didn't load in 5 minutes: see the log (Log).", CRed); return; }
+            { Status("The game didn't load in 5 minutes: see the log (Help, Show the log).", CRed); return; }
             Thread.Sleep(3000);
             bridge = Bridge(host, dir);
             DateTime b0 = DateTime.Now;
@@ -1052,7 +2174,7 @@ static class Uplink
                 if (starter.ExitCode == 0)
                     Status("Mission " + playMission + " started." + (playMission == 18 || playMission == 28 ?
                         " (In a mission of your own the game drops the player alone, in a standard suit.)" : ""), CGreen);
-                else Status(playError != "" ? playError : "The mission could not be started: see the log (Log).", CRed);
+                else Status(playError != "" ? playError : "The mission could not be started: see the log (Help, Show the log).", CRed);
                 starter = null;
             }
         }
@@ -1238,10 +2360,15 @@ static class Uplink
         env["TN_FPS"] = Cfg("fps_counter") == "1" ? "1" : "0";
         env["TN_FPS_CAP"] = Cfg("fps_cap") == "" ? "0" : Cfg("fps_cap");
         env["TN_OLDSCHOOL"] = Cfg("old_school") == "0" ? "0" : "1";
-        env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
+        env["TN_NO_PAD"] = Cfg("gamepad") == "1" ? "0" : "1";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
         env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";
         env["TN_ORDER_KEY"] = OrderKey();
+        env["TN_ORDER_PANES"] = string.Join(",", Array.ConvertAll(Panes(), x => x.ToString()));
+        env["TN_ORDER_TAP_GROUND"] = Num("tap_ground", 1, -1, ORDERS.Length - 1).ToString();
+        env["TN_ORDER_TAP_ENEMY"] = Num("tap_enemy", 0, -1, ORDERS.Length - 1).ToString();
+        env["TN_ORDER_TAP_MS"] = Num("tap_ms", TAP_MS0, 100, 350).ToString();
+        env["TN_ORDER_DEAD"] = Num("wheel_dead", DEAD0, 24, 104).ToString();
         foreach (string fx in FX) env["TN_FX_" + fx.ToUpperInvariant()] = Cfg("fx_" + fx) == "1" ? "1" : "0";
         return env;
     }
@@ -1439,18 +2566,21 @@ static class Uplink
     // picked mission. The player loads it.
     static void FillMissions()
     {
-        int keep = missionBox.SelectedIndex;
-        missionBox.Items.Clear();
-        missionBox.Items.Add("From the game's menus");
+        int keep = missionBox.Selected;
+        List<string> l = new List<string> { "From the game's menus" };
         string g = Game();
         string[] names = g != null ? MissionNames(g) : null;
         for (int i = 0; i < CAMPAIGN.Length; i++)
         {
             int n = CAMPAIGN[i];
             string nm = names != null && n - 1 < names.Length && names[n - 1].Trim() != "" ? names[n - 1].Trim() : "MISS" + n;
-            missionBox.Items.Add((i + 1).ToString("00") + "   " + nm);
+            l.Add((i + 1).ToString("00") + "   " + nm);
         }
-        if (keep >= 0 && keep < missionBox.Items.Count) missionBox.SelectedIndex = keep;
+        bool was = loading;
+        loading = true;
+        missionBox.Items = l;
+        missionBox.Selected = keep < l.Count ? keep : 0;
+        loading = was;
     }
 
     static string[] MissionNames(string game)
@@ -1652,6 +2782,8 @@ static class Uplink
             return l;
         }
     }
+
+    static void StopNow() { new Thread(StopAll) { IsBackground = true }.Start(); }
 
     static void StopAll()
     {
@@ -1945,9 +3077,6 @@ static class Uplink
         return k == "M4" || k == "M5" || (KeyOk(k) && k != "") ? k : "MID";
     }
 
-    static Tick hudTick, editTick;                            // Uplink HUD colours (In game), Mission editor (Maps)
-    static Tile photoKeyBtn;
-
     // The photo mode's key (key_photo in the ini): O unless another is chosen, written as the other keys
     static string PhotoKey()
     {
@@ -1967,17 +3096,27 @@ static class Uplink
         return sb + ScanName(Convert.ToInt32(p[p.Length - 1], 16));
     }
 
+    // the same, short, for a key's button: "Shift+F12", "Ctrl + F12", "Middle mouse"
+    static string KeyShort(string spec, bool tight)
+    {
+        if (spec == "") return "None";
+        if (spec == "MID") return "Middle mouse";
+        if (spec == "M4" || spec == "M5") return "Mouse " + spec.Substring(1);
+        string[] p = spec.Split('+');
+        for (int i = 0; i < p.Length - 1; i++) p[i] = p[i].Substring(0, 1) + p[i].Substring(1).ToLowerInvariant();
+        p[p.Length - 1] = ScanName(Convert.ToInt32(p[p.Length - 1], 16));
+        return string.Join(tight ? "+" : " + ", p);
+    }
+
     static void KeyLabels()
     {
-        oldKeyBtn.Text = "On / off in game: " + KeyName(OldKey());
-        sharpKeyBtn.Text = "Bigger / finer pixels: " + KeyName(SharpKey());
-        oldKeyBtn.Invalidate(); sharpKeyBtn.Invalidate();
-        fpsKeyLabel.Text = FpsKey() != "" ? "in game: " + KeyName(FpsKey()) : "";
-        wheelKeyBtn.Text = "Its button: " + KeyName(OrderKey());
-        wheelKeyBtn.Invalidate();
-        photoKeyBtn.Text = "Photo mode: " + KeyName(PhotoKey());
-        photoKeyBtn.Invalidate();
-        shotKeyLabel.Text = ShotKey() != "" ? "Screenshot: " + KeyName(ShotKey()) + "  (saved in Pictures)" : "";
+        oldKeyBtn.Text = KeyShort(OldKey(), true);
+        sharpKeyBtn.Text = KeyShort(SharpKey(), true);
+        fpsBox.Em = FpsKey() != "" ? KeyShort(FpsKey(), true) : null;      // (the counter's own key in game, next to its switch)
+        fpsBox.Invalidate();
+        wheelKeyBtn.Text = KeyShort(OrderKey(), false);
+        photoKeyBtn.Text = KeyShort(PhotoKey(), false);
+        shotKeyBtn.Text = KeyShort(ShotKey(), false);
     }
 
     // the keys Uplink's window knows (viewer.gd, SCANCODES), less the modifiers and the three the question keeps
@@ -2075,6 +3214,27 @@ static class Uplink
             string game = now.IndexOf('+') < 0 ? GameUses(Convert.ToInt32(now, 16)) : null;
             Status("Photo mode: " + KeyName(PhotoKey()) + " (from the next time Uplink starts)." +
                 (game != null ? " " + KeyName(now) + " is one of the game's keys too (" + game + "): the game will not get it in a mission any more." : ""),
+                game != null ? CAmber : CGreen);
+        }
+    }
+
+    // The screenshot's key (key_shot in the ini): Ctrl with the look's key unless another is chosen
+    static void AskShotKey()
+    {
+        using (KeyAsk d = new KeyAsk("a screenshot", KeyName(ShotKey())))
+        {
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            string spec = d.Spec;                             // ("": Ctrl with the look's key, as it came)
+            if (spec != "" && (spec == OldKey() || spec == SharpKey() || spec == FpsKey() || spec == PhotoKey() || spec == OrderKey()))
+            { Status(KeyName(spec) + " is already one of Uplink's keys.", CAmber); return; }
+            if (spec == FreelookScan().ToString("X2") || spec == "45")
+            { Status(KeyName(spec) + " already swaps the look and the game's cursor.", CAmber); return; }
+            Set("key_shot", spec);
+            SaveCfg();
+            KeyLabels();
+            string game = spec != "" && spec.IndexOf('+') < 0 ? GameUses(Convert.ToInt32(spec, 16)) : null;
+            Status("Screenshot: " + KeyName(ShotKey()) + " (from the next time Uplink starts)." +
+                (game != null ? " " + KeyName(spec) + " is one of the game's keys too (" + game + "): the game will not get it any more." : ""),
                 game != null ? CAmber : CGreen);
         }
     }
@@ -2206,10 +3366,11 @@ static class Uplink
         Dictionary<string, string> h = Heads();
         string up = Get(h, Head(UPLINK_REPO, UPLINK_BRANCH));
         Ui(delegate {
-            if (up == null) { verLabel.Text = "●  Couldn't check for updates (offline?)"; verLabel.ForeColor = CDim; }
-            else if (Cfg("uplink_sha") == "") { verLabel.Text = "●  Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.ForeColor = CAmber; }
-            else if (up == Cfg("uplink_sha")) { verLabel.Text = "●  Up to date"; verLabel.ForeColor = CGreen; }
-            else { verLabel.Text = "●  Update available at the next start"; verLabel.ForeColor = CAmber; }
+            if (up == null) { verLabel.Text = "Couldn't check for updates (offline?)"; verLabel.On = CLedOff; }
+            else if (Cfg("uplink_sha") == "") { verLabel.Text = "Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.On = CAmber; }
+            else if (up == Cfg("uplink_sha")) { verLabel.Text = "Uplink " + VERSION + ", up to date"; verLabel.On = CGreen; }
+            else { verLabel.Text = "Update available at the next start"; verLabel.On = CAmber; }
+            verLabel.Invalidate();
         });
     }
 
@@ -2226,9 +3387,10 @@ static class Uplink
         if (!m.Success || !Version.TryParse(VERSION, out now) || !Version.TryParse(m.Groups[1].Value, out theirs) || theirs <= now) return;
         selfAsked = true;
         Status("Building the new launcher " + theirs + "...", CAmber);
-        string dir = Path.GetDirectoryName(src), outExe = Path.Combine(Root, "Terra Nova Uplink.new.exe");
+        string dir = Path.GetDirectoryName(src), outExe = Path.Combine(Root, "Terra Nova Uplink.new.exe"), res = "";
+        foreach (string h in HEROES) if (File.Exists(Path.Combine(dir, h))) res += "/resource:" + h + " ";   // (the pages' pictures)
         Process p = Run(Csc(), "/nologo /optimize /target:winexe /win32manifest:app.manifest /win32icon:icon.ico /r:System.Windows.Forms.dll " +
-            "/r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll " +
+            "/r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll " + res +
             "/out:\"" + outExe + "\" TerraNovaUplink.cs", dir, null, true);
         p.WaitForExit();
         if (p.ExitCode != 0 || !File.Exists(outExe)) { Log("new launcher didn't build"); return; }

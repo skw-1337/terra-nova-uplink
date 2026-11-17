@@ -19,8 +19,9 @@
 # which key he must press for each (128 keys x none / Shift / Ctrl / Alt), read here before each order.
 import re, struct, threading, time
 
-ATTACK, MOVE, COVER, RETREAT, FOLLOW, HOLD, FORM = range(7)       # (FORM: assume formation, the bridge's own use)
-NAMES = ('attack target', 'move there', 'take cover', 'retreat', 'follow me', 'hold position')
+ATTACK, MOVE, COVER, RETREAT, FOLLOW, HOLD, FORM = range(7)       # (FORM: assume formation; the bridge's own use,
+NAMES = ('attack target', 'move there', 'take cover', 'retreat', 'follow me', 'hold position',   # and the player's if
+         'assume formation')                                                                    # he puts it on his wheel)
 F1, F2, F3, F4, F5, F6, F7, ESC = 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x01
 SHIFT, CTRL, ALT = 1, 2, 3
 MOD_KEY = {SHIFT: 0x2A, CTRL: 0x1D, ALT: 0x38}
@@ -200,7 +201,7 @@ class Orders:
                     self.log('orders: %r' % (ex,))
                 finally:
                     self.busy.release()
-            self.log('order %s to %s: %s (code %#x)' % (NAMES[order] if 0 <= order < 6 else order,
+            self.log('order %s to %s: %s (code %#x)' % (NAMES[order] if 0 <= order < len(NAMES) else order,
                                                         'squadmate %d' % who if who else 'the squad', WHY[res], code))
             if done: done(res, code)
         threading.Thread(target=run, daemon=True).start()
@@ -232,7 +233,7 @@ class Orders:
     def _send(self, order, who, kind, ent, x, y):
         g = self.g
         if not self.ok: return (NO_GAME, 0)
-        if not 0 <= order <= HOLD: return (NOT_TAKEN, 0)
+        if not 0 <= order <= FORM: return (NOT_TAKEN, 0)
         n, mates = self.squad()
         if n <= 1 or (who and who not in [m[0] for m in mates]): return (NO_SQUAD, 0)
         put_back = []                                    # (address, the bytes that were there)

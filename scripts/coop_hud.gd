@@ -1000,8 +1000,10 @@ func _draw_mate() -> void:
 	if cam.is_position_behind(top):
 		return
 	var c := _pixel(cam, top)
-	var d := cam.global_position.distance_to(top)
 	var fs := int(clampf(root.size.y * 0.028, 12.0, 26.0))
+	if win.size.y > 0 and not _grect(win.position.x, win.position.y, win.end.x, win.end.y).grow_individual(0, -fs - 6.0, 0, 0).has_point(c):
+		return                                               # (not over the cockpit around the 3D window: its compass, its panels)
+	var d := cam.global_position.distance_to(top)
 	var t := "%s  %dm" % [mate_name, int(round(d * 6.0))]   # the game's metres (its lock reads 51 m where 8.5 units)
 	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 	var p := c - Vector2(w / 2.0, 6.0)

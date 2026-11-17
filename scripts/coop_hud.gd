@@ -56,7 +56,7 @@ const BOX := Rect2i(146, 226, 26, 26)
 const MAP_BOX := Rect2i(118, 264, 84, 108)
 const MAP_LIGHT := "02020202020202020202020202020202030303030303030304040404040404040405050505060606060606060707070707070606060606060505050505050404"
 const MAP_LIGHT_8 := "04040404040404040404040404040404040404040404040404040404040404040505050505050505050505050505050505050505050505050505050505050505"
-enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT }   # the marks' kinds (coop_guest.py)
+enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE }   # the marks' kinds (coop_guest.py)
 
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
@@ -116,6 +116,13 @@ var map_from := Vector2i.ZERO        # its top left corner in the world, and the
 var map_step := 1
 var map_marks := []                  # the marks the host's game would draw: [kind, palette colour, payload]
 var map_told := false                # the host sends them (an older host: the squad from the view's entities)
+# His own map marker (the host's is the game's nav marker): a click on his map with the mouse free puts it there, a
+# click on it or the right button on the map takes it away. His window only asks ('W' + world x, y to the host's
+# bridge, again while the answer differs, for 3 s); what is drawn is what the bridge says back in the map's marks.
+var own_mark := Vector2.ZERO          # as the host's bridge says it (x = 0: none)
+var mark_want := Vector2.ZERO         # what he last asked for, when, and when it was last sent
+var mark_want_t := -100.0
+var mark_sent_t := -100.0
 var weapon_state := 0                # his weapon: 0 ready, 1 destroyed, 2 no ammunition, 5 not ready yet
 var weapon_ammo := 0xFFFF            # its ammunition (0xFFFF: a weapon that counts none)
 var tints := [PackedByteArray(), PackedByteArray()]   # the game's colour tables for states 1-2 and 5
@@ -322,6 +329,12 @@ func _process(delta: float) -> void:
 			got = true
 			map_dirty = true
 	root.visible = clock - last < TIMEOUT
+	if clock - mark_want_t < 3.0 and clock - mark_sent_t > 0.4 and (own_mark - mark_want).length() > 0.05:
+		_mark_ask()                                           # (asked and not answered yet)
+	if not root.visible and own_mark.x != 0.0:
+		own_mark = Vector2.ZERO                               # (the host is gone: his marker with it)
+		if get_parent().has_method("mate_marker"):
+			get_parent().mate_marker(Vector2.ZERO)
 	if got and root.visible:
 		_update()
 	if root.visible:
@@ -446,6 +459,15 @@ func _map_packet(pk: PackedByteArray, at: int) -> void:
 		p += 3 + pk[p + 2]
 	map_marks = marks
 	map_told = true
+	var mine := Vector2.ZERO
+	for m in marks:
+		if m[0] == M_MATE and m[2].size() >= 4:
+			mine = Vector2(m[2].decode_u16(0), m[2].decode_u16(2)) / 64.0
+	if mine != own_mark:
+		own_mark = mine
+		var vp := get_parent()
+		if vp and vp.has_method("mate_marker"):
+			vp.mate_marker(mine)                            # (and in the 3D, as the host's)
 
 
 # The game's picture of the whole ground, as its map panels draw it (0x2774c0), from his own game files in the
@@ -585,7 +607,9 @@ func _map_paint() -> void:
 			M_WAYPOINT:
 				_frame(img, p - Vector2i(2, 2), p + Vector2i(1, 1), c)
 			M_NAV:
-				_cross(img, p, c, 1)
+				_cross(img, p, ENERGY_LIT, 1)                   # the host's marker, in his colour
+			M_MATE:
+				_cross(img, p, ARMOUR_LIT, 1)                   # his own
 			M_RECT, M_ROUND, M_TEXT:
 				if d.size() < 8:
 					continue
@@ -1058,6 +1082,28 @@ func _draw_status() -> void:
 		Color(0.4, 1.0, 0.45) if jump_ready else Color(1.0, 0.7, 0.25))
 	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 219.0, 351.0, 10.0,
 		Color(0.4, 1.0, 0.45) if lock else Color(0.75, 0.78, 0.9))
+
+
+# the mouse free, a button pressed at a place of the window: true if it was on his map (his marker's, see own_mark)
+func map_click(at: Vector2, right: bool) -> bool:
+	var box := _map_box()
+	if not cockpit.visible or state != 0 or map_tex == null or not map_told or not box.has_point(at):
+		return false
+	var px := (at - box.position) / box.size * Vector2(map_tex.get_size())
+	var w := Vector2(map_from) + Vector2(px.x, px.y / 2.0) * map_step
+	var on_it := own_mark.x != 0.0 and absf(w.x - own_mark.x) <= 2.0 * map_step and absf(w.y - own_mark.y) <= 2.0 * map_step
+	mark_want = Vector2.ZERO if right or on_it else w.clamp(Vector2(1, 1), Vector2(511, 511))
+	mark_want_t = clock
+	_mark_ask()
+	return true
+
+
+func _mark_ask() -> void:
+	mark_sent_t = clock
+	var b := PackedByteArray([0x57, 0, 0, 0, 0, 0, 0, 0, 0])
+	b.encode_float(1, mark_want.x)
+	b.encode_float(5, mark_want.y)
+	lobby.out.put_packet(b)
 
 
 func toggle_map() -> void:

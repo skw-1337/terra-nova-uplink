@@ -4726,6 +4726,8 @@ func _photo_show() -> void:
 		compass_rect.visible = false
 	if waypoint != null:
 		waypoint.visible = show and waypoint_at.x != 0.0 and not current.is_empty()
+	if mate_wp != null:
+		mate_wp.visible = show and mate_wp_at.x != 0.0 and not current.is_empty()
 	if photo_on:
 		if order_wheel != null:
 			order_wheel.visible = false
@@ -5134,6 +5136,16 @@ func _menu_game_pos(p: Vector2) -> Vector2i:
 			clampi(int((p.y - box.position.y) / box.size.y * menu_frame.y), 0, menu_frame.y - 1))
 
 
+# coop guest, mouse free: a click on his map panel (or his big map) is his marker's
+func _guest_map_click(event: InputEventMouseButton) -> bool:
+	if event.button_index != MOUSE_BUTTON_LEFT and event.button_index != MOUSE_BUTTON_RIGHT:
+		return false
+	for n in get_children():
+		if n.has_method("map_click"):
+			return n.map_click(event.position, event.button_index == MOUSE_BUTTON_RIGHT)
+	return false
+
+
 # Window position -> the game's 320 x 400 screen (the HUD image is stretched over the whole window).
 func _play_game_pos(p: Vector2) -> Vector2i:
 	var vs := get_viewport().get_visible_rect().size
@@ -5226,6 +5238,8 @@ func _input(event: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click only takes the mouse
 		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
 			free_look = event.pressed
+		elif guest_win and not captured and event.pressed and _guest_map_click(event):
+			pass                                          # coop guest: his own marker on his map (coop_hud.gd)
 		elif guest_win and not captured and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and \
 				(Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position))) or
 				Rect2(240, 256, 44, 14).has_point(Vector2(_play_game_pos(event.position)))):
@@ -5478,6 +5492,8 @@ func _live_update() -> void:
 			if q.size() == 16:                              # the game's angle word (12 bytes: an older bridge, none)
 				_waypoint_word(q.decode_u32(12) & 0xFFFF)
 			_live_waypoint(Vector2(q.decode_float(4), q.decode_float(8)))
+		elif q.size() >= 13 and q.slice(0, 4).get_string_from_ascii() == "GNAV":
+			_mate_nav(q)                                    # co-op: the guest's map marker (coop_guest.py host_marker)
 		elif q.size() >= 12 and q.slice(0, 4).get_string_from_ascii() == "SKYO":
 			cloud_base = Vector2(q.decode_float(4), q.decode_float(8))   # the game's wind offset of its clouds
 			if q.size() >= 16:
@@ -5547,55 +5563,129 @@ func _live_waypoint(at: Vector2) -> void:
 			waypoint.visible = false
 		return
 	if waypoint == null:
-		waypoint = Node3D.new()
-		var wm := ShaderMaterial.new()
-		wm.shader = WAYPOINT
-		wm.render_priority = 10
-		var rod := CylinderMesh.new()               # one for all its lines: 1 long, 1 thick (the shader sizes it)
-		rod.top_radius = 1.0
-		rod.bottom_radius = 1.0
-		rod.height = 1.0
-		rod.radial_segments = 6
-		rod.rings = 0
-		var spin := Node3D.new()
-		spin.name = "spin"
-		waypoint.add_child(spin)
-		for e in [[0, 1], [0, 2], [0, 3], [1, 2], [2, 3], [3, 1]]:
-			var a: Vector3 = WAYPOINT_POINTS[e[0]]
-			var b: Vector3 = WAYPOINT_POINTS[e[1]]
-			var up := (b - a).normalized()
-			var side := up.cross(Vector3.UP if absf(up.y) < 0.9 else Vector3.RIGHT).normalized()
-			var mi := MeshInstance3D.new()
-			mi.mesh = rod
-			mi.material_override = wm
-			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			mi.position = (a + b) * 0.5
-			mi.basis = Basis(side, up * (b - a).length(), side.cross(up))
-			mi.extra_cull_margin = 2.0                  # (thicker than its mesh when seen from far)
-			spin.add_child(mi)
-		var l := Label3D.new()
-		l.name = "label"
-		l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		l.fixed_size = true
-		l.no_depth_test = true
-		l.shaded = false
-		l.render_priority = 11
-		l.outline_size = 5                          # (thick strokes, as the game's small letters)
-		l.font_size = 48
-		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		l.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-		l.layers = SUB_HIDE_LAYER                   # (the main view only)
-		waypoint.add_child(l)
-		waypoint.set_meta("mat", wm)
-		add_child(waypoint)
+		waypoint = _waypoint_new()
 	var col: Color = hud_pal_img.get_pixel(WAYPOINT_COLOUR, 0) if hud_pal_img != null and hud_version > 0 else (
 			pal[WAYPOINT_COLOUR] if pal.size() > WAYPOINT_COLOUR else Color(0.47, 0.0, 0.72))
-	(waypoint.get_meta("mat") as ShaderMaterial).set_shader_parameter("colour", col)
-	(waypoint.get_node("label") as Label3D).modulate = col
-	(waypoint.get_node("label") as Label3D).outline_modulate = col
-	waypoint.position = Vector3(at.x, TNData.height_at(current["map"], at.x, at.y) + 1.0, at.y)
-	waypoint.visible = not _photo_hides()
+	_waypoint_put(waypoint, at, HOST_MARK if guest_win else col)   # (a co-op guest's window: the host's, in his colour)
 	_waypoint_update(0.0)
+
+
+# Co-op: a map marker for each player. The host's is the game's own (above). The guest's is Uplink's: his window
+# asks the host's bridge for it (coop_hud.gd map_click), which says it back to both windows. Each window draws the
+# other player's and its own in the 3D as the game's pyramid, in the co-op HUD's colours (the host's orange, the
+# guest's light blue; the host's own stays the game's purple in his window, as his game draws it on its map), and the
+# host's window draws the guest's over the game's maps: 'GNAV' tells where they are on its screen and what they show.
+const HOST_MARK := Color8(255, 165, 40)          # (coop_hud.gd ENERGY_LIT, ARMOUR_LIT)
+const MATE_MARK := Color8(135, 200, 255)
+var mate_wp: Node3D                              # the guest's marker in the 3D
+var mate_wp_at := Vector2.ZERO
+var mate_maps := []                              # host: [the map on the game's screen, its corner in the world, a column's and a row's length]
+var mate_news := -100000                         # host: when the bridge last said it
+var mate_view: Control
+
+
+# the guest's marker put at a place of the world (x = 0: none)
+func mate_marker(at: Vector2) -> void:
+	mate_wp_at = at
+	if at.x == 0.0 or current.is_empty():
+		if mate_wp != null:
+			mate_wp.visible = false
+		return
+	if mate_wp == null:
+		mate_wp = _waypoint_new()
+	_waypoint_put(mate_wp, at, MATE_MARK)
+	_waypoint_update(0.0)
+
+
+# host: the bridge's 'GNAV'
+func _mate_nav(q: PackedByteArray) -> void:
+	mate_news = _ticks()
+	var at := Vector2(q.decode_float(4), q.decode_float(8))
+	if at != mate_wp_at:
+		mate_marker(at)
+	mate_maps = []
+	for i in mini(q[12], (q.size() - 13) / 24):
+		var o := 13 + 24 * i
+		mate_maps.append([Rect2(q.decode_s16(o), q.decode_s16(o + 2), q.decode_s16(o + 4) - q.decode_s16(o), q.decode_s16(o + 6) - q.decode_s16(o + 2)),
+				Vector2(q.decode_float(o + 8), q.decode_float(o + 12)), Vector2(maxf(q.decode_float(o + 16), 0.0001), maxf(q.decode_float(o + 20), 0.0001))])
+	if mate_view == null:
+		var ml := CanvasLayer.new()
+		ml.layer = 3                                       # over the game's HUD, under the subtitles, the wheel and its screens
+		add_child(ml)
+		mate_view = Control.new()
+		mate_view.set_anchors_preset(Control.PRESET_FULL_RECT)
+		mate_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		mate_view.draw.connect(_mate_draw)
+		ml.add_child(mate_view)
+	mate_view.queue_redraw()
+
+
+# host: the guest's marker on the game's maps, the game's own mark for its marker (3 pixels across, 3 rows down) in
+# the guest's colour, where each map shows that place
+func _mate_draw() -> void:
+	if mate_wp_at.x == 0.0 or menu_mode or _photo_hides() or _ticks() - mate_news > 2000:
+		return
+	var k := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	for m in mate_maps:
+		var box: Rect2 = m[0]
+		var p: Vector2 = box.position + ((mate_wp_at - (m[1] as Vector2)) / (m[2] as Vector2)).floor()
+		if not box.grow(-1.0).has_point(p):
+			continue
+		mate_view.draw_rect(Rect2((p + Vector2(-1, 0)) * k, Vector2(3, 1) * k), MATE_MARK)
+		mate_view.draw_rect(Rect2((p + Vector2(0, -1)) * k, Vector2(1, 3) * k), MATE_MARK)
+
+
+func _waypoint_put(n: Node3D, at: Vector2, col: Color) -> void:
+	(n.get_meta("mat") as ShaderMaterial).set_shader_parameter("colour", col)
+	(n.get_node("label") as Label3D).modulate = col
+	(n.get_node("label") as Label3D).outline_modulate = col
+	n.position = Vector3(at.x, TNData.height_at(current["map"], at.x, at.y) + 1.0, at.y)
+	n.visible = not _photo_hides()
+
+
+func _waypoint_new() -> Node3D:
+	var n := Node3D.new()
+	var wm := ShaderMaterial.new()
+	wm.shader = WAYPOINT
+	wm.render_priority = 10
+	var rod := CylinderMesh.new()               # one for all its lines: 1 long, 1 thick (the shader sizes it)
+	rod.top_radius = 1.0
+	rod.bottom_radius = 1.0
+	rod.height = 1.0
+	rod.radial_segments = 6
+	rod.rings = 0
+	var spin := Node3D.new()
+	spin.name = "spin"
+	n.add_child(spin)
+	for e in [[0, 1], [0, 2], [0, 3], [1, 2], [2, 3], [3, 1]]:
+		var a: Vector3 = WAYPOINT_POINTS[e[0]]
+		var b: Vector3 = WAYPOINT_POINTS[e[1]]
+		var up := (b - a).normalized()
+		var side := up.cross(Vector3.UP if absf(up.y) < 0.9 else Vector3.RIGHT).normalized()
+		var mi := MeshInstance3D.new()
+		mi.mesh = rod
+		mi.material_override = wm
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.position = (a + b) * 0.5
+		mi.basis = Basis(side, up * (b - a).length(), side.cross(up))
+		mi.extra_cull_margin = 2.0                  # (thicker than its mesh when seen from far)
+		spin.add_child(mi)
+	var l := Label3D.new()
+	l.name = "label"
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.fixed_size = true
+	l.no_depth_test = true
+	l.shaded = false
+	l.render_priority = 11
+	l.outline_size = 5                          # (thick strokes, as the game's small letters)
+	l.font_size = 48
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	l.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	l.layers = SUB_HIDE_LAYER                   # (the main view only)
+	n.add_child(l)
+	n.set_meta("mat", wm)
+	add_child(n)
+	return n
 
 
 func _waypoint_word(w: int) -> void:
@@ -5610,20 +5700,30 @@ func _waypoint_word(w: int) -> void:
 
 
 func _waypoint_update(delta: float) -> void:
-	if waypoint == null or not waypoint.visible:
-		return
-	var spin := waypoint.get_node("spin") as Node3D
+	if mate_wp != null and mate_wp.visible:
+		if not guest_win and _ticks() - mate_news > 2000:   # (host: the bridge no longer says it)
+			mate_marker(Vector2.ZERO)
+			if mate_view != null:
+				mate_view.queue_redraw()
+		else:
+			_waypoint_turn(mate_wp, mate_wp_at, delta)
+	if waypoint != null and waypoint.visible:
+		_waypoint_turn(waypoint, waypoint_at, delta)
+
+
+func _waypoint_turn(n: Node3D, at: Vector2, delta: float) -> void:
+	var spin := n.get_node("spin") as Node3D
 	if wp_word >= 0.0:
 		var wd := wp_word + wp_rate * minf(_ticks_usec() / 1e6 - wp_t, 0.25)
 		spin.rotation.y = fposmod(-wd / 65536.0 * TAU - PI / 2.0, TAU)
 	else:
 		spin.rotation.y = fposmod(spin.rotation.y - TAU * WAYPOINT_TURN * delta, TAU)
 	var vs := get_viewport().get_visible_rect().size
-	(waypoint.get_meta("mat") as ShaderMaterial).set_shader_parameter("width", WAYPOINT_LINE * vs.y / 400.0)
+	(n.get_meta("mat") as ShaderMaterial).set_shader_parameter("width", WAYPOINT_LINE * vs.y / 400.0)
 	# the letters: what a window pixel is worth one unit away (the field of view is the game's horizontal one, zoom
 	# included)
 	var px := 2.0 * tan(deg_to_rad(camera.fov) * 0.5) / vs.x
-	var l := waypoint.get_node("label") as Label3D
+	var l := n.get_node("label") as Label3D
 	l.pixel_size = WAYPOINT_TEXT * vs.y / 400.0 * px / l.font_size
 	# the game writes it 15 columns right of the pyramid's middle and from 3 rows above it (of its 848 x 400 picture)
 	l.offset = Vector2(15.0 * vs.x / 848.0, 3.0 * vs.y / 400.0) * px / l.pixel_size
@@ -5633,7 +5733,7 @@ func _waypoint_update(delta: float) -> void:
 	var me: Array = live_ents.get(live_me, [])
 	if me.size() >= 5:
 		from = Vector2(me[3], me[4])
-	l.text = "%d M" % int(6.0 * (from - waypoint_at).length())
+	l.text = "%d M" % int(6.0 * (from - at).length())
 
 
 # Game entities after the camera: count, player index, then 32 bytes each: index, class, type, active (int32),

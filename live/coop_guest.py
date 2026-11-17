@@ -11,6 +11,7 @@ import coop_lobby, coop_view
 from coop_name import NameTag
 
 CAVE = 0x46B040
+CAVE_WAIT = 60                    # seconds the bridge waits for it before saying it is missing
 G_ON, G_FIRE, G_ID, G_TIM, G_CTRL, G_TGT = 0x46C000, 0x46C001, 0x46C002, 0x46C010, 0x46C020, 0x46C048
 G_HIT = 0x46C200                  # 1v1 hit mailbox (TN+ Coop coop3): 1, +2 entity hit, +6 the guest's projectile that hit it
 # versus: the guest's shots never collide with the host, so the bridge watches them (projectile entities: class 5, record
@@ -40,12 +41,16 @@ BOUND_GATE = 0x3C8                # suit record: the game's Bound only while thi
 REPEAT = (0.5, 1 / 10.9)
 FEET, STEPS, STRIDE, STILL, STANCE = (0x353, 0x397), 4, 290, 600, 16
 CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of these values = off the ground (0x27EDA0)
-# Lock (right button, gamepad RB): the unit nearest the middle of his view (within 12 degrees, 250 units), not one
-# of the squad; while it stays within 30 degrees of his view his shots aim at its middle. Right button again: off.
-LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(12), math.radians(30), 120.0   # range: 1.2 km (2.5 km picked targets out of sight)
-# side angle as above; up / down much wider: the guest rarely aims his pitch at a unit on another level (the arena's
-# terraces put the host 30 degrees below him at 8 units)
-LOCK_PICK_V, LOCK_KEEP_V = math.radians(45), math.radians(60)
+# Lock (right button, gamepad RB), as the game's for its player (a click in its 3D view, 0x269F28, or its next-target
+# key, then 0x262D4C): of the units in his view (the game's list of those on its screen; here within his field of
+# view, 84.5 degrees across, and 120 units), not one of the squad, the one nearest the middle; the game then plays its
+# lock sound (2021, his window plays it) and keeps the target while it is on his screen or within his suit's sensor
+# range (suit +0xB6, 16.16 metres: / 6 for units, 0x262B00), else drops it. While it stays within 30 degrees of his view
+# his shots aim at its middle. Right button again: off. (It was the unit within 12 degrees of the middle only: a click
+# a little off a target locked nothing.)
+LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
+LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
+SENSOR = 0xB6
 LIVE_PORT, PLAY_PORT = 47831, 47834
 HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
@@ -151,6 +156,15 @@ M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = r
 # playing; +0x10 length, +0x18 position, +0x30 loops left, 0 = for ever) is told instead that this pass is its last:
 # it ends by itself, the game frees the voice and empties the suit's.
 SOUND, VOICES, VOICE_N, SAMPLES = 0x82, 0x370738, 0x4F, 0x44B600
+# The game's sounds for the guest's window (coop_sound.gd): the game's voices (VOICES: 16 here, their number at
+# 0x35982D) as it starts and ends them, seen each update. A voice: byte 0 the driver's sample (-1: free), +1 its kind
+# (0 not placed; 1 at a place of the world, x y z 16.16 at +0x1A; 2 and 5 at a unit, its entity at +0x1A), +0x15 its
+# volume now (0-127), +0x17 1 = played once (0: until stopped), +0x18 the sound (RESSOUND.RES). A sound the game
+# plays as its player's (kind 0) is a shot of the suit whose voice it is (suit +0x82): placed at that suit for the
+# guest. The game's sound volume: 0x35982F. A voice started again (the driver's sample back near its start, or
+# another sound) is a new sound. 'SND' + master volume + count, then 'S' starts (voice, sound, kind, once, volume,
+# entity, x, y, z) and 'E' ends (voice); sent when something happened, reliable online.
+VOICE_MAX, SFX_VOLUME = 0x35982D, 0x35982F
 # A map marker for each player. The host's is the game's own nav marker. The guest's is Uplink's: his window asks for
 # it ('W' + world x, y, floats; x = 0: none), the bridge keeps it (the game is not told: it has one marker only) and
 # says it back to both windows: to his in the marks of his map (M_MATE), to the host's as 'GNAV' + x, y (floats; x = 0:
@@ -235,7 +249,8 @@ class Guest:
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.gnav, self.gnav_t, self.gnav_told, self.gnav_mis = None, 0.0, False, None   # his map marker (world x, y)
-        self.fired_t = 0.0                                     # when he last held the fire (his laser's sound: laser_off)
+        self.fired_t, self.laser_said = 0.0, None             # when he last held the fire (his laser's sound: laser_off)
+        self.voices = {}                                       # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
         self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
@@ -263,8 +278,11 @@ class Guest:
             self.anim = HostAnim()
         except Exception:
             pass
+        # TN+ Coop writes its code into the game at the main menu, a few seconds after the bridge starts: said when it
+        # is seen (step), "NOT in place" only once the game has been up a while without it
         self.ready = g.read(CAVE, 4) != bytes(4)
-        print('coop :', 'code in place' if self.ready else 'NOT in place (start the game with TN+ Coop, English game)', flush=True)
+        self.ready_t, self.ready_said = time.time(), self.ready
+        print('coop :', 'code in place' if self.ready else 'waiting for the co-op code (TN+ Coop puts it in at the main menu)', flush=True)
 
     def u16(self, a):
         return struct.unpack('<H', self.g.read(a, 2))[0]
@@ -417,6 +435,10 @@ class Guest:
         up = abs(math.atan2(d[2], math.hypot(d[0], d[1])) - math.asin(max(-1.0, min(1.0, view[2]))))
         return side, up
 
+    def sensor(self):
+        """his suit's sensor range (units), as the game keeps a lock (0x262B00)"""
+        return self.i32(self.suit(self.gid) + SENSOR) / 65536 / 6
+
     def pick_target(self, me, eye, view):
         best, pick = None, 0
         for i in range(1, self.nent):
@@ -428,7 +450,7 @@ class Guest:
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
-            score = side + up * 0.25 + math.dist(t[:2], eye[:2]) * 0.0005   # nearest the crosshair; near ones first (100 u = 3 deg)
+            score = math.hypot(side, up) + math.dist(t[:2], eye[:2]) * 0.0005   # nearest the crosshair; near ones first (100 u = 3 deg)
             if side < LOCK_PICK and up < LOCK_PICK_V and (best is None or score < best):
                 best, pick = score, i
         print('guest: lock', pick or 'nothing', flush=True)
@@ -920,10 +942,56 @@ class Guest:
         if not 0x100000 <= p < 0x2000000:
             return
         status, length, pos, loops = (struct.unpack('<i', g.read(p + o, 4))[0] for o in (4, 0x10, 0x18, 0x30))
+        said = (v, k, status, loops)
         if status == 4 and loops == 0:
             g.write(p + 0x30, struct.pack('<i', 1))
             if 0 < pos < length - 2048:
                 g.write(p + 0x18, struct.pack('<i', length - 1024))   # (and its end now: under a twentieth of a second)
+            print('guest: laser sound stopped (voice %d, sample %d, entity %d)' % (v, k, e), flush=True)
+        elif loops == 0 and said != self.laser_said:           # (once a case: a sound that would go on and is not stopped)
+            print('guest: laser sound NOT stopped: voice %d, sample %d, status %d, loops %d' % said, flush=True)
+        self.laser_said = said
+
+    def sounds(self, me):
+        """the game's sounds started and ended since the last update, for the guest's window (see VOICE_MAX)"""
+        g = self.g
+        n = min(g.read(VOICE_MAX, 1)[0], 32)
+        t = g.read(VOICES, VOICE_N * n)
+        owners = {}                                            # a suit's own sound (kind 0): whose
+        for e in [me] + list(self.squad) + ([self.gid] if self.gid else []):
+            if 0 < e < 300:
+                owners.setdefault(self.i32(self.suit(e) + SOUND), e)
+        out, now = [], {}
+        for k in range(n):
+            r = t[VOICE_N * k:VOICE_N * (k + 1)]
+            drv = struct.unpack_from('<b', r, 0)[0]
+            if drv < 0:
+                continue
+            sound, kind = struct.unpack_from('<H', r, 0x18)[0], struct.unpack_from('<I', r, 1)[0]
+            ent, at = 0, (0.0, 0.0, 0.0)
+            if kind in (2, 5):
+                ent = struct.unpack_from('<H', r, 0x1A)[0]
+                if 0 < ent < self.nent:                        # (and where it is: a shot or a blast is not among the
+                    at = tuple(v / 65536 for v in struct.unpack('<3i', g.read(self.master + 0x25 * ent + 0x0F, 12)))   # guest's units)
+            elif kind == 1:
+                at = tuple(v / 65536 for v in struct.unpack_from('<3i', r, 0x1A))
+            elif kind == 0 and k in owners:
+                ent = owners[k]
+            p = self.i32(SAMPLES + 4 * drv) if 0 <= drv < 16 else 0
+            pos = self.i32(p + 0x18) if 0x100000 <= p < 0x2000000 else 0
+            now[k] = (sound, kind, ent, pos)
+            was = self.voices.get(k)
+            if was is None or was[:3] != (sound, kind, ent) or pos + 4096 < was[3]:
+                if was is not None:
+                    out.append(b'E' + bytes([k]))
+                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, r[0x17], r[0x15], ent, *at))
+        for k in self.voices:
+            if k not in now:
+                out.append(b'E' + bytes([k]))
+        self.voices = now
+        if out:
+            pk = b'SND' + bytes([g.read(SFX_VOLUME, 1)[0], min(len(out), 255)]) + b''.join(out[:255])
+            self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
     def take(self, gid):
         g = self.g
@@ -1078,6 +1146,11 @@ class Guest:
         g, M = self.g, self.master
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
+            if self.ready:
+                print('coop : code in place', flush=True)
+            elif not self.ready_said and time.time() - self.ready_t > CAVE_WAIT:
+                self.ready_said = True
+                print('coop : NOT in place after %d s (start the game with TN+ Coop, English game)' % CAVE_WAIT, flush=True)
             if not self.ready:
                 return
         me = self.u16(self.pid_addr + 2)
@@ -1117,6 +1190,10 @@ class Guest:
                 self.take(gid)
         self.next = False
         self.hud()
+        try:
+            self.sounds(me)
+        except (OSError, struct.error):
+            pass
         self.tag.retry()
         self.lobby_step(True)
         if self.versus and self.state == OK:
@@ -1171,6 +1248,9 @@ class Guest:
                 side, up = self.off_aim(eye, view, t)
                 if side < LOCK_KEEP and up < LOCK_KEEP_V:
                     aim = t
+                elif (side > LOCK_PICK or up > LOCK_PICK_V) and math.dist(t[:2], eye[:2]) > self.sensor():
+                    print('guest: lock lost (%d: off his view, out of his sensor range)' % self.lock, flush=True)
+                    self.lock = 0                              # (the game's rule: off its screen and out of range)
         if aim is None:
             aim = tuple(e + v * 30 for e, v in zip(eye, view))
         g.write(G_TGT, struct.pack('<3i', *(int(v * 65536) for v in aim)))
@@ -1219,7 +1299,7 @@ class Guest:
                 if self.joined:
                     self.joined = False
                     print('guest: left', flush=True)
-                self.gnav = None                               # (his map marker goes with him)
+                self.gnav, self.fire = None, False             # (his map marker goes with him, and his fire)
                 continue
             if not self.joined:
                 self.joined = True
@@ -1253,6 +1333,8 @@ class Guest:
                     self.lock_req = True
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
+            elif pk[:1] == b'C' and len(pk) >= 3 and pk[1] == 1 and not pk[2]:
+                self.fire = False                              # (the left button let go with his mouse freed)
             elif pk[:1] == b'W' and len(pk) == 9:                # his map marker: put there, or (x = 0) taken away
                 x, y = struct.unpack('<2f', pk[1:])
                 self.gnav = (x, y) if active and 1.0 <= x <= 511.0 and 1.0 <= y <= 511.0 else None

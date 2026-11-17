@@ -58,6 +58,7 @@ const MAP_LIGHT := "020202020202020202020202020202020303030303030303040404040404
 const MAP_LIGHT_8 := "04040404040404040404040404040404040404040404040404040404040404040505050505050505050505050505050505050505050505050505050505050505"
 enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE }   # the marks' kinds (coop_guest.py)
 
+const LOCK_SOUND := 2021                     # the game's sound when its player locks a target (0x262BBF)
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
 const WEAPONS := ["", "Flare Launcher", "Smoke Grenade", "Grenade Launcher", "Laser", "Multipulsar", "Particle Beam",
@@ -76,6 +77,7 @@ var entity := 0
 var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
+var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
 var host_pos := Vector3.ZERO           # the host's suit (Godot units): his name above it
@@ -110,6 +112,7 @@ var ground_of := ""                  # ... of which map file
 var map_img: Image                   # the panel's picture: the ground around him and the marks
 var map_tex: ImageTexture
 var map_dirty := true
+var big_font := PackedByteArray()     # the game's big HUD letters (the lock's lines)
 var note_font := PackedByteArray()    # the game's small letters (the map's written notes)
 var pal_map := ""                    # the map file the palette was taken with (another planet: other ground colours)
 var map_from := Vector2i.ZERO        # its top left corner in the world, and the world units of a pixel
@@ -146,6 +149,7 @@ var hl_res = null                     # RESHLMHI.RES
 var preview_steam: Object
 var win := Rect2()                   # the game's 3D window (320 x 400 units), from the cockpit packet
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
+var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -288,6 +292,11 @@ func _process(delta: float) -> void:
 			_cockpit(pk)
 		elif tag == "GLB":
 			lobby.feed(pk)
+		elif tag == "SND":
+			if sound == null:
+				sound = preload("res://scripts/coop_sound.gd").new()
+				add_child(sound)
+			sound.feed(pk)
 		elif tag == "GHD" and pk.size() >= 10:
 			state = pk.decode_u8(3)
 			armour = pk.decode_s16(4)
@@ -324,6 +333,12 @@ func _process(delta: float) -> void:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
 				lock = pk.decode_u16(14)
+				if lock != 0 and lock != lock_heard:
+					if sound == null:
+						sound = preload("res://scripts/coop_sound.gd").new()
+						add_child(sound)
+					sound.play_own(LOCK_SOUND, 64)                    # (the game's lock sound, at its volume)
+				lock_heard = lock
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true
@@ -1064,7 +1079,9 @@ func _drawn(idx: int) -> Node3D:
 	return n if n != null and is_instance_valid(n) and n.visible else null
 
 
-# the lock: green corners around his target, where his camera sees it
+# the lock, as the game marks its player's target: a green box around it and, to its right, in the game's big
+# letters and its red, what it is (a word a line) and how far (the game's metres: 6 a unit). (Not drawn: the game's
+# "OUT OF RANGE" line and its target camera.)
 func _draw_lock() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if lock == 0 or cam == null:
@@ -1074,13 +1091,49 @@ func _draw_lock() -> void:
 	if cam.is_position_behind(at):
 		return
 	var c := _pixel(cam, at)
-	var r := maxf(10.0, root.size.y * 0.03)
-	var col := Color(0.3, 1.0, 0.35)
-	for sx in [-1, 1]:
-		for sy in [-1, 1]:
-			var k := c + Vector2(sx * r, sy * r)
-			panel.draw_line(k, k - Vector2(sx * r * 0.5, 0), col, 2.0)
-			panel.draw_line(k, k - Vector2(0, sy * r * 0.5), col, 2.0)
+	var g := Vector2(c.x * 320.0 / root.size.x, c.y * 400.0 / root.size.y)   # (in the game's screen)
+	var green: Color = hud_pal[0x84] if hud_pal.size() > 0x84 else Color(0.0, 0.9, 0.0)
+	var red: Color = hud_pal[0x44] if hud_pal.size() > 0x44 else Color(0.9, 0.0, 0.0)
+	var box := Rect2(g - Vector2(6, 11), Vector2(12, 22))
+	for r in [Rect2(box.position, Vector2(box.size.x, 2)), Rect2(box.position + Vector2(0, box.size.y - 2), Vector2(box.size.x, 2)),
+			Rect2(box.position, Vector2(1, box.size.y)), Rect2(box.position + Vector2(box.size.x - 1, 0), Vector2(1, box.size.y))]:
+		panel.draw_rect(_grect(r.position.x, r.position.y, r.end.x, r.end.y), green)
+	var vp := get_parent()
+	var lines: Array = []
+	if vp and "live_ents" in vp and vp.live_ents.has(lock) and "data" in vp:
+		var e: Array = vp.live_ents[lock]
+		lines = vp.data.type_name(e[0], e[1]).to_upper().split(" ", false)
+	lines.append("")
+	lines.append("%d M" % int(round(cam.global_position.distance_to(at) * 6.0)))
+	var y := box.position.y
+	for t in lines:
+		_glyphs(str(t), box.end.x + 4.0, y, red)
+		y += 16.0
+
+
+# a text in the game's big HUD letters (RESHLMHI.RES 504, as _write's small ones), drawn at x, y of the game's screen
+func _glyphs(text: String, x: float, y: float, col: Color) -> void:
+	if big_font.is_empty():
+		_helmet_frames(0)
+		big_font = hl_res.data(504) if hl_res and hl_res.has(504) else PackedByteArray([0])
+	var f := big_font
+	if f.size() < 88 or text == "":
+		return
+	var first := f.decode_s16(36)
+	var bits := f.decode_s32(76)
+	var row := f.decode_s16(80)
+	var h := f.decode_s16(82)
+	for ch in text.to_ascii_buffer():
+		if ch < first or ch > f.decode_s16(38) or 88 + 2 * (ch - first) > f.size():
+			continue
+		var a := f.decode_s16(84 + 2 * (ch - first))
+		var b := f.decode_s16(86 + 2 * (ch - first))
+		for yy in h:
+			for xx in range(a, b):
+				var at := bits + yy * row + (xx >> 3)
+				if at < f.size() and f[at] & (0x80 >> (xx & 7)):
+					panel.draw_rect(_grect(x + xx - a, y + yy, x + xx - a + 1, y + yy + 1), col)
+		x += b - a
 
 
 func toggle_status() -> void:

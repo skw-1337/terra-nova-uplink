@@ -3605,6 +3605,7 @@ const GUEST_KEYS := {0x2D: 0x1F, 0x2C: 0x1E, 0x2E: 0x20, 0x1F: 0}
 const GUEST_TURN := {0x1E: -1.0, 0x20: 1.0}
 const GUEST_TURN_RATE := 1100.0                  # mouse counts a second (about a quarter turn in 1.2 s at TN+'s own speed)
 var guest_turn := {}                             # his turn keys held: key -> -1 left, 1 right
+var play_buttons := {}                           # the mouse buttons sent down in the look ('B'), not yet let go
 var key_map := _key_map()
 
 static func _key_map() -> Dictionary:
@@ -4433,6 +4434,9 @@ func _look_swap() -> void:
 	if not play_started or play_hold or menu_mode:      # (a game screen: the mouse is its cursor's)
 		return
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		for bt in play_buttons.keys():                   # (a button held in the look: let go there)
+			_play_send(PackedByteArray([0x42, bt, 0]))
+		play_buttons.clear()
 		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN      # the game draws its own cursor
 		var vs := get_viewport().get_visible_rect().size
 		Input.warp_mouse((Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs)   # (where the crosshair was)
@@ -4930,6 +4934,9 @@ func _play_key(sc: int, down: bool) -> void:
 
 func _play_release_all() -> void:
 	guest_turn.clear()
+	for bt in play_buttons.keys():                       # a button held in the look, let go elsewhere (the window left,
+		_play_send(PackedByteArray([0x42, bt, 0]))       # the mouse freed): its release, else a guest's fire stayed held
+	play_buttons.clear()
 	for sc in play_held.keys():
 		_play_key(sc, false)
 	key_holders.clear()
@@ -5325,6 +5332,10 @@ func _input(event: InputEvent) -> void:
 			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
 			if captured:
 				_play_send(PackedByteArray([0x42, bt, 1 if event.pressed else 0]))
+				if event.pressed:
+					play_buttons[bt] = true
+				else:
+					play_buttons.erase(bt)
 			else:
 				var gp := _play_game_pos(event.position)
 				var b := PackedByteArray([0x43, bt, 1 if event.pressed else 0, 0, 0, 0, 0])

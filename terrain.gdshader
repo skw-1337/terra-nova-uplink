@@ -260,6 +260,10 @@ void vertex() {
 void light() {
 	if (LIGHT_IS_DIRECTIONAL) {
 		DIFFUSE_LIGHT += vec3(ATTENUATION - 1.0);
+	} else if (tn_ir < 0.5) {
+		// the lights of the shots (an extra, fx_lights.gd: no other light stands on a map), on the ground's own colour
+		// (ALBEDO holds shadow_dark of it)
+		DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * max(dot(NORMAL, LIGHT), 0.0) / (PI * shadow_dark);
 	}
 }
 

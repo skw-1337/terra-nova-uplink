@@ -122,5 +122,6 @@ void fragment() {
 	if (col.a < 0.5) {
 		discard;
 	}
-	ALBEDO = tn_haze(col.rgb * factor * deep, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	ALBEDO = tn_haze(col.rgb * factor * deep * (1.0 + tn_shot_light(wp)), wp, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 }

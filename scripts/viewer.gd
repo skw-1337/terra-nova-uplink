@@ -6691,6 +6691,7 @@ func _process(delta: float) -> void:
 # Novelties on top of the game's look, each off unless asked for (the launcher's "In game" switches, or the
 # environment), each in its own script, nothing of them made when off:
 # TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
+# TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
 
 
@@ -6700,6 +6701,11 @@ func _extras() -> void:
 		mk.v = self
 		mk.shots = _fx_shots()
 		add_child(mk)
+	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") == "1":
+		var lt: Node = load("res://scripts/fx_lights.gd").new()
+		lt.v = self
+		lt.shots = _fx_shots()
+		add_child(lt)
 
 
 func _fx_shots() -> Node:

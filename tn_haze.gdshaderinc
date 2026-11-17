@@ -72,3 +72,39 @@ vec3 tn_haze(vec3 col, vec3 wpos, vec3 cam, uint layers) {
 	float e = 1.0 - exp(-length(wpos - cam) * tn_haze_range.x);
 	return mix(col, tn_haze_linear(tn_haze_color.rgb), e);
 }
+
+// The light of the shots (an extra, off unless TN_FX_LIGHTS=1: fx_lights.gd), for what is drawn unlit (the suits,
+// the models, the plants): up to four lights, tn_shot_p*: xyz the place, w the range; tn_shot_c*: rgb the colour x
+// its strength, c0's alpha how many are on (0: none, nothing computed). What it adds to a surface's own colour at wpos.
+global uniform vec4 tn_shot_p0;
+global uniform vec4 tn_shot_p1;
+global uniform vec4 tn_shot_p2;
+global uniform vec4 tn_shot_p3;
+global uniform vec4 tn_shot_c0;
+global uniform vec4 tn_shot_c1;
+global uniform vec4 tn_shot_c2;
+global uniform vec4 tn_shot_c3;
+
+vec3 tn_shot_one(vec4 p, vec4 c, vec3 wpos) {
+	vec3 d = p.xyz - wpos;
+	float r2 = dot(d, d) / max(p.w * p.w, 1e-6);
+	if (r2 >= 1.0) {
+		return vec3(0.0);
+	}
+	float f = 1.0 - r2;
+	return c.rgb * f * f / (1.0 + 6.0 * r2);
+}
+
+vec3 tn_shot_light(vec3 wpos) {
+	if (tn_shot_c0.a < 0.5 || tn_ir > 0.5) {
+		return vec3(0.0);
+	}
+	vec3 l = tn_shot_one(tn_shot_p0, tn_shot_c0, wpos);
+	if (tn_shot_c0.a > 1.5) {
+		l += tn_shot_one(tn_shot_p1, tn_shot_c1, wpos);
+	}
+	if (tn_shot_c0.a > 2.5) {
+		l += tn_shot_one(tn_shot_p2, tn_shot_c2, wpos) + tn_shot_one(tn_shot_p3, tn_shot_c3, wpos);
+	}
+	return l;
+}

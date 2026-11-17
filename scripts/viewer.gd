@@ -1984,6 +1984,8 @@ func _pose_suit(node: Node3D, q: Array, own: bool) -> void:
 				off.append((last[j] as Vector3) - (q[j] as Vector3))
 			node.set_meta("fade_off", off)
 	node.set_meta("own", own)
+	if own and node.has_meta("refs_eased"):
+		node.remove_meta("refs_eased")               # (its own steps: the game's reference vectors no longer hold)
 	var game := q                                    # (the pose given, before the fade)
 	var wf := 1.0
 	if node.has_meta("fade_t"):
@@ -4519,6 +4521,7 @@ func _live_units(pk: PackedByteArray) -> void:
 				if not _gait_wanted(node, now_ms):
 					if live_refs.has(idx):
 						node.set_meta("refs", live_refs[idx])
+						node.set_meta("refs_eased", live_refs[idx])   # (for its eased poses, _unit_smooth)
 					_pose_suit(node, joints[idx], false)
 			if not node.has_meta("corpse") and not node.has_meta("gait"):
 				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits
@@ -4869,6 +4872,11 @@ func _unit_smooth(node: Node3D, now: int) -> void:
 		if node.has_meta("mech"):
 			_pose_mech(node, d[2])
 		else:
+			# the game's pose eased keeps the game's limb views (its reference vectors are taken once by the pose they
+			# came with, _game_views: the eased pose that follows every frame had none and fell back on Uplink's own
+			# choice of views, 19 frames in 20)
+			if node.has_meta("refs_eased") and not bool(node.get_meta("own", false)):
+				node.set_meta("refs", node.get_meta("refs_eased"))
 			_pose_soldier(node, d[2])
 
 

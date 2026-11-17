@@ -3390,7 +3390,7 @@ static class Uplink
         Dictionary<string, string> h = Heads();
         string up = Get(h, Head(UPLINK_REPO, UPLINK_BRANCH));
         Ui(delegate {
-            if (NoUpdate) { verLabel.Text = "Updates are off in this folder (no_update.txt)"; verLabel.On = CLedOff; }
+            if (NoUpdate) { verLabel.Text = "Updates are off here (no_update.txt)"; verLabel.On = CLedOff; }
             else if (up == null) { verLabel.Text = "Couldn't check for updates (offline?)"; verLabel.On = CLedOff; }
             else if (Cfg("uplink_sha") == "") { verLabel.Text = "Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.On = CAmber; }
             else if (up == Cfg("uplink_sha")) { verLabel.Text = "Uplink " + VERSION + ", up to date"; verLabel.On = CGreen; }

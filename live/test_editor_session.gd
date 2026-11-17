@@ -133,6 +133,9 @@ func _run() -> void:
 	# spawn: the menu (Q held), a picture clicked, the unit where the crosshair meets the ground
 	var spot := _pos(0) + Vector2(14, 9)
 	await _look_at_ground(spot)
+	var met = ed._ground_at(root.get_visible_rect().size * 0.5)     # (a hill in between: the ground the crosshair meets)
+	if met != null:
+		spot = met
 	_key(KEY_Q, true)
 	await _frames(3)
 	_check(ed.menu_open and ed.menu.visible and not viewer.look, "Q held opens the spawn menu, the mouse is free")
@@ -306,6 +309,11 @@ func _run() -> void:
 		heads.append(ed.recs[i].slice(0, 6))
 	await _tap(KEY_2)
 	await _look_at_ground(_pos(victim))
+	var aimed: int = ed._index(int(ed.aim.get("uid", -1)))
+	if aimed >= 0 and aimed != victim and not ed._is_added(aimed):   # (two units side by side: the one it is on)
+		victim = aimed
+		vuid = ed.uids[victim]
+		vrec = ed.recs[victim].duplicate()
 	_check(ed.aim.get("uid", -1) == vuid, "the crosshair is on one of the mission's own units")
 	await _click(MOUSE_BUTTON_LEFT)
 	_check(ed._index(vuid) < 0 and ed.recs.size() == n0, "the remover takes it out (%d units left)" % ed.recs.size())

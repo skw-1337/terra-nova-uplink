@@ -7,6 +7,7 @@
 # fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd). Online the
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
 import builtins, ctypes, json, math, os, socket, struct, time, zlib
+import host_state
 import coop_lobby, coop_view
 from coop_name import NameTag
 
@@ -1144,6 +1145,7 @@ class Guest:
         # host, or his drone); alarm: the mission's alarm byte. The views end as the host's: the entity whose body the
         # view hides, then the alarm (the type-57 lamps)
         g, M = self.g, self.master
+        host_state.tick(self)                                  # where the host's game is, for his window (host_state.py)
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
             if self.ready:

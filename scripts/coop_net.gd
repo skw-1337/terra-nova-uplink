@@ -56,6 +56,8 @@ var pad_live := false                # guest: the last gamepad packet was not al
 var udp_in := PacketPeerUDP.new()
 var udp_out := PacketPeerUDP.new()
 var hud_out := PacketPeerUDP.new()
+var hst_out: PacketPeerUDP = null      # guest: to host_state.gd ('HST': where the host's game is)
+const HST_OUT := 47836
 var label: Label
 var sent := 0
 var recv := 0
@@ -324,6 +326,11 @@ func _read(ch: int) -> void:
 				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
 			elif tag == "GHD" or tag == "GCK" or tag == "GLB" or tag == "SND":   # HUD, cockpit, lobby, the game's sounds: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
+			elif tag == "HST":                            # where the host's game is: to host_state.gd (host_state.py)
+				if hst_out == null:
+					hst_out = PacketPeerUDP.new()
+					hst_out.set_dest_address("127.0.0.1", HST_OUT)
+				hst_out.put_packet(data)
 			elif data.size() > 3 and tag == "MSN":
 				var mf := data.slice(3).get_string_from_ascii()
 				var vp := get_parent()

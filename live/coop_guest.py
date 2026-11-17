@@ -50,7 +50,7 @@ LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 # online: the bridge's packets about the picture relayed to the guest (relay), and their least gap (s): the sky's
 # drift 5 a second (it moves slowly), the waypoint (its angle word turns every frame) twice; the rest when it changes
-RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25}
+RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25, b'GAIT': 0.5}
 KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A D, Space (network input is filtered)
 # The jets (Space), as the game's 0x288EF0 / 0x288F78 for a suit: near the ground a kick of 150 up every 2nd game
 # update, unpaid; in the air free for 200 ms, then each update pays energy dt x 2^32 / ((f + 0x20000) / 3) (16.16, f =
@@ -1078,7 +1078,7 @@ class Guest:
 
     def relay(self, pk):
         """What the bridge sends the host's window about his picture and the guest's needs as well: the sky's drift
-        and sway (SKYO), the waypoint (WAYP), the haze (HAZE), the soldiers' bone lengths and arms (SLEN, ARMS), the
+        and sway (SKYO), the waypoint (WAYP), the haze (HAZE), the soldiers' bone lengths, arms and walks (SLEN, ARMS, GAIT), the
         ground tiles (TEXL, local only). Local: as it is. Online: 'LIV' + the packet (coop_net.gd hands the listed
         ones to his viewer), when it changes, at most RELAY_GAP a second, and every 2 s."""
         if not self.remote:

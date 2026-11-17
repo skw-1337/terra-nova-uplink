@@ -4,6 +4,7 @@ extends Node3D
 const TNData = preload("res://scripts/tn_data.gd")
 const Terrain = preload("res://scripts/terrain.gd")
 const TNObjects = preload("res://scripts/tn_objects.gd")
+const SuitGait = preload("res://scripts/suit_gait.gd")
 const GROUND = preload("res://terrain.gdshader")
 const LIMB = preload("res://limb.gdshader")
 const OLDSCHOOL = preload("res://oldschool.gdshader")
@@ -128,6 +129,9 @@ var mission_tag := ""         # the mission's file (the pirates' arms in the map
 var draw_distance := OS.get_environment("TN_DRAW_DISTANCE") == "1"   # live: hide what the game does not draw
 var live_drawn := PackedByteArray()  # the bridge's DRAW bits (entity index), empty: none received
 var live_sizes := {}          # game entity index -> its soldier's bone lengths (the bridge's SLEN, _live_size)
+var live_gaits := {}          # game entity index -> its soldier's walk in the game (the bridge's GAIT, _gait_game)
+var live_gaits_new := false
+var live_lod := 272.0         # a unit's height in the game's pixels at 1 unit (the bridge's GAIT; TN+ HD 848 x 480: 272)
 var live_refs := {}           # live: game index -> [handedness, the 5 chains' limb reference vectors (right, up, fwd)]
 var live_alarm := false       # the mission's alarm (the bridge, [0x371174] of the English exe): type-57 lamps lit
 var live_extra := {}          # game entity index -> node, for units not in the mission file (squadmates...)
@@ -693,6 +697,7 @@ func _load(index: int) -> void:
 	live_off = -1
 	live_alarm = false                        # (cleared by the game at each mission start)
 	live_sizes.clear()
+	live_gaits.clear()
 	live_drawn = PackedByteArray()            # (the last mission's DRAW bits)
 	mission_tag = String(entry["file"]).get_file().to_upper()
 	live_extra.clear()
@@ -1930,6 +1935,8 @@ func _leg_lengths(p: Array, rest: Array) -> Array:
 # crouching, dying), cross-faded from and to their steps (_pose_suit).
 const ARM_TOL := 0.15                          # an arm's bone against the other arm's (_arms_off)
 const GAIT_STALE := 250                        # ms without a pose from the game
+const GAIT_STALE_MOVING := 100                 # the same for a suit that moves (it slides, its legs still, meanwhile; a
+										# suit the game draws has a pose under 40 ms old 98.7 % of the time)
 const GAIT_BACK := 400                         # ms of its poses again before they are drawn
 const GAIT_STRIDE := 2.6                       # legs covered by a cycle, a step of each foot (the game's walk: 4.3,
 const GAIT_CYCLE := Vector2(0.55, 1.3)         # its feet sliding); a cycle's duration (s), the quickest, the slowest
@@ -2001,7 +2008,41 @@ func _gait_wanted(node: Node3D, now: int) -> bool:
 	if not node.has_meta("leg_rest") or node.has_meta("corpse"):
 		return false
 	return node.has_meta("player_body") or \
-			now - int(node.get_meta("jt", -100000)) > GAIT_STALE or now - int(node.get_meta("jt0", -100000)) < GAIT_BACK
+			now - int(node.get_meta("jt", -100000)) > _gait_stale(node, now) or now - int(node.get_meta("jt0", -100000)) < GAIT_BACK
+
+
+# how long without a pose from the game before a suit takes its own steps: sooner when it moves (the game's walk
+# goes on from its last pose, _gait_game)
+func _gait_stale(node: Node3D, now: int) -> int:
+	if game_gait and node.has_meta("gk") and _unit_velocity(node, now).length() > 0.3:
+		return GAIT_STALE_MOVING
+	return GAIT_STALE
+
+
+# A soldier's moves of the last 90 ms (each packet that moves it), for its speed whether the game poses it or not:
+# the walk taken over from the game's pose needs it at once (_gait_game), and a suit that moves leaves the game's
+# pose sooner (_gait_stale). No move for 120 ms: stopped (a late picture of the game: not yet).
+func _note_move(node: Node3D, p2: Vector2) -> void:
+	var now := Time.get_ticks_msec()
+	if not node.has_meta("mv"):
+		node.set_meta("mv", [[now, p2]])
+		return
+	var mv: Array = node.get_meta("mv")
+	if (mv[-1][1] as Vector2) == p2:
+		return
+	if (mv[-1][1] as Vector2).distance_to(p2) > 1.0 or now - int(mv[-1][0]) > 120:
+		mv.clear()                                   # (put elsewhere, or moving again)
+	mv.append([now, p2])
+	while mv.size() > 2 and now - int(mv[1][0]) >= 90:   # (150 ms: a suit slowing down or speeding up was 0.3 units a
+		mv.pop_front()                                   # second off, its steps a pace too long or short)
+
+
+func _unit_velocity(node: Node3D, now: int) -> Vector2:
+	var mv: Array = node.get_meta("mv", [])
+	if mv.size() < 2 or now - int(mv[-1][0]) > 120:
+		return Vector2.ZERO
+	var v: Vector2 = ((mv[-1][1] as Vector2) - (mv[0][1] as Vector2)) / maxf((int(mv[-1][0]) - int(mv[0][0])) / 1000.0, 0.001)
+	return v if v.length() < 20.0 else Vector2.ZERO
 
 
 # every frame (after the game's state): the suits walking on their own steps take theirs
@@ -2025,7 +2066,10 @@ func _gait_update(dt: float) -> void:
 			node.set_meta("gait_dt", acc)            # (a pose each time: the far ones less often)
 			continue
 		node.set_meta("gait_dt", 0.0)
-		_gait(node, m, minf(acc, 0.1))
+		if game_gait and node.has_meta("gk"):
+			_gait_game(node, m, minf(acc, 0.25))
+		else:
+			_gait(node, m, minf(acc, 0.1))
 
 
 # a suit on its own steps: its moves from the game (~30 a second, each one a jump: its planted legs jerked) kept for
@@ -2062,9 +2106,22 @@ func _gait_place(node: Node3D, now: int) -> void:
 func _pose_suit(node: Node3D, q: Array, own: bool, later := false) -> void:
 	var now := Time.get_ticks_msec()
 	if bool(node.get_meta("own", own)) != own and node.has_meta("pose_last"):
-		node.set_meta("fade_from", node.get_meta("pose_last"))
+		var last: Array = node.get_meta("pose_last")
 		node.set_meta("fade_t", now)
+		node.set_meta("fade_from", last)
+		if node.has_meta("fade_off"):
+			node.remove_meta("fade_off")
+		if own and node.has_meta("took") and last.size() == q.size():
+			# its steps going on from the game's pose (_gait_game): what differs at the start fades out on top of the
+			# steps. (Faded from the pose itself, which stands still, the legs were held back a moment, then sprang
+			# forward: joints at 6 units a second for 2 on the game's pose)
+			var off := []
+			for j in q.size():
+				off.append((last[j] as Vector3) - (q[j] as Vector3))
+			node.set_meta("fade_off", off)
 	node.set_meta("own", own)
+	if own and node.has_meta("refs_eased"):
+		node.remove_meta("refs_eased")               # (its own steps: the game's reference vectors no longer hold)
 	var game := q                                    # (the pose given, before the fade)
 	var wf := 1.0
 	if node.has_meta("fade_t"):
@@ -2073,12 +2130,19 @@ func _pose_suit(node: Node3D, q: Array, own: bool, later := false) -> void:
 		if w >= 1.0:
 			node.remove_meta("fade_t")
 			node.remove_meta("fade_from")
+			if node.has_meta("fade_off"):
+				node.remove_meta("fade_off")
 		else:
 			w = w * w * (3.0 - 2.0 * w)
-			var from: Array = node.get_meta("fade_from")
 			var b := []
-			for j in q.size():
-				b.append((from[j] as Vector3).lerp(q[j], w))
+			if node.has_meta("fade_off"):
+				var off: Array = node.get_meta("fade_off")
+				for j in q.size():
+					b.append((q[j] as Vector3) + (off[j] as Vector3) * (1.0 - w))
+			else:
+				var from: Array = node.get_meta("fade_from")
+				for j in q.size():
+					b.append((from[j] as Vector3).lerp(q[j], w))
 			q = b
 	node.set_meta("pose_last", q)
 	if own or not node.has_meta("leg_rest") or node.has_meta("corpse"):
@@ -2272,6 +2336,92 @@ func _gait(node: Node3D, m: Dictionary, dt: float) -> void:
 		var r := Basis(right, WALK_ARMS * float(arms[s]))
 		for j in [12 + s, 14 + s]:
 			q[j] = sh + r * ((q[j] as Vector3) - sh)
+	_pose_suit(node, q, true)
+
+
+# A suit on its own steps, the game's own walk (suit_gait.gd: its code ported) run on the suit's moves, with the
+# soldier's values from its game record (the bridge's GAIT: bones, paces, stance): the same stride, cadence, knees,
+# arms and lean as the game gives a suit it draws. (The steps above, _gait, were Uplink's own: a fixed cadence and
+# stride, straighter legs, arms eased after the legs; kept for a bridge that sends no GAIT, and TN_GAIT=old.)
+# The suit's speed from its moves of the last 90 ms (_unit_velocity; the game's: from one picture to the next; here
+# they come eased and by packets). Taken over from a pose of the game (it stopped drawing the suit): the walk goes on from that pose,
+# the feet where they are, a foot in the air carried on (take_over), under the poses' cross-fade (_pose_suit).
+var game_gait := OS.get_environment("TN_GAIT") != "old"
+var gait_full := OS.get_environment("TN_GAIT_DETAIL") == "full"
+
+
+func _gait_game(node: Node3D, m: Dictionary, dt: float) -> void:
+	var gk: Array = node.get_meta("gk")
+	var now := Time.get_ticks_msec()
+	var st: Dictionary = node.get_meta("gait", {})
+	var sg: RefCounted = st.get("sg")
+	var fresh := sg == null
+	var ground := TNData.height_at(m, node.position.x, node.position.z)
+	if fresh:
+		sg = SuitGait.new()
+		sg.ground = func(x: float, y: float) -> float: return TNData.height_at(m, x, y)
+		st = {"sg": sg, "hist": [], "vel": _unit_velocity(node, now), "arms": [0.0, 0.0], "t": 0.0, "gk": null}
+		node.set_meta("gait", st)
+	if not is_same(st["gk"], gk):
+		st["gk"] = gk
+		sg.setup(gk[0], gk[1], gk[2], node.has_meta("player_body"))
+	# as detailed as the game draws a suit of that size on its screen (suit_gait.gd detail): far ones with stiff legs
+	# and still arms, as the suits it poses beside them (TN_GAIT_DETAIL=full: always all of it)
+	if gait_full:
+		sg.detail = 99
+	else:
+		var far := maxf(node.global_position.distance_to(camera.global_position), 0.5)
+		sg.detail = roundi(live_lod * (float(sg.torso) + float(sg.legtot)) / far)
+	var v2 := _unit_velocity(node, now)
+	var vel: Vector2 = (st["vel"] as Vector2).lerp(v2, 1.0 - exp(-dt * 30.0))
+	if v2 == Vector2.ZERO and vel.length() < 0.02:
+		vel = Vector2.ZERO
+	st["vel"] = vel
+	var t: float = float(st["t"]) + dt
+	st["t"] = t
+	var h := -node.rotation.y
+	var ez: float = st.get("ez", node.get_meta("ez", ground))
+	if fresh and not bool(node.get_meta("own", true)) and now - int(node.get_meta("jt", -100000)) < 1500:
+		var jn := _joints_now(node)                      # the game's pose as it is drawn: the walk goes on from it
+		if jn.size() == 16:
+			var arr := []
+			for j in 16:
+				var w: Vector3 = jn[j]
+				arr.append(Vector3(w.x, w.z, w.y))
+			sg.take_over(arr, h, t - dt, vel, gk[3], gk[4], gk[5])
+			sg.aim = (gk[6] as PackedFloat32Array).duplicate()   # (its arms as the game had them, at once)
+			node.set_meta("took", true)                  # (what differs fades out on top of the steps, _pose_suit)
+	if not fresh and node.has_meta("took"):
+		node.remove_meta("took")
+	# the arms' aim, eased (it comes 4 times a second): turn and pitch by the shortest way, the share straight
+	var am: PackedFloat32Array = sg.aim
+	var ak := 1.0 - exp(-dt * 12.0)
+	for a in 6:
+		am[a] = lerpf(am[a], gk[6][a], ak) if a % 3 == 2 else lerp_angle(am[a], gk[6][a], ak)
+	sg.aim = am
+	sg.stand = gk[7]
+	sg.step(node.position.x, node.position.z, ez + float(sg.zoff), h, dt, t, gk[3], gk[4], gk[5], vel)
+	sg.pose()
+	# the suit on its lowest toe (as with the game's poses), the joints from there (right, up, forward)
+	var jj: Array[Vector3] = sg.J
+	var base := minf(jj[0].z, jj[1].z)
+	if fresh and absf(node.position.y - base) < 1.0:
+		node.set_meta("y_off", [node.position.y - base, now])   # (from the game's pose: its height eased, _y_ease)
+	node.set_meta("gait_y", base)
+	var xf := node.global_transform
+	xf.origin.y = base
+	var inv := xf.affine_inverse()
+	var q := []
+	for j in 16:
+		var l: Vector3 = inv * Vector3(jj[j].x, jj[j].z, jj[j].y)
+		q.append(Vector3(l.z, l.y / SUIT_SQUASH, l.x))
+	node.position.y = base + _y_ease(node, now)
+	# each limb's view picked as the game does, from the reference vectors its walk gives (_game_views)
+	var rf: Array = [-1.0]
+	for v in sg.refs():
+		var lv: Vector3 = inv.basis * Vector3(v.x, v.z, v.y)
+		rf.append(Vector3(lv.z, lv.y, lv.x))
+	node.set_meta("refs", rf)
 	_pose_suit(node, q, true)
 
 
@@ -4558,6 +4708,16 @@ func _live_update() -> void:
 				var o := 6 + 28 * k
 				live_sizes[q.decode_s32(o)] = [q.decode_float(o + 4), q.decode_float(o + 8), q.decode_float(o + 12),
 						q.decode_float(o + 16), q.decode_float(o + 20), q.decode_float(o + 24)]
+		elif q.size() >= 10 and q.slice(0, 4).get_string_from_ascii() == "GAIT" and q.size() == 10 + 128 * q.decode_u16(4):
+			if q.decode_float(q.size() - 4) > 1.0:
+				live_lod = q.decode_float(q.size() - 4)
+			for k in q.decode_u16(4):                       # each soldier's walk as its game record has it: 20 constants
+				var o := 6 + 128 * k                        # (suit_gait.gd setup), knee side, flat feet, then what the
+				live_gaits[q.decode_s32(o)] = [q.slice(o + 8, o + 88).to_float32_array(), q.decode_s8(o + 4),   # game's AI
+						q[o + 5] != 0, q.decode_float(o + 88), q.decode_float(o + 92), int(q[o + 6]),   # sets: height, lean, stance,
+						q.slice(o + 96, o + 120).to_float32_array(),                             # each arm's aim, the height
+						Vector2(q.decode_float(o + 120), q.decode_float(o + 124))]                # and lean it stood with
+			live_gaits_new = true
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "ARMS" and q.size() == 6 + 5 * q.decode_u16(4):
 			for k in q.decode_u16(4):
 				_live_arms(q.decode_s32(6 + 5 * k), q[10 + 5 * k])
@@ -4983,6 +5143,13 @@ func _live_units(pk: PackedByteArray) -> void:
 		var sn := _live_node(idx)
 		if sn != null and sn.has_meta("soldier") and sn.get_meta("size", []) != live_sizes[idx]:
 			_live_size(sn, live_sizes[idx])
+	if live_gaits_new:
+		live_gaits_new = false
+		for idx in live_gaits:
+			var ge = ents.get(idx)
+			var gn := _live_node(idx) if ge != null and ge[0] == 1 else null
+			if gn != null and gn.has_meta("soldier"):
+				gn.set_meta("gk", live_gaits[idx])
 	for idx in joints:                                 # soldiers the game draws: its own animation
 		var node: Node3D = live_extra.get(idx)
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
@@ -4996,11 +5163,13 @@ func _live_units(pk: PackedByteArray) -> void:
 			# Nor one with a bone too long to draw (_pose_soldier left the suit in its last pose, for as long as they came)
 			if not _bones_long(node, joints[idx]) and not _arms_off(joints[idx]):
 				if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
-					node.set_meta("jt0", now_ms)            # its poses again after a while without (GAIT_BACK)
+					node.set_meta("jt0", now_ms)            # its poses again after a while without (GAIT_BACK; after a
+					# shorter gap, GAIT_STALE_MOVING, the game never stopped posing it: back on its pose at once)
 				node.set_meta("jt", now_ms)
 				if not _gait_wanted(node, now_ms):
 					if live_refs.has(idx):
 						node.set_meta("refs", live_refs[idx])
+						node.set_meta("refs_eased", live_refs[idx])   # (for its eased poses, _unit_smooth)
 					_pose_suit(node, joints[idx], false, true)   # (put on its limbs after the easing, _pose_flush_all)
 			if not node.has_meta("corpse") and not node.has_meta("gait"):
 				node.position.y = feet[idx]              # on its lowest foot (the entity minus GAME_Z left suits
@@ -5351,6 +5520,11 @@ func _unit_smooth(node: Node3D, now: int) -> void:
 		if node.has_meta("mech"):
 			_pose_mech(node, d[2])
 		else:
+			# the game's pose eased keeps the game's limb views (its reference vectors are taken once by the pose they
+			# came with, _game_views: the eased pose that follows every frame had none and fell back on Uplink's own
+			# choice of views, 19 frames in 20)
+			if node.has_meta("refs_eased") and not bool(node.get_meta("own", false)):
+				node.set_meta("refs", node.get_meta("refs_eased"))
 			_pose_soldier(node, d[2])
 
 
@@ -6863,6 +7037,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 			y += _ship_lift(node, m, e[3], e[4], e[6])
 		node.set_meta("ez", y)
 		node.set_meta("pkt", Vector2(e[3], e[4]))
+		if e[0] == 1 and node.has_meta("soldier"):
+			_note_move(node, Vector2(e[3], e[4]))
 		if node.has_meta("gait"):
 			y = node.position.y                          # (a suit on its own steps: on the ground, _gait)
 		elif node.has_meta("feet_off") and absf(float(node.get_meta("feet_off"))) < 0.5:

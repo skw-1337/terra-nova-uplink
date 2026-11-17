@@ -151,13 +151,13 @@ static class Uplink
     static Panel[] pages;
     static Tile[] navs;
     static Tile helpBtn;
-    static Tick fpsBox, oldBox, runTick, introBox, wheelTick, hudTick, editTick;
-    static Tile wheelKeyBtn, photoKeyBtn;
+    static Tick fpsBox, oldBox, runTick, introBox, wheelTick;
+    static Tile wheelKeyBtn;
     static Label fpsKeyLabel, shotKeyLabel;
     static ComboBox capBox;
     static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Settings" };
     static readonly string[] PAGE_ICONS = { "", "", "", "", "" };
-    const int SB = 150, PW = 520, PH = 402;        // the side bar's width, a page's inner width and height
+    const int SB = 150, PW = 520, PH = 334;        // the side bar's width, a page's inner width and height
 
     static void ShowPage(int k)
     {
@@ -271,7 +271,7 @@ static class Uplink
 
         // ---- In game: what shows and how it plays in a mission, one switch a line
         pg = pages[3];
-        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 356) };
+        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 288) };
         pg.Controls.Add(ig);
         int ry = 10, RH = 34;
         fpsBox = new Tick { Text = "Frame counter (top right)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
@@ -287,7 +287,10 @@ static class Uplink
         ig.Controls.Add(Caption("CROSSHAIR", 12, ry + 6));       // (the look mode's: the game's own, a dot, or none)
         crossBox = Combo(new Point(120, ry + 1), 130);
         crossBox.Items.AddRange(new object[] { "The game's", "A dot", "None" });
-        ig.Controls.Add(crossBox); ry += RH;
+        ig.Controls.Add(crossBox);
+        // Uplink's own colours on the cockpit: orange energy bar, light blue armour indicator (off: the game's; TN_HUD_COLOURS)
+        hudTick = new Tick { Text = "Uplink HUD colours", AutoSize = false, Size = new Size(230, 22), Location = new Point(270, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(hudTick); ry += RH;
         oldBox = new Tick { Text = "Old school look at start", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
         ig.Controls.Add(oldBox);
         shotKeyLabel = new Label { AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
@@ -303,7 +306,11 @@ static class Uplink
         // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
         // leap at the same pace (Uplink's bridge: TN_RUN)
         runTick = new Tick { Text = "Run instead of Bound (Shift + move, no leap)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(runTick); ry += RH;
+        ig.Controls.Add(runTick);
+        // the photo mode's key (TN_KEY_PHOTO): the game paused, a free camera, pictures
+        photoKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(330, ry), Size = new Size(178, 28), Small = true };
+        photoKeyBtn.Click += delegate { AskPhotoKey(); };
+        ig.Controls.Add(photoKeyBtn); ry += RH;
         invertBox = new Tick { Text = "Invert mouse (up / down)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
         ig.Controls.Add(invertBox);
         // the Looking Glass logo and the opening film skipped at the game's start (the bridge presses Esc on them, once each)
@@ -314,16 +321,7 @@ static class Uplink
         ig.Controls.Add(wheelTick);
         wheelKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(270, ry), Size = new Size(238, 28), Small = true };
         wheelKeyBtn.Click += delegate { AskOrderKey(); };
-        ig.Controls.Add(wheelKeyBtn); ry += RH;
-        // Uplink's own colours on the cockpit: orange energy bar, light blue armour indicator (off: the game's; TN_HUD_COLOURS)
-        hudTick = new Tick { Text = "Uplink HUD colours (orange energy, blue armour)", AutoSize = false, Size = new Size(380, 22), Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(hudTick); ry += RH;
-        // the photo mode's key (TN_KEY_PHOTO): the game paused, a free camera, pictures
-        ig.Controls.Add(Caption("PHOTO MODE", 12, ry + 6));
-        photoKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(120, ry), Size = new Size(190, 28), Small = true };
-        photoKeyBtn.Click += delegate { AskPhotoKey(); };
-        ig.Controls.Add(photoKeyBtn);
-        ig.Controls.Add(new Label { Text = "game paused, free camera", AutoSize = true, Location = new Point(320, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall });
+        ig.Controls.Add(wheelKeyBtn);
         runBox = new ComboBox();                                 // (kept for the code that reads it: the switch drives it)
         runBox.Items.AddRange(new object[] { "Bound", "Run" });
         runTick.CheckedChanged += delegate { runBox.SelectedIndex = runTick.Checked ? 1 : 0; };
@@ -697,11 +695,11 @@ static class Uplink
         runBox.SelectedIndex = Cfg("shift_run") == "1" ? 1 : 0;
         runTick.Checked = runBox.SelectedIndex == 1;
         fpsBox.Checked = Cfg("fps_counter") == "1";              // (off unless asked for: ticket #13)
+        hudTick.Checked = Cfg("hud_colours") != "0";             // (on unless turned off)
+        editTick.Checked = Cfg("mission_editor") == "1";         // (off unless asked for)
         introBox.Checked = Cfg("skip_intro") == "1";
         oldBox.Checked = Cfg("old_school") != "0";
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
-        hudTick.Checked = Cfg("hud_colours") != "0";             // (on unless turned off)
-        editTick.Checked = Cfg("mission_editor") == "1";         // (off unless asked for)
         int cap;
         capBox.Text = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap.ToString() : "Unlimited";
         padBox.Checked = Cfg("gamepad") != "0";
@@ -720,11 +718,11 @@ static class Uplink
         Set("crosshair", CROSSHAIRS[Math.Max(0, crossBox.SelectedIndex)]);
         Set("shift_run", runBox.SelectedIndex == 1 ? "1" : "0");
         Set("fps_counter", fpsBox.Checked ? "1" : "0");
+        Set("hud_colours", hudTick.Checked ? "1" : "0");
+        Set("mission_editor", editTick.Checked ? "1" : "0");
         Set("skip_intro", introBox.Checked ? "1" : "0");
         Set("old_school", oldBox.Checked ? "1" : "0");
         Set("order_wheel", wheelTick.Checked ? "1" : "0");
-        Set("hud_colours", hudTick.Checked ? "1" : "0");
-        Set("mission_editor", editTick.Checked ? "1" : "0");
         int cap;
         Set("fps_cap", int.TryParse(capBox.Text.Trim(), out cap) && cap > 0 ? Math.Max(20, Math.Min(1000, cap)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
@@ -1161,6 +1159,9 @@ static class Uplink
         env["TN_KEY_SHARP"] = SharpKey();
         env["TN_KEY_SHOT"] = ShotKey();
         env["TN_KEY_FPS"] = FpsKey();
+        env["TN_KEY_PHOTO"] = PhotoKey();
+        env["TN_HUD_COLOURS"] = Cfg("hud_colours") == "0" ? "0" : "1";
+        env["TN_EDITOR"] = Cfg("mission_editor") == "1" ? "1" : "0";
         env["TN_SKIP_INTRO"] = Cfg("skip_intro") == "1" ? "1" : "0";
         env["TN_BINDS"] = Binds();
         env["TN_CROSSHAIR"] = Cfg("crosshair");
@@ -1171,9 +1172,6 @@ static class Uplink
         env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
         env["TN_ORDER_KEY"] = OrderKey();
-        env["TN_HUD_COLOURS"] = Cfg("hud_colours") == "0" ? "0" : "1";
-        env["TN_EDITOR"] = Cfg("mission_editor") == "1" ? "1" : "0";
-        env["TN_KEY_PHOTO"] = PhotoKey();
         return env;
     }
 
@@ -1854,6 +1852,9 @@ static class Uplink
         return k == "M4" || k == "M5" || (KeyOk(k) && k != "") ? k : "MID";
     }
 
+    static Tick hudTick, editTick;                            // Uplink HUD colours (In game), Mission editor (Maps)
+    static Tile photoKeyBtn;
+
     // The photo mode's key (key_photo in the ini): O unless another is chosen, written as the other keys
     static string PhotoKey()
     {
@@ -1881,7 +1882,7 @@ static class Uplink
         fpsKeyLabel.Text = FpsKey() != "" ? "in game: " + KeyName(FpsKey()) : "";
         wheelKeyBtn.Text = "Its button: " + KeyName(OrderKey());
         wheelKeyBtn.Invalidate();
-        photoKeyBtn.Text = "Its key: " + KeyName(PhotoKey());
+        photoKeyBtn.Text = "Photo mode: " + KeyName(PhotoKey());
         photoKeyBtn.Invalidate();
         shotKeyLabel.Text = ShotKey() != "" ? "Screenshot: " + KeyName(ShotKey()) + "  (saved in Pictures)" : "";
     }

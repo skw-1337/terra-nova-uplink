@@ -5337,8 +5337,11 @@ func _map_cursor(on: bool) -> void:
 
 
 # The objects' articulated parts (the dropship's door, turrets): after the joints, a count then for each object its
-# game index and the two angle words the game draws it with (65536 = a full turn). Its mesh is rebuilt when they
-# change, to 1/256 of a turn (the models are cached by pose).
+# game index and the two angle words the game draws it with (65536 = a full turn), followed to 1/256 of a turn. The
+# model is built once, at rest, each part's vertices on a bone of their own: a skeleton turns the parts (the same
+# faces in the same order; vertices within 0.000002 unit and normals within 0.0002 rad of the model rebuilt at that
+# pose, as checked on every articulated model over 2000 poses), without the 2.5 ms each new pose cost. A model whose
+# parts are not rigid pieces (none in the game's files) is rebuilt as before (cached by pose).
 func _live_arts(pk: PackedByteArray, at: int) -> void:
 	var na := pk.decode_s32(at)
 	for k in na:
@@ -5357,9 +5360,35 @@ func _live_arts(pk: PackedByteArray, at: int) -> void:
 		mi.set_meta("art_pose", pr)
 		var lp: Array = mi.get_meta("lamp", [])
 		var lamp := TNObjects.lamp_state(lp[1], lp[2], live_alarm) if not lp.is_empty() else TNObjects.LAMP_NONE
+		var rest: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, PackedByteArray(), lamp)
+		if not ART_REBUILD and not rest.is_empty() and not (rest["joints"] as Array).is_empty():
+			_art_turn(mi, rest, pr)
+			continue
 		var md: Dictionary = objects.model(mi.get_meta("art_ref"), pal, pal_key, pr, lamp)
 		if not md.is_empty():
 			mi.mesh = md["mesh"]
+
+
+const ART_REBUILD := false                      # (tests: the old way, a mesh for each pose)
+
+
+func _art_turn(mi: MeshInstance3D, rest: Dictionary, pr: PackedByteArray) -> void:
+	var joints: Array = rest["joints"]
+	var sk: Skeleton3D = mi.get_meta("art_bones") if mi.has_meta("art_bones") else null
+	if sk == null or not is_instance_valid(sk) or sk.get_bone_count() != joints.size() + 1:
+		sk = Skeleton3D.new()
+		for k in joints.size() + 1:
+			sk.add_bone("part%d" % k)
+		mi.add_child(sk)
+		mi.skeleton = mi.get_path_to(sk)
+		mi.set_meta("art_bones", sk)
+	if mi.mesh != rest["mesh"]:
+		mi.mesh = rest["mesh"]
+	var bones := TNObjects.Decoder.joint_bones(joints, pr)
+	for k in range(1, bones.size()):
+		var b: Transform3D = bones[k]
+		sk.set_bone_pose_position(k, b.origin)
+		sk.set_bone_pose_rotation(k, b.basis.get_rotation_quaternion())
 
 
 # The alarm went on (it stays on until the next mission): the type-57 lamps light up, as the game's 0x29B4D0 sees it.
@@ -5370,7 +5399,9 @@ func _live_alarm(on: bool) -> void:
 	for n in get_tree().get_nodes_in_group("lamps"):
 		var mi := n as MeshInstance3D
 		var lp: Array = mi.get_meta("lamp")
-		var md: Dictionary = objects.model(lp[0], pal, pal_key, mi.get_meta("art_pose", PackedByteArray()),
+		# (a model turned by its bones, _art_turn: its rest mesh)
+		var md: Dictionary = objects.model(lp[0], pal, pal_key,
+				PackedByteArray() if mi.has_meta("art_bones") else mi.get_meta("art_pose", PackedByteArray()),
 				TNObjects.lamp_state(lp[1], lp[2], on))
 		if not md.is_empty():
 			mi.mesh = md["mesh"]

@@ -562,6 +562,8 @@ func model_name(ref: Vector2i) -> String:
 
 
 # {"mesh": ArrayMesh, "name": String, "height": float}, or {} when the ref is not a model.
+# A model with articulated parts, built at rest (no params): "joints" (joint_bones) and its mesh carries each vertex's
+# part as its bone, so a skeleton turns the parts without a new mesh (viewer.gd _live_arts).
 # Mesh axes: the model's forward axis is +X (heading 0 = east), up is +Y; turn the node by
 # rotation.y = -heading.
 # lamp: LAMP_NONE (not a lamp object: run-time colours lit as the lamp's), LAMP_OFF (type 57 before the alarm) or
@@ -811,6 +813,11 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 	if d.polys.is_empty():
 		return {}
 	d.separate()
+	# parts that are rigid pieces (every model of the game's files): one bone each
+	var joints := []
+	if params.is_empty() and d.parts > 0 and not d.loose:
+		joints = Decoder.joints_rest(d.joints)
+	var bone_w := PackedFloat32Array([1.0, 0.0, 0.0, 0.0])
 	var mesh := ArrayMesh.new()
 	var groups := {}                             # slot (or -1 for flat colors) -> [poly]
 	for p in d.polys:
@@ -842,6 +849,9 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 						st.set_color(col)
 					var n: Vector3 = ns[j]
 					st.set_normal(Vector3(n.z, -n.y, n.x))   # the game's normals: flat faces, not averaged
+					if not joints.is_empty():
+						st.set_bones(PackedInt32Array([p[7], 0, 0, 0]))
+						st.set_weights(bone_w)
 					var q: Vector3 = v[j]
 					top = maxf(top, -q.y)
 					st.add_vertex(Vector3(q.z, -q.y, q.x))
@@ -883,6 +893,9 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 		for seg in d.lines:
 			var a: Vector3 = seg[0]
 			var b: Vector3 = seg[1]
+			if not joints.is_empty():
+				sl.set_bones(PackedInt32Array([seg[3], 0, 0, 0]))
+				sl.set_weights(bone_w)
 			sl.set_color(pal[int(seg[2]) & 0xFF])
 			sl.add_vertex(Vector3(a.z, -a.y, a.x))
 			sl.set_color(pal[int(seg[2]) & 0xFF])
@@ -897,7 +910,7 @@ func _build(f: PackedByteArray, pal: PackedColorArray, pal_key: String, params :
 	# of and behind its origin (0x29dd64)
 	var half_len := float((f.decode_s32(0x10) - f.decode_s32(0x1c)) / 2) / 65536.0
 	return {"mesh": mesh, "name": LGRes.text(f.slice(0, 8)), "height": top, "params": f.decode_u16(0x44),
-			"half_len": half_len}
+			"half_len": half_len, "joints": joints}
 
 
 # Walks the bytecode like the game's interpreter, but draws every polygon (no back-face jumps).
@@ -918,6 +931,53 @@ class Decoder:
 	var parts := 0
 	var path := []          # the BSP nodes (op 6) above: [pc, 0 / 1 for its first / second branch]
 	var vn := {}            # point index -> normal given by op 0x34 (smooth shading, mode 2)
+	var joints := []        # part k's joint at k - 1: [parent part, op, its parameter's byte offset, pivot, basis] (joint_local)
+	var pt_part := {}       # point index -> the part it was set under (-1: built on another part's point)
+	var vn_part := {}
+	var loose := false      # a polygon over points of another part than its own: the parts are not rigid pieces
+
+	# A part in its parent's frame for the object's parameters, as run() places it (ops 0x10-0x12, 0x28, 0x29).
+	static func joint_local(j: Array, pr: PackedByteArray) -> Transform3D:
+		var op: int = j[1]
+		var po: int = j[2]
+		if op <= 0x12:
+			var ang := 0.0
+			if po + 2 <= pr.size():
+				ang = pr.decode_u16(po) / 65536.0 * TAU
+			var axis: Vector3 = [Vector3.RIGHT, Vector3.BACK, Vector3.UP][op - 0x10]
+			return Transform3D(Basis(axis, ang * ART_SIGN), j[3])
+		var bs: Basis = j[4]
+		var at: Vector3 = j[3]
+		if po + 4 <= pr.size():
+			if op == 0x28:
+				bs = bs * Basis(Vector3.RIGHT, pr.decode_u16(po) / 65536.0 * TAU * ART_SIGN)
+			else:
+				at -= bs.x * (pr.decode_s32(po) / 65536.0)
+		return Transform3D(bs, at)
+
+	# The joints with each part's place at rest, inverted (joint_bones): only when every joint is a rigid move.
+	static func joints_rest(js: Array) -> Array:
+		var out := []
+		var rest := [Transform3D.IDENTITY]
+		for j in js:
+			var b: Basis = j[4]
+			if not b.is_equal_approx(b.orthonormalized()) or b.determinant() < 0.0:
+				return []
+			var r: Transform3D = rest[j[0]] * joint_local(j, PackedByteArray())
+			rest.append(r)
+			out.append(j + [r.affine_inverse()])
+		return out
+
+	# For a model built at rest: each part's move (mesh axes) to the pose of the parameters; [0] is the body's (none).
+	static func joint_bones(js: Array, pr: PackedByteArray) -> Array:
+		var at := [Transform3D.IDENTITY]
+		var out := [Transform3D.IDENTITY]
+		var m := Transform3D(Basis(Vector3(0, 0, 1), Vector3(0, -1, 0), Vector3(1, 0, 0)), Vector3.ZERO)   # (its own inverse)
+		for j in js:
+			var t: Transform3D = at[j[0]] * joint_local(j, pr)
+			at.append(t)
+			out.append(m * (t * (j[5] as Transform3D)) * m)
+		return out
 
 	func v3(o: int) -> Vector3:
 		return Vector3(f.decode_s32(o), f.decode_s32(o + 4), f.decode_s32(o + 8)) / 65536.0
@@ -938,6 +998,8 @@ class Decoder:
 		var v := PackedVector3Array()
 		for i in idx:
 			v.append(pt(i))
+			if pt_part.get(i, part) != part or (mode == 2 and vn_part.get(i, part) != part):
+				loose = true
 		if v.size() < 3:
 			return
 		var nw := Vector3.ZERO                     # Newell normal of the vertex order
@@ -1141,6 +1203,7 @@ class Decoder:
 					var start := f.decode_u16(pc + 4)
 					for i in n:
 						pts[start + i] = xf * v3(pc + 6 + 12 * i)
+						pt_part[start + i] = part
 					pc += 6 + 12 * n
 				0x04:                              # flat polygon, current color
 					var n4 := f.decode_u16(pc + 2)
@@ -1178,6 +1241,7 @@ class Decoder:
 					var d := Vector3.ZERO
 					d[op - 0x0a] = fx(pc + 6)
 					pts[f.decode_u16(pc + 2)] = pt(f.decode_u16(pc + 4)) + xf.basis * d
+					pt_part[f.decode_u16(pc + 2)] = part if pt_part.get(f.decode_u16(pc + 4), part) == part else -1
 					pc += 0xa
 				0x0d, 0x0e, 0x0f:                  # ... offset on two axes (xy, xz, yz)
 					var ax: Array = [[0, 1], [0, 2], [1, 2]][op - 0x0d]
@@ -1185,6 +1249,7 @@ class Decoder:
 					d2[ax[0]] = fx(pc + 6)
 					d2[ax[1]] = fx(pc + 10)
 					pts[f.decode_u16(pc + 2)] = pt(f.decode_u16(pc + 4)) + xf.basis * d2
+					pt_part[f.decode_u16(pc + 2)] = part if pt_part.get(f.decode_u16(pc + 4), part) == part else -1
 					pc += 0xe
 				0x10, 0x11, 0x12:                  # articulated part (pitch / bank / heading)
 					var target := f.decode_u32(pc + 2)
@@ -1197,6 +1262,7 @@ class Decoder:
 					var was := part
 					parts += 1
 					part = parts
+					joints.append([was, op, po, v3(pc + 6), Basis.IDENTITY])
 					run(target, t2, depth + 1)
 					part = was
 					pc += 0x14
@@ -1205,9 +1271,11 @@ class Decoder:
 					pc += 4
 				0x15:
 					pts[f.decode_u16(pc + 2)] = xf * v3(pc + 4)
+					pt_part[f.decode_u16(pc + 2)] = part
 					pc += 0x10
 				0x16:
 					pts[f.decode_u16(pc + 2)] = xf * v3(pc + 4)
+					pt_part[f.decode_u16(pc + 2)] = part
 					pc += 0x12
 				0x1d:                              # per-point texture coordinates, 8.8
 					var n1d := f.decode_u16(pc + 2)
@@ -1220,6 +1288,7 @@ class Decoder:
 					var s21 := f.decode_u16(pc + 6)
 					for i in n21:
 						pts[s21 + i] = xf * v3(pc + 8 + 12 * i)
+						pt_part[s21 + i] = part
 					pc += 8 + 12 * n21
 				0x22, 0x23:
 					pc += 6
@@ -1255,6 +1324,7 @@ class Decoder:
 					# door and ramp), or for 0x29 slid along its x by it (16.16)
 					var pn := 4 * f.decode_u16(pc + 2)
 					var at := xf * v3(pc + 4)
+					var bs0 := bs
 					if pn + 4 <= params.size():
 						if op == 0x28:
 							bs = bs * Basis(Vector3.RIGHT, params.decode_u16(pn) / 65536.0 * TAU * ART_SIGN)
@@ -1263,6 +1333,7 @@ class Decoder:
 					var was2 := part
 					parts += 1
 					part = parts
+					joints.append([was2, op, pn, v3(pc + 4), bs0])
 					run(pc + 0x34, Transform3D(xf.basis * bs, at), depth + 1)
 					part = was2
 					return
@@ -1291,7 +1362,9 @@ class Decoder:
 						add_poly(idx33, uv33, last, 0, nrm)
 					elif sub == 1:
 						for k in n33:
-							lines.append([pt(idx33[k]), pt(idx33[(k + 1) % n33]), maxi(col, 0)])
+							lines.append([pt(idx33[k]), pt(idx33[(k + 1) % n33]), maxi(col, 0), part])
+							if pt_part.get(idx33[k], part) != part:
+								loose = true
 					else:
 						add_poly(idx33, PackedVector2Array(), -1, col, nrm)
 					if skip <= 0:
@@ -1302,6 +1375,7 @@ class Decoder:
 					while pc + 2 <= f.size() and f.decode_u16(pc) != 0xFFFF:
 						if pc + 0xE <= f.size():
 							vn[f.decode_u16(pc)] = (xf.basis * v3(pc + 2)).normalized()
+							vn_part[f.decode_u16(pc)] = part
 						pc += 0x1a
 					pc += 0x1a
 				_:

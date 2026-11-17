@@ -71,6 +71,7 @@ func _on_fired(_idx: int, typ: int, pos: Vector3) -> void:
 
 
 func _on_blast(_typ: int, pos: Vector3, width: float) -> void:
+	width *= 0.5                                    # (the effect's radius: its sprite is twice its type's radius wide)
 	if width < 0.45:
 		return                                          # (sparks and small impacts: none)
 	flashes.append([pos + Vector3(0.0, 0.3, 0.0), 2.5 + 4.5 * width, BLAST_COLOUR, BLAST_ENERGY * clampf(width, 0.5, 1.5),

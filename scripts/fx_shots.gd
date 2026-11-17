@@ -23,6 +23,8 @@ var v: Node                   # the viewer (viewer.gd)
 var shots := {}               # entity -> [type, position, the one before, steps seen]
 var effects := {}             # entity -> [type, position] of the animated effects in the last state
 var gone := []                # shots that left in the last state: [type, position, direction, step], judged at the next
+var ents := {}                # the shots and animated effects of the game's last state (viewer.gd _live_units:
+                              # entity -> [class, type, active, x, y, z, heading])
 var seen := -1
 var debug := OS.has_environment("TN_FX_DEBUG")   # tests: what is seen, said in the log
 
@@ -31,7 +33,6 @@ func _process(_dt: float) -> void:
 	if v == null or not v.live or v.current.is_empty() or v.live_units_seen == seen:
 		return
 	seen = v.live_units_seen
-	var ents: Dictionary = v.live_ents
 	var m: Dictionary = v.current["map"]
 	var fresh := []                                    # the effects that appeared in this state
 	var now_fx := {}

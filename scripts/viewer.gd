@@ -5019,11 +5019,16 @@ func _live_units(pk: PackedByteArray) -> void:
 	var ei := eblock.to_int32_array()
 	var ef := eblock.to_float32_array()
 	var fx_at := PackedInt32Array()
+	if fx_shots != null:
+		fx_shots.ents = {}
 	for k in ne:
 		var o := 8 * k
 		var cls := ei[o + 1]
 		if cls == 5 or cls == 6:
 			fx_at.append(o)
+			# (the extras that follow the shots, fx_shots.gd: the shots and the game's animated effects, not the dust)
+			if fx_shots != null and ei[o + 3] != 0 and (cls == 5 or not FX_NOT_FOLLOWED.has(ei[o + 2])):
+				fx_shots.ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 		else:
 			ents[ei[o]] = [cls, ei[o + 2], ei[o + 3], ef[o + 4], ef[o + 5], ef[o + 6], ef[o + 7]]
 	var joints := {}                                   # game index -> 16 joints (after the entities)
@@ -7201,6 +7206,7 @@ func _process(delta: float) -> void:
 # TN_FX_STARS=1     the space skies' stars as sharp points at the window's resolution (sky.gdshader star_scale)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
 var look_dn: Node                # looking down past the game's limit (look_down.gd), null: off
+const FX_NOT_FOLLOWED := [28, 29, 31, 32, 33]   # class 6: beams, particles, lightning, debris, burst suits
 
 
 func _extras() -> void:

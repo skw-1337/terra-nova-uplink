@@ -57,7 +57,7 @@ func _ready() -> void:
 
 
 func _process(_dt: float) -> void:
-	var now := Time.get_ticks_msec() / 1000.0
+	var now: float = v._ticks() / 1000.0
 	if v.current.get("map") != map_ref:                # another map: its ground has none of them
 		map_ref = v.current.get("map")
 		clear()
@@ -111,7 +111,7 @@ func _on_impact(typ: int, pos: Vector3, on_ground: bool, _dir: Vector3) -> void:
 		if shots.debug:
 			print("fx mark: none at ", pos, " (off the detailed map, or water)")
 		return                                          # (the detailed map only; nothing stays on water)
-	var now := Time.get_ticks_msec() / 1000.0
+	var now: float = v._ticks() / 1000.0
 	var half: float = SIZE[kind][0]
 	# the same place again (a still aim): the mark there is made new, no pile of them
 	for r in recent:

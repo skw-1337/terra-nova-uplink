@@ -4,8 +4,8 @@
 # his suit instead of the host's: the distance in units (none past 31 on any axis) gives a volume from the game's table,
 # the side a pan (64 + 63 x sine of the angle from where he faces), a sound to a side a little softer, one behind 3/4,
 # then the sound's own volume (RESSOUND.RES 2204, sounds 1900-2129) and the game's sound volume. A sound the game
-# plays as its player's own (a shot) is placed at the suit that fired it. A sound placed nowhere (a radio call) is
-# played as the game does, at its volume. Nothing while his window is minimised. The game's music (MIDI through the
+# plays as its player's own is placed at the suit that fired it (a shot), else at the host's suit (his cockpit's own
+# sounds: heard when near him, as another suit's). Nothing while his window is minimised. The game's music (MIDI through the
 # card's driver) is not played: Godot has no MIDI synthesizer.
 extends Node
 
@@ -26,9 +26,35 @@ var master := 101                        # the game's sound volume (0-127)
 var log_to: FileAccess                   # TN_SOUND_LOG: what is played, for tests (no sound card needed)
 var t0 := 0
 var own_voice := {}
+var own_turn := 0
+var rec: AudioEffectRecord
+var rec_to := ""
+var rec_t := 0.0
+
+
+# tests: the recording so far saved as a WAV, then a new one started (TN_SOUND_REC; every 20 s)
+func rec_save() -> void:
+	if rec == null:
+		return
+	var w := rec.get_recording()
+	rec.set_recording_active(false)
+	if w:
+		w.save_to_wav(rec_to)
+	rec.set_recording_active(true)
 
 
 func _ready() -> void:
+	# the voices' buses (a panner each) go through one with a limiter, as the game's sounds are summed by its driver
+	# (several loud ones at once must not clip)
+	var mix := AudioServer.get_bus_index("CoopSound")
+	if mix < 0:
+		AudioServer.add_bus()
+		mix = AudioServer.bus_count - 1
+		AudioServer.set_bus_name(mix, "CoopSound")
+		AudioServer.set_bus_send(mix, "Master")
+		var lim := AudioEffectHardLimiter.new()
+		lim.ceiling_db = -0.5
+		AudioServer.add_bus_effect(mix, lim)
 	for k in VOICES:
 		var name := "CoopSound%d" % k
 		var b := AudioServer.get_bus_index(name)
@@ -36,7 +62,7 @@ func _ready() -> void:
 			AudioServer.add_bus()
 			b = AudioServer.bus_count - 1
 			AudioServer.set_bus_name(b, name)
-			AudioServer.set_bus_send(b, "Master")
+			AudioServer.set_bus_send(b, "CoopSound")
 			AudioServer.add_bus_effect(b, AudioEffectPanner.new())
 		var p := AudioStreamPlayer.new()
 		p.bus = name
@@ -46,6 +72,12 @@ func _ready() -> void:
 	if lf != "":
 		log_to = FileAccess.open(lf, FileAccess.WRITE)
 	t0 = Time.get_ticks_msec()
+	var rf := OS.get_environment("TN_SOUND_REC")      # tests: what his window outputs, recorded (saved on rec_save)
+	if rf != "":
+		rec_to = rf
+		rec = AudioEffectRecord.new()
+		AudioServer.add_bus_effect(0, rec)
+		rec.set_recording_active(true)
 
 
 func _hud() -> Node:
@@ -69,6 +101,14 @@ func feed(pk: PackedByteArray) -> void:
 		if pk[p] == 0x45 and p + 2 <= pk.size():
 			_stop(pk[p + 1])
 			p += 2
+		elif pk[p] == 0x41 and p + 2 <= pk.size() and p + 2 + 3 * pk[p + 1] <= pk.size():
+			var on := {}                                   # the voices the game plays now: any other of his ends
+			for i2 in pk[p + 1]:
+				on[pk[p + 2 + 3 * i2]] = pk.decode_u16(p + 3 + 3 * i2)
+			for k in VOICES:
+				if voices[k]["sound"] != 0 and on.get(k, -1) != voices[k]["sound"]:
+					_stop(k)
+			p += 2 + 3 * pk[p + 1]
 		elif pk[p] == 0x53 and p + 21 <= pk.size():
 			_start(pk[p + 1], pk.decode_u16(p + 2), pk[p + 4], pk[p + 5], pk[p + 6], pk.decode_u16(p + 7),
 					Vector3(pk.decode_float(p + 9), pk.decode_float(p + 13), pk.decode_float(p + 17)))
@@ -103,12 +143,14 @@ func _start(k: int, sound: int, kind: int, once: int, vol: int, ent: int, at: Ve
 
 # a sound of his own window (his lock), on a voice of its own, not placed, at a volume of the game's (0-127)
 func play_own(sound: int, vol: int) -> void:
-	var v: Dictionary = own_voice
+	own_turn = (own_turn + 1) % 2                     # (two of them: the lock's two sounds at once)
+	var v: Dictionary = own_voice.get(own_turn, {})
 	if v.is_empty():
 		var p := AudioStreamPlayer.new()
+		p.bus = "CoopSound"
 		add_child(p)
 		v = {"player": p}
-		own_voice = v
+		own_voice[own_turn] = v
 	var s := _stream(sound, false)
 	if s == null:
 		return
@@ -136,8 +178,13 @@ func _stop(k: int) -> void:
 	(v["player"] as AudioStreamPlayer).stop()
 
 
-func _process(_delta: float) -> void:
-	var minimised := get_window().mode == Window.MODE_MINIMIZED
+func _process(delta: float) -> void:
+	if rec:
+		rec_t += delta
+		if rec_t > 20.0:
+			rec_t = 0.0
+			rec_save()
+	var minimised := get_window().mode == Window.MODE_MINIMIZED and DisplayServer.get_name() != "headless"
 	for v in voices:
 		if v["sound"] == 0:
 			continue
@@ -249,6 +296,9 @@ func _stream(sound: int, loop: bool) -> AudioStreamWAV:
 				if typ == 1 and n > 2:
 					rate = int(1000000.0 / (256 - d[p + 4]))
 					pcm.append_array(d.slice(p + 6, p + 4 + n))
+				elif typ == 9 and n > 12 and d[p + 8] == 8 and d[p + 9] == 1 and d.decode_u16(p + 10) == 0:
+					rate = d.decode_u32(p + 4)                 # (the newer block: rate, 8 bits, mono, plain PCM)
+					pcm.append_array(d.slice(p + 16, p + 4 + n))
 				elif typ == 2:
 					pcm.append_array(d.slice(p + 4, p + 4 + n))
 				p += 4 + n

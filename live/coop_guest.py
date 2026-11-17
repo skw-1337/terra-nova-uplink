@@ -156,6 +156,8 @@ M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = r
 # playing; +0x10 length, +0x18 position, +0x30 loops left, 0 = for ever) is told instead that this pass is its last:
 # it ends by itself, the game frees the voice and empties the suit's.
 SOUND, VOICES, VOICE_N, SAMPLES = 0x82, 0x370738, 0x4F, 0x44B600
+SND_PIECE = 0x29055D              # TN+ coop's sound piece there (a call): his shots already sound like a squadmate's
+LASER_SOUNDS = {2046}             # the one weapon sound the player's path plays until stopped (weapon 4, table 0x39512A)
 # The game's sounds for the guest's window (coop_sound.gd): the game's voices (VOICES: 16 here, their number at
 # 0x35982D) as it starts and ends them, seen each update. A voice: byte 0 the driver's sample (-1: free), +1 its kind
 # (0 not placed; 1 at a place of the world, x y z 16.16 at +0x1A; 2 and 5 at a unit, its entity at +0x1A), +0x15 its
@@ -250,7 +252,8 @@ class Guest:
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.gnav, self.gnav_t, self.gnav_told, self.gnav_mis = None, 0.0, False, None   # his map marker (world x, y)
         self.fired_t, self.laser_said = 0.0, None             # when he last held the fire (his laser's sound: laser_off)
-        self.voices = {}                                       # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
+        self.snd_piece = None                                  # (the TN+ build's sound piece: None not looked yet)
+        self.voices, self.voices_t = {}, 0.0                   # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
         self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
@@ -931,12 +934,18 @@ class Guest:
         if not e or firing or time.time() - self.fired_t < 0.12:
             return
         g = self.g
+        if self.snd_piece is None:                             # a TN+ coop build that plays his shots as a squadmate's
+            self.snd_piece = g.read(SND_PIECE, 1) == b'\xe8'  # (each once): nothing to stop, the driver left alone
+            print("coop : the guest's shots sound", "at his suit (TN+ coop sound piece)" if self.snd_piece else
+                  "as the player's (older TN+ coop build: his laser is stopped by the bridge)", flush=True)
+        if self.snd_piece:
+            return
         v = self.i32(self.suit(e) + SOUND)
         if not 0 <= v < g.read(0x35982D, 1)[0]:
             return
-        r = g.read(VOICES + VOICE_N * v, 0x18)
+        r = g.read(VOICES + VOICE_N * v, 0x1A)
         k = struct.unpack_from('<b', r, 0)[0]
-        if k < 0 or r[0x17] != 0:
+        if k < 0 or r[0x17] != 0 or struct.unpack_from('<H', r, 0x18)[0] not in LASER_SOUNDS:
             return                                             # (no sample, or a sound played once: it ends by itself)
         p = self.i32(SAMPLES + 4 * k)
         if not 0x100000 <= p < 0x2000000:
@@ -975,13 +984,13 @@ class Guest:
                     at = tuple(v / 65536 for v in struct.unpack('<3i', g.read(self.master + 0x25 * ent + 0x0F, 12)))   # guest's units)
             elif kind == 1:
                 at = tuple(v / 65536 for v in struct.unpack_from('<3i', r, 0x1A))
-            elif kind == 0 and k in owners:
-                ent = owners[k]
+            elif kind == 0:                                    # the game's player's own sounds (his shots, his
+                ent = owners.get(k, me)                        # cockpit's): at the suit that fired, else at the host's
             p = self.i32(SAMPLES + 4 * drv) if 0 <= drv < 16 else 0
             pos = self.i32(p + 0x18) if 0x100000 <= p < 0x2000000 else 0
             now[k] = (sound, kind, ent, pos)
             was = self.voices.get(k)
-            if was is None or was[:3] != (sound, kind, ent) or pos + 4096 < was[3]:
+            if was is None or was[:3] != (sound, kind, ent) or (r[0x17] and pos + 4096 < was[3]):   # (a loop going round: the same)
                 if was is not None:
                     out.append(b'E' + bytes([k]))
                 out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, r[0x17], r[0x15], ent, *at))
@@ -989,6 +998,9 @@ class Guest:
             if k not in now:
                 out.append(b'E' + bytes([k]))
         self.voices = now
+        if time.time() - self.voices_t > 0.5:                 # twice a second, the voices playing: online the sounds
+            self.voices_t = time.time()                        # go unreliable, an end lost is caught up this way
+            out.append(b'A' + bytes([len(now)]) + b''.join(struct.pack('<BH', k, v[0]) for k, v in sorted(now.items())))
         if out:
             pk = b'SND' + bytes([g.read(SFX_VOLUME, 1)[0], min(len(out), 255)]) + b''.join(out[:255])
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))

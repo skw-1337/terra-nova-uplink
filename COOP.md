@@ -39,13 +39,13 @@ It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: 
 | Enter | call the dropship |
 | Y | free the mouse |
 
-A gamepad works too (untick **Gamepad** in the launcher if you don't want it).
+A gamepad works too: switch on **Gamepad for the guest** on the launcher's Co-op page.
 
 ## If something goes wrong
 
 - **Your friend isn't in the list**: you must be Steam friends, and he must have clicked HOST A GAME.
 - **"Different versions"**: both close Uplink and click again, it updates.
-- **The guest keeps firing**: a gamepad trigger that doesn't go back to zero. Untick **Gamepad**.
+- **The guest keeps firing**: a gamepad trigger that doesn't go back to zero. Switch **Gamepad for the guest** off.
 - **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/AHpqNeT7s), with a few words on what happened.
 
 <details>

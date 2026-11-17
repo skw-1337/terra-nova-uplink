@@ -4001,6 +4001,7 @@ func _live_update() -> void:
 				var o := 6 + 29 * k
 				beams[q.decode_s32(o)] = [Vector3(q.decode_float(o + 4), q.decode_float(o + 12), q.decode_float(o + 8)),
 						Vector3(q.decode_float(o + 16), q.decode_float(o + 24), q.decode_float(o + 20)), q[o + 28]]
+				_beam_flash_note(q.decode_s32(o))
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SMKC" and _smoke_packet_ok(q):
 			_live_smoke(q)                                  # smoke grenades' clouds (live_bridge.py, fumees)
 		elif q.size() == 16 and q.slice(0, 4).get_string_from_ascii() == "WTHR":
@@ -4290,6 +4291,7 @@ func _live_units(pk: PackedByteArray) -> void:
 		var u = ents[player]                         # weapons' dust settles at their feet too (thousands of 6/29 in a
 		puff_units.append(Vector3(u[3], u[5], u[4]))  # fight), which made puffs fill the screen; the game shows none
 	_pulsar_trails(ents)
+	_beam_flashes()
 	for idx in ents:
 		var e = ents[idx]
 		if (e[0] == 5 or e[0] == 6) and e[2] != 0:
@@ -5541,6 +5543,45 @@ func _live_shard(idx: int, e, d: Array) -> void:
 	mi.visible = true
 var beam_mode := false                          # the bridge sends the beams (an older one: Uplink's own, as before)
 var beam_mats := {}
+# A beam at the gun (the player's laser: the thick red line from the gun to the bolt) is in the game for ONE of its
+# pictures, then the bolt is far and its line a few pixels. The bridge reads the game faster than Uplink draws: when
+# that picture's beams and the next one's came between two of Uplink's views, only the next one's were drawn and the
+# shot showed no beam at all. Each beam near the eye is noted as it comes and drawn in the next view if the game's
+# state then no longer has it. TN_BEAM_HOLD (milliseconds, default 0: as the game) keeps it on screen that long, for
+# those who find a sixtieth of a second too short (the game at its 1996 pace showed it for about 50).
+const BEAM_FLASH_NEAR := 2.5                    # how near the eye (units)
+const BEAM_FLASH_LONG := 0.05                   # not a pulsar bolt's bars (0.02 long, a chain of them)
+var beam_hold := maxi(0, int(OS.get_environment("TN_BEAM_HOLD")))
+var beam_flash := []                            # [6/28 entity, beam, msec it came, drawn]
+
+
+func _beam_flash_note(idx: int) -> void:
+	var b: Array = beams[idx]
+	var eye := camera.global_position
+	if (b[0] as Vector3).distance_to(b[1]) < BEAM_FLASH_LONG or 			minf((b[0] as Vector3).distance_to(eye), (b[1] as Vector3).distance_to(eye)) > BEAM_FLASH_NEAR:
+		return
+	for f in beam_flash:                                # (the same state, sent again while the game holds it)
+		if f[0] == idx and (f[1][0] as Vector3) == (b[0] as Vector3) and (f[1][1] as Vector3) == (b[1] as Vector3):
+			return
+	if beam_flash.size() < 64:
+		beam_flash.append([idx, b, Time.get_ticks_msec(), false])
+
+
+# with each view: the noted beams the game's state no longer has, not drawn yet (or held: TN_BEAM_HOLD)
+func _beam_flashes() -> void:
+	var now := Time.get_ticks_msec()
+	var keep := []
+	for f in beam_flash:
+		var b: Array = f[1]
+		var cur = beams.get(f[0])
+		if cur != null and (cur[0] as Vector3) == (b[0] as Vector3) and (cur[1] as Vector3) == (b[1] as Vector3):
+			f[3] = true                                 # in this view as it is (_live_beam)
+			keep.append(f)
+		elif not f[3] or now - int(f[2]) < beam_hold:
+			f[3] = true
+			_live_beam(-1 - keep.size(), b)
+			keep.append(f)
+	beam_flash = keep
 
 
 func _game_colour(i: int) -> Color:

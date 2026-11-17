@@ -349,6 +349,23 @@ func _write(game_data: String) -> void:
 	_check(err == "" and FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES")) == game_file,
 		"the game's file is put back")
 	_new_mission(dir, game_data)
+	# --- the script against the mission's units and zones
+	var m37 := ResFile.read(game_data.path_join("MISS37.RES"))
+	var recs: Array = ResFile.items(ResFile.data(m37, 173))
+	var zones37 := ResFile.data(m37, 176)
+	_check(MissionScript.problems(s37, recs, zones37).is_empty(), "37 as the game has it: nothing to say")
+	var fewer := []
+	for r in recs:
+		if r[7] != 1:                                # (group 1 taken out; its soldier was one of the label 2)
+			var r2: PackedByteArray = r.duplicate()
+			r2[26] = 0
+			fewer.append(r2)
+	var z2 := zones37.duplicate()
+	z2.encode_s32(8 * 5, 0)
+	z2.encode_s32(8 * 5 + 4, 0)
+	var pr: Array = MissionScript.problems(s37, fewer, z2)
+	_check(pr.size() == 7 and pr[0].contains("can never be completed") and pr[2].contains("never given")
+		and pr[3].begins_with("zone 5 is not placed"), "37 without group 1, label 2 and zone 5: %d things to say" % pr.size())
 
 
 # ---- a brand new mission in an empty slot

@@ -16,6 +16,7 @@
 #     s["labels"] / s["groups"] / s["zones"] = {number: [what the script does with it]}
 #     s["edits"]       = {id: {"what", "kind", "v", "min", "max", "res", "frame", "off", "n"}}
 #   MissionScript.uses(s, "label", 2)              # the sentences to show before label 2 goes away
+#   MissionScript.problems(s, unit_records, zones) # what the script counts on and the mission no longer has
 #
 # Who is who in a script (the game's code): a unit is known by its LABEL (unit record +26), a group by its number
 # (+7), a place by its zone index. The director function receives events: 97 = a group that exists when the
@@ -443,6 +444,49 @@ func summary(mission: int) -> Dictionary:
 # the sentences about one label, group or zone ("label", "group", "zone"), empty when the script ignores it
 static func uses(s: Dictionary, kind: String, n: int) -> Array:
 	return s.get(kind + "s", {}).get(n, [])
+
+
+# What the script counts on and the mission no longer has: sentences for the editor, empty when all is well.
+# recs: the mission's unit records (resource 173, and 181's reinforcements if wanted), zones: its resource 176.
+# (The game counts a label's units when the mission starts, 0x291D78: an objective on a label nobody carries
+# can never be completed; a group without a unit never sends its start event.)
+static func problems(s: Dictionary, recs: Array, zones: PackedByteArray) -> Array:
+	var out := []
+	var labels := {}
+	var groups := {}
+	for r in recs:
+		var rec: PackedByteArray = r
+		if rec.size() < 27:
+			continue
+		labels[rec[26]] = labels.get(rec[26], 0) + 1
+		groups[rec[7]] = groups.get(rec[7], 0) + 1
+	for o in s.get("objectives", []):
+		for c in o["conditions"]:
+			var l: int = c["label"]
+			if l < 0x100 and not labels.has(l):
+				out.append("objective %d (%s): no unit is labelled %d, it can never be completed" % [o["n"], _cond_text(c), l])
+	var silent := {}
+	for od in s.get("orders", []):
+		var g: int = od["group"]
+		var w: Dictionary = od["when"]
+		if g > 0 and not groups.has(g):
+			_add_once(out, "group %d has no unit: its orders (%s) go nowhere" % [g, od["text"]])
+		if w["event"] == 97 and w["group"] > 0 and not groups.has(w["group"]) and not silent.has(w["group"]):
+			silent[w["group"]] = true
+			out.append("group %d has no unit: the orders the script gives when it starts are never given" % w["group"])
+		for z in od["zones"]:
+			if 8 * int(z) + 8 > zones.size() or (zones.decode_s32(8 * int(z)) == 0 and zones.decode_s32(8 * int(z) + 4) == 0):
+				_add_once(out, "zone %d is not placed: group %d is sent there (%s)" % [z, g, od["text"]])
+		if (od["order"] == "follow" or od["order"] == "attack_label") and od["target"] > 0 and not labels.has(od["target"]):
+			_add_once(out, "no unit is labelled %d: group %d %s" % [od["target"], g, od["text"]])
+		if (od["order"] == "attack_group" or od["order"] == "link") and od["target"] > 0 and not groups.has(od["target"]):
+			_add_once(out, "group %d has no unit: group %d %s" % [od["target"], g, od["text"]])
+	return out
+
+
+static func _add_once(out: Array, what: String) -> void:
+	if not out.has(what):
+		out.append(what)
 
 
 static func _secs(ms: int) -> String:

@@ -740,7 +740,7 @@ func _load(index: int) -> void:
 	zone_nodes.clear()
 	for z in mis["zones"]:
 		zone_nodes[int(z.get("index", zone_nodes.size()))] = _add_zone(m, z)
-	current = {"map": m, "mission": mis, "entry": entry}
+	current = {"map": m, "mission": mis, "entry": entry, "map_path": map_path}   # (map_path: the coop guest's map panel)
 	_sync_sun_half()
 	_place_camera(m, mis)
 	info.text = "%s\nmap %s (%s), %d objects, %d named zones, %d plants%s\nloaded in %.1f s" % [

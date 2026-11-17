@@ -126,6 +126,21 @@ CLEAR = [((17, 277, 99, 380), 60, 255),      # COMM panel, ENTIRE SQUAD box incl
 # right bar (energy) x 165-247 (separators every 4 from 168)
 BAR_ROWS = (30, 34)
 BAR_LEDS = [x for x in range(73, 149) if (x - 75) % 5] + [x for x in range(165, 248) if (x - 165) % 4 != 3]
+# His map panel and the small box over it (coop_hud.gd), as the game draws the host's. The box (the HUD's region at
+# 146, 226; 0x265094): the selected weapon's picture, washed through one of two colour tables when the weapon cannot
+# fire (0x28f024: 1 the slot is destroyed, 2 no ammunition, 5 not ready yet; pointers 0x389DD0 for 1 and 2, 0x389DC8
+# for 5). The map's marks (0x276ef8, a panel's map: zoom 4, one world unit a pixel): the mission's map notes (list
+# 0x39A510, those of its zoom and of the panel), the contacts of the whole squad (each suit's list, 0x27d158: 6 bytes
+# a contact, the entity first; merged, in the entities' order), his locked target, himself, the squad's waypoints
+# (0x392170, 4 x 10 x 12 bytes), the nav marker (0x38FFF0, x and y 16.16). A unit's colour: 0x2769e8.
+TINT_BAD, TINT_WAIT = 0x389DD0, 0x389DC8
+W_AMMO = 0x39511A                         # per weapon type (W_N bytes): over 1 = it counts its ammunition (slot +4)
+NAV = 0x38FFF0
+NOTES, NOTES_END, NOTE_ZOOM = 0x39A510, 0x39A518, 4   # (the panel's zoom 4: bit 2 of a note's byte +0xD; its panel: bit 0 of +0xE)
+CONTACTS_AT = {1: (PBA, PBA_N, 0xB2), 2: (0x3A19E8, 0x128, 0x4D), 3: (0x39E590, 0x14F, 0x62)}
+SQUAD_COLOURS, DRONE, FOOTPRINTS, WAYPOINTS = 0x35B3ED, 0x396868, 0x3C5DD0, 0x392170
+WAYPOINT_COLOURS = (0x38, 0x3F, 0x7E, 0x84)
+M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT = range(8)
 
 
 _LOG = None
@@ -217,6 +232,7 @@ class Guest:
         self.data_dir = coop_lobby.find_data(g)
         self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, self.data_dir), 0.0, []
         self.frames = {}                                       # 3D window -> its cockpit frame (mask, pixels), the host whole
+        self.tint_t, self.map_said = 0.0, False                 # his weapon box's colour tables: when last sent
         self.comm, self.ind, self.ind_at = [], None, None      # his COMM rows' entities; the armour indicator's picture
         # (False: none) and where the host's game draws it (his window draws his own there)
         self.anim = None
@@ -643,6 +659,120 @@ class Guest:
             hp.append(c * 100 // m if m else 255)
         return struct.pack('<HH', cur, mx) + lv + struct.pack('<hh', *(self.ind_at or (-1, -1))) + bytes(hp + [255] * (3 - len(hp)))
 
+    def weapon_state(self):
+        """his selected weapon as the game's small box shows the player's (0x28f024): 0 it can fire (or lacks the
+        energy: the box shows nothing of that), 1 destroyed, 2 no ammunition, 5 not ready yet; and its ammunition, the
+        number the box writes in its corner (0xFFFF: a weapon that counts none)"""
+        p = self.suit(self.gid)
+        slot = p + SLOTS + SLOT_N * (self.g.read(p + SEL, 1)[0] & 3)
+        r = self.g.read(slot, SLOT_READY + 4)
+        ammo = struct.unpack_from('<H', r, 4)[0] if self.u16(W_AMMO + W_N * r[0]) > 1 else 0xFFFF
+        if struct.unpack_from('<h', r, 2)[0] <= 0:
+            return 1, ammo
+        if ammo == 0:
+            return 2, ammo
+        return (5 if self.clock() < struct.unpack_from('<I', r, SLOT_READY)[0] else 0), ammo
+
+    def map_colour(self, e, b, pilots):
+        """the colour of unit e's mark (0x2769e8; b: its entity record; pilots: the squad's colour numbers)"""
+        if e == self.lock:
+            return 0x84
+        t, sub = b[1], b[2]
+        if t == 1:
+            if e in pilots:
+                return self.g.read(SQUAD_COLOURS + pilots[e], 1)[0]
+            return 0x6E if sub == 0x0D else 0x44
+        if t == 2:
+            return 0x22 if sub <= 3 else 0x44
+        if t == 3:
+            return 0x4B if e == self.u16(DRONE) else 0x63 if sub < 7 else 0x50 if sub == 7 else 0x6E
+        if t == 4:
+            return 0x44 if 0x45 <= sub <= 0x47 else 0x7B
+        return 0x90
+
+    def map_block(self, me):
+        """the end of the 'GHD' packet: 'M', flags (bit 0: the two colour tables of the weapon box follow the
+        header), his weapon's state and ammunition (a word), the number of marks; then each mark of his map in the game's drawing order:
+        kind, colour (the game's palette), payload length, payload (world x, y in 1/64 units, words; a shape: its
+        corners; a note: x, y, width, height and, for a text, its letters)"""
+        g = self.g
+        pt = lambda x, y: struct.pack('<2H', *(max(0, min(0xFFFF, v >> 10)) for v in (x, y)))
+        marks = []
+        a, n = struct.unpack('<I', g.read(NOTES, 4))[0], 0
+        while a != NOTES_END and 0x300000 < a < 0x2000000 and n < 24:   # the mission's notes on the map
+            r = g.read(a, 0x23 + 24)
+            n += 1
+            if r[0x0D] & NOTE_ZOOM and r[0x0E] & 1 and r[0x0A] in (0, 2, 3):
+                box = pt(*struct.unpack_from('<2i', r, 0x0F)) + pt(*struct.unpack_from('<2i', r, 0x17))
+                if r[0x0A] == 0:
+                    marks.append((M_TEXT, r[0x0B], box + r[0x23:].split(b'\0')[0][:24]))
+                else:
+                    marks.append((M_RECT if r[0x0A] == 2 else M_ROUND, r[0x0B], box))
+            a = struct.unpack_from('<I', r, 0)[0]
+        ents = g.read(self.master, 0x25 * 300)
+        rec = lambda e: ents[0x25 * e:0x25 * e + 0x25]
+        pilots = {}
+        for k in range(4):
+            r = g.read(PILOTS + PILOT_N * k, 8)
+            if r[0] | r[1]:
+                pilots[struct.unpack_from('<H', r, 2)[0]] = r[7]
+        seen = set()
+        for w in [self.gid] if self.versus else [me] + list(self.squad) + [self.u16(DRONE)]:   # what the squad sees
+            b = rec(w) if 0 < w < 300 else b''
+            if not b or not b[0] or b[1] not in CONTACTS_AT:
+                continue
+            base, size, at = CONTACTS_AT[b[1]]
+            _, _, n, lst = struct.unpack('<4I', g.read(base + size * struct.unpack_from('<H', b, 3)[0] + at, 16))
+            if not (0x300000 < lst < 0x2000000 and 0 < n <= 300):
+                continue
+            c = g.read(lst, 6 * n)
+            for i in range(n):
+                e = struct.unpack_from('<H', c, 6 * i)[0]
+                if not e:
+                    break
+                if e < 300:
+                    seen.add(e)
+        if self.lock:
+            seen.add(self.lock)
+        for e in sorted(seen - {self.gid}) + [self.gid]:      # (himself last, as the game its player)
+            b = rec(e)
+            if not b[0]:
+                continue
+            x, y = struct.unpack_from('<2i', b, 0x0F)
+            if b[1] == 4 and not (b[2] in (0x2E, 0x2F) or 0x45 <= b[2] <= 0x47):   # a building: its outline
+                t = struct.unpack('<I', g.read(FOOTPRINTS + 16, 4))[0]
+                if not 0x300000 < t < 0x2000000:
+                    continue
+                p = t + struct.unpack('<I', g.read(t + 4 * b[2] + 2, 4))[0]
+                n = min(struct.unpack('<I', g.read(p, 4))[0] >> 16, 16)
+                c = struct.unpack('<%di' % (2 * n), g.read(p + 4, 8 * n))
+                h = struct.unpack_from('<H', b, 0x1B)[0] / 65536 * 2 * math.pi
+                co, si = math.cos(h), math.sin(h)
+                marks.append((M_SHAPE, 0x12, b''.join(pt(x + int(c[2 * i] * co - c[2 * i + 1] * si),
+                                                          y + int(c[2 * i] * si + c[2 * i + 1] * co)) for i in range(n))))
+            else:
+                marks.append((M_SELF if e == self.gid else M_CROSS, self.map_colour(e, b, pilots), pt(x, y)))
+        w = g.read(WAYPOINTS, 4 * 0x84)
+        for k in range(40):                                   # the squad's waypoints (a place, or a unit to follow)
+            r = w[0x84 * (k // 10) + 12 * (k % 10):][:12]
+            if r[0] < 4:
+                e = struct.unpack_from('<H', r, 1)[0]
+                x, y = struct.unpack_from('<2i', rec(e), 0x0F) if 0 < e < 300 else struct.unpack_from('<2i', r, 3)
+                marks.append((M_WAYPOINT, WAYPOINT_COLOURS[r[0]], pt(x, y)))
+        nx, ny = struct.unpack('<2i', g.read(NAV, 8))
+        if nx and ny:
+            marks.append((M_NAV, 0x9C, pt(nx, ny)))
+        marks = marks[:255]
+        tables = b''
+        if time.time() - self.tint_t > 5.0:                    # the weapon box's two colour tables, now and then
+            self.tint_t = time.time()
+            for a in (TINT_BAD, TINT_WAIT):
+                p = struct.unpack('<I', g.read(a, 4))[0]
+                tables += g.read(p, 256) if 0x300000 < p < 0x2000000 else bytes(range(256))
+        state, ammo = self.weapon_state()
+        return b'M' + struct.pack('<BBHB', 1 if tables else 0, state, ammo, len(marks)) + tables + \
+            b''.join(bytes([k, c, len(d)]) + d for k, c, d in marks)
+
     def energy_pct(self, e):
         """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power
         plant damage lowers the max, and he changes suits)"""
@@ -755,6 +885,13 @@ class Guest:
             struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
             struct.pack('<3f', *host) + self.squad_info(me) + struct.pack('<H', me) + self.hud_more()   # (me: the host's
         # entity, his name follows his drawn suit)
+        if self.gid and self.state == OK:
+            try:
+                pk += self.map_block(me)                       # (an older guest window stops reading before it)
+            except (OSError, struct.error, IndexError) as ex:
+                if not self.map_said:
+                    self.map_said = True
+                    print('guest: no map marks (%r)' % (ex,), flush=True)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):

@@ -1060,6 +1060,16 @@ if PLAY and os.environ.get('TN_ORDER_WHEEL') == '1':   # (the launcher's "Order 
         print('orders: %r' % (ex,), flush=True)
 ordres_t = 0.0
 
+# Squadmates' subtitles (subtitles.py; the launcher's "Subtitles": nothing of it otherwise): who speaks and what the
+# clip he plays means, told to the viewer ('SUBT') when it starts and while it plays
+sous_titres = None
+if os.environ.get('TN_SUBTITLES') == '1':
+    import subtitles
+    try:
+        sous_titres = subtitles.Subtitles(g, code, FR, os.environ.get('TN_GAME_DIR'), log=lambda *a: print(*a, flush=True))
+    except Exception as ex:
+        print('subtitles: %r' % (ex,), flush=True)
+
 
 def handle_input():
     global guest
@@ -2333,6 +2343,12 @@ while True:
         menu_beat = time.time()
         print('menus : fil relance', file=sys.stderr, flush=True)
         threading.Thread(target=menu_loop, daemon=True).start()
+    if sous_titres is not None:
+        try:
+            for pk in sous_titres.poll(time.time(), x + y > 0):
+                s.sendto(pk, ('127.0.0.1', 47821))
+        except Exception as ex:
+            if os.environ.get('TN_DEBUG'): print('subtitles:', repr(ex), flush=True)
     if PLAY:
         handle_input()
         if ordres is not None and time.time() - ordres_t > 0.2:   # the order wheel: the squad, the lock, who can be attacked

@@ -3767,6 +3767,74 @@ func _order_input(event: InputEvent) -> bool:
 	return false
 
 
+# ------------------------------------------------------------------ the squadmates' subtitles
+# What a squadmate says, written (the launcher's "Subtitles": TN_SUBTITLES = 1; off unless asked). The game plays a
+# voice clip and shows nothing; the bridge says who plays which clip and what it means (live_bridge.py 'SUBT',
+# subtitles.py: the game's own reply texts where it has them), again every fifth of a second while the clip plays.
+# One line a speaker (subtitles.gd), kept as long as he speaks and no less than SUBS_MIN_MS. Not on a game screen,
+# not for a coop guest.
+const Subtitles = preload("res://scripts/subtitles.gd")
+const SUBS_MIN_MS := 1500                # a line stays at least that long (a one-word answer lasts half a second)
+const SUBS_LATE_MS := 450                # no news of a clip for that long: it is over
+var subs_on := OS.get_environment("TN_SUBTITLES") == "1"
+var subs := {}                           # squadmate (1-3) -> {n, pilot, text, since, seen, playing, ms, clip, event}
+var subs_view: Subtitles
+
+
+# the bridge's 'SUBT': number, squadmate, pilot, event, flags (bit 0: playing), clip, length (ms), text
+func _subs_packet(q: PackedByteArray) -> void:
+	if not subs_on or q.size() < 13 or guest_win:
+		return
+	var mate := int(q[5])
+	var now := Time.get_ticks_msec()
+	var s = subs.get(mate)
+	if s == null or int(s["n"]) != int(q[4]):
+		if q[8] & 1 == 0:
+			return                                         # (the end of a line never shown)
+		s = {"n": int(q[4]), "pilot": int(q[6]), "event": int(q[7]), "clip": q.decode_u16(9), "ms": q.decode_u16(11),
+				"text": q.slice(13).get_string_from_utf8(), "since": now}
+		subs[mate] = s
+	s["seen"] = now
+	s["playing"] = q[8] & 1 == 1
+
+
+func _subs_update() -> void:
+	if not subs_on:
+		return
+	var now := Time.get_ticks_msec()
+	var shown := []
+	for mate in subs.keys():
+		var s: Dictionary = subs[mate]
+		var end := int(s["seen"]) + (SUBS_LATE_MS if bool(s["playing"]) else 0)
+		if now >= maxi(end, int(s["since"]) + SUBS_MIN_MS):
+			subs.erase(mate)
+		else:
+			shown.append([int(s["since"]), mate])
+	if subs_view == null:
+		if shown.is_empty():
+			return
+		var sl := CanvasLayer.new()
+		sl.layer = 4                                       # over the game's HUD and the old school look, under the order wheel
+		add_child(sl)
+		subs_view = Subtitles.new()
+		sl.add_child(subs_view)
+	shown.sort()                                           # the newest line lowest
+	var lines := []
+	for it in shown:
+		var s: Dictionary = subs[it[1]]
+		var text := str(s["text"])
+		lines.append([_order_name([it[1], 0, int(s["pilot"])]), it[1], text, text.begins_with("[")])
+	var vs := get_viewport().get_visible_rect().size
+	var v := subs_view
+	v.k = vs.y / 1080.0
+	# at the bottom of the game's 3D window (its cockpit's dashboard rises in the middle), far under the crosshair
+	var win := Rect2(hud_win) if hud_win.size.y > 0 else Rect2(11, 42, 298, 199)
+	v.foot = Vector2((win.position.x + win.size.x * 0.5) / 320.0 * vs.x, (win.position.y + win.size.y * 0.89) / 400.0 * vs.y).round()
+	v.lines = lines
+	v.visible = not lines.is_empty() and not menu_mode
+	v.queue_redraw()
+
+
 # look <-> cursor (the look key, Pause, or a bind): the cursor starts on the view's centre
 func _look_swap() -> void:
 	if not play_started or play_hold or menu_mode:      # (a game screen: the mouse is its cursor's)
@@ -4349,6 +4417,7 @@ func _live_update() -> void:
 		_play_cursor()
 		_bind_taps()
 		_order_update()
+		_subs_update()
 	if host_btn:
 		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 		if versus_btn:
@@ -4382,6 +4451,8 @@ func _live_update() -> void:
 			_order_status(q)                                # the squad and who can be attacked (live_bridge.py, orders.py)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "ORDR":
 			_order_result(q)
+		elif q.size() >= 13 and q.slice(0, 4).get_string_from_ascii() == "SUBT":
+			_subs_packet(q)                                 # a squadmate speaks (live_bridge.py, subtitles.py)
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)

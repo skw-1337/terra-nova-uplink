@@ -147,7 +147,10 @@ M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = r
 # says it back to both windows: to his in the marks of his map (M_MATE), to the host's as 'GNAV' + x, y (floats; x = 0:
 # none) + the number of maps on the host's game screen, then for each its rectangle (4 words), the world x, y of its
 # corner and the world length of a column and of a row (4 floats): a cockpit panel showing the map (mode 9; its view:
-# the pointer at +0x20 of the panel) or the full screen map (a panel in mode 8, the view at 0x38FB20).
+# the pointer at +0x20 of the panel) or the full screen map (a panel in mode 8, the view at 0x38FB20); then where the
+# game draws its own marker on that map (screen x, y, words; -1: none) and whether as one pixel (zoom levels 0 to 3)
+# or as its small cross (0x277424): the host's window draws it again there in his co-op colour. 'GNAV' goes on as
+# long as a guest plays (10 a second): it also tells the host's window that this is co-op.
 PANELS, PANEL_N, PANEL_MODE, PANEL_VIEW, FULL_MAP, MAP_ROWS = 0x38FC00, 32, 0x12, 0x20, 0x38FB20, 0x35A544
 
 
@@ -797,26 +800,32 @@ class Guest:
         for v in views:
             if not 0x300000 <= v < 0x500000:
                 continue
-            x, y, _, step, _, canvas = struct.unpack('<iiHiiI', g.read(v, 0x16))
+            x, y, zoom, step, per, canvas = struct.unpack('<iiHiiI', g.read(v, 0x16))
             if not (0x300000 <= canvas < 0x500000 and step > 0):
                 continue
             x0, y0, x1, y1 = struct.unpack('<4h', g.read(canvas - 0x22 + 8, 8))
             if 0 <= x0 < x1 <= 320 and 0 <= y0 < y1 <= 400:
-                out.append(struct.pack('<4h4f', x0, y0, x1, y1, x / 65536, y / 65536, step / 65536,
-                                       step / 65536 / (1 << (g.read(MAP_ROWS, 1)[0] & 3))))
+                rows = g.read(MAP_ROWS, 1)[0] & 3
+                nx, ny = struct.unpack('<2i', g.read(NAV, 8))
+                at = (x0 + (((nx - x) * per) >> 32), y0 + ((((ny - y) << rows) * per) >> 32)) if nx and ny else (-1, -1)
+                if not (x0 <= at[0] < x1 and y0 <= at[1] < y1):
+                    at = (-1, -1)
+                out.append(struct.pack('<4h4f2hB', x0, y0, x1, y1, x / 65536, y / 65536, step / 65536,
+                                       step / 65536 / (1 << rows), at[0], at[1], 1 if zoom < 4 else 0))
         return out
 
     def host_marker(self, in_mission):
-        """the guest's map marker for the host's window, 5 times a second while there is one (and once when it goes);
-        gone with the mission"""
+        """the guest's map marker and the game's maps for the host's window, 10 times a second while a guest plays
+        (and once more after); his marker is gone with the mission"""
         mis = self.i32(MISSION) if in_mission else None
         if mis != self.gnav_mis:
             self.gnav, self.gnav_mis = None, mis
-        if time.time() - self.gnav_t < 0.2 or not (self.gnav or self.gnav_told):
+        on = in_mission and self.joined
+        if time.time() - self.gnav_t < 0.1 or not (on or self.gnav_told):
             return
-        self.gnav_t, self.gnav_told = time.time(), bool(self.gnav)
+        self.gnav_t, self.gnav_told = time.time(), on
         try:
-            maps = self.host_maps() if self.gnav else []
+            maps = self.host_maps() if on else []
         except (OSError, struct.error):
             maps = []
         self.s.sendto(b'GNAV' + struct.pack('<2fB', *(self.gnav or (0.0, 0.0)), len(maps)) + b''.join(maps),

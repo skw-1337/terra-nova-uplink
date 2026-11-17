@@ -341,7 +341,7 @@ def main(argv):
                     start(mission, slot_of(path), gm, log=say)
                     break
                 except PlayError as e:
-                    if 'not at its main menu' not in str(e) or attempt == 7:
+                    if attempt == 7 or not ('not at its main menu' in str(e) or 'did not start' in str(e)):
                         raise
                     say('the game is not at its main menu yet: waiting')
                     time.sleep(6)

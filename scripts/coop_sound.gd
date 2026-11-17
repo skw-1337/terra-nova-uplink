@@ -159,6 +159,8 @@ func _place(v: Dictionary) -> void:
 		src = v["at"]
 	elif v["ent"] > 0:
 		src = _ent_pos(v["ent"])
+		if src == null and v["at"] != Vector3.ZERO:
+			src = v["at"]                                  # (a shot or a blast: not among his units, where it started)
 	if src != null or v["kind"] in [1, 2, 5]:
 		vol = 0
 		var me = _listener()

@@ -971,6 +971,8 @@ class Guest:
             ent, at = 0, (0.0, 0.0, 0.0)
             if kind in (2, 5):
                 ent = struct.unpack_from('<H', r, 0x1A)[0]
+                if 0 < ent < self.nent:                        # (and where it is: a shot or a blast is not among the
+                    at = tuple(v / 65536 for v in struct.unpack('<3i', g.read(self.master + 0x25 * ent + 0x0F, 12)))   # guest's units)
             elif kind == 1:
                 at = tuple(v / 65536 for v in struct.unpack_from('<3i', r, 0x1A))
             elif kind == 0 and k in owners:

@@ -181,8 +181,11 @@ func _solid(ld: Dictionary, foot: bool) -> ArrayMesh:
 	var ends := [[first[0] - first[1] * 0.35, 0.0, first[2]], [first[0] - first[1] * 0.25, first[1] * 0.6, first[2]]]
 	var ends2 := [[last[0] + last[1] * 0.25, last[1] * 0.6, last[2]], [last[0] + last[1] * 0.35, 0.0, last[2]]]
 	rings = ends + rings + ends2
-	var v0: float = (first[0] + a1 + 0.5) / h              # (the picture's opaque rows: the ends take their colours)
-	var v1: float = (last[0] + a1 + 0.5) / h
+	# the picture's rows the solid is dressed in: a little inside its opaque part (its first and last rows are the
+	# picture's dark outline: the ends were black lids)
+	var inset: float = 0.12 * (last[0] - first[0])
+	var v0: float = (first[0] + inset + a1 + 0.5) / h
+	var v1: float = (last[0] - inset + a1 + 0.5) / h
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for r in rings.size() - 1:

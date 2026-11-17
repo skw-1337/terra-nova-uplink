@@ -98,6 +98,7 @@ static class Uplink
         Migrate();
         bool had = File.Exists(Ini);
         LoadCfg();
+        AdoptGameSettings();                                   // (what Uplink's own menu changed since: its viewer.cfg)
         // The keys a new installation comes with (2: freelook on F), as against one that was already there (1: on
         // Y): said once, when the settings do not say yet, so that nobody's key changes with an update
         if (Cfg("keys_gen") != "1" && Cfg("keys_gen") != "2") Set("keys_gen", had && cfg.Count > 0 ? "1" : "2");
@@ -142,7 +143,7 @@ static class Uplink
         }
         Build();
         form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
-        form.FormClosing += delegate { loading = false; SaveOptions(); stopping = true; };
+        form.FormClosing += delegate { AdoptNow(); loading = false; SaveOptions(); stopping = true; };
         Application.Run(form);
     }
 
@@ -197,9 +198,10 @@ static class Uplink
     static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars" };
     static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars" };
     static Switch[] fxTicks = new Switch[6];
-    static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Settings" };
+    static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Controls", "Settings" };
     const int SB = 150, MW = 610, MH = 500;                   // the side bar's width, a page's size
-    const int P_WHEEL = 5;                                    // the order wheel's page (opened from In game)
+    const int P_WHEEL = 6;                                    // the order wheel's page (opened from In game)
+    const int P_CONTROLS = 4, P_SETTINGS = 5;
     // the squad's orders, by their number (as Uplink and its bridge count them: scripts\order_wheel.gd, live\orders.py)
     static readonly string[] ORDERS = { "Attack target", "Move there", "Take cover", "Retreat", "Follow me", "Hold position", "Assume formation" };
     static readonly Color CSoft = Color.FromArgb(157, 176, 169), CTape = Color.FromArgb(242, 194, 26), CTapeInk = Color.FromArgb(21, 20, 15);
@@ -241,6 +243,7 @@ static class Uplink
         Set("page", nav.ToString());
         if (k == 3) ReadSharp();
         if (k == P_WHEEL) WheelUi();
+        if (k == P_CONTROLS) { ControlsLoad(); keyList.Top0 = 0; keyList.Invalidate(); }
         if (toast != null) toast.Place();
     }
 
@@ -348,7 +351,8 @@ static class Uplink
         BuildCoop(pages[1]);
         BuildMaps(pages[2]);
         BuildInGame(pages[3]);
-        BuildSettings(pages[4]);
+        BuildControls(pages[P_CONTROLS]);
+        BuildSettings(pages[P_SETTINGS]);
         BuildWheel(pages[P_WHEEL]);
         LoadHeroes();
 
@@ -364,7 +368,10 @@ static class Uplink
         try { SetWindowTheme(logBox.Handle, "DarkMode_Explorer", null); } catch { }
         toast = new Toast();
         form.Move += delegate { toast.Place(); };
-        form.Activated += delegate { ReadSharp(); };          // (the pixel size may have been changed in the game meanwhile)
+        form.Activated += delegate {                          // (the pixel size, options or keys may have been changed in the game meanwhile)
+            ReadSharp();
+            AdoptNow();
+        };
 
         KeyLabels();
         LoadOptions();
@@ -533,9 +540,9 @@ static class Uplink
         c.Controls.Add(sensBar);
 
         c = Card(pg, "KEYS AND TOOLS", COrange, null, 18 + CW + 12, 16, CW, 108);
-        c.Controls.Add(new Txt { Text = "The game's own keys, saves folder, repair.", F = F115, Ink = CDim, Location = new Point(X, 32), Size = new Size(IW, RH) });
-        keysBtn = Key(c, X, 64, 123, 28, "Game keys");
-        keysBtn.Click += delegate { GameKeys(); };
+        c.Controls.Add(new Txt { Text = "Every key, saves folder, repair.", F = F115, Ink = CDim, Location = new Point(X, 32), Size = new Size(IW, RH) });
+        keysBtn = Key(c, X, 64, 123, 28, "Controls");
+        keysBtn.Click += delegate { ShowPage(P_CONTROLS); };
         toolsBtn = Key(c, X + 123 + 9, 64, 123, 28, "Tools");
         toolsBtn.Click += delegate { ToolsMenu().Show(toolsBtn, new Point(0, toolsBtn.Height + 2)); };
 
@@ -1664,7 +1671,7 @@ static class Uplink
         {
             if (form == null || !form.Visible || form.WindowState == FormWindowState.Minimized) return;
             // (under the top line of a page with a picture; over the cards' titles on the others: no switch is covered)
-            Location = form.PointToScreen(new Point(S(SB + MW - 18) - Width, S(pageNow <= 2 ? 56 : 7)));
+            Location = form.PointToScreen(new Point(S(SB + MW - 18) - Width, S(pageNow <= 2 ? 56 : pageNow == P_CONTROLS ? 418 : 7)));
         }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -2192,6 +2199,7 @@ static class Uplink
     static void Start(Mode m)
     {
         if (busy) return;
+        AdoptNow();                                          // (what Uplink's menu changed: before the options are given)
         SaveOptions();
         if (Game() == null) { PickGame(); if (Game() == null) return; }
         if (m == Mode.Host && !IsEnglish(Game()))
@@ -2475,6 +2483,7 @@ static class Uplink
         env["TN_KEY_SHOT"] = ShotKey();
         env["TN_KEY_FPS"] = FpsKey();
         env["TN_KEY_PHOTO"] = PhotoKey();
+        env["TN_KEY_MENU"] = MenuKey();
         env["TN_HUD_COLOURS"] = Cfg("hud_colours") == "0" ? "0" : "1";
         env["TN_EDITOR"] = Cfg("mission_editor") == "1" ? "1" : "0";
         env["TN_SKIP_INTRO"] = Cfg("skip_intro") == "1" ? "1" : "0";
@@ -3098,6 +3107,375 @@ static class Uplink
             if (Cfg("keys_gen") == "2") lines.Add("keys_version = 4");
         }
         File.WriteAllLines(ini, lines);
+    }
+
+    // ------------------------------------------------------------------ Controls: every key in one place
+    // The list is Uplink's data\controls.txt, which the in-game menu's Controls page reads too (scripts\controls.gd),
+    // with the same rules. The game's commands are Terra Nova Plus's (its TNPlus.ini: key_game_<id>, mouse_<id>, its
+    // keys' version 4: freelook on F, Centre view without a key; settings with keys from before keep F and Y as they
+    // were), written to both TN+ (SyncKeys); Uplink's own keys are this launcher's (key_<id>). A key: a PC scancode
+    // (E0xx: the grey block's), modifiers 1 Shift, 2 Ctrl, 4 Alt; -1 / -2 / -3 the middle / side mouse buttons.
+    class Cmd { public string Group, Id, Name, Kind; public int DefSc, DefMods, Sc, Mods, Mouse; }
+    static List<Cmd> cmds = new List<Cmd>();
+    static readonly string[] MOUSE_INI = { "", "MID", "M4", "M5", "WHEELUP", "WHEELDOWN", "PGUP", "PGDN", "HOME", "END", "INS", "DEL" };
+    static readonly string[] MOUSE_SHORT = { "", "Middle", "Mouse 4", "Mouse 5", "Wheel up", "Wheel down", "PgUp", "PgDn", "Home", "End", "Ins", "Del" };
+    static readonly int[] SPARE = { 0x25, 0x26, 0x27, 0x08, 0x09, 0x0A, 0x0B };
+    static readonly string[] CONTROL_GROUPS = { "Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Uplink" };
+
+    static int[] KeyParse(string spec)
+    {
+        string s = (spec ?? "").Trim().ToUpperInvariant();
+        if (s == "" || s == "-") return new[] { 0, 0 };
+        if (s == "MID") return new[] { -1, 0 };
+        if (s == "M4" || s == "M5") return new[] { s == "M4" ? -2 : -3, 0 };
+        string[] p = s.Split('+');
+        int mods = 0;
+        for (int i = 0; i < p.Length - 1; i++) mods |= p[i] == "SHIFT" ? 1 : p[i] == "CTRL" ? 2 : p[i] == "ALT" ? 4 : 0;
+        int sc;
+        return int.TryParse(p[p.Length - 1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out sc) ? new[] { sc, mods } : new[] { 0, 0 };
+    }
+
+    static string KeySpec(int sc, int mods)
+    {
+        if (sc == 0) return "";
+        if (sc < 0) return new[] { "", "MID", "M4", "M5" }[-sc];
+        return ((mods & 1) != 0 ? "SHIFT+" : "") + ((mods & 2) != 0 ? "CTRL+" : "") + ((mods & 4) != 0 ? "ALT+" : "") + sc.ToString(sc > 0xFF ? "X4" : "X2");
+    }
+
+    static string KeyLabel(int sc, int mods) { return sc == 0 ? "-" : KeyShort(KeySpec(sc, mods), true); }
+
+    static Cmd FindCmd(string id) { return cmds.Find(c => c.Id == id); }
+
+    // the list, then the player's keys: TN+'s settings read as TN+ reads them, Uplink's from this launcher's settings
+    static void ControlsLoad()
+    {
+        cmds = new List<Cmd>();
+        string list = Path.Combine(UplinkDir, "data", "controls.txt");
+        if (!File.Exists(list)) return;
+        foreach (string raw in File.ReadAllLines(list))
+        {
+            string l = raw.Trim();
+            if (l == "" || l.StartsWith("#")) continue;
+            string[] p = l.Split('|');
+            if (p.Length < 5) continue;
+            int[] d = KeyParse(p[3]);
+            if (p[4] != "uplink" && d[0] >= 0x80 && d[0] < 0x100) d[0] = 0xE000 | (d[0] & 0x7F);   // (TN+'s 0x80 + code)
+            cmds.Add(new Cmd { Group = p[0], Id = p[1], Name = p[2], Kind = p[4], DefSc = d[0], DefMods = d[1], Sc = d[0], Mods = d[1] });
+        }
+        Dictionary<string, string> vals = new Dictionary<string, string>();
+        string ini = KeysIni();
+        int kv = 0;
+        bool sawKeys = false;
+        if (File.Exists(ini))
+            foreach (string raw in File.ReadAllLines(ini))
+            {
+                string l = raw.Trim();
+                int e = l.IndexOf('=');
+                if (l.StartsWith(";") || e <= 0) continue;
+                string k = l.Substring(0, e).Trim().ToLowerInvariant(), v = l.Substring(e + 1).Trim();
+                if (k.StartsWith("key_") || k.StartsWith("keys_")) sawKeys = true;
+                if (k == "keys_version") int.TryParse(v, out kv);
+                vals[k] = v;
+            }
+        bool old = sawKeys && kv < 4;
+        string got;
+        foreach (Cmd c in cmds)
+        {
+            if (c.Kind == "game" || c.Kind == "fixed")
+            {
+                if (c.Id == "centre" && !old) c.DefSc = 0;
+                c.Sc = c.DefSc; c.Mods = c.DefMods;
+                if (c.Kind == "game" && vals.TryGetValue("key_game_" + c.Id, out got))
+                {
+                    int[] k = KeyParse(got);
+                    if (k[0] > 0 && k[0] < 0x100 && !(c.Id == "bound" && k[1] != 0))
+                    { c.Sc = k[0] >= 0x80 ? 0xE000 | (k[0] & 0x7F) : k[0]; c.Mods = (k[1] & 4) != 0 ? 4 : (k[1] & 2) != 0 ? 2 : k[1] & 1; }
+                }
+            }
+            else if (c.Kind == "tnplus")
+            {
+                if (c.Id == "freelook" && old) c.DefSc = 0x15;
+                c.Sc = vals.TryGetValue("key_" + c.Id, out got) ? KeyParse(got)[0] : c.DefSc;
+            }
+            else if (c.Kind == "uplink")
+            {
+                int[] k = KeyParse(c.Id == "menu" ? MenuKey() : c.Id == "order" ? OrderKey() : c.Id == "photo" ? PhotoKey() :
+                    c.Id == "oldschool" ? OldKey() : c.Id == "sharp" ? SharpKey() : c.Id == "shot" ? ShotKey() : c.Id == "fps" ? FpsKey() : "");
+                c.Sc = k[0]; c.Mods = k[1];
+                if (c.Id == "sharp" || c.Id == "shot" || c.Id == "fps")   // (they follow the old school look's key unless set)
+                {
+                    Cmd o = FindCmd("oldschool");
+                    bool plain = o.Mods == 0;
+                    int add = c.Id == "sharp" ? 1 : c.Id == "shot" ? 2 : 3;
+                    bool has = c.Id == "sharp" ? (o.Mods & 1) == 0 : plain;
+                    c.DefSc = has ? o.Sc : 0; c.DefMods = has ? o.Mods | add : 0;
+                }
+            }
+            if (c.Kind == "game" || c.Kind == "tnplus")
+                c.Mouse = Math.Max(0, Array.IndexOf(MOUSE_INI, vals.TryGetValue("mouse_" + c.Id, out got) ? got.ToUpperInvariant() : ""));
+        }
+        // TN+'s ResolveToolClashes: a plain game key on one of its own goes to the first spare key free
+        HashSet<int> tools = new HashSet<int>();
+        foreach (Cmd c in cmds) if (c.Kind == "tnplus") tools.Add(c.Sc);
+        foreach (Cmd c in cmds)
+            if (c.Kind == "game" && c.Mods == 0 && c.Sc > 0 && c.Sc < 0x80 && tools.Contains(c.Sc))
+                foreach (int f in SPARE)
+                    if (!tools.Contains(f) && !cmds.Exists(o => (o.Kind == "game" || o.Kind == "fixed") && o.Sc == f && o.Mods == 0)) { c.Sc = f; break; }
+    }
+
+    // The Uplink menu's key (key_menu): F5 unless another is chosen (F10 is the game's Sensor range)
+    static string MenuKey() { string k = Cfg("key_menu").ToUpperInvariant(); return KeyOk(k) && k != "" ? k : "3F"; }
+
+    // commands sharing a key (not the game's fixed keys, nor two both as they come: Uplink's F12 is the game's Mission
+    // info on purpose)
+    static Dictionary<string, string> Conflicts()
+    {
+        Dictionary<string, string> o = new Dictionary<string, string>();
+        foreach (Cmd a in cmds)
+        {
+            if (a.Kind == "fixed" || a.Sc == 0) continue;
+            foreach (Cmd b in cmds)
+                if (b != a && b.Kind != "fixed" && b.Sc == a.Sc && b.Mods == a.Mods && !(a.Sc == a.DefSc && a.Mods == a.DefMods && b.Sc == b.DefSc && b.Mods == b.DefMods))
+                    o[a.Id] = b.Name;
+        }
+        return o;
+    }
+
+    // TN+'s settings: the game's keys not as they come (version 4), its own keys, the second binds; then the co-op build's
+    static void ControlsSave()
+    {
+        string ini = Path.Combine(TnpDir, "TNPlus.ini");
+        if (!File.Exists(ini) && File.Exists(KeysIni())) ini = KeysIni();
+        List<string> lines = File.Exists(ini) ? new List<string>(File.ReadAllLines(ini)) : new List<string> { "; Terra Nova Plus settings (written by Terra Nova Uplink)" };
+        lines.RemoveAll(l => { string t = l.Trim().ToLowerInvariant(); return t.StartsWith("key_game_") || t.StartsWith("mouse_") || t.StartsWith("keys_version") ||
+            t.StartsWith("key_freelook") || t.StartsWith("key_noclip") || t.StartsWith("key_distance") || t.StartsWith("key_stereo"); });
+        foreach (Cmd c in cmds) if (c.Kind == "tnplus") lines.Add("key_" + c.Id + " = " + c.Sc.ToString("X2"));
+        lines.Add("keys_version = 4");
+        foreach (Cmd c in cmds)
+        {
+            if (c.Kind != "game") continue;
+            int ds = c.Id == "centre" ? 0 : c.DefSc, dm = c.Id == "centre" ? 0 : c.DefMods;
+            if (c.Sc == ds && c.Mods == dm) continue;
+            int code = c.Sc >= 0xE000 ? 0x80 | (c.Sc & 0x7F) : c.Sc;
+            lines.Add("key_game_" + c.Id + " = " + ((c.Mods & 4) != 0 ? "ALT+" : (c.Mods & 2) != 0 ? "CTRL+" : (c.Mods & 1) != 0 ? "SHIFT+" : "") + code.ToString("X2"));
+        }
+        foreach (Cmd c in cmds) if (c.Mouse > 0) lines.Add("mouse_" + c.Id + " = " + MOUSE_INI[c.Mouse]);
+        try { Directory.CreateDirectory(Path.GetDirectoryName(ini)); File.WriteAllLines(ini, lines); } catch (Exception e) { Status("The keys could not be saved: " + e.Message, CRed); return; }
+        if (ini.StartsWith(TnpDir, StringComparison.OrdinalIgnoreCase)) SyncKeys();
+        foreach (Cmd c in cmds)
+            if (c.Kind == "uplink")
+                Set("key_" + c.Id, c.Sc == c.DefSc && c.Mods == c.DefMods ? "" : KeySpec(c.Sc, c.Mods));
+        SaveCfg();
+        KeyLabels();
+    }
+
+    static KeyList keyList;
+    static TextBox keySearch;
+
+    static void BuildControls(Surface pg)
+    {
+        pg.Look = delegate(Graphics g) {
+            g.Clear(CBack);
+            Spaced(g, "CONTROLS", F14s, COrange, 18, 18, 1.2f);
+            Str(g, "KEY", F10b, CDim, 18 + 352, 52); Str(g, "MOUSE", F10b, CDim, 18 + 478, 52);
+        };
+        keySearch = new TextBox { Location = new Point(MW - 18 - 220, 14), Size = new Size(220, 24), BackColor = CButton, ForeColor = CText,
+            BorderStyle = BorderStyle.FixedSingle, Font = F12 };
+        keySearch.TextChanged += delegate { keyList.Filter = keySearch.Text; keyList.Top0 = 0; keyList.Invalidate(); };
+        pg.Controls.Add(keySearch);
+        pg.Controls.Add(new Txt { Text = "Search", F = F11, Ink = CDim, Location = new Point(MW - 18 - 220 - 50, 16), Size = new Size(48, 20) });
+        keyList = new KeyList { Text = "Keys", Location = new Point(18, 68), Size = new Size(MW - 36, 350) };
+        pg.Controls.Add(keyList);
+        pg.Controls.Add(new Txt { Text = "Keys are places on the keyboard (shown with your keyboard's letters). The game's keys change at the next",
+            F = F11, Ink = CDim, Location = new Point(18, 424), Size = new Size(MW - 36, 16) });
+        pg.Controls.Add(new Txt { Text = "start of the game, Uplink's at the next start of Uplink (in game: its menu's Controls, at once).",
+            F = F11, Ink = CDim, Location = new Point(18, 440), Size = new Size(MW - 36, 16) });
+        Btn reset = Key(pg, 18, 460, 170, 28, "Reset to defaults");
+        reset.Click += delegate {
+            if (!Ask("Put every key back as it comes (freelook on F, Centre view without a key)?")) return;
+            foreach (Cmd c in cmds) { c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.DefSc; c.Mods = c.Id == "centre" || c.Id == "freelook" ? 0 : c.DefMods; c.Mouse = 0; }
+            ControlsSave(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);
+        };
+        Btn adv = Key(pg, MW - 18 - 190, 460, 190, 28, "Advanced (Terra Nova Plus)...");
+        adv.Click += delegate { GameKeys(); };
+    }
+
+    // a key asked for, for a command
+    static void AskControl(Cmd c)
+    {
+        using (KeyAsk d = c.Id == "order" ? new KeyAsk(c.Name.ToLowerInvariant(), KeyLabel(c.Sc, c.Mods), true) : new KeyAsk(c.Name.ToLowerInvariant(), KeyLabel(c.Sc, c.Mods)))
+        {
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            int[] k = d.Spec == "" ? new[] { c.DefSc, c.DefMods } : KeyParse(d.Spec);
+            if (c.Kind == "game" && (k[1] & 4) != 0) k[1] = 4;                      // (the game takes one modifier)
+            else if (c.Kind == "game" && (k[1] & 2) != 0) k[1] = 2;
+            if (c.Kind == "tnplus") k[1] = 0;
+            if (c.Kind != "uplink" && k[0] >= 0xE000 && Array.IndexOf(new[] { 0x47, 0x49, 0x4F, 0x51, 0x52, 0x53 }, k[0] & 0xFF) >= 0 && c.Kind == "tnplus")
+            { Status("PgUp / PgDn, Home / End, Ins / Del go in the MOUSE column, as a second bind.", CAmber); return; }
+            c.Sc = k[0]; c.Mods = k[1];
+            ControlsSave();
+            string clash;
+            Status(c.Name + ": " + KeyLabel(c.Sc, c.Mods) + (Conflicts().TryGetValue(c.Id, out clash) ? ". Also the key of " + clash + "." : "."),
+                Conflicts().ContainsKey(c.Id) ? CAmber : CGreen);
+        }
+        keyList.Invalidate();
+    }
+
+    static void AskMouse(Cmd c, Control at, Point p)
+    {
+        ContextMenuStrip m = Menu();
+        for (int i = 0; i < MOUSE_SHORT.Length; i++)
+        {
+            int k = i;
+            ToolStripItem it = m.Items.Add(i == 0 ? "None" : MOUSE_SHORT[i], null, delegate {
+                foreach (Cmd o in cmds) if (k != 0 && o.Mouse == k) o.Mouse = 0;
+                c.Mouse = k; ControlsSave(); keyList.Invalidate();
+            });
+            if (i == c.Mouse) it.Font = new Font(it.Font, FontStyle.Bold);
+        }
+        m.Show(at, p);
+    }
+
+    // the list: group names, then per command its name, its key, its second bind; the mouse wheel scrolls it
+    class KeyList : Drawn
+    {
+        public string Filter = "";
+        public int Top0;
+        int hotRow = -1, hotCol = -1;
+        const int RH = 25;
+        public KeyList() : base(true) { }
+        List<object> Rows()
+        {
+            List<object> l = new List<object>();
+            string q = (Filter ?? "").Trim().ToLowerInvariant();
+            foreach (string g in CONTROL_GROUPS)
+            {
+                bool any = false;
+                foreach (Cmd c in cmds)
+                {
+                    if (c.Group != g || (q != "" && c.Name.ToLowerInvariant().IndexOf(q) < 0 && g.ToLowerInvariant().IndexOf(q) < 0)) continue;
+                    if (!any) { l.Add(g); any = true; }
+                    l.Add(c);
+                }
+            }
+            return l;
+        }
+        int Fits { get { return (int)(H / RH); } }
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            Top0 = Math.Max(0, Math.Min(Rows().Count - Fits, Top0 - Math.Sign(e.Delta) * 3));
+            Invalidate();
+        }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Up || k == Keys.Down || k == Keys.PageUp || k == Keys.PageDown || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            int n = e.KeyCode == Keys.Down ? 1 : e.KeyCode == Keys.Up ? -1 : e.KeyCode == Keys.PageDown ? Fits : e.KeyCode == Keys.PageUp ? -Fits : 0;
+            if (n != 0) { Top0 = Math.Max(0, Math.Min(Rows().Count - Fits, Top0 + n)); Invalidate(); }
+        }
+        void Hit(MouseEventArgs e, out int row, out int col)
+        {
+            float x = e.X / K, y = e.Y / K;
+            row = Top0 + (int)(y / RH);
+            col = x >= 340 && x < 466 ? 1 : x >= 476 && x < 572 ? 2 : 0;
+        }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int r, c; Hit(e, out r, out c);
+            if (r != hotRow || c != hotCol) { hotRow = r; hotCol = c; Invalidate(); }
+        }
+        protected override void OnMouseLeave(EventArgs e) { hotRow = hotCol = -1; base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            int r, col; Hit(e, out r, out col);
+            List<object> rows = Rows();
+            Cmd c = r >= 0 && r < rows.Count ? rows[r] as Cmd : null;
+            if (c == null || c.Kind == "fixed" || e.Button != MouseButtons.Left) return;
+            if (col == 1) AskControl(c);
+            else if (col == 2 && (c.Kind == "game" || c.Kind == "tnplus")) AskMouse(c, this, e.Location);
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            List<object> rows = Rows();
+            Dictionary<string, string> clash = Conflicts();
+            if (cmds.Count == 0) { Str(g, "The list comes with Uplink: start once (PLAY or MAP VIEWER) so that it is installed.", F12, CDim, 0, 6); return; }
+            for (int i = 0; i < Fits && Top0 + i < rows.Count; i++)
+            {
+                float y = i * RH;
+                string grp = rows[Top0 + i] as string;
+                if (grp != null) { Spaced(g, grp.ToUpperInvariant(), F10b, grp == "Uplink" ? CBlue : COrange, 2, y + 8, 1.2f); continue; }
+                Cmd c = (Cmd)rows[Top0 + i];
+                string cl;
+                bool bad = clash.TryGetValue(c.Id, out cl);
+                StrIn(g, c.Name + (bad ? "   (also " + cl + ")" : ""), F12, bad ? CRed : c.Kind == "fixed" ? CDim : CText, new RectangleF(10, y, 326, RH), TFLeft);
+                bool hot = Top0 + i == hotRow;
+                DrawBox(g, new RectangleF(340, y + 2, 126, RH - 4), KeyLabel(c.Sc, c.Mods), c.Kind == "fixed" ? CDim : c.Sc != c.DefSc || c.Mods != c.DefMods ? COrange : CText,
+                    hot && hotCol == 1 && c.Kind != "fixed", c.Kind == "fixed");
+                if (c.Kind == "game" || c.Kind == "tnplus")
+                    DrawBox(g, new RectangleF(476, y + 2, 96, RH - 4), c.Mouse > 0 ? MOUSE_SHORT[c.Mouse] : "+", c.Mouse > 0 ? CText : CDim, hot && hotCol == 2, false);
+            }
+            if (rows.Count > Fits)                       // where in the list
+            {
+                float h = H * Fits / rows.Count, y = (H - h) * Top0 / Math.Max(1, rows.Count - Fits);
+                using (Brush b = new SolidBrush(CButtonLine)) g.FillRectangle(b, W - 4, y, 3, h);
+            }
+        }
+        static void DrawBox(Graphics g, RectangleF r, string t, Color ink, bool hot, bool off)
+        {
+            using (GraphicsPath p = Round(r, 4))
+            {
+                using (Brush b = new SolidBrush(off ? CBack : hot ? Mix(CButton, Color.White, 0.08f) : CButton)) g.FillPath(b, p);
+                using (Pen l = new Pen(hot ? Mix(CButtonLine, Color.White, 0.3f) : CButtonLine)) g.DrawPath(l, p);
+            }
+            StrIn(g, t, F11, ink, r, TFMid);
+        }
+    }
+
+    // What the in-game menu changed (its Options, its Controls page's Uplink keys): kept in Uplink's viewer.cfg,
+    // [launcher], with the time; taken over here when newer than what this launcher last took (at start, and each
+    // time its window comes to the front), and given to Uplink at the next start
+    static void AdoptNow()
+    {
+        if (!AdoptGameSettings() || sizeBox == null) return;
+        bool was = loading; loading = true; LoadOptions(); loading = was; KeyLabels();
+    }
+
+    static bool AdoptGameSettings()
+    {
+        Dictionary<string, string> s = new Dictionary<string, string>();
+        try
+        {
+            string f = Path.Combine(GodotData, "viewer.cfg");
+            if (!File.Exists(f)) return false;
+            bool sec = false;
+            foreach (string raw in File.ReadAllLines(f))
+            {
+                string l = raw.Trim();
+                if (l.StartsWith("[")) { sec = l == "[launcher]"; continue; }
+                int e = l.IndexOf('=');
+                if (sec && e > 0) s[l.Substring(0, e).Trim()] = l.Substring(e + 1).Trim().Trim('"');
+            }
+        }
+        catch { return false; }
+        long stamp, had;
+        string st;
+        if (!s.TryGetValue("stamp", out st) || !long.TryParse(st, out stamp) || (long.TryParse(Cfg("game_stamp"), out had) && had >= stamp)) return false;
+        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars",
+            "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps" };
+        foreach (string k in allowed)
+        {
+            string v;
+            if (!s.TryGetValue(k, out v)) continue;
+            if (k.StartsWith("key_") && v != "" && !KeyOk(v.ToUpperInvariant()) && v != "MID" && v != "M4" && v != "M5") continue;
+            Set(k, v);
+        }
+        Set("game_stamp", stamp.ToString());
+        SaveCfg();
+        Log("settings changed in Uplink's menu taken over");
+        return true;
     }
 
     // ------------------------------------------------------------------ the game's keys (TN+'s KEYBOARD page)

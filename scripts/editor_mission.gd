@@ -122,6 +122,7 @@ func show_mission(i: Dictionary) -> void:
 	_zones(keep_zone)
 	_section("WHAT IS MISSING")
 	fields["problems"] = _text("", WARN)
+	fields["problems_game"] = _text("", DIM)
 	_mine(keep_like, keep_name)
 	busy = false
 	refresh(i)
@@ -139,6 +140,11 @@ func refresh(i: Dictionary) -> void:
 		fields["problems"].text = "Nothing: the script finds every unit, group and zone it counts on." if p.is_empty() \
 			else "\n".join(p.map(func(t): return "•  " + str(t)))
 		fields["problems"].add_theme_color_override("font_color", DIM if p.is_empty() else WARN)
+		var pg: Array = i.get("problems_game", [])
+		fields["problems_game"].visible = not pg.is_empty()
+		fields["problems_game"].text = "Already so in the game's own mission (units that come later, groups the script names without using them):
+" 			+ "
+".join(pg.map(func(t): return "•  " + str(t)))
 	if fields.has("numbers_reset"):
 		var np := int(i.get("patched", 0))
 		fields["numbers_reset"].text = "Put the game's numbers back  (%d changed)" % np

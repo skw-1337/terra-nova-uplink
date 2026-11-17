@@ -2758,7 +2758,11 @@ func _mission_info() -> Dictionary:
 		"mode": "blocks" if not spec.is_empty() else "game" if s.get("ok", false) else "none",
 		"name": str(new_part.get("name", s.get("name", ""))), "sentences": [], "lines": [], "orders_said": [],
 		"notes": s.get("notes", []), "edits": [], "patched": script_part.get("patch", []).size(),
-		"groups": [], "zones": [], "labels": {}, "problems": _problems(), "slots": [], "maps": [], "play": _play_state()}
+		"groups": [], "zones": [], "labels": {}, "problems": [], "problems_game": [], "slots": [], "maps": [], "play": _play_state()}
+	# (what the game's own mission already lacks, units that only come later for instance, is told apart)
+	var as_shipped: Array = MissionScript.problems(_base_summary(), orig_recs, orig_zones) if _base_summary().get("ok", false) else []
+	for p in _problems():
+		i["problems_game" if as_shipped.has(p) else "problems"].append(p)
 	if mission_n <= 0:
 		i["error"] = "This mission has no script of its own in the game (a scenario builder terrain or a demo): only its units and zones can be changed."
 	for o in s.get("objectives", []):
@@ -2771,7 +2775,13 @@ func _mission_info() -> Dictionary:
 		for c in script_part.get("patch", []):
 			changed["%d.%d.%d" % [int(c["res"]), int(c["frame"]), int(c["off"])]] = int(c["new"])
 		var eds: Dictionary = _base_summary().get("edits", {})
-		var ids := eds.keys()
+		var own := {}                                # (the mission's own modules: a function shared with other
+		var mo = _reader()                           # missions is not for one mission to change)
+		if mo != null and mo.table.has(mission_n):
+			for role in ["main", "debrief", "director"]:
+				if not mo.table[mission_n][role].is_empty():
+					own[int(mo.table[mission_n][role][0])] = true
+		var ids := eds.keys().filter(func(id): return own.has(int(eds[id]["res"])))
 		ids.sort_custom(func(a, b): return eds[a]["frame"] * 100000 + eds[a]["off"] < eds[b]["frame"] * 100000 + eds[b]["off"])
 		for id in ids:
 			var e: Dictionary = eds[id]

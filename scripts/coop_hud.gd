@@ -821,9 +821,27 @@ func _text(t: String, x: float, y: float, h: float, col: Color, centre := false)
 	panel.draw_string(font, p, t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 
 
+# why his keys or his mouse do nothing just now, in a line over the bottom of his view (nothing: they are taken)
+func _input_notice() -> String:
+	var vp := get_parent()
+	if vp == null or not ("play_started" in vp) or state != 0:
+		return ""
+	if not get_window().has_focus():
+		return "CLICK IN THIS WINDOW: IT DOES NOT HAVE THE KEYBOARD"
+	if not vp.play_started:
+		return "CLICK TO TAKE THE MOUSE AND PLAY"
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		return "MOUSE FREE (MAP, BUTTONS)   %s: BACK TO THE LOOK" % OS.get_keycode_string(vp.look_key)
+	return ""
+
+
 func _draw_panel() -> void:
 	if state != 0:
 		return
+	var notice := _input_notice()
+	if notice != "":
+		var wy := win.position.y + win.size.y * 0.8 if win.size.y > 0 else 200.0
+		_text(notice, 160.0, wy, 10.0, Color(1.0, 0.8, 0.25), true)
 	if not big_map:                                  # the big map covers the 3D view: no marks on it
 		_draw_lock()
 		_draw_mate()

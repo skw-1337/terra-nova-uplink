@@ -207,7 +207,7 @@ func _write(game_data: String) -> void:
 	DirAccess.make_dir_recursive_absolute(dir)
 	for f in DirAccess.get_files_at(dir):
 		DirAccess.remove_absolute(dir.path_join(f))
-	for f in ["RESBABL2.RES", "RESGAME.RES", "RESMISS.RES", "MISS37.RES"]:
+	for f in ["RESBABL2.RES", "RESGAME.RES", "RESMISS.RES", "RESPTERM.RES", "MISS37.RES"]:
 		DirAccess.copy_absolute(game_data.path_join(f), dir.path_join(f))
 	var game_file := FileAccess.get_file_as_bytes(game_data.path_join("RESBABL2.RES"))
 	var mo = MissionScript.open(dir, true)
@@ -348,6 +348,26 @@ func _write(game_data: String) -> void:
 	err = MissionBuild.install(dir, {})
 	_check(err == "" and FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES")) == game_file,
 		"the game's file is put back")
+	# --- several missions' creations share the one script file
+	var one := {"patch": [changes[0]]}
+	var s8: Dictionary = mo.summary(8)
+	var lock8: Dictionary = s8["objectives"][1]["conditions"][0]
+	var two := {"patch": [mo.change(s8["edits"][lock8["edit"]["ms"]], 2000)]}
+	_check(MissionBuild.set_mission_script(dir, "MISS37.RES", one) == "" and MissionBuild.set_mission_script(dir, "MISS8.RES", two) == "",
+		"two missions' script parts are installed one after the other")
+	var both = MissionScript.open(dir)
+	_check(both.summary(37)["objectives"][2]["conditions"][0]["pct"] == 80 and both.summary(8)["objectives"][1]["conditions"][0]["ms"] == 2000,
+		"the file holds both")
+	_check(MissionBuild.set_mission_script(dir, "MISS8.RES", one) != "", "a change for another mission's script is refused")
+	_check(MissionBuild.set_mission_script(dir, "MISSFLAT.RES", one) != "", "a terrain of the scenario builder has no script to change")
+	_check(MissionBuild.set_mission_script(dir, "MISS37.RES", {}) == "" and MissionScript.open(dir).summary(37)["objectives"][2]["conditions"][0]["pct"] == 100
+		and MissionScript.open(dir).summary(8)["objectives"][1]["conditions"][0]["ms"] == 2000, "one taken out, the other stays")
+	_check(MissionBuild.set_mission_script(dir, "MISS8.RES", {}) == "" and FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES")) == game_file
+		and not FileAccess.file_exists(dir.path_join("uplink-scripts.json")), "both out: the game's file is back")
+	var r8: Dictionary = mo.refs(8)
+	var r37: Dictionary = mo.refs_of_file("miss37.res")
+	_check(r37["kill"] == {"2": [0, 0, 100]} and r37["groups"] == [1, 2, 3, 4] and r8["groups"].has(11) and r8["kill"].is_empty(),
+		"refs(): what the editor's table says of 37 and 8")
 	_new_mission(dir, game_data)
 	# --- the script against the mission's units and zones
 	var m37 := ResFile.read(game_data.path_join("MISS37.RES"))
@@ -375,9 +395,9 @@ func _new_mission(dir: String, game_data: String) -> void:
 	var like := ResFile.read(game_data.path_join("MISS37.RES"))
 	var src: PackedByteArray = ResFile.items(ResFile.data(like, 173))[0]
 	var new18 := {"slot": 18, "like": "MISS37.RES",
-		"zones": [[0, 256 << 16, 209 << 16], [31, 261 << 16, 217 << 16], [4, 228 << 16, 185 << 16]],
-		"sides": {"3": 1},
-		"add": [{"from": "MISS37.RES", "rec": 0, "label": 7, "g": 3, "x": 258 << 16, "o": [27, 1]}],
+		"zones": [[0, 256 << 16, 209 << 16], [31, 261 << 16, 217 << 16], [4, 228 << 16, 185 << 16, 1, 12 << 16, 8 << 16]],
+		"sides": {"3": 1}, "briefing": "Go there.", "note": "Travel light.",
+		"add": [{"from": "MISS37.RES", "rec": 0, "l": 7, "g": 3, "x": 258 << 16, "o": [27, 1]}],
 		"name": "OPERATION TEST", "objectives": ["First", "", "Third"]}
 	var err := MissionNew.install(dir, new18)
 	_check(err == "", "a new mission is written in slot 18 %s" % err)
@@ -414,6 +434,16 @@ func _new_mission(dir: String, game_data: String) -> void:
 	var bad: Dictionary = new18.duplicate(true)
 	bad["zones"].remove_at(1)
 	_check(MissionNew.mission_file(dir, bad)["error"] != "", "a mission without its pickup zone is refused")
+	var sh := ResFile.data(f, 182)
+	_check(sh.decode_u16(40) == 1 and sh.decode_s32(42) == 12 << 16 and sh.decode_s32(46) == 8 << 16 and sh.decode_u16(0) == 0
+		and sh.decode_s32(2) == 0x8000, "a zone given a shape has it, the others are the game's usual points")
+	if FileAccess.file_exists(dir.path_join("RESPTERM.RES")):
+		var pt := ResFile.items(ResFile.data(ResFile.read(dir.path_join("RESPTERM.RES")), 0x5AF))
+		_check(pt.size() == 98 and pt[18].get_string_from_ascii() == "Go there." and pt[66].get_string_from_ascii() == "Travel light.",
+			"its briefing and outfitting note are in the game's table")
+	bad = new18.duplicate(true)
+	bad["add"][0]["sum"] = "00000000"
+	_check(MissionNew.mission_file(dir, bad)["error"] != "", "a unit whose record is not this game's is refused")
 	bad = new18.duplicate(true)
 	bad["slot"] = 19
 	_check(MissionNew.mission_file(dir, bad)["error"] != "", "slot 19 is refused")

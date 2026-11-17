@@ -2,6 +2,7 @@
 #   godot --headless --path . --script res://live/mission_tool.gd -- summary DATA_DIR MISSION
 #   godot --headless --path . --script res://live/mission_tool.gd -- install DATA_DIR CREATION.json
 #   godot --headless --path . --script res://live/mission_tool.gd -- remove DATA_DIR
+#   godot --headless --path . --script res://live/mission_tool.gd -- refs DATA_DIR      (every mission's refs(), JSON)
 # DATA_DIR: a TNOVA\DATA folder (install and remove write there: give a copy). CREATION.json: {"new": {...} (see
 # scripts/mission_new.gd), "script": {"patch": [...], "build": [...]} (see scripts/mission_build.gd)}.
 extends SceneTree
@@ -18,6 +19,13 @@ func _initialize() -> void:
 		code = _summary(a[1], int(a[2]))
 	elif a.size() >= 3 and a[0] == "install":
 		code = _install(a[1], a[2])
+	elif a.size() >= 2 and a[0] == "refs":
+		var ms = MissionScript.open(a[1], true)
+		var all := {}
+		for n in ms.missions():
+			all["MISS%d.RES" % n] = ms.refs(n)
+		print("REFS " + JSON.stringify(all))
+		code = 0
 	elif a.size() >= 2 and a[0] == "remove":
 		code = _remove(a[1])
 	else:

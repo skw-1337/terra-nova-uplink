@@ -298,7 +298,7 @@ static func _when(guards: Array, role: String) -> Dictionary:
 func summary(mission: int) -> Dictionary:
 	var out := {"mission": mission, "ok": false, "error": "", "name": "", "module": "", "res": -1,
 		"main": -1, "debrief": -1, "director": -1, "objectives": [], "orders": [], "start_orders": {},
-		"labels": {}, "groups": {}, "zones": {}, "edits": {}, "notes": []}
+		"labels": {}, "groups": {}, "zones": {}, "edits": {}, "notes": [], "needs": [], "counted": []}
 	if mission >= 1 and mission - 1 < mission_names.size():
 		out["name"] = mission_names[mission - 1].strip_edges()
 	if not table.has(mission):
@@ -439,6 +439,51 @@ func summary(mission: int) -> Dictionary:
 			out["start_orders"][od["group"]].append(od["text"])
 	out["ok"] = true
 	return out
+
+
+# What a mission's script does with labels and groups, in the shape of data/mission_refs.json (which was scanned
+# once from the decompiled scripts; this reads the player's own RESBABL2.RES instead): {"kill": {label: [percent
+# for objectives 1, 2, 3]}, "alive": the same, "follow" / "attack": labels a group follows / attacks, "count":
+# labels (or 256 + class) whose kills the script counts, "groups": groups it gives orders to}. Labels are text
+# keys, as in the JSON. A label asked twice keeps, for each objective, the highest percentage.
+func refs(mission: int) -> Dictionary:
+	var out := {"kill": {}, "alive": {}, "follow": [], "attack": [], "count": [], "groups": []}
+	var s := summary(mission)
+	if not s["ok"]:
+		return out
+	for n in s["needs"]:
+		var key := str(n["label"])
+		var d: Dictionary = out[n["kind"]]
+		if not d.has(key):
+			d[key] = [0, 0, 0]
+		for k in 3:
+			d[key][k] = maxi(d[key][k], n["pct"][k])
+	for od in s["orders"]:
+		if od["group"] > 0 and not out["groups"].has(od["group"]):
+			out["groups"].append(od["group"])
+		if od["order"] == "follow" and od["target"] >= 0 and not out["follow"].has(od["target"]):
+			out["follow"].append(od["target"])
+		if od["order"] == "attack_label" and od["target"] >= 0 and not out["attack"].has(od["target"]):
+			out["attack"].append(od["target"])
+	out["count"] = s["counted"].duplicate()
+	for key in ["follow", "attack", "count", "groups"]:
+		out[key].sort()
+	return out
+
+
+# the same for a mission file's name ("MISS37.RES"); {} for a file that is not a numbered mission
+func refs_of_file(file: String) -> Dictionary:
+	var n := mission_of_file(file)
+	return refs(n) if n > 0 and table.has(n) else {}
+
+
+# "MISS37.RES" -> 37; 0 for anything else (the scenario builder's terrains have no script of their own)
+static func mission_of_file(file: String) -> int:
+	var u := file.get_file().to_upper()
+	if not u.begins_with("MISS") or not u.ends_with(".RES"):
+		return 0
+	var mid := u.substr(4, u.length() - 8)
+	return int(mid) if mid.is_valid_int() and int(mid) > 0 else 0
 
 
 # the sentences about one label, group or zone ("label", "group", "zone"), empty when the script ignores it
@@ -615,6 +660,9 @@ func _native(out: Dictionary, nd: Dictionary, when: Dictionary, role: String, ri
 			if a.size() < 4:
 				return
 			var kind := "kill" if i == N_NEED_KILL else "alive"
+			if c[0] != null:
+				out["needs"].append({"kind": kind, "label": int(c[0]),
+					"pct": [int(c[1]) if c[1] != null else -1, int(c[2]) if c[2] != null else -1, int(c[3]) if c[3] != null else -1]})
 			for k in 3:
 				var what := "objective %d: %% of the units labelled %s to %s (0: not asked)" % [
 					k + 1, str(c[0]), "destroy" if kind == "kill" else "keep alive"]
@@ -648,6 +696,8 @@ func _native(out: Dictionary, nd: Dictionary, when: Dictionary, role: String, ri
 			if when["label"] >= 0:
 				_use(out, "labels", when["label"], "objective %d is %s when one of them dies" % [c[0], word])
 		N_KILLED:
+			if not a.is_empty() and c[0] != null and not out["counted"].has(int(c[0])):
+				out["counted"].append(int(c[0]))
 			if not a.is_empty() and c[0] != null and int(c[0]) < 0x100:
 				_use(out, "labels", c[0], "the script counts how many of them were destroyed (%s)" % when["text"])
 		N_ENT_OF_LABEL:

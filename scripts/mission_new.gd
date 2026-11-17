@@ -6,13 +6,20 @@
 #   {"slot": 18,
 #    "like": "MISS37.RES",              the game's mission whose map (resource 170) and sky / light / weather
 #                                       parameters (178) the new one takes: the map is chosen by choosing it
-#    "zones": [[index, x, y], ...],     16.16; zone 0 = where the squad is dropped, zone 31 = the pickup point
+#    "zones": [[index, x, y], ...],     16.16; zone 0 = where the squad is dropped, zone 31 = the pickup point;
+#                                       or [index, x, y, shape, w, h]: shape 0 a circle of diameter w, 1 a rectangle
+#                                       w by h (16.16). Without a shape a zone is the game's usual point (a circle
+#                                       0.5 wide): fine as a place to go to, but a group only "enters" a zone or
+#                                       holds it when it stands INSIDE its shape (0x2C9D50)
 #    "sides": {"3": 1},                 groups on the player's side (1); every other group is an enemy (2)
-#    "add": [{"from": "MISS37.RES", "rec": 0, "label": 2, "g": 1, "x": .., "y": .., "z": .., "h": .., "o": [off, value...]}],
+#    "add": [{"from": "MISS37.RES", "rec": 0, "sum": "<8 hex>", "l": 2, "g": 1, "x": .., "y": .., "z": .., "h": .., "o": [off, value...]}],
 #                                       units, each a copy of a unit record of one of the game's missions with
-#                                       what differs (as the editor's added units; "label" = record byte +26)
+#                                       what differs: the same entries as mission_mod.gd's "add" (l = label, record
+#                                       byte +26; "sum", the record's checksum, is checked when given)
 #    "name": "OPERATION ...",           the mission's name (RESMISS.RES 0x6AA, string slot - 1)
-#    "objectives": ["", "", ""]}        the three objective lines (RESGAME.RES 0x175, strings slot * 3 + k)
+#    "objectives": ["", "", ""],        the three objective lines (RESGAME.RES 0x175, strings slot * 3 + k)
+#    "briefing": "...",                 the text briefing (RESPTERM.RES 0x5AF, string slot)
+#    "note": "..."}                     the commander's line on the outfitting screen (same table, string slot + 48)
 # The mission's script (objectives, orders, debriefing) is a "build" spec of mission_build.gd for the same slot.
 #
 # The file: 170 map name (80 bytes), 171 / 172 / 177 names of sets, groups and zones (the game does not read
@@ -29,7 +36,8 @@ const REC := 50
 const ZONES := 128
 const RES_OBJ_TEXT := 0x175
 const RES_NAMES := 0x6AA
-const FIELDS := [["g", 7, 1], ["x", 8, 4], ["y", 12, 4], ["z", 16, 4], ["h", 20, 2], ["p", 22, 2], ["label", 26, 1]]
+const RES_BRIEFING := 0x5AF        # RESPTERM.RES: string mission = the text briefing, mission + 48 = the outfitting note
+const FIELDS := [["g", 7, 1], ["x", 8, 4], ["y", 12, 4], ["z", 16, 4], ["h", 20, 2], ["p", 22, 2], ["l", 26, 1], ["label", 26, 1]]
 const MAX_UNITS := 300              # the game's entity table
 
 
@@ -91,13 +99,28 @@ static func mission_file(data_dir: String, new) -> Dictionary:
 	if not (zl is Array):
 		bad["error"] = "the zones are not well formed"
 		return bad
+	var shapes := PackedByteArray()
+	shapes.resize(10 * ZONES)
+	for z in ZONES:
+		shapes.encode_s32(10 * z + 2, 0x8000)
+		shapes.encode_s32(10 * z + 6, 0x8000)
 	for z in zl:
-		if not (z is Array) or z.size() != 3 or not _is_int(z[0]) or not _is_int(z[1]) or not _is_int(z[2]) \
-				or int(z[0]) < 0 or int(z[0]) >= ZONES or int(z[1]) <= 0 or int(z[2]) <= 0:
-			bad["error"] = "a zone is [index 0..127, x, y]"
+		var ok: bool = z is Array and (z.size() == 3 or z.size() == 6)
+		if ok:
+			for v in z:
+				ok = ok and _is_int(v)
+		if not ok or int(z[0]) < 0 or int(z[0]) >= ZONES or int(z[1]) <= 0 or int(z[2]) <= 0:
+			bad["error"] = "a zone is [index 0..127, x, y] or [index, x, y, shape, width, height]"
 			return bad
 		zones.encode_s32(8 * int(z[0]), int(z[1]))
 		zones.encode_s32(8 * int(z[0]) + 4, int(z[2]))
+		if z.size() == 6:
+			if (int(z[3]) != 0 and int(z[3]) != 1) or int(z[4]) <= 0 or int(z[5]) <= 0:
+				bad["error"] = "a zone's shape is 0 (circle) or 1 (rectangle), with a width and a height"
+				return bad
+			shapes.encode_u16(10 * int(z[0]), int(z[3]))
+			shapes.encode_s32(10 * int(z[0]) + 2, int(z[4]))
+			shapes.encode_s32(10 * int(z[0]) + 6, int(z[5]))
 		seen[int(z[0])] = true
 	if not seen.has(0) or not seen.has(31):
 		bad["error"] = "a mission needs zone 0 (where the squad is dropped) and zone 31 (the pickup point)"
@@ -136,6 +159,13 @@ static func mission_file(data_dir: String, new) -> Dictionary:
 			bad["error"] = "%s has no unit %d" % [src, ri]
 			return bad
 		var r: PackedByteArray = recs[ri].duplicate()
+		if a.has("sum"):
+			var hc := HashingContext.new()
+			hc.start(HashingContext.HASH_SHA256)
+			hc.update(r)
+			if hc.finish().hex_encode().substr(0, 8) != str(a["sum"]):
+				bad["error"] = "unit %d of %s is not the same in this game (another version, or a changed file)" % [ri, src]
+				return bad
 		for fd in FIELDS:
 			if a.has(fd[0]):
 				if not _is_int(a[fd[0]]):
@@ -178,11 +208,6 @@ static func mission_file(data_dir: String, new) -> Dictionary:
 	var zone_names := []
 	for z in ZONES:
 		zone_names.append("0: Drop point" if z == 0 else "31: pickup" if z == 31 else "%d: " % z)
-	var shapes := PackedByteArray()
-	shapes.resize(10 * ZONES)
-	for z in ZONES:
-		shapes.encode_s32(10 * z + 2, 0x8000)
-		shapes.encode_s32(10 * z + 6, 0x8000)
 	var reinf := PackedByteArray()
 	reinf.resize(4 + 32 * REC)
 	var f := ResFile.empty()
@@ -246,6 +271,15 @@ static func install(data_dir: String, new) -> String:
 	err = _set_strings(data_dir.path_join("RESMISS.RES"), RES_NAMES, {slot - 1: name if name != "" else "MISSION %d" % slot})
 	if err != "":
 		return err
+	var brief = new.get("briefing", "")
+	var note = new.get("note", "")
+	if not (brief is String) or brief.length() > 1500 or not (note is String) or note.length() > 300:
+		return "the briefing (1500 characters at most) or the outfitting note (300) is too long"
+	if FileAccess.file_exists(data_dir.path_join("RESPTERM.RES")):
+		err = _set_strings(data_dir.path_join("RESPTERM.RES"), RES_BRIEFING,
+			{slot: brief if brief != "" else " ", slot + 48: note if note != "" else " "})
+		if err != "":
+			return err
 	var mk := FileAccess.open(path + MARK, FileAccess.WRITE)
 	if mk == null:
 		return "%s could not be written (is the folder write-protected?)" % (file_name(slot) + MARK)
@@ -269,7 +303,8 @@ static func remove(data_dir: String, slot: int) -> String:
 	for other in SLOTS:                              # the texts stay while the other slot is in use
 		if other != slot and FileAccess.file_exists(data_dir.path_join(file_name(other)) + MARK):
 			return ""
-	var err := ResFile.restore(data_dir.path_join("RESGAME.RES"))
-	if err != "":
-		return err
+	for f in ["RESGAME.RES", "RESPTERM.RES"]:
+		var err := ResFile.restore(data_dir.path_join(f))
+		if err != "":
+			return err
 	return ResFile.restore(data_dir.path_join("RESMISS.RES"))

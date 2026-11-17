@@ -18,6 +18,12 @@
 #    "debrief": [t1, t2, t3, t0]}   what the colonel says when objective 1 / 2 / 3 is the best one completed, and
 #                                   when none is (optional; a text of an unused objective is ignored)
 #
+# In a creation (mission_mod.gd's .tnmod, JSON v1) this part is the top-level key "script", beside "remove",
+# "edit", "add" and "zones"; a creation that is a brand new mission also has the key "new" (mission_new.gd).
+# RESBABL2.RES is ONE file for every mission: the creations installed on several missions share it. set_mission_script()
+# keeps each mission's script part in data_dir\uplink-scripts.json and writes the file from the game's own with
+# all of them, so installing or removing one mission's creation never loses another's.
+#
 # What is built is what the game's own compiler wrote for the same things (missions 37, 8, 1 and the scenario
 # builder): the objectives function sets the game's tables (ObjInit, ObjNeedKill, ObjNeedAlive), then lets the
 # game's generic check (missgen.4) complete what is done, each turn; the director answers each group's start
@@ -485,3 +491,93 @@ static func install(data_dir: String, script: Dictionary) -> String:
 	if err != "":
 		return err
 	return ResFile.write(path, fb["bytes"])
+
+
+# ---- one mission's script part among the others
+const REGISTRY := "uplink-scripts.json"
+
+
+static func installed(data_dir: String) -> Dictionary:
+	if not FileAccess.file_exists(data_dir.path_join(REGISTRY)):
+		return {}
+	var j = JSON.parse_string(FileAccess.get_file_as_string(data_dir.path_join(REGISTRY)))
+	return j if j is Dictionary else {}
+
+
+# "" when a script part touches only the script of its own mission (file: "MISS37.RES")
+static func check_for(data_dir: String, file: String, script) -> String:
+	if not (script is Dictionary):
+		return "the script part of the creation is not well formed"
+	var patch = script.get("patch", [])
+	var builds = script.get("build", [])
+	if not (patch is Array) or not (builds is Array):
+		return "the script part of the creation is not well formed"
+	if patch.is_empty() and builds.is_empty():
+		return ""
+	var n := MissionScript.mission_of_file(file)
+	var mo = MissionScript.open(data_dir, true)
+	if mo == null:
+		return "RESBABL2.RES was not found in %s" % data_dir
+	if n <= 0 or not mo.table.has(n):
+		return "%s has no script of its own in the game: its script cannot be changed" % file.get_file().to_upper()
+	var own := {}
+	for role in ["main", "debrief", "director"]:
+		if not mo.table[n][role].is_empty():
+			own[int(mo.table[n][role][0])] = true
+	for c in patch:
+		var e: String = mo.check_change(c)
+		if e != "":
+			return e
+		if not own.has(int(c["res"])):
+			return "a script change of this creation is for another mission's script"
+	for spec in builds:
+		var e2 := check(mo, spec)
+		if e2 != "":
+			return e2
+		if int(spec["mission"]) != n:
+			return "the script of this creation is for mission %d, not for %s" % [spec["mission"], file.get_file().to_upper()]
+	return ""
+
+
+# the script part of the creation installed on one mission (file: "MISS37.RES"; an empty part takes it out),
+# RESBABL2.RES rewritten from the game's own with every mission's part. "" or what went wrong (nothing changes).
+static func set_mission_script(data_dir: String, file: String, script: Dictionary) -> String:
+	var err := check_for(data_dir, file, script)
+	if err != "":
+		return err
+	var key := file.get_file().to_upper()
+	var reg := installed(data_dir)
+	var before := reg.duplicate(true)
+	if script.get("patch", []).is_empty() and script.get("build", []).is_empty():
+		reg.erase(key)
+	else:
+		reg[key] = {"patch": script.get("patch", []), "build": script.get("build", [])}
+	var all := {"patch": [], "build": []}
+	var keys := reg.keys()
+	keys.sort()
+	for k in keys:
+		all["patch"].append_array(reg[k].get("patch", []))
+		all["build"].append_array(reg[k].get("build", []))
+	err = install(data_dir, all)
+	if err != "":
+		return err
+	var path := data_dir.path_join(REGISTRY)
+	if reg.is_empty():
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+		return ""
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		install(data_dir, _merged(before))           # (back to what the registry still says)
+		return "%s could not be written" % REGISTRY
+	f.store_string(JSON.stringify(reg, "", true))
+	f.close()
+	return ""
+
+
+static func _merged(reg: Dictionary) -> Dictionary:
+	var all := {"patch": [], "build": []}
+	for k in reg:
+		all["patch"].append_array(reg[k].get("patch", []))
+		all["build"].append_array(reg[k].get("build", []))
+	return all

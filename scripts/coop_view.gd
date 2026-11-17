@@ -20,6 +20,7 @@ var decor := {}                      # index -> 32-byte entity, as in the view
 var decor_seq := 0
 var decor_ok := false
 var kf_seq := -1
+var kf_decor := -1                   # the decor seq its keyframe was made with (a delta is read with that decor only)
 var kf_ents := {}
 var kf_joints := {}                  # index -> 200-byte joint block, as in the view
 var seen_any := false
@@ -73,7 +74,8 @@ func feed(msg: PackedByteArray) -> PackedByteArray:
 		return none
 	if tag == "VKF":
 		kf_seq = b.decode_u16(0)
-		if b.decode_u32(2) != decor_seq:
+		kf_decor = b.decode_u32(2)
+		if kf_decor != decor_seq:
 			decor_ok = false
 		kf_ents = {}
 		kf_joints = {}
@@ -83,8 +85,8 @@ func feed(msg: PackedByteArray) -> PackedByteArray:
 			return none
 		return _build(b.slice(6, 38), kf_ents, kf_joints, b.slice(o))
 	if tag == "VDL":
-		if b.decode_u16(0) != kf_seq or not decor_ok:
-			return none
+		if b.decode_u16(0) != kf_seq or not decor_ok or kf_decor != decor_seq:
+			return none                                     # (a delta of a keyframe made with another decor: the decor came between)
 		var ents := kf_ents.duplicate()
 		var joints := kf_joints.duplicate()
 		var o := _records(b, 34, ents, false)

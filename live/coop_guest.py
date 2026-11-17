@@ -52,6 +52,7 @@ CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of 
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
 SENSOR = 0xB6
+PICK_HALF, PICK_GROW, PICK_SIZE = 149.0, 20.0, 0.4   # (the game's 3D window's half width, its click margin, a unit's half size)
 TARGET_KEYS = {0x14: 1, 0x15: -1}   # the game's next / previous target keys (T, Y; his own keys turned into them)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
@@ -488,7 +489,13 @@ class Guest:
         return sorted(out)
 
     def pick_target(self, me, eye, view):
+        """his right button, as the game's click on its 3D view picks its player's target (0x269F28): of the units it
+        drew (its list 0x397CA0 of their boxes on the screen), those whose box grown by 20 pixels holds the click (here
+        his crosshair), the one whose box's middle is nearest it (squared distance in the game's pixels); none: no
+        target. Each unit's box: its middle on his screen (the game's 3D window, 298 pixels for 84.5 degrees across,
+        rows half a pixel high) and about 0.4 units around it"""
         best, pick = None, 0
+        f = PICK_HALF / math.tan(math.radians(84.5) / 2)       # (pixels a unit of tangent)
         for i in range(1, self.nent):
             if i == self.gid or (i == me and not self.versus) or i in self.squad:
                 continue
@@ -498,8 +505,15 @@ class Guest:
             if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
-            score = math.hypot(side, up) + math.dist(t[:2], eye[:2]) * 0.0005   # nearest the crosshair; near ones first (100 u = 3 deg)
-            if side < LOCK_PICK and up < LOCK_PICK_V and (best is None or score < best):
+            if side > LOCK_PICK or up > LOCK_PICK_V:
+                continue
+            d = max(0.5, math.dist(t, eye))
+            sx, sy = f * math.tan(side), 2 * f * math.tan(up)  # (rows: two a pixel)
+            r = f * PICK_SIZE / d
+            if sx > r + PICK_GROW or sy > 2 * r + PICK_GROW:
+                continue
+            score = sx * sx + sy * sy
+            if best is None or score < best:
                 best, pick = score, i
         print('guest: lock', pick or 'nothing', flush=True)
         return pick
@@ -1334,7 +1348,8 @@ class Guest:
         if self.lock:
             t = self.target_pos(self.lock)
             if t is None:
-                self.lock = 0
+                print('guest: lock lost (%d: gone)' % self.lock, flush=True)
+                self.lock = 0                                  # (destroyed: the game's callback clears its target too)
             else:
                 side, up = self.off_aim(eye, view, t)
                 if side < LOCK_KEEP and up < LOCK_KEEP_V:

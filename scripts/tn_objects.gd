@@ -163,6 +163,25 @@ func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dicti
 	var key := "l%d/%d/%s" % [suit, part, pal_key]
 	if tex_cache.has(key):
 		return tex_cache[key]
+	var out := _limb_views(suit, part, pal)
+	tex_cache[key] = out
+	return out
+
+
+# The same views through one of the planet's IR remap tables (256 colours: TNData.ir_palettes; the suits: table 62,
+# soldier draw 0x29C96E), laid out as limb()'s, or null.
+func limb_ir(suit: int, part: int, pal_key: String, table: int, cols: PackedColorArray) -> Texture2DArray:
+	var key := "li%d/%d/%s/%d" % [suit, part, pal_key, table]
+	if tex_cache.has(key):
+		return tex_cache[key]
+	var tex: Texture2DArray = null
+	if cols.size() == 256:
+		tex = _limb_views(suit, part, cols).get("tex")
+	tex_cache[key] = tex
+	return tex
+
+
+func _limb_views(suit: int, part: int, pal: PackedColorArray) -> Dictionary:
 	var out := {}
 	var fr := LGRes.frames(res.data(800 + 7 * suit + part))
 	if not fr.is_empty() and fr[0].size() > 13:
@@ -200,7 +219,6 @@ func limb(suit: int, part: int, pal: PackedColorArray, pal_key: String) -> Dicti
 			var arr := Texture2DArray.new()
 			arr.create_from_images(images)
 			out = {"tex": arr, "views": n, "size": Vector2(w, h), "a1": float(top), "len": float(f.decode_u16(9))}
-	tex_cache[key] = out
 	return out
 
 

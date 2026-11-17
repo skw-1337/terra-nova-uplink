@@ -18,7 +18,8 @@ uniform sampler2D shade_idx : filter_nearest, repeat_disable;  // RESPLNT 53: 25
 uniform sampler2D pal_tex : filter_nearest, repeat_disable;    // the planet's palette, 256 x 1
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of IR tables 59-62
 uniform bool has_ir = false;
-uniform int ir_table = 2;                                      // its row: 61 (the models), 62 the suits / hot ones
+uniform int ir_table = 2;                                      // its row: 61 (the models), 62 the walker's parts (drawn
+                                                               // by the soldier draw, 0x29C96E: viewer.gd _add_mech)
 
 varying vec3 wn;
 
@@ -35,7 +36,7 @@ void fragment() {
 	} else {
 		idx = int(COLOR.r * 255.0 + 0.5);
 	}
-	if (has_ir && tn_ir > 0.5) {         // infrared: unlit (0x29E4F4), through table 61
+	if (has_ir && tn_ir > 0.5) {         // infrared: unlit (0x29E4F4), through its table
 		ALBEDO = tn_game_colour(texelFetch(ir_lut, ivec2(idx, ir_table), 0).rgb);
 	} else {
 	vec3 n = normalize(wn);

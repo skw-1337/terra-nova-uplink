@@ -210,7 +210,7 @@ func load_mission(path: String) -> Dictionary:
 		var nm := zone_names[i]
 		var label := nm.substr(nm.find(": ") + 2) if nm.contains(": ") else nm
 		if label.strip_edges() != "" or x != 0.0 or y != 0.0:
-			zones.append({"name": label, "x": x, "y": y})
+			zones.append({"name": label, "x": x, "y": y, "index": i})
 	var ents := []
 	for t in LGRes.frames(r.data(173)):
 		var f: PackedByteArray = t

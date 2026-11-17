@@ -151,12 +151,13 @@ static class Uplink
     static Panel[] pages;
     static Tile[] navs;
     static Tile helpBtn;
-    static Tick fpsBox, oldBox, runTick, introBox;
+    static Tick fpsBox, oldBox, runTick, introBox, wheelTick;
+    static Tile wheelKeyBtn;
     static Label fpsKeyLabel, shotKeyLabel;
     static ComboBox capBox;
     static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Settings" };
     static readonly string[] PAGE_ICONS = { "", "", "", "", "" };
-    const int SB = 150, PW = 520, PH = 300;        // the side bar's width, a page's inner width and height
+    const int SB = 150, PW = 520, PH = 334;        // the side bar's width, a page's inner width and height
 
     static void ShowPage(int k)
     {
@@ -267,7 +268,7 @@ static class Uplink
 
         // ---- In game: what shows and how it plays in a mission, one switch a line
         pg = pages[3];
-        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 254) };
+        Box ig = new Box { Location = new Point(X, 16), Size = new Size(W, 288) };
         pg.Controls.Add(ig);
         int ry = 10, RH = 34;
         fpsBox = new Tick { Text = "Frame counter (top right)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
@@ -304,7 +305,13 @@ static class Uplink
         ig.Controls.Add(invertBox);
         // the Looking Glass logo and the opening film skipped at the game's start (the bridge presses Esc on them, once each)
         introBox = new Tick { Text = "Skip the intro videos", AutoSize = true, Location = new Point(270, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(introBox);
+        ig.Controls.Add(introBox); ry += RH;
+        // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY)
+        wheelTick = new Tick { Text = "Order wheel (squad orders)", AutoSize = false, Size = new Size(250, 22), Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(wheelTick);
+        wheelKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(270, ry), Size = new Size(238, 28), Small = true };
+        wheelKeyBtn.Click += delegate { AskOrderKey(); };
+        ig.Controls.Add(wheelKeyBtn);
         runBox = new ComboBox();                                 // (kept for the code that reads it: the switch drives it)
         runBox.Items.AddRange(new object[] { "Bound", "Run" });
         runTick.CheckedChanged += delegate { runBox.SelectedIndex = runTick.Checked ? 1 : 0; };
@@ -680,6 +687,7 @@ static class Uplink
         fpsBox.Checked = Cfg("fps_counter") == "1";              // (off unless asked for: ticket #13)
         introBox.Checked = Cfg("skip_intro") == "1";
         oldBox.Checked = Cfg("old_school") != "0";
+        wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
         int cap;
         capBox.Text = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap.ToString() : "Unlimited";
         padBox.Checked = Cfg("gamepad") != "0";
@@ -700,6 +708,7 @@ static class Uplink
         Set("fps_counter", fpsBox.Checked ? "1" : "0");
         Set("skip_intro", introBox.Checked ? "1" : "0");
         Set("old_school", oldBox.Checked ? "1" : "0");
+        Set("order_wheel", wheelTick.Checked ? "1" : "0");
         int cap;
         Set("fps_cap", int.TryParse(capBox.Text.Trim(), out cap) && cap > 0 ? Math.Max(20, Math.Min(1000, cap)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
@@ -1143,6 +1152,8 @@ static class Uplink
         env["TN_FPS_CAP"] = Cfg("fps_cap") == "" ? "0" : Cfg("fps_cap");
         env["TN_OLDSCHOOL"] = Cfg("old_school") == "0" ? "0" : "1";
         env["TN_NO_PAD"] = Cfg("gamepad") == "0" ? "1" : "0";
+        env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
+        env["TN_ORDER_KEY"] = OrderKey();
         return env;
     }
 
@@ -1815,10 +1826,20 @@ static class Uplink
         return OldKey().Contains("+") ? "" : "CTRL+SHIFT+" + OldKey();
     }
 
+    // The order wheel's button (key_order in the ini): the middle mouse button unless another is chosen, a side button
+    // (MID, M4, M5) or a key, written as the other keys
+    static string OrderKey()
+    {
+        string k = Cfg("key_order").ToUpperInvariant();
+        return k == "M4" || k == "M5" || (KeyOk(k) && k != "") ? k : "MID";
+    }
+
     // "SHIFT+58" -> "Shift+F12", the key named as this keyboard prints it
     static string KeyName(string spec)
     {
         if (spec == "") return "no key";
+        if (spec == "MID") return "Middle mouse button";
+        if (spec == "M4" || spec == "M5") return "Mouse button " + spec.Substring(1);
         string[] p = spec.Split('+');
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < p.Length - 1; i++) sb.Append(p[i].Substring(0, 1) + p[i].Substring(1).ToLowerInvariant() + "+");
@@ -1831,6 +1852,8 @@ static class Uplink
         sharpKeyBtn.Text = "Bigger / finer pixels: " + KeyName(SharpKey());
         oldKeyBtn.Invalidate(); sharpKeyBtn.Invalidate();
         fpsKeyLabel.Text = FpsKey() != "" ? "in game: " + KeyName(FpsKey()) : "";
+        wheelKeyBtn.Text = "Its button: " + KeyName(OrderKey());
+        wheelKeyBtn.Invalidate();
         shotKeyLabel.Text = ShotKey() != "" ? "Screenshot: " + KeyName(ShotKey()) + "  (saved in Pictures)" : "";
     }
 
@@ -1892,11 +1915,51 @@ static class Uplink
         }
     }
 
+    static void AskOrderKey()
+    {
+        using (KeyAsk d = new KeyAsk("the order wheel", KeyName(OrderKey()), true))
+        {
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            string spec = d.Spec;                             // ("": the middle button it came with)
+            if (spec != "" && (spec == OldKey() || spec == SharpKey() || spec == ShotKey() || spec == FpsKey()))
+            { Status(KeyName(spec) + " is already one of Uplink's keys.", CAmber); return; }
+            if (spec == FreelookScan().ToString("X2") || spec == "45")
+            { Status(KeyName(spec) + " already swaps the look and the game's cursor.", CAmber); return; }
+            Set("key_order", spec);
+            SaveCfg();
+            KeyLabels();
+            string game = spec != "" && spec.IndexOf('+') < 0 && spec[0] != 'M' ? GameUses(Convert.ToInt32(spec, 16)) : null;
+            Status("Order wheel: " + KeyName(OrderKey()) + " (from the next time Uplink starts)." +
+                (game != null ? " " + KeyName(spec) + " is one of the game's keys too (" + game + "): the game will not get it while the wheel is on." : ""),
+                game != null ? CAmber : CGreen);
+        }
+    }
+
     // "Press a key": the next key pressed, with the Shift, Ctrl or Alt held (Esc: nothing changed, Del: as it came)
     class KeyAsk : Form
     {
         public string Spec;
         Label note;
+        bool mouse;                                           // the middle and side mouse buttons can be given too
+        public KeyAsk(string what, string now, bool mouse) : this(what, now)
+        {
+            this.mouse = mouse;
+            ClientSize = new Size(500, 150);
+            foreach (Control c in Controls)
+            {
+                c.Width = 468;
+                if (c.Text.StartsWith("Now: ")) c.Text = "Now: " + now + ".  A key, or the middle or a side mouse button.";
+                c.MouseDown += delegate(object s, MouseEventArgs e) { OnMouseDown(e); };
+            }
+        }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (!mouse) return;
+            string b = e.Button == MouseButtons.Middle ? "MID" : e.Button == MouseButtons.XButton1 ? "M4" : e.Button == MouseButtons.XButton2 ? "M5" : null;
+            if (b == null) return;
+            Spec = b; DialogResult = DialogResult.OK;
+        }
         public KeyAsk(string what, string now)
         {
             Text = "Uplink's keys"; ClientSize = new Size(420, 150); FormBorderStyle = FormBorderStyle.FixedDialog;

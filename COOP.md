@@ -27,10 +27,14 @@ It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: 
 | Key | Action |
 |---|---|
 | W / S / A / D | move |
+| Shift + W / S / A / D | bound (a leap that way, again while held) |
 | Mouse | look |
+| Alt or middle button (hold) | look around without turning the suit |
 | Left / right button | fire / lock a target |
 | Space (hold) | jump jets |
 | 1 - 4 | weapon |
+| Tab | WEAPON / STATUS page |
+| M | big map |
 | F8 | next squadmate |
 | Enter | call the dropship |
 | Y | free the mouse |

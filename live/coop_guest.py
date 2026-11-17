@@ -50,7 +50,7 @@ LIVE_PORT, PLAY_PORT = 47831, 47834
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 # online: the bridge's packets about the picture relayed to the guest (relay), and their least gap (s): the sky's
 # drift 5 a second (it moves slowly), the waypoint (its angle word turns every frame) twice; the rest when it changes
-RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25}
+RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25, b'GAIT': 0.5}
 KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A D, Space (network input is filtered)
 # The jets (Space), as the game's 0x288EF0 / 0x288F78 for a suit: near the ground a kick of 150 up every 2nd game
 # update, unpaid; in the air free for 200 ms, then each update pays energy dt x 2^32 / ((f + 0x20000) / 3) (16.16, f =
@@ -63,11 +63,21 @@ KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A 
 JET_ACC = float(os.environ.get('TN_JET_ACC', '750'))
 JET_KICK, JET_FREE, AIR = 150, 200, 0x4000   # the ground kick, free airtime (ms), "near the ground" (0.25, 0x28927C)
 # The ground under him: the game's height map (English exe: pointer at 0x36F50A, 513 x 513 points of 3 bytes, the
-# height s16 at +1, >> 4, / 24 units), between its 4 points (the game cuts the cells in triangles: a few hundredths
-# off on slopes). His suit's contact bytes (CONTACT) are no help: the game keeps them for the player's suit only (in
-# flight the host's +0xE2 reads 2, the guest's stays 0 even 100 units up), so both the Bound's "on the ground" and the
-# jets' band are his height over this, as the game's 0x28927C measures it
+# height s16 at +1, >> 4, / 24 units), each cell cut in two triangles as the game's 0x2949C4 does. His suit's contact
+# bytes (CONTACT) are no help: the game keeps them for the player's suit only (in flight the host's +0xE2 reads 2,
+# the guest's stays 0 even 100 units up), so both the Bound's "on the ground" and the jets' band are his height over
+# this, as the game's 0x28927C measures it
 HMAP, HMAP_N = 0x36F50A, 513
+# The ceiling: the game keeps the player's suit within 30 units of the ground. After each physics step (0x2D3D29),
+# for the entity of word 0x441350 only, a body higher than the ground (0x2949C4) + 0x1E0000 is put back at that
+# height, its vertical speed at 0, the rest of its motion kept (0x2F09E3, 0x2F0BC8). His suit is not the player's:
+# jets held, it went on up (121 units in a test), and the host's game stopped for good when it came down, at over
+# 20 units a second. The same limit for it here, each tick: from 30 units it lands at 10 units a second. A body:
+# the entity's byte +0x22 = its handle, dword 0x44B9E4 + 4 x handle = its slot (under 0x60), its state at
+# 0x44E0DD + 0x30 x slot: for x, y, z (0x10 apart) the position (6 x the entity's, 16.16), the speed, the
+# acceleration
+CEILING = 0x1E0000
+BODY, BODY_SLOT, BODY_STATE, BODY_N, BODY_Z = 0x22, 0x44B9E4, 0x44E0DD, 0x30, 0x20
 MISSION, NO_JETS, NO_FUEL, ENERGY_F = 0x359708, 0x2E, 0x2F, 0x442439
 J_RATING, J_FUEL, J_HALF = 0xA6, 0xAA, 0x0D   # suit record: jets' rating (word), fuel (word), dword 4 = half the fuel
 F8 = 0x42                     # next teammate
@@ -390,7 +400,9 @@ class Guest:
         return struct.unpack('<I', self.g.read(CLOCK, 4))[0]
 
     def ground(self, x, y):
-        """the terrain's height under x, y (units) from the game's height map, None when it is not there"""
+        """the terrain's height under x, y (units) as the game's 0x2949C4 takes it from its height map: on the plane
+        of the cell's triangle he is over (cells are cut along one diagonal or the other, by turns); None when the
+        map is not there"""
         base = struct.unpack('<I', self.g.read(HMAP, 4))[0]
         if not 0x100000 <= base < 0x2000000:
             return None
@@ -398,13 +410,38 @@ class Guest:
         fx, fy = min(1.0, max(0.0, x - ix)), min(1.0, max(0.0, y - iy))
         a, b = (self.g.read(base + 3 * (HMAP_N * j + ix), 6) for j in (iy, iy + 1))
         h = lambda r, o: (struct.unpack_from('<h', r, o + 1)[0] >> 4) / 24
-        return (h(a, 0) * (1 - fx) + h(a, 3) * fx) * (1 - fy) + (h(b, 0) * (1 - fx) + h(b, 3) * fx) * fy
+        h00, h10, h01, h11 = h(a, 0), h(a, 3), h(b, 0), h(b, 3)
+        if (ix + iy) & 1 == 0:                                 # cut from (0, 0) to (1, 1)
+            if fx > fy:
+                h01 = h00 + h11 - h10
+            else:
+                h10 = h00 + h11 - h01
+        elif fx + fy >= 1.0:                                   # cut from (1, 0) to (0, 1), the far half
+            h00 = h10 + h01 - h11
+        return h00 + fx * (h10 - h00) + fy * (h01 - h00)
 
     def near_ground(self, e):
         """entity e within 0.25 of the terrain (the game's 0x28927C); True when the height map is not there"""
         x, y, z = (v / 65536 for v in struct.unpack('<3i', self.g.read(self.master + 0x25 * e + 0x0F, 12)))
         h = self.ground(x, y)
         return h is None or abs(z - h) <= AIR / 65536
+
+    def ceiling(self):
+        """his suit kept within 30 units of the ground, as the game keeps the player's (CEILING): higher, his body
+        goes back to that height with no vertical speed. True when it was put back"""
+        e = self.master + 0x25 * self.gid
+        x, y, z = struct.unpack('<3i', self.g.read(e + 0x0F, 12))
+        h = self.ground(x / 65536, y / 65536)
+        if h is None or z <= int(h * 65536) + CEILING:
+            return False
+        slot = self.i32(BODY_SLOT + 4 * self.g.read(e + BODY, 1)[0])
+        if not 0 <= slot < 0x60:
+            return False
+        a = BODY_STATE + BODY_N * slot + BODY_Z
+        if abs(self.i32(a) - 6 * z) > 6 * 0x80000:             # not his body (the entity follows it at each step)
+            return False
+        self.g.write(a, struct.pack('<3i', 6 * (int(h * 65536) + CEILING), 0, 0))
+        return True
 
     def grounded(self, e):
         """his suit stands on something: the game's contact bytes (0x27EDA0) say so, and he is near the ground"""
@@ -484,14 +521,15 @@ class Guest:
             self.pending = [0, 0, 0]
 
     def push(self, jets):
-        """each tick: the jets while Space is held (counted in game updates: the clock moved), and what waits in the
-        mailbox"""
+        """each tick: the game's ceiling, the jets while Space is held (counted in game updates: the clock moved),
+        and what waits in the mailbox"""
         c = self.clock()
         dt = 0 if self.clk is None else (c - self.clk) & 0xFFFFFFFF
         if dt > 100:
             dt = 0 if dt > 0x7FFFFFFF else 100                  # the clock went back (no update), or a long hitch
         self.clk = c
         if self.gid:
+            self.ceiling()
             if jets and self.i32(MISSION) != NO_JETS:
                 self.jets(self.suit(self.gid), c, dt)
             else:
@@ -1040,7 +1078,7 @@ class Guest:
 
     def relay(self, pk):
         """What the bridge sends the host's window about his picture and the guest's needs as well: the sky's drift
-        and sway (SKYO), the waypoint (WAYP), the haze (HAZE), the soldiers' bone lengths and arms (SLEN, ARMS), the
+        and sway (SKYO), the waypoint (WAYP), the haze (HAZE), the soldiers' bone lengths, arms and walks (SLEN, ARMS, GAIT), the
         ground tiles (TEXL, local only). Local: as it is. Online: 'LIV' + the packet (coop_net.gd hands the listed
         ones to his viewer), when it changes, at most RELAY_GAP a second, and every 2 s."""
         if not self.remote:

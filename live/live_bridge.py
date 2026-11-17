@@ -1287,7 +1287,7 @@ hud_last = None
 # of the view shown (the record whose rectangle is the 3D window): the energy bar (0x26541C) and the armour indicator
 # (0x2637DC), none in a view that has none. Read twice a second.
 HUD_REGIONS, HUD_REGION_N, HUD_REGION_COUNT = 0x389F38, 0x62, 69
-R_VIEW, R_ENERGY, R_ARMOUR = 0x269028, 0x26541C, 0x2637DC
+R_VIEW, R_ENERGY, R_ARMOUR = (0x269038, 0x26542C, 0x2637F4) if FR else (0x269028, 0x26541C, 0x2637DC)   # (the French exe's: its code is a few bytes further)
 hud_places_last = (0.0, None, (0,) * 8)
 
 

@@ -48,6 +48,21 @@ var glances := true                           # a standing suit looks aside now 
 var aim := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
 var J: Array[Vector3] = []
+# The joints to draw (pose): J with its jumps spread out. The game's walk moves a joint at once in places (a foot
+# out of reach, held dragged at 0.95 of the leg, goes back to its step's start the picture its next step begins;
+# the toes lie flat for the one picture between a kick and the reach after it; knees and arms change with the size on
+# screen): at the game's 30 pictures a second and eased from one to the next they pass, drawn as they are 240 times
+# a second a foot leapt 0.1 to 0.4 units in one picture. What a joint moves beyond SMOOTH_SPEED (against the pelvis)
+# is kept as an offset that fades in SMOOTH_TIME (no faster than that speed); the walk itself (J and the steps) is untouched.
+var D: Array[Vector3] = []
+const SMOOTH_SPEED := 5.0                      # units a second (a running suit's foot against its body: up to 4)
+const SMOOTH_TIME := 0.08
+const SMOOTH_TURN := 25.0                      # radians a second
+var d_side: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
+var d_off: Array[Vector3] = []
+var d_last: Array[Vector3] = []
+var d_now := -1e9
+var d_knee := 1.0
 var l_yaw := [0.0, 0.0]                        # each foot: its turn, the heel's end, at rest since its last step
 var l_c := [1.0, 1.0]
 var l_s := [0.0, 0.0]
@@ -108,6 +123,12 @@ var stood := false                             # it got up to move (0x281151)
 func _init() -> void:
 	J.resize(16)
 	J.fill(Vector3.ZERO)
+	D.resize(16)
+	D.fill(Vector3.ZERO)
+	d_off.resize(16)
+	d_off.fill(Vector3.ZERO)
+	d_last.resize(16)
+	d_last.fill(Vector3.ZERO)
 
 
 # the bridge's values for this soldier (22 floats, then knee side and flat feet)
@@ -190,6 +211,83 @@ func pose() -> void:
 	_arms()
 	_aim(0, aim[0], aim[1], aim[2])
 	_aim(1, aim[3], aim[4], aim[5])
+	_display()
+
+
+# D from J (see D): each joint against the pelvis, the toes against their ankles, the knees worked out again from
+# the hips and ankles drawn (the thighs keep their length while a foot's jump fades).
+func _display() -> void:
+	var pd := now - d_now
+	var fresh := pd < 0.0 or pd > 0.25                # (the first pose, or after a pause: as it is)
+	d_now = now
+	var keep := 0.0 if fresh else exp(-pd / SMOOTH_TIME)
+	var lim := SMOOTH_SPEED * maxf(pd, 0.0)
+	D[8] = J[8]
+	for j in [6, 7, 9, 10, 11, 12, 13, 14, 15, 2, 3]:
+		D[j] = J[8] + _spread(j, J[j] - J[8], fresh, keep, lim)
+	# (the knees: bent from 16 pixels, half way under; from one to the other in SMOOTH_TIME)
+	var bent := 1.0 if lod > 15 else 0.0
+	d_knee = bent if fresh else move_toward(d_knee, bent, pd / SMOOTH_TIME)
+	var maxr := 0.95 * ts
+	for leg in 2:
+		var hip: Vector3 = D[6 + leg]
+		var a: Vector3 = D[2 + leg]
+		var d := a - hip
+		var r := d.length()
+		if lod > 6 and r > maxr:                      # (the offset must not stretch the leg)
+			d *= maxr / r
+			a = hip + d
+			r = maxr
+			D[2 + leg] = a
+		var kn := (a + hip) * 0.5
+		if d_knee > 0.0:
+			# (the game: hip + d / 2 + (d x n) x h with n = d x the foot's heading: the same place, as the thigh's
+			# direction. It turns at once in places - a foot kicked up through the hip's height, a leg crossing its
+			# foot's heading: the thigh then swings there, SMOOTH_TURN at most)
+			var ax := d / r if r > 0.001 else Vector3(0.0, 0.0, -1.0)
+			var side := ax.cross(ax.cross(Vector3(l_c[leg], l_s[leg], 0.0))) * float(-kneesign)
+			side = side.normalized() if side.length() > 0.001 else Vector3(c, s, 0.0)
+			var m := clampf(((thigh * thigh - shin * shin) / maxf(r, 0.001) + r) * 0.5, -thigh, thigh)
+			var want := (ax * m + side * sqrt(maxf(thigh * thigh - m * m, 0.0))).normalized()
+			var was: Vector3 = d_side[leg]
+			if fresh or was.length() < 0.5:
+				was = want
+			else:
+				var ang := was.angle_to(want)
+				var most := SMOOTH_TURN * pd
+				if ang <= most:
+					was = want
+				else:
+					var axis := was.cross(want)
+					if axis.length() < 0.001:                 # (straight back: round the body's side)
+						axis = was.cross(Vector3(-s, c, 0.0))
+					if axis.length() < 0.001:
+						axis = was.cross(Vector3(0.0, 0.0, 1.0))
+					was = was.rotated(axis.normalized(), most).normalized()
+			d_side[leg] = was
+			kn = kn.lerp(hip + was * thigh, d_knee)
+		D[4 + leg] = kn
+		D[leg] = a + _spread(leg, J[leg] - J[2 + leg], fresh, keep, lim * 0.4)   # (a foot turns slowly)
+
+
+func _spread(j: int, rel: Vector3, fresh: bool, keep: float, lim: float) -> Vector3:
+	if fresh:
+		d_off[j] = Vector3.ZERO
+		d_last[j] = rel
+		return rel
+	var m := rel - d_last[j]
+	var ml := m.length()
+	d_last[j] = rel
+	var off: Vector3 = d_off[j]
+	if ml > lim:
+		off -= m * (1.0 - lim / ml)
+	var ol := off.length()
+	if ol * (1.0 - keep) > lim:                       # (a large one fades at that speed too)
+		off *= 1.0 - lim / ol
+	else:
+		off *= keep
+	d_off[j] = off
+	return rel + off
 
 
 # From a pose the game drew (joints in game axes, the suit heading h at the clock t, moving at vel): the walk goes on
@@ -198,6 +296,7 @@ func pose() -> void:
 func take_over(joints: Array, h: float, t: float, vel: Vector2, hf: float, lean_t: float, st: int) -> void:
 	started = true
 	now = t
+	d_now = -1e9                                  # (drawn from that pose as it is)
 	stance = st
 	hf_was = hf
 	bodyh = h

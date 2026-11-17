@@ -11,6 +11,10 @@ render_mode unshaded, cull_disabled, fog_disabled;
 
 uniform sampler2DArray views : source_color, filter_linear_mipmap, repeat_disable;
 uniform int view_count = 16;      // 16 views all around, or 9 from back to front (torso)
+// the game's infrared view (live, tn_ir): the same views through the planet's IR table 62, unlit, no haze (the soldier
+// draw 0x29C96E and the burst suit's 0x29CB08 swap the view's remap for it around the whole suit)
+uniform sampler2DArray views_ir : source_color, filter_linear_mipmap, repeat_disable;
+uniform bool has_ir = false;
 uniform float widen = 1.0;        // sprite width factor
 uniform float squash = 1.0;       // sprite height factor
 uniform float pixel_aspect = 1.2; // the game's pixels on the screen: 320 x 400 (848 x 400 wide) shown 4:3 / 16:9
@@ -122,5 +126,9 @@ void fragment() {
 	if (col.a < 0.5) {
 		discard;
 	}
-	ALBEDO = tn_haze(col.rgb * factor * deep, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	if (has_ir && tn_ir > 0.5) {
+		ALBEDO = tn_game_colour(tn_haze_srgb(texture(views_ir, vec3(uv, float(layer))).rgb));
+	} else {
+		ALBEDO = tn_haze(col.rgb * factor * deep, (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+	}
 }

@@ -2812,6 +2812,11 @@ static class Uplink
                 try { if (!p.HasExited) { p.CloseMainWindow(); if (!p.WaitForExit(1500)) p.Kill(); } } catch { }
             mine.Clear();
         }
+        // and what those had started in turn: this launcher's Uplink (opened by the bridge) and its game (opened by
+        // Terra Nova Plus). Without them STOP left both open, with nothing driving them any more
+        foreach (Proc p in Procs())
+            if (p.Name.StartsWith("Godot") && p.Cmd.IndexOf(UplinkDir, StringComparison.OrdinalIgnoreCase) >= 0) Kill(p.Id);
+        CloseOurGame();
         Status("Stopped.", CText);
         Session("No session.", CDim);
     }

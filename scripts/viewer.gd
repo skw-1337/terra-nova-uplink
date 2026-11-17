@@ -96,6 +96,8 @@ var missions := []
 var labels_on := true
 var zones_on := true
 var veg_on := true
+var zone_nodes := {}             # zone number -> its post (the mission editor moves them)
+var editor: Node                 # the mission editor (map viewer, F6)
 var yaw := 0.0
 var pitch := -0.45
 var speed := 30.0
@@ -427,6 +429,10 @@ func _ready() -> void:
 		zones_on = false
 		panel.visible = false
 		status.visible = false
+	if not live and (OS.get_environment("TN_EDITOR") == "1" or "--editor" in args):
+		editor = load("res://scripts/mission_editor.gd").new()   # the mission editor: an option, off unless asked for
+		add_child(editor)
+		status.text += "   F6 or the EDIT MISSION button: mission editor"
 	if OS.get_environment("TN_LAB") != "" and not ("--coop-guest" in args or "--coop-hud" in args):
 		add_child(load("res://scripts/lab.gd").new())   # live graphics lab (lab.gd): only with the lab shortcut
 	if "--all" in args:                       # test: load every mission, then quit
@@ -579,6 +585,8 @@ func _load_by_label(t: String) -> void:
 
 # ------------------------------------------------------------------ loading
 func _load(index: int) -> void:
+	if editor and not editor.allow_load(index):   # (unsaved changes in the mission editor: asked first)
+		return
 	var entry: Dictionary = missions[index]
 	info.text = "Loading %s..." % entry["label"]
 	await get_tree().process_frame
@@ -693,8 +701,9 @@ func _load(index: int) -> void:
 				e.get("team", 0), e.get("pitch", 0.0), e.get("state", 0)))
 		live_nodes[-1].set_meta("mission", true)       # placed from the file: buildings stay on the ground
 		counts[e["cls"]] = counts.get(e["cls"], 0) + 1
+	zone_nodes.clear()
 	for z in mis["zones"]:
-		_add_zone(m, z)
+		zone_nodes[int(z.get("index", zone_nodes.size()))] = _add_zone(m, z)
 	current = {"map": m, "mission": mis, "entry": entry}
 	_sync_sun_half()
 	_place_camera(m, mis)
@@ -2354,7 +2363,7 @@ func _limb_light_set(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("light_rows", limb_light["rows"])
 
 
-func _add_zone(m: Dictionary, z: Dictionary) -> void:
+func _add_zone(m: Dictionary, z: Dictionary) -> MeshInstance3D:
 	# script zone (waypoint, trigger, drop / pickup point): thin post, name at eye level
 	var ground := TNData.height_at(m, z["x"], z["y"])
 	var cyl := CylinderMesh.new()
@@ -2379,6 +2388,7 @@ func _add_zone(m: Dictionary, z: Dictionary) -> void:
 	l.position = Vector3(0, 3.6, 0)
 	mi.add_child(l)
 	world.add_child(mi)
+	return mi
 
 
 func _drop_zone(mis: Dictionary) -> Vector2:
@@ -2442,6 +2452,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_F4:
 				veg_on = not veg_on
 				get_tree().call_group("vegetation", "set_visible", veg_on)
+			KEY_F6:
+				if editor:
+					editor.toggle()
 
 
 # old school mode: the game's look over the 3D view, under its HUD (F12)
@@ -6650,8 +6663,10 @@ func _process(delta: float) -> void:
 			_compass_update()
 		sky_root.position = camera.position
 		return
-	if list.has_focus() and not look:
+	if (list.has_focus() or get_viewport().gui_get_focus_owner() is LineEdit) and not look:
 		return
+	if editor and editor.active and editor.ctrl_chord:
+		return                                    # (the editor's Ctrl+S / Ctrl+Z: no flying down until Ctrl is up)
 	var b := camera.global_transform.basis
 	var move := Vector3.ZERO
 	if Input.is_physical_key_pressed(KEY_W):

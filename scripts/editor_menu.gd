@@ -13,6 +13,8 @@ signal export_file_pressed
 signal copy_code_pressed
 signal import_file_pressed
 signal paste_code_pressed
+signal mission_pressed
+signal play_pressed
 
 const KIND_TABS := [[-1, "All"], [1, "Soldiers"], [2, "Vehicles"], [3, "Probes & craft"], [4, "Buildings"], [0, "Decor"]]
 const KIND_COL := {1: Color(0.95, 0.45, 0.25), 2: Color(0.95, 0.75, 0.25), 3: Color(0.45, 0.75, 0.95),
@@ -35,6 +37,8 @@ var tool_buttons := []
 var group_opt: OptionButton
 var file_label: Label
 var help: Label
+var mission_btn: Button
+var play_btn: Button
 var placeholders := {}           # class -> Texture2D
 var busy := false
 var flash_t := 0                 # the last spawn's line in the top bar, until then
@@ -130,6 +134,14 @@ func _ready() -> void:
 	revert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	revert.pressed.connect(func(): revert_pressed.emit())
 	fr.add_child(revert)
+	mission_btn = _flat("Objectives, orders, new mission...", 14)
+	mission_btn.tooltip_text = "The Mission panel: what the mission asks and what its groups do, the zones, your own missions"
+	mission_btn.pressed.connect(func(): mission_pressed.emit())
+	right.add_child(mission_btn)
+	play_btn = _flat("▶  Play this mission", 14)
+	play_btn.tooltip_text = "Saves if needed, then starts the game on this mission"
+	play_btn.pressed.connect(func(): play_pressed.emit())
+	right.add_child(play_btn)
 	right.add_child(HSeparator.new())
 	right.add_child(_title("SHARE  (only your changes)"))
 	var sh := GridContainer.new()

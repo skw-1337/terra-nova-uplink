@@ -835,7 +835,7 @@ func _watch(out: Dictionary, guards: Array, s: Dictionary, role: String) -> void
 	var w := _when(g2, role)
 	match w["event"]:
 		97:
-			_use(out, "groups", w["group"], "the script gives orders when it starts (no unit in it: those orders are never given)")
+			_use(out, "groups", w["group"], "the script gives orders when it starts (with no unit in it, those orders are never given)")
 		108:
 			_use(out, "labels", w["label"], "the script reacts when one of them dies")
 		109:

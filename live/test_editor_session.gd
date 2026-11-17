@@ -1,7 +1,10 @@
 # A session in the mission editor, driven as a player would (real key and button events: the editor reads their
 # real state), on a COPY of the game: spawn, move with the physgun, turn, duplicate, team, undo, the properties
 # panel, one of the mission's own units removed, the creation exported (code and file), save, reload, revert,
-# import on the fresh original. Not one of the stable channel's checks (it needs the game's data):
+# import on the fresh original. Then the Mission panel (M): a game mission's script in sentences and its numbers
+# changed, the script part's round trip through export / import / save / revert (RESBABL2.RES byte for byte), a
+# mission of one's own made in a free slot, built with the blocks, saved, removed, imported back, and PLAY THIS
+# MISSION's request to the launcher. Not one of the stable channel's checks (it needs the game's data):
 #   set TN_EDITOR_SANDBOX=<a folder holding a copy of TNOVA\DATA and TNOVA\MAPS>     (never the game itself)
 #   godot --headless --path . --script res://live/test_editor_session.gd [-- --mission MISS5.RES]
 # It refuses to run on a real game folder, and checks before every save that the file is inside the sandbox.
@@ -451,6 +454,7 @@ func _run() -> void:
 	var n_other: int = ed.recs.size()
 	err = ed.import_text(code)
 	_check(err.contains(file.get_file().to_upper()) and ed.recs.size() == n_other and not ed.dirty, "on another mission: \"%s\"" % err)
+	await _mission_part()
 	_end()
 
 
@@ -467,3 +471,452 @@ func _reload(n: int) -> void:
 func _end() -> void:
 	print("%d / %d checks passed" % [checks - fails, checks])
 	quit(1 if fails else 0)
+
+
+# ---- the Mission panel, a mission of the player's own, play this mission
+func _load_wait(mission: String) -> void:
+	var was = viewer.current
+	viewer._load_by_label(mission)
+	await _changed(was, mission)
+
+
+# another mission than `was` is loaded and the editor has it
+func _changed(was, mission: String) -> void:
+	for i in 1200:
+		await process_frame
+		if not is_same(viewer.current, was) and not viewer.current.is_empty() and is_same(ed.seen, viewer.current) \
+				and ed.lg != null and ed.path.get_file().to_upper() == mission.to_upper() and ed.nodes.size() == ed.recs.size():
+			break
+	await _frames(6)
+
+
+func _sums(dir: String) -> Dictionary:
+	var out := {}
+	for f in DirAccess.get_files_at(dir):
+		var u := f.to_upper()
+		if u.begins_with("MISS") and u.ends_with(".RES") and u != "MISS18.RES" and u != "MISS28.RES":
+			out[u] = FileAccess.get_sha256(dir.path_join(f))
+	return out
+
+
+func _pick_option(o: OptionButton, value) -> bool:
+	for k in o.item_count:
+		if o.get_item_metadata(k) == value:
+			o.select(k)
+			o.item_selected.emit(k)
+			return true
+	return false
+
+
+func _type(le: LineEdit, t: String) -> void:
+	le.text = t
+	le.text_changed.emit(t)
+
+
+func _has(list: Array, part: String) -> bool:
+	for t in list:
+		if str(t).contains(part):
+			return true
+	return false
+
+
+func _mission_part() -> void:
+	var MS = load("res://scripts/mission_script.gd")
+	var MB = load("res://scripts/mission_build.gd")
+	var dir: String = viewer.data.data_dir()
+	if not dir.to_lower().begins_with(sandbox.to_lower() + "/"):
+		_check(false, "the game's data folder is inside the sandbox")
+		return
+	var babl := dir.path_join("RESBABL2.RES")
+	var babl0 := FileAccess.get_file_as_bytes(babl)
+	var texts0 := {}
+	for f in ["RESGAME.RES", "RESMISS.RES", "RESPTERM.RES"]:
+		texts0[f] = FileAccess.get_file_as_bytes(dir.path_join(f))
+	var all0 := _sums(dir)
+
+	# -- one of the game's missions: its script in sentences, its numbers changed one by one
+	await _load_wait("MISS37.RES")
+	var m37 := FileAccess.get_file_as_bytes(ed.path)
+	if not ed.active:
+		await _tap(KEY_F6)
+	await _tap(KEY_M)
+	var mp = ed.mpanel
+	_check(mp.visible and not viewer.look, "M opens the Mission panel (the mouse is free)")
+	_check(mp.info["mode"] == "game" and mp.info["sentences"].size() == 3 and mp.fields["what2"].text.contains("Destroy 100 % of the units labelled 2"),
+		"mission 37, the game's own script, in sentences: \"%s\"" % mp.fields["what2"].text)
+	_check(_has(mp.info["orders_said"], "Group 1 patrols zones 1, 2, 3 when group 1 starts"), "its orders too (%d lines)" % mp.info["orders_said"].size())
+	_check(not mp.fields.has("pct2_0") and not mp.fields.has("order_add"), "a script of the game: shown, not rebuilt (no block control)")
+	var base: Dictionary = ed._base_summary()
+	var pct_id: String = base["objectives"][2]["conditions"][0]["edit"]["pct"]
+	var zone_id := ""
+	for od in base["orders"]:
+		if od["order"] == "patrol" and od["group"] == 1:
+			zone_id = od["edit"]["zone1"]
+	_check(mp.fields.has("num:" + pct_id) and mp.fields.has("num:" + zone_id), "its numbers are listed (%d)" % mp.info["edits"].size())
+	mp.fields["num:" + pct_id].value = 50
+	await _frames(3)
+	_check(ed.script_part.get("patch", []).size() == 1 and ed.dirty and str(mp.info["sentences"][2]).begins_with("Destroy 50 %"),
+		"objective 3's percentage typed: \"%s\" (unsaved)" % mp.info["sentences"][2])
+	var free_zone := -1
+	for z in range(7, 31):
+		if free_zone < 0 and not ed._zone_placed(z):
+			free_zone = z
+	mp.fields["num:" + zone_id].value = free_zone
+	await _frames(3)
+	_check(_has(mp.info["problems"], "zone %d is not placed" % free_zone) and mp.fields["problems"].text.contains("zone %d is not placed" % free_zone),
+		"group 1's patrol sent to zone %d, which is not placed: said under WHAT IS MISSING" % free_zone)
+	mp.fields["num:" + zone_id].value = 4
+	await _frames(3)
+	_check(not _has(mp.info["problems"], "is not placed") and _has(mp.info["orders_said"], "Group 1 patrols zones 4, 2, 3"), "to zone 4: nothing missing, the orders read \"patrols zones 4, 2, 3\"")
+	await _tap(KEY_Z)
+	_check(ed.script_part.get("patch", []).size() == 1 and _has(mp.info["orders_said"], "Group 1 patrols zones 1, 2, 3"), "undo: the patrol's zone (typed twice in a row: one step)")
+	await _tap(KEY_Z)
+	_check(ed.script_part.is_empty() and str(mp.info["sentences"][2]).begins_with("Destroy 100 %"), "undo: the percentage, the game's own script again")
+	# what the script does with a label is said before its units go
+	var l2 := []
+	for i in ed.recs.size():
+		if ed.recs[i][26] == 2:
+			l2.append(ed.uids[i])
+	_check(not l2.is_empty() and _has(MS.uses(ed._summary(), "label", 2), "objective 3") and ed._script_use(ed._index(l2[0]), true).contains("objective 3"),
+		"removing a unit labelled 2: \"%s\"" % ed._script_use(ed._index(l2[0]), true))
+	for u in l2:
+		ed._remove(u)
+	await _frames(3)
+	_check(_has(mp.info["problems"], "no unit is labelled 2") and mp.fields["problems"].text.contains("no unit is labelled 2"),
+		"all %d removed: \"%s\"" % [l2.size(), mp.info["problems"][0]])
+	for u in l2:
+		await _tap(KEY_Z)
+	await _frames(3)
+	_check(mp.info["problems"].is_empty() and ed.recs.size() == LGRes.frames(ed.lg.data(173)).size(), "undone: nothing missing")
+	mp.fields["num:" + pct_id].value = 50
+	mp.fields["num:" + zone_id].value = 4
+	await _frames(3)
+	var code37: String = ed.export_code()
+	var mod37: Dictionary = Mod.from_text(code37)
+	_check(mod37.get("script", {}).get("patch", []).size() == 2 and Mod.summary(mod37).contains("2 script numbers changed"), "export: the creation carries the script part (%s)" % Mod.summary(mod37))
+	if not _safe():
+		return
+	_key(KEY_CTRL, true)
+	await _frames(1)
+	await _tap(KEY_S, true)
+	_key(KEY_CTRL, false)
+	await _frames(2)
+	var babl1 := FileAccess.get_file_as_bytes(babl)
+	_check(not ed.dirty and babl1 != babl0 and FileAccess.get_file_as_bytes(babl + ".uplink-original") == babl0, "Ctrl+S: RESBABL2.RES rewritten, the game's own kept beside it byte for byte")
+	var inst = MS.open(dir)
+	var s37: Dictionary = inst.summary(37)
+	_check(str(s37["objectives"][2]["what"]).begins_with("destroy 50 %") and _has(s37["start_orders"].get(1, []), "patrols zones 4, 2, 3"),
+		"the installed script, read back: %s; group 1 %s" % [s37["objectives"][2]["what"], s37["start_orders"].get(1, [])])
+	_check(MB.installed(dir).has("MISS37.RES"), "the script part is in the folder's registry")
+	await _load_wait("MISS37.RES")
+	_check(ed.script_part.get("patch", []).size() == 2 and not ed.dirty and ed.export_code() == code37, "reloaded: the script part is known, the very same code exported")
+	var was = viewer.current
+	ed.confirm.confirmed.emit()
+	await _changed(was, "MISS37.RES")
+	_check(FileAccess.get_file_as_bytes(babl) == babl0, "Revert: RESBABL2.RES is the game's again, byte for byte")
+	_check(FileAccess.get_file_as_bytes(ed.path) == m37 and ed.script_part.is_empty() and not MB.installed(dir).has("MISS37.RES"), "the mission file too, nothing left in the registry")
+	if not ed.active:
+		await _tap(KEY_F6)
+	_check(ed.import_text(code37) == "" and ed.script_part.get("patch", []).size() == 2 and ed.dirty and FileAccess.get_file_as_bytes(babl) == babl0,
+		"import: the script part as unsaved changes, nothing written")
+	_check(not ed.allow_load(0) and ed.unsaved.visible, "another mission asked for: the unsaved script change is asked about first")
+	ed.unsaved.hide()
+	ed.unsaved.canceled.emit()
+	await _frames(3)
+	await _tap(KEY_Z)
+	_check(ed.script_part.is_empty(), "undo: the import, script part included")
+	_check(ed.import_text(code37) == "", "imported again")
+	ed.save()
+	await _frames(2)
+	_check(not ed.dirty and FileAccess.get_file_as_bytes(babl) == babl1, "saved: the same RESBABL2.RES as the first save, byte for byte")
+
+	# -- a mission of the player's own
+	var all1 := _sums(dir)
+	if not mp.visible:
+		await _tap(KEY_M)
+	_check(mp.fields.has("new_create") and mp.info["slots"].size() == 2 and mp.info["slots"][0]["state"] == "free", "MY MISSIONS: both slots free, a map to pick (%d)" % mp.fields["new_like"].item_count)
+	mp.fields["new_name"].text = "OPERATION TEST"
+	var lk: OptionButton = mp.fields["new_like"]
+	for k in lk.item_count:
+		if str(lk.get_item_metadata(k)) == "MISS37.RES":
+			lk.select(k)
+	was = viewer.current
+	mp.fields["new_create"].pressed.emit()
+	await _changed(was, "MISS18.RES")
+	var p18 := dir.path_join("MISS18.RES")
+	_check(ed.path == p18 and FileAccess.file_exists(p18) and FileAccess.file_exists(p18 + ".uplink-new") and FileAccess.file_exists(p18 + ".uplink-new.json"),
+		"Create a new mission: MISS18.RES written in the sandbox, marked as Uplink's")
+	var listed := false
+	for m in viewer.missions:
+		listed = listed or (str(m["label"]).contains("OPERATION TEST") and m["file"] == p18)
+	_check(listed and ed.active and mp.visible and not ed.dirty, "it is in the list under its name, open in the build mode with the Mission panel")
+	_check(mp.info["mode"] == "blocks" and mp.info["sentences"][0] == "Destroy 100 % of the units labelled 2" and mp.info["sentences"][1] == "Not used",
+		"its starting script: \"%s\"" % mp.info["sentences"][0])
+	_check(ed.recs.is_empty() and ed._zone_placed(0) and ed._zone_placed(31) and viewer.zone_nodes.has(0) and viewer.zone_nodes.has(31), "no unit, a drop zone (0) and a pickup zone (31) to place")
+	_check(_has(mp.info["problems"], "no unit is labelled 2"), "what is missing: \"%s\"" % mp.info["problems"][0])
+	_check(_sums(dir) == all1 and FileAccess.get_file_as_bytes(dir.path_join("MISS37.RES") + ".uplink-original") == m37, "no campaign mission file was touched")
+	inst = MS.open(dir)
+	_check(inst.summary(18)["name"] == "OPERATION TEST" and str(inst.summary(18)["objectives"][0]["what"]) == "destroy 100 % of the units labelled 2"
+		and str(inst.summary(37)["objectives"][2]["what"]).begins_with("destroy 50 %"), "installed: its name, its script, and mission 37's own part still there")
+	# two units, spawned from the menu where the crosshair is; labelled in their properties
+	var z0: Vector2 = ed._get_pos({"kind": "zone", "i": 0})
+	var enemy := -1
+	for i in ed.catalog.size():
+		if enemy < 0 and ed.catalog[i]["cls"] == 1 and ed._side_of(1, ed.catalog[i]["sub"]) == 2:
+			enemy = i
+	await _tap(KEY_M)
+	_check(not mp.visible and viewer.look, "M closes the panel")
+	for k in 2:
+		await _look_at_ground(z0 + Vector2(6 + 5 * k, 4))
+		_key(KEY_Q, true)
+		await _frames(3)
+		ed.menu.buttons[enemy].pressed.emit()
+		await _frames(2)
+		_key(KEY_Q, false)
+		await _frames(3)
+	_check(ed.recs.size() == 2 and ed.recs[0][7] == 1 and ed.recs[1][7] == 1, "two %s spawned: with no group of their side yet they join group 1, not the null group" % ed.catalog[enemy]["name"])
+	await _look_at_ground(_pos(0))
+	await _tap(KEY_P)
+	ed.props.fields["label"].value = 2
+	await _frames(2)
+	await _tap(KEY_P)
+	if ed.props.visible:
+		ed._close_props()
+	var r1: PackedByteArray = ed.recs[1].duplicate()
+	r1[26] = 2
+	r1[7] = 2
+	ed._edit_rec(ed.uids[1], r1, "label")
+	await _frames(3)
+	await _tap(KEY_M)
+	_check(mp.visible and not _has(mp.info["problems"], "no unit is labelled 2") and mp.fields["count0_0"].text == "2 units", "both labelled 2: objective 1 has its units (\"%s\")" % mp.fields["count0_0"].text)
+	# the objectives' blocks
+	mp.fields["pct0_0"].value = 50
+	await _frames(3)
+	_check(mp.info["sentences"][0] == "Destroy 50 % of the units labelled 2" and mp.fields["what0"].text.contains("Destroy 50 %"), "percentage 50: \"%s\"" % mp.info["sentences"][0])
+	await _tap(KEY_Z)
+	_check(mp.info["sentences"][0] == "Destroy 100 % of the units labelled 2" and mp.fields["pct0_0"].value == 100, "undo: 100 % again, in the panel too")
+	mp.fields["pct0_0"].value = 50
+	await _frames(2)
+	_pick_option(mp.fields["kind0_0"], "alive")
+	await _frames(3)
+	_check(mp.info["sentences"][0] == "Keep 50 % of the units labelled 2 alive", "kind Keep alive: \"%s\"" % mp.info["sentences"][0])
+	await _tap(KEY_Z)
+	_check(mp.info["sentences"][0] == "Destroy 50 % of the units labelled 2", "undo: Destroy again")
+	mp.fields["add1"].pressed.emit()
+	await _frames(3)
+	_check(mp.info["sentences"][1] == "Destroy 100 % of the units labelled 2" and _has(mp.info["problems"], "objective 2 has no line"), "objective 2 used: it asks for its line on the game's screen")
+	_type(mp.fields["line1"], "Leave no one standing")
+	await _frames(3)
+	_check(ed.new_part["objectives"][1] == "Leave no one standing" and not _has(mp.info["problems"], "objective 2 has no line"), "its line typed")
+	mp.fields["del1_0"].pressed.emit()
+	await _frames(3)
+	_check(mp.info["sentences"][1] == "Not used" and ed._spec_of(ed.script_part)["objectives"][1] == null, "its condition removed: not used again")
+	# zones placed where the view looks
+	var spots := {1: z0 + Vector2(-20, -12), 2: z0 + Vector2(-8, -18), 3: z0 + Vector2(-14, -4), 4: z0 + Vector2(-16, -16)}
+	for z in spots:
+		mp.fields["zone_n"].value = z
+		await _look_at_ground(spots[z])
+		mp.fields["zone_place"].pressed.emit()
+		await _frames(3)
+	var zok := true
+	for z in spots:
+		zok = zok and ed._zone_placed(z) and viewer.zone_nodes.has(z) and is_instance_valid(viewer.zone_nodes[z]) \
+			and Vector2(viewer.zone_nodes[z].position.x, viewer.zone_nodes[z].position.z).distance_to(ed._get_pos({"kind": "zone", "i": z})) < 0.01
+	_check(zok and mp.info["zones"].size() == 6, "zones 1 to 4 placed where the view looks, a post each (%d zones)" % mp.info["zones"].size())
+	await _tap(KEY_Z)
+	_check(not ed._zone_placed(4) and not viewer.zone_nodes.has(4), "undo: zone 4 and its post are gone")
+	await _look_at_ground(spots[4])
+	mp.fields["zone_place"].pressed.emit()
+	await _frames(3)
+	# orders
+	mp.fields["order_add"].pressed.emit()
+	await _frames(3)
+	var sp: Dictionary = ed._spec_of(ed.script_part)
+	_check(sp["orders"].size() == 1 and sp["orders"][0] == {"group": 1, "order": "patrol", "zones": [1, 2, 3]}, "Add an order: %s" % str(sp["orders"]))
+	_check(not mp.fields["okind0"].get_item_text(0).is_empty() and mp.fields["okind0"].item_count == 4, "four kinds of order offered (no attack, no follow, no ID lock)")
+	_pick_option(mp.fields["ogroup0"], 2)
+	await _frames(3)
+	_pick_option(mp.fields["ozone0_0"], 4)
+	await _frames(3)
+	mp.fields["ozone0_1_pick"].pressed.emit()         # the second zone: picked in the world
+	await _frames(2)
+	_check(ed.zone_setter.is_valid(), "⌖: the panel waits for a zone post")
+	var zp: Vector2 = ed._get_pos({"kind": "zone", "i": 1})
+	var zn1: Node3D = viewer.zone_nodes[1]
+	# (the window is 64 x 64, the toolbar is over its centre and the panel under it: the view is turned until the
+	# post is where no control is, and the click goes there)
+	var at := Vector2(-1, -1)
+	for d in [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]:
+		if at.x >= 0:
+			break
+		await _look_at_ground(zp + Vector2(d, d))
+		for hh in [-2.5, -1.5, -0.5, 0.0]:
+			var q: Vector2 = viewer.camera.unproject_position(zn1.global_position + Vector3(0, hh, 0))
+			if at.x < 0 and q.x > 0 and q.x < 63 and q.y > 0 and q.y < 63 and not ed.toolbar.get_global_rect().has_point(q) 					and not mp.get_global_rect().has_point(q) and ed._pick_at(q).get("i", -1) == 1:
+				at = q
+	_mouse(MOUSE_BUTTON_LEFT, true, at)
+	await _frames(2)
+	_mouse(MOUSE_BUTTON_LEFT, false, at)
+	await _frames(3)
+	sp = ed._spec_of(ed.script_part)
+	_check(sp["orders"][0] == {"group": 2, "order": "patrol", "zones": [4, 1, 3]} and _has(mp.info["orders_said"], "Group 2 patrols zones 4, 1, 3 when group 2 starts"),
+		"group 2 patrols zones 4, 1 (clicked in the world), 3: \"%s\"" % str(mp.info["orders_said"]))
+	_pick_option(mp.fields["okind0"], "move")
+	await _frames(3)
+	_check(ed._spec_of(ed.script_part)["orders"][0]["order"] == "move" and _has(mp.info["orders_said"], "Group 2 goes to zone"), "order kind Go to a zone: %s" % str(mp.info["orders_said"]))
+	await _tap(KEY_Z)
+	_check(ed._spec_of(ed.script_part)["orders"][0] == {"group": 2, "order": "patrol", "zones": [4, 1, 3]}, "undo: the patrol again")
+	mp.fields["order_add"].pressed.emit()
+	await _frames(3)
+	_pick_option(mp.fields["okind1"], "link")
+	await _frames(3)
+	_check(ed._spec_of(ed.script_part)["orders"][1] == {"group": 1, "order": "link", "target": 2}, "a second order: group 1 linked with group 2")
+	mp.fields["odel1"].pressed.emit()
+	await _frames(3)
+	_check(ed._spec_of(ed.script_part)["orders"].size() == 1, "and removed")
+	# the end, the debriefing
+	mp.fields["end_on"].button_pressed = true
+	await _frames(3)
+	mp.fields["end_seconds"].value = 5
+	await _frames(3)
+	_check(ed._spec_of(ed.script_part)["end"] == {"objective": 1, "seconds": 5}, "the mission ends by itself 5 s after objective 1")
+	_type(mp.fields["debrief0"], "Half of them will do.")
+	await _frames(3)
+	_check(ed._spec_of(ed.script_part)["debrief"][0] == "Half of them will do.", "the debriefing text typed")
+	# a zone the script uses, removed
+	mp.fields["zone_n"].value = 4
+	mp.fields["zone_remove"].pressed.emit()
+	await _frames(4)
+	_check(not ed._zone_placed(4) and _has(mp.info["problems"], "zone 4 is not placed"), "zone 4 removed: \"%s\"" % (mp.info["problems"][0] if not mp.info["problems"].is_empty() else ""))
+	await _tap(KEY_Z)
+	await _frames(3)
+	_check(ed._zone_placed(4) and mp.info["problems"].is_empty(), "undo: back, nothing missing")
+	_check(ed._script_use(0, true).contains("objective 1") and ed._script_use(1, true).contains("patrols zones 4, 1, 3"), "what the script does with a unit's label and group: \"%s\"" % ed._script_use(1, true))
+	# save, read back
+	var code18: String = ed.export_code()
+	var mod18: Dictionary = Mod.from_text(code18)
+	_check(mod18.get("new", {}).get("slot", 0) == 18 and mod18.get("script", {}).get("build", []).size() == 1 and mod18.get("add", []).size() == 2,
+		"export: the new mission, its script and its units in one code (%d characters, %s)" % [code18.length(), Mod.summary(mod18)])
+	var want_part: Dictionary = ed.script_part.duplicate(true)
+	if not _safe():
+		return
+	_key(KEY_CTRL, true)
+	await _frames(1)
+	await _tap(KEY_S, true)
+	_key(KEY_CTRL, false)
+	await _frames(2)
+	_check(not ed.dirty and _units(p18) == ed.recs, "Ctrl+S: MISS18.RES has the two units")
+	inst = MS.open(dir)
+	var s18: Dictionary = inst.summary(18)
+	_check(str(s18["objectives"][0]["what"]) == "destroy 50 % of the units labelled 2" and str(s18["objectives"][0]["text"]) == "Destroy every enemy unit"
+		and _has(s18["start_orders"].get(2, []), "patrols zones 4, 1, 3") and _has(s18["notes"], "ends the mission"),
+		"the installed script, read back: %s; group 2 %s; %s" % [s18["objectives"][0]["what"], s18["start_orders"].get(2, []), s18["notes"]])
+	var babl2 := FileAccess.get_file_as_bytes(babl)
+	_check(_find(babl2, "Half of them will do.".to_ascii_buffer()) and str(inst.summary(37)["objectives"][2]["what"]).begins_with("destroy 50 %"),
+		"the debriefing text is in RESBABL2.RES, with mission 37's own part beside it")
+	var m18 := FileAccess.get_file_as_bytes(p18)
+	var out_dir := sandbox.get_base_dir().path_join("out")
+	var tn := out_dir.path_join("mission18." + Mod.EXT)
+	_check(ed.export_file(tn) == "", "exported to %s" % tn.get_file())
+	# play this mission
+	OS.set_environment("TN_PLAY_REQUEST", "")
+	ed._show_mission()
+	mp.fields["play"].pressed.emit()
+	await _frames(3)
+	_check(ed.tell.visible and ed.tell.dialog_text.contains("MAP VIEWER") and mp.fields["play_note"].text.contains("alone, in a standard suit"),
+		"PLAY THIS MISSION without the launcher: what is missing is said (and the known limit of a new mission)")
+	# (a save of the player's in the sandbox, and a Python: the save that starts on the mission is made instead)
+	var tnova := sandbox.path_join("TNOVA")
+	if FileAccess.file_exists(tnova.path_join("SAVE01.RES")):
+		var made := false
+		for f in DirAccess.get_files_at(tnova):
+			if f.to_upper().begins_with("SAVE") and f.to_upper() != "SAVE01.RES":
+				made = made or _find(FileAccess.get_file_as_bytes(tnova.path_join(f)), "UPLINK Mission new 18".to_ascii_buffer())
+		_check(made and ed.tell.dialog_text.contains("\"UPLINK Mission new 18\""), "a save named \"UPLINK Mission new 18\" is made in the sandbox, and the player told to load it")
+	else:
+		print("     (no SAVE01.RES in the sandbox: the save made without the launcher is not checked)")
+	ed.tell.hide()
+	OS.set_environment("TN_PYTHON", sandbox.path_join("no_python_here.exe"))
+	mp.fields["play"].pressed.emit()
+	await _frames(3)
+	_check(ed.tell.visible and ed.tell.dialog_text.contains("no save could be made") and ed.tell.dialog_text.contains("Python was not found"),
+		"without a Python either: said, with what to do")
+	ed.tell.hide()
+	OS.set_environment("TN_PYTHON", "")
+	var req := out_dir.path_join("play_request.txt")
+	DirAccess.remove_absolute(req)
+	OS.set_environment("TN_PLAY_REQUEST", req)
+	mp.fields["pct0_0"].value = 60
+	await _frames(2)
+	mp.fields["pct0_0"].value = 50
+	await _frames(2)
+	_check(ed.dirty, "(an unsaved change)")
+	ed._show_mission()
+	mp.fields["play"].pressed.emit()
+	await _frames(3)
+	_check(not ed.dirty and FileAccess.get_file_as_string(req).begins_with("18\n") and FileAccess.get_file_as_bytes(babl) == babl2,
+		"PLAY THIS MISSION with the launcher's request file: saved first, then mission 18 asked for")
+	DirAccess.remove_absolute(req)
+	OS.set_environment("TN_PLAY_REQUEST", "")
+	# remove my mission: everything of it goes, the game's files come back
+	mp.fields["remove18"].pressed.emit()
+	await _frames(2)
+	_check(ed.ask.visible, "Remove my mission asks first")
+	was = viewer.current
+	ed.ask.hide()
+	ed.ask.confirmed.emit()
+	for i in 1200:
+		await process_frame
+		if not is_same(viewer.current, was) and is_same(ed.seen, viewer.current) and ed.lg != null:
+			break
+	await _frames(6)
+	var gone := true
+	for ext in ["", ".uplink-new", ".uplink-new.json", ".uplink-original", ".uplink-edit"]:
+		gone = gone and not FileAccess.file_exists(p18 + ext)
+	var back := true
+	for f in texts0:
+		back = back and FileAccess.get_file_as_bytes(dir.path_join(f)) == texts0[f]
+	_check(gone and back and FileAccess.get_file_as_bytes(babl) == babl1 and not MB.installed(dir).has("MISS18.RES"),
+		"removed: no file of it left, the game's texts byte for byte, RESBABL2.RES as before it (mission 37's part only)")
+	_check(_sums(dir) == all1 and ed.path != p18, "no campaign mission file changed; the editor is on %s" % ed.path.get_file())
+	# the exported creation brings it all back
+	was = viewer.current
+	ed.dlg_import = true
+	ed._on_file_picked(tn)
+	await _changed(was, "MISS18.RES")
+	await _frames(6)
+	_check(ed.path == p18 and ed.recs.size() == 2 and ed.script_part == want_part and ed.dirty, "import from another mission: slot 18 installed and opened, its units and script as unsaved changes")
+	ed.save()
+	await _frames(2)
+	_check(not ed.dirty and FileAccess.get_file_as_bytes(p18) == m18 and FileAccess.get_file_as_bytes(babl) == babl2,
+		"saved: MISS18.RES and RESBABL2.RES are the ones of before the removal, byte for byte")
+	was = viewer.current
+	ed.confirm.confirmed.emit()
+	await _changed(was, "MISS18.RES")
+	inst = MS.open(dir)
+	_check(ed.recs.is_empty() and str(inst.summary(18)["objectives"][0]["what"]) == "destroy 100 % of the units labelled 2" and ed._spec_of(ed.script_part).get("orders", [0]).is_empty(),
+		"Revert on a mission of one's own: the empty mission and its starting script")
+	# everything back as the game was
+	was = viewer.current
+	ed.remove_new(18)
+	for i in 1200:
+		await process_frame
+		if not is_same(viewer.current, was) and is_same(ed.seen, viewer.current) and ed.lg != null:
+			break
+	await _frames(6)
+	await _load_wait("MISS37.RES")
+	was = viewer.current
+	ed.confirm.confirmed.emit()
+	await _changed(was, "MISS37.RES")
+	back = FileAccess.get_file_as_bytes(babl) == babl0
+	for f in texts0:
+		back = back and FileAccess.get_file_as_bytes(dir.path_join(f)) == texts0[f]
+	_check(back and _sums(dir) == all0 and MB.installed(dir).is_empty() and not FileAccess.file_exists(dir.path_join("uplink-scripts.json")),
+		"my mission removed and mission 37 reverted: RESBABL2.RES, the texts and every mission file are the game's, byte for byte")
+
+
+func _find(hay: PackedByteArray, needle: PackedByteArray) -> bool:
+	for i in range(0, hay.size() - needle.size() + 1):
+		if hay[i] == needle[0] and hay.slice(i, i + needle.size()) == needle:
+			return true
+	return false

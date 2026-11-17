@@ -150,6 +150,8 @@ func mission_list() -> Array:
 		out.append({"label": "%02d  %s" % [i + 1, _mname(n)], "file": d.path_join("MISS%d.RES" % n)})
 	for n in [46, 47]:
 		out.append({"label": "Training  %s" % _mname(n), "file": d.path_join("MISS%d.RES" % n)})
+	for n in [18, 28]:           # the game's two free slots: a mission made with the mission editor (mission_new.gd)
+		out.append({"label": "My mission  %s" % _mname(n), "file": d.path_join("MISS%d.RES" % n)})
 	out.append({"label": "Cut  MISS40 - %s" % _mname(40), "file": d.path_join("MISS40.RES")})
 	out.append({"label": "Cut  MISS41 (prototype)", "file": d.path_join("MISS41.RES")})
 	for f in DirAccess.get_files_at(d):

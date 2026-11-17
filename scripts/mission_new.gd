@@ -254,6 +254,23 @@ static func install(data_dir: String, new) -> String:
 	var path := data_dir.path_join(file_name(slot))
 	if FileAccess.file_exists(path) and not FileAccess.file_exists(path + MARK):
 		return "%s is already there and is not one of Uplink's: left as it is" % file_name(slot)
+	var err := set_texts(data_dir, new)
+	if err != "":
+		return err
+	var mk := FileAccess.open(path + MARK, FileAccess.WRITE)
+	if mk == null:
+		return "%s could not be written (is the folder write-protected?)" % (file_name(slot) + MARK)
+	mk.store_string("written by Terra Nova Uplink's mission editor\n")
+	mk.close()
+	return ResFile.write(path, made["bytes"])
+
+
+# the new mission's texts alone (its name, objective lines, briefing and outfitting note) written where the game
+# reads them: what install() does with them, and what the editor calls when only they changed. "" or what went wrong.
+static func set_texts(data_dir: String, new) -> String:
+	if not (new is Dictionary) or not _is_int(new.get("slot", null)) or not SLOTS.has(int(new["slot"])):
+		return "a new mission takes slot 18 or 28"
+	var slot := int(new["slot"])
 	var texts := {}
 	var objs = new.get("objectives", ["", "", ""])
 	if not (objs is Array) or objs.size() != 3:
@@ -280,12 +297,7 @@ static func install(data_dir: String, new) -> String:
 			{slot: brief if brief != "" else " ", slot + 48: note if note != "" else " "})
 		if err != "":
 			return err
-	var mk := FileAccess.open(path + MARK, FileAccess.WRITE)
-	if mk == null:
-		return "%s could not be written (is the folder write-protected?)" % (file_name(slot) + MARK)
-	mk.store_string("written by Terra Nova Uplink's mission editor\n")
-	mk.close()
-	return ResFile.write(path, made["bytes"])
+	return ""
 
 
 # the new mission taken out again (only a file this module wrote), the game's texts put back

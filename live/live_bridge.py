@@ -898,6 +898,7 @@ def articulations(tab):
 #   'HOST' -> bouton "Host online" du visualiseur : coop en ligne a partir de maintenant (comme --guest-remote)
 #   'O' + number, order, who, kind (bytes), entity (u16), x, y (floats) -> the order wheel: a squad order (orders.py);
 #        answered on the viewer's port by 'ORDR' + number, result (0: taken), the game's order code (u16)
+#   'X' + 1 / 0 -> the viewer's photo mode: the mission paused / resumed with the game's own Pause (see photo_step)
 PLAY = '--play' in sys.argv
 SENS_X, SENS_Y, PITCH_MIN, PITCH_MAX = 12, 8, -0x2000, 0x2000
 if PLAY:
@@ -1061,6 +1062,111 @@ if PLAY and os.environ.get('TN_ORDER_WHEEL') == '1':   # (the launcher's "Order 
 ordres_t = 0.0
 
 
+# The viewer's photo mode ('X' + 1: wanted, + 0: left; said twice a second while it lasts). The mission is paused and
+# resumed by the game's own Pause command: its key (P; the player's own key for it when Terra Nova Plus moved it) is
+# pressed here, held until the game has taken it, and the game's pause flag tells what came of it. The flag: the byte
+# its clock routines set and clear ("push edx / mov ah, 1 / mov dl, [x] / mov [paused], ah / test dl, dl / jne / mov
+# eax, [ticks] / mov [since], eax": EN 0x35F3F4, FR 0x35F49C), which its main loop tests before it runs the mission.
+# Paused, the game takes no other key (its handler lets only Pause through). A press whose effect is not seen is not
+# followed by another for 0.6 s: two presses taken would pause and resume. Only a pause made here is resumed here: a
+# mission the player paused himself stays his. The game's screen of a paused mission is not sent meanwhile (menu_step:
+# the viewer goes on drawing its own scene).
+#   'PHOT' + state (u8) on the viewer's port: 0 the game runs, 1 the key is on its way, 2 paused for the photo mode,
+#   3 the game would not pause (no flag in this exe, no key for Pause, three presses not taken)
+_ph = _run_adr(re.escape(bytes.fromhex('52b4018a15')) + b'(....)' + re.escape(bytes.fromhex('8825')) + b'(....)' +
+               re.escape(bytes.fromhex('84d2750aa1')) + b'(....)' + re.escape(bytes.fromhex('a3')) + b'(....)' +
+               re.escape(bytes.fromhex('5ac3')))
+A_PAUSE = _ph[1] if _ph else None
+PAUSE_KEY = 0x19                          # the game's own key for it: P
+photo = {'want': False, 'ours': False, 'key': None, 'n': 0, 'hold': 0.0, 'was': False, 'fail': False, 'end': 0.0,
+         'said': None, 'said_t': 0.0}
+if PLAY: print('photo mode: pause flag %s' % ('%#x' % A_PAUSE if A_PAUSE else 'not found'), flush=True)
+
+
+def touche_du_jeu(sc):
+    """the key (scancode, modifier: 0 none, 1 Shift, 2 Ctrl, 3 Alt) the player's keyboard has for the game's plain key
+    sc: his own when Terra Nova Plus moved it (its table, as orders.py reads it); None: it has no place left"""
+    try:
+        if not tnp_touches() or not struct.unpack('<I', g.read(0x469A10, 4))[0]: return (sc, 0)
+        tb = struct.unpack('<512H', g.read(0x469B30, 1024))
+    except BaseException:
+        return (sc, 0)
+    for i, w in enumerate(tb):
+        if w == 0x8000 | sc: return (i >> 2, i & 3)
+    return (sc, 0) if tb[sc * 4] == 0 else None
+
+
+def photo_tient(now):
+    """the mission is (being) paused or resumed for the photo mode: not one of the game's screens"""
+    return photo['want'] or photo['ours'] or photo['key'] is not None or now - photo['end'] < 1.0
+
+
+def photo_presse(paused, now):
+    k = touche_du_jeu(PAUSE_KEY)
+    if k is None: return False
+    mk = {1: 0x2A, 2: 0x1D, 3: 0x38}.get(k[1], 0)
+    with touches:
+        if mk: post_key(mk, True)
+        post_key(k[0], True)
+        tenues.pop(k[0], None)                           # (never repeated: a second press would undo the first)
+    photo['key'], photo['was'], photo['n'] = (k[0], mk, now), paused, photo['n'] + 1
+    return True
+
+
+def photo_step(now, en_mission):
+    ph = photo
+    try:
+        paused = bool(g.read(A_PAUSE, 1)[0]) if A_PAUSE else None
+    except BaseException:
+        paused = None
+    if ph['key'] is not None:                            # its key is down: up once the game has taken it
+        sc, mk, t0 = ph['key']
+        if paused != ph['was'] or now - t0 > 0.15:
+            with touches:
+                post_key(sc, False)
+                if mk: post_key(mk, False)
+            ph['key'] = None
+            ph['hold'] = 0.0 if paused != ph['was'] else now + 0.6
+    elif ph['hold'] and (paused != ph['was'] or now >= ph['hold']):
+        ph['hold'] = 0.0
+    libre = ph['key'] is None and not ph['hold'] and not (ordres is not None and ordres.typing)
+    if ph['want']:
+        if paused is None:
+            ph['fail'] = True
+        elif paused:
+            if ph['n']: ph['ours'] = True                # (paused by a press of this bridge)
+            ph['n'] = 0
+        elif libre and not ph['fail'] and en_mission:
+            ph['ours'] = False
+            if ph['n'] >= 3 or not photo_presse(paused, now): ph['fail'] = True
+    else:
+        ph['fail'] = False
+        if ph['ours'] and paused is False:               # resumed
+            ph['ours'], ph['n'], ph['end'] = False, 0, now
+        elif ph['ours'] and libre:
+            if ph['n'] >= 4 or not photo_presse(paused, now):
+                ph['ours'], ph['n'], ph['end'] = False, 0, now    # (given up: the player's own Pause key resumes it)
+        elif not ph['ours']:
+            ph['n'] = 0
+    st = 3 if ph['fail'] else 2 if ph['want'] and paused else 1 if ph['want'] or ph['ours'] or ph['key'] is not None else 0
+    if st != ph['said'] or (now - ph['said_t'] > 0.25 and (st or now - ph['end'] < 1.0)):
+        ph['said'], ph['said_t'] = st, now
+        s.sendto(b'PHOT' + bytes([st]), ('127.0.0.1', 47821))
+
+
+def photo_fin():
+    """the bridge stops: a mission it paused for the photo mode is resumed"""
+    try:
+        if not (PLAY and photo['ours'] and A_PAUSE and g.read(A_PAUSE, 1)[0]): return
+        if photo['key'] is None and not photo_presse(True, time.time()): return
+        t0 = time.time()
+        while time.time() - t0 < 0.4 and g.read(A_PAUSE, 1)[0]: time.sleep(0.005)
+        post_key(photo['key'][0], False)
+        if photo['key'][1]: post_key(photo['key'][1], False)
+    except BaseException:
+        pass
+
+
 def handle_input():
     global guest
     look = False
@@ -1091,6 +1197,11 @@ def handle_input():
             with trace_lock: trace.append((time.time(), bytes(pk[1:5])))
         elif pk[:1] == b'F' and len(pk) == 2:
             curseur['libre'] = time.time() if pk[1] else 0.0
+        elif pk[:1] == b'X' and len(pk) == 2:
+            if bool(pk[1]) != photo['want']:
+                photo['want'], photo['end'] = bool(pk[1]), time.time()
+                if pk[1]: photo['fail'], photo['n'] = False, 0
+                print('photo mode:', 'pause wanted' if pk[1] else 'left', flush=True)
         elif pk[:1] == b'R' and len(pk) >= 5:
             dx, dy = struct.unpack('<hh', pk[1:5])
             glisse['du'][0] += dx; glisse['du'][1] += dy
@@ -1465,6 +1576,7 @@ def menu_step(grab, tx, last_c, last_t, mode, n, img_n, prev, sent_t, mod_t, fw,
     if True:
         c = d32(COPIES); now = time.time()
         if c != last_c: last_c, last_t = c, now
+        if PLAY and photo_tient(now): last_t = now       # (paused for the viewer's photo mode: its 3D is not "stopped")
         # un ecran du jeu : sa 3D arretee, ou sa souris dans un cadre de menu (640 x 480 ; la 3D de TN+ tourne encore
         # au debut de certains ecrans, comme la base : leur image passait alors par le HUD, assombrie)
         fw, fh = struct.unpack('<hh', g.read(m_frame, 4)) if PLAY else (0, 0)   # sans --play : la 3D arretee seulement
@@ -1935,6 +2047,7 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
 atexit.register(cursor_restore)
 atexit.register(maj_lacher)               # (a Shift still down when the bridge stops: the player would bound on)
 atexit.register(courir_fin)               # (the run: the suit's own pace and the Bound back)
+atexit.register(photo_fin)                # (a mission paused for the photo mode: resumed)
 if not RUN: courir_fin()                  # (a bridge with the run on, stopped dead, left the Bound off: free again)
 atexit.register(lambda: guest and guest.tag.restore())   # coop: the pilot's own name back in the game
 if viewer is not None:                    # le jeu ferme (lecture ratee) ou le pont arrete : le visualiseur aussi
@@ -2369,6 +2482,7 @@ while True:
         threading.Thread(target=menu_loop, daemon=True).start()
     if PLAY:
         handle_input()
+        photo_step(time.time(), x + y > 0 and not curseur['menu'])
         if ordres is not None and time.time() - ordres_t > 0.2:   # the order wheel: the squad, the lock, who can be attacked
             ordres_t = time.time()
             try:

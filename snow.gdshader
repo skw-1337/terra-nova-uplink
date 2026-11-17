@@ -11,6 +11,7 @@ uniform float sway = 0.06;                      // flutter amplitude (the game's
 uniform float size = 0.03;                      // flake size (units)
 uniform float stretch = 1.0;                    // rain: streaks along the fall
 uniform vec4 color : source_color = vec4(0.92, 0.95, 1.0, 0.9);
+uniform float now = 0.0;                        // seconds (the viewer's weather_t: it can stop, the photo mode)
 global uniform float tn_ir;                     // the game's infrared view: its flakes do not show in it
 
 varying vec2 uv;
@@ -20,9 +21,9 @@ void vertex() {
 	vec4 c = INSTANCE_CUSTOM;
 	float ph = c.w;
 	float spd = 0.6 + 0.8 * fract(ph * 7.31);    // the game: fall 1-4 at random per step
-	vec3 p = c.xyz * box + drift * spd * TIME;
-	p.x += sway * sin(TIME * (1.3 + ph) + ph * 6.2832);
-	p.z += sway * cos(TIME * (1.1 + ph) + ph * 4.0);
+	vec3 p = c.xyz * box + drift * spd * now;
+	p.x += sway * sin(now * (1.3 + ph) + ph * 6.2832);
+	p.z += sway * cos(now * (1.1 + ph) + ph * 4.0);
 	vec3 cam = CAMERA_POSITION_WORLD;
 	vec3 rel = mod(p - cam, box) - box * 0.5;
 	// fade at the box's walls (no popping where flakes wrap) and right in front of the lens

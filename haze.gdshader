@@ -7,6 +7,7 @@ render_mode unshaded, cull_disabled, shadows_disabled, fog_disabled, depth_draw_
 uniform sampler2D screen_tex : hint_screen_texture, repeat_disable, filter_linear;
 uniform float shift = 0.03;            // how far the picture is shifted, in screen heights (the game: a strong lens)
 uniform float widest = 0.0775;         // the disc's greatest half size per unit of distance (64 pixels of the game's picture)
+global uniform float tn_time;          // seconds, the viewer's clock (it stops in the photo mode)
 varying float seed;
 
 void vertex() {
@@ -21,7 +22,7 @@ void vertex() {
 void fragment() {
 	float r = length(UV - vec2(0.5)) * 2.0;
 	float k = 1.0 - smoothstep(0.7, 1.0, r);
-	vec2 wave = vec2(sin(UV.y * 9.0 + seed * 40.0 + TIME * 19.0), cos(UV.x * 7.0 + seed * 31.0 + TIME * 23.0));
+	vec2 wave = vec2(sin(UV.y * 9.0 + seed * 40.0 + tn_time * 19.0), cos(UV.x * 7.0 + seed * 31.0 + tn_time * 23.0));
 	ALBEDO = texture(screen_tex, SCREEN_UV + wave * shift * k).rgb;
 	ALPHA = k > 0.01 ? 1.0 : 0.0;
 }

@@ -50,3 +50,7 @@ tn_ir={
 "type": "float",
 "value": 0.0
 }
+tn_time={
+"type": "float",
+"value": 0.0
+}

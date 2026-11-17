@@ -42,6 +42,7 @@ uniform vec3 water_far : source_color = vec3(0.41, 0.54, 0.5);   // the mean col
 // through the 2D library's inverse palette: the nearest colour in RGB, 5 bits a channel), and not hazed again
 uniform sampler2D pal_tex : filter_nearest;   // 256 x 1, the planet's palette
 uniform bool has_pal = false;
+global uniform float tn_time;              // seconds, the viewer's clock (it stops in the photo mode)
 
 varying vec3 wpos;
 varying vec2 g;
@@ -91,7 +92,7 @@ void fragment() {
 	if (modern) {
 		vec3 v = normalize(wpos - CAMERA_POSITION_WORLD);
 		float dist = length(wpos - CAMERA_POSITION_WORLD);
-		vec2 sm = tn_waves(wpos.xz, TIME, dist);
+		vec2 sm = tn_waves(wpos.xz, tn_time, dist);
 		vec3 nm = normalize(vec3(-sm.x, 1.0, -sm.y));
 		vec3 rm = reflect(v, nm);
 		rm.y = max(rm.y, 0.07);
@@ -110,7 +111,7 @@ void fragment() {
 		float h = (0.5 + 0.5 * hp.y / hp.w) * VIEWPORT_SIZE.y - px;     // (FRAGCOORD: rows down from the top)
 		vec2 fc = FRAGCOORD.xy;
 		// each of the 14 colour indices gets its own pixel of jitter (-1, 0, 1 on both axes), drawn again each frame
-		float frame = floor(TIME * 30.0);
+		float frame = floor(tn_time * 30.0);
 		vec2 jit = floor(vec2(hash(vec2(idx, frame)), hash(vec2(idx + 17.0, frame))) * 3.0) - 1.0;
 		vec2 src = vec2(fc.x, 2.0 * h - fc.y) + jit * px;
 		vec3 ps = to_srgb(own);              // (the texel's own colour: the game's value as is)

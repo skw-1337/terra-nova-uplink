@@ -16,6 +16,8 @@ uniform float light_amb = 1.0;
 uniform float light_dif = 0.0;
 uniform vec3 light_rows[16];
 instance uniform float mirror = 0.0;   // a left limb: the right one's picture, mirrored
+instance uniform float fade_top = 0.0; // > 0: a thigh, dissolved towards the hip over this share of its length (nothing
+                                       // is drawn above it: it ended in a clean cut under the cockpit's rim)
 
 varying vec3 wn;
 
@@ -31,6 +33,14 @@ void fragment() {
 	vec4 c = texture(views, vec3(uv, front));
 	if (c.a < 0.5) {                       // (a see-through texel at the picture's edge: the limb's middle there)
 		c = texture(views, vec3(0.5, uv.y, front));
+	}
+	if (fade_top > 0.0) {
+		float keep = smoothstep(0.08, fade_top, UV.y);
+		vec2 q = floor(FRAGCOORD.xy);
+		float d = fract(52.9829189 * fract(0.06711056 * q.x + 0.00583715 * q.y));   // (interleaved gradient noise)
+		if (d > keep) {
+			discard;
+		}
 	}
 	vec3 f = vec3(1.0);
 	if (lit) {

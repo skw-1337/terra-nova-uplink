@@ -4,7 +4,7 @@
 # With the game (TN_GAME_DIR, or one of tn_data.gd's usual places): every script module of RESBABL2.RES is read
 # without an unknown opcode, every mission has its summary, and missions 37 and 8 say what the game does; then, on
 # a COPY of the three data files in the test's own folder (never in the game's): numbers changed in place, scripts
-# rebuilt from blocks, the game's file kept and put back.
+# rebuilt from blocks, a new mission written in slot 18, the game's files kept and put back.
 #   godot --headless --path . --script res://live/test_mission_script.gd [-- dump N]
 extends SceneTree
 
@@ -12,6 +12,7 @@ const Babl := preload("res://scripts/babl.gd")
 const MissionScript := preload("res://scripts/mission_script.gd")
 const MissionBuild := preload("res://scripts/mission_build.gd")
 const ResFile := preload("res://scripts/res_file.gd")
+const MissionNew := preload("res://scripts/mission_new.gd")
 const TNData := preload("res://scripts/tn_data.gd")
 
 var fails := 0
@@ -206,7 +207,7 @@ func _write(game_data: String) -> void:
 	DirAccess.make_dir_recursive_absolute(dir)
 	for f in DirAccess.get_files_at(dir):
 		DirAccess.remove_absolute(dir.path_join(f))
-	for f in ["RESBABL2.RES", "RESGAME.RES", "RESMISS.RES"]:
+	for f in ["RESBABL2.RES", "RESGAME.RES", "RESMISS.RES", "MISS37.RES"]:
 		DirAccess.copy_absolute(game_data.path_join(f), dir.path_join(f))
 	var game_file := FileAccess.get_file_as_bytes(game_data.path_join("RESBABL2.RES"))
 	var mo = MissionScript.open(dir, true)
@@ -347,3 +348,74 @@ func _write(game_data: String) -> void:
 	err = MissionBuild.install(dir, {})
 	_check(err == "" and FileAccess.get_file_as_bytes(dir.path_join("RESBABL2.RES")) == game_file,
 		"the game's file is put back")
+	_new_mission(dir, game_data)
+
+
+# ---- a brand new mission in an empty slot
+func _new_mission(dir: String, game_data: String) -> void:
+	var game_texts := FileAccess.get_file_as_bytes(game_data.path_join("RESGAME.RES"))
+	var game_names := FileAccess.get_file_as_bytes(game_data.path_join("RESMISS.RES"))
+	var like := ResFile.read(game_data.path_join("MISS37.RES"))
+	var src: PackedByteArray = ResFile.items(ResFile.data(like, 173))[0]
+	var new18 := {"slot": 18, "like": "MISS37.RES",
+		"zones": [[0, 256 << 16, 209 << 16], [31, 261 << 16, 217 << 16], [4, 228 << 16, 185 << 16]],
+		"sides": {"3": 1},
+		"add": [{"from": "MISS37.RES", "rec": 0, "label": 7, "g": 3, "x": 258 << 16, "o": [27, 1]}],
+		"name": "OPERATION TEST", "objectives": ["First", "", "Third"]}
+	var err := MissionNew.install(dir, new18)
+	_check(err == "", "a new mission is written in slot 18 %s" % err)
+	var f := ResFile.read(dir.path_join("MISS18.RES"))
+	var ids := []
+	for e in f.get("entries", []):
+		ids.append(e["id"])
+	_check(ids == [170, 171, 172, 173, 174, 175, 176, 177, 178, 180, 181, 182], "it has the twelve resources of a mission")
+	var units: Array = ResFile.items(ResFile.data(f, 173))
+	var u: PackedByteArray = units[0] if units.size() == 1 else PackedByteArray()
+	var same_rest := u.size() == 50
+	if same_rest:
+		for o in range(6, 50):
+			if not [7, 8, 9, 10, 11, 26, 27].has(o):
+				same_rest = same_rest and u[o] == src[o]
+	_check(same_rest and u[26] == 7 and u[7] == 3 and u.decode_s32(8) == 258 << 16 and u[27] == 1
+		and u.decode_u16(2) == 1 and u.decode_u16(4) == 1, "its unit is the game's record with what was asked changed")
+	var z := ResFile.data(f, 176)
+	_check(z.size() == 1024 and z.decode_s32(0) == 256 << 16 and z.decode_s32(8 * 31 + 4) == 217 << 16
+		and z.decode_s32(8 * 4) == 228 << 16 and z.decode_s32(8) == 0, "its zones are where they were put")
+	_check(ResFile.data(f, 174)[3] == 1 and ResFile.data(f, 174)[4] == 2 and ResFile.data(f, 180) == PackedByteArray([4, 0])
+		and ResFile.data(f, 178) == ResFile.data(like, 178) and ResFile.data(f, 181).size() == 1604
+		and ResFile.data(f, 182).size() == 1280, "sides, version, parameters, reinforcements and shapes as the game's files")
+	var map_name := ResFile.data(f, 170).slice(0, 9).get_string_from_ascii()
+	_check(map_name == ResFile.data(like, 170).slice(0, 9).get_string_from_ascii() and ResFile.data(f, 170).size() == 80,
+		"it takes the map of the mission it is like (%s)" % map_name)
+	var ms = MissionScript.open(dir)
+	_check(ms.obj_texts.size() == 144 and ms.obj_texts[54] == "First" and ms.obj_texts[56] == "Third"
+		and ms.mission_names[17] == "OPERATION TEST" and ms.obj_texts[57] != "", "its name and objective lines are in the game's tables")
+	var mo = MissionScript.open(dir, true)
+	_check(mo.mission_names[17] != "OPERATION TEST" and FileAccess.get_file_as_bytes(dir.path_join("RESGAME.RES.uplink-original")) == game_texts,
+		"the game's own tables are kept beside")
+	# what a creation must not do
+	var bad: Dictionary = new18.duplicate(true)
+	bad["zones"].remove_at(1)
+	_check(MissionNew.mission_file(dir, bad)["error"] != "", "a mission without its pickup zone is refused")
+	bad = new18.duplicate(true)
+	bad["slot"] = 19
+	_check(MissionNew.mission_file(dir, bad)["error"] != "", "slot 19 is refused")
+	bad = new18.duplicate(true)
+	bad["like"] = "..\\MISS37.RES"
+	_check(MissionNew.mission_file(dir, bad)["error"] != "", "a path in place of a mission name is refused")
+	bad = new18.duplicate(true)
+	bad["add"][0]["rec"] = 99
+	_check(MissionNew.mission_file(dir, bad)["error"] != "", "a unit copied from a record the game does not have is refused")
+	bad = new18.duplicate(true)
+	bad["add"][0]["g"] = 32
+	_check(MissionNew.mission_file(dir, bad)["error"] != "", "group 32 is refused")
+	DirAccess.copy_absolute(game_data.path_join("MISS37.RES"), dir.path_join("MISS28.RES"))
+	bad = new18.duplicate(true)
+	bad["slot"] = 28
+	_check(MissionNew.install(dir, bad) != "" and FileAccess.get_file_as_bytes(dir.path_join("MISS28.RES"))
+		== FileAccess.get_file_as_bytes(game_data.path_join("MISS37.RES")), "a mission file that is not Uplink's is never replaced")
+	_check(MissionNew.remove(dir, 28) != "" and FileAccess.file_exists(dir.path_join("MISS28.RES")), "nor removed")
+	err = MissionNew.remove(dir, 18)
+	_check(err == "" and not FileAccess.file_exists(dir.path_join("MISS18.RES"))
+		and FileAccess.get_file_as_bytes(dir.path_join("RESGAME.RES")) == game_texts
+		and FileAccess.get_file_as_bytes(dir.path_join("RESMISS.RES")) == game_names, "the new mission is removed, the game's tables are back")

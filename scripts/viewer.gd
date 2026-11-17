@@ -2434,7 +2434,7 @@ func _gait_game(node: Node3D, m: Dictionary, dt: float) -> void:
 	sg.step(node.position.x, node.position.z, ez + float(sg.zoff), h, dt, t, gk[3], gk[4], gk[5], vel)
 	sg.pose()
 	# the suit on its lowest toe (as with the game's poses), the joints from there (right, up, forward)
-	var jj: Array[Vector3] = sg.J
+	var jj: Array[Vector3] = sg.D                    # (its joints with their jumps spread out, suit_gait.gd D)
 	var base := minf(jj[0].z, jj[1].z)
 	if fresh and absf(node.position.y - base) < 1.0:
 		node.set_meta("y_off", [node.position.y - base, now])   # (from the game's pose: its height eased, _y_ease)

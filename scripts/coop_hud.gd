@@ -7,6 +7,9 @@
 # host's name and Steam avatar in the COMM panel (set_mate, from coop_net.gd), the game's crosshair and its armour
 # indicator (light blue, its damaged parts in the game's yellow and red). Before the first cockpit: a plain crosshair and armour bar. Online, the host window's coop_net.gd relays the packets over Steam and the guest's
 # coop_net.gd forwards them here. Nothing is drawn when no packet came for 2 s.
+# The map panel is the game's own picture of the ground (_ground: its colour tables, a pixel a world unit, north up)
+# with the marks the host's game would draw for him ('GHD' ends with them, coop_guest.py map_block), and the small box
+# over it shows his weapon as the game's does (TN_GUEST_REAR=1: the rear view Uplink had there before).
 extends CanvasLayer
 
 const LGRes = preload("res://scripts/lgres.gd")
@@ -41,6 +44,19 @@ const INDICATOR := 506
 const INDICATOR_AT := Vector2i(211, 144)     # from the 3D window's corner, in the cockpit view (the host's says where)
 const CROSS := 505                            # the game's cursors: the first is the crosshair, its tip at 6, 10
 const CROSS_TIP := Vector2i(6, 10)
+
+# The small box over the map (the game's region at 146, 226, 26 x 26; its routine 0x265094): RESHLMHI.RES 535, a
+# frame for each weapon type (the game's table at 0x35A9BC)
+const BOX_PICS := 535
+const BOX_FRAME := [8, 9, 11, 0, 6, 1, 2, 4, 7, 3, 5, 12, 8, 10, 10, 13, 14, 15]
+const BOX := Rect2i(146, 226, 26, 26)
+# The map panel (the game's region 118, 264 - 202, 372; its routine 0x2774c0): a pixel for a world unit, two screen
+# rows for one; a point's colour = RESPLNT 54 [light, RESPLNT 71 [material (RESPLNT 43) of its tile, its height]],
+# the light from the slope towards the next point east through the game's table at 0x35B3F2 (mission 8: 0x35B432)
+const MAP_BOX := Rect2i(118, 264, 84, 108)
+const MAP_LIGHT := "02020202020202020202020202020202030303030303030304040404040404040405050505060606060606060707070707070606060606060505050505050404"
+const MAP_LIGHT_8 := "04040404040404040404040404040404040404040404040404040404040404040505050505050505050505050505050505050505050505050505050505050505"
+enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT }   # the marks' kinds (coop_guest.py)
 
 const HUD_PORT := 47832
 const TIMEOUT := 2.0
@@ -89,13 +105,26 @@ var down_text: Label
 var spec_label: Label
 var cockpit: TextureRect             # the game's cockpit (from the host's screen), over the whole window
 var panel: Control                   # what is drawn on it, in the game's 320 x 400 screen units (_draw_panel)
-var map_view: SubViewport            # the map: the 3D world from above, around the guest
-var map_cam: Camera3D
-var map_rect: TextureRect
+var ground: Image                    # the map: the game's picture of the whole ground (513 x 513, a pixel a unit)
+var ground_of := ""                  # ... of which map file
+var map_img: Image                   # the panel's picture: the ground around him and the marks
+var map_tex: ImageTexture
+var map_dirty := true
+var note_font := PackedByteArray()    # the game's small letters (the map's written notes)
+var pal_map := ""                    # the map file the palette was taken with (another planet: other ground colours)
+var map_from := Vector2i.ZERO        # its top left corner in the world, and the world units of a pixel
+var map_step := 1
+var map_marks := []                  # the marks the host's game would draw: [kind, palette colour, payload]
+var map_told := false                # the host sends them (an older host: the squad from the view's entities)
+var weapon_state := 0                # his weapon: 0 ready, 1 destroyed, 2 no ammunition, 5 not ready yet
+var weapon_ammo := 0xFFFF            # its ammunition (0xFFFF: a weapon that counts none)
+var tints := [PackedByteArray(), PackedByteArray()]   # the game's colour tables for states 1-2 and 5
+var box_pics := {}                   # weapon type and table -> the small box's texture
 var status_page := false             # Tab (or the STATUS tab with the mouse free): his weapon slots, jump, lock
 var slot_types := PackedByteArray([0, 0, 0, 0])
 var jump_ready := true
-var rear_view: SubViewport            # the dashboard's rear view (the game's small screen under the 3D window)
+var rear_on := OS.get_environment("TN_GUEST_REAR") == "1"   # the small box as a rear view instead of his weapon
+var rear_view: SubViewport            # the rear view (TN_GUEST_REAR=1)
 var rear_cam: Camera3D
 var rear_rect: TextureRect
 var big_map := false                 # M (or the MAP button with the mouse free): the map over the 3D window, wider
@@ -137,41 +166,23 @@ func _ready() -> void:
 	cockpit.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	cockpit.visible = false
 	root.add_child(cockpit)
-	map_view = SubViewport.new()
-	map_view.size = Vector2i(168, 216)
-	map_view.world_3d = get_viewport().world_3d
-	map_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	add_child(map_view)
-	map_cam = Camera3D.new()
-	map_cam.projection = Camera3D.PROJECTION_ORTHOGONAL
-	map_cam.size = 60.0
-	map_cam.far = 600.0
-	map_cam.environment = get_parent().env_nofog()       # (high above the map: the live view's fog would cover it)
-	map_cam.cull_mask = 0xFFFFF & ~(1 << 16)             # nor the haze of the ground (the viewer's NO_HAZE_LAYER)
-	map_view.add_child(map_cam)
-	map_rect = TextureRect.new()
-	map_rect.texture = map_view.get_texture()
-	map_rect.stretch_mode = TextureRect.STRETCH_SCALE
-	map_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	map_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	map_rect.visible = false
-	root.add_child(map_rect)
-	rear_view = SubViewport.new()
-	rear_view.size = Vector2i(120, 100)
-	rear_view.world_3d = get_viewport().world_3d
-	add_child(rear_view)
-	rear_cam = Camera3D.new()
-	rear_cam.fov = 60.0
-	rear_cam.far = 400.0
-	rear_cam.cull_mask = 0xFFFFF & ~(1 << 18)            # not his own body (the viewer's PLAYER_LAYER)
-	rear_view.add_child(rear_cam)
-	rear_rect = TextureRect.new()
-	rear_rect.texture = rear_view.get_texture()
-	rear_rect.stretch_mode = TextureRect.STRETCH_SCALE
-	rear_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	rear_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	rear_rect.visible = false
-	root.add_child(rear_rect)
+	if rear_on:
+		rear_view = SubViewport.new()
+		rear_view.size = Vector2i(120, 100)
+		rear_view.world_3d = get_viewport().world_3d
+		add_child(rear_view)
+		rear_cam = Camera3D.new()
+		rear_cam.fov = 60.0
+		rear_cam.far = 400.0
+		rear_cam.cull_mask = 0xFFFFF & ~(1 << 18)            # not his own body (the viewer's PLAYER_LAYER)
+		rear_view.add_child(rear_cam)
+		rear_rect = TextureRect.new()
+		rear_rect.texture = rear_view.get_texture()
+		rear_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		rear_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		rear_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rear_rect.visible = false
+		root.add_child(rear_rect)
 	panel = Control.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -301,6 +312,7 @@ func _process(delta: float) -> void:
 					levels = pk.slice(so + 12, so + 17)
 					indicator_at = Vector2i(pk.decode_s16(so + 17), pk.decode_s16(so + 19))
 					squad_health = pk.slice(so + 21, so + 24)
+					_map_packet(pk, so + 24)
 			if pk.size() >= 52:
 				host_pos = Vector3(pk.decode_float(40), pk.decode_float(48) - 0.12, pk.decode_float(44))
 			if pk.size() >= 28:
@@ -308,13 +320,15 @@ func _process(delta: float) -> void:
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true
+			map_dirty = true
 	root.visible = clock - last < TIMEOUT
 	if got and root.visible:
 		_update()
 	if root.visible:
-		if cockpit.visible:
-			_map_follow()
-		_rear_follow()
+		if map_dirty and cockpit.visible and state == 0:
+			_map_paint()
+		if rear_on:
+			_rear_follow()
 		panel.visible = true
 		panel.queue_redraw()
 
@@ -325,7 +339,6 @@ func _update() -> void:
 	bottom.visible = state == 0 and not ck
 	cockpit.visible = ck
 	panel.visible = ck
-	map_rect.visible = ck and state == 0
 	down_title.visible = state == 1
 	down_text.visible = state == 1
 	spec_label.visible = state == 2
@@ -348,9 +361,20 @@ func _cockpit(pk: PackedByteArray) -> void:
 	if vp and "hud_win" in vp:
 		vp.hud_win = Rect2i(win)
 	var pal := pk.slice(11, 11 + 768)
-	if hud_pal.is_empty():
+	var map_now := str(vp.current.get("map_path", "")) if vp and "current" in vp else ""
+	if hud_pal.is_empty() or map_now != pal_map:             # (the game's palette changes with the planet)
+		pal_map = map_now
+		hud_pal.clear()
 		for i in 256:
 			hud_pal.append(Color8(pal[3 * i], pal[3 * i + 1], pal[3 * i + 2]))
+		weapon_pics.clear()
+		box_pics.clear()
+		faces.clear()
+		indicator_tex.clear()
+		cross_tried = false
+		cross_tex = null
+		ground_of = ""
+		map_dirty = true
 	var raw := pk.slice(11 + 768).decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
 	if raw.size() != 320 * 400 * 2:
 		return
@@ -398,32 +422,299 @@ func _preview_avatar(_id: int, size: int, data: PackedByteArray) -> void:
 	set_mate(name, img)
 
 
-# the map's units: teammates green, the host blue, others red; north-up like the 3D (his heading up)
-func _draw_map_units() -> void:
+# the end of a 'GHD' packet (coop_guest.py map_block): 'M', flags (bit 0: the weapon box's two colour tables follow),
+# his weapon's state and ammunition, the number of marks, then the marks: kind, colour, payload length, payload
+func _map_packet(pk: PackedByteArray, at: int) -> void:
+	if at + 6 > pk.size() or pk[at] != 0x4D:
+		return
+	var p := at + 6
+	if pk[at + 1] & 1:
+		if p + 512 > pk.size():
+			return
+		var t := [pk.slice(p, p + 256), pk.slice(p + 256, p + 512)]
+		if t != tints:
+			tints = t
+			box_pics.clear()
+		p += 512
+	weapon_state = pk[at + 2]
+	weapon_ammo = pk.decode_u16(at + 3)
+	var marks := []
+	for i in pk[at + 5]:
+		if p + 3 > pk.size() or p + 3 + pk[p + 2] > pk.size():
+			break
+		marks.append([pk[p], pk[p + 1], pk.slice(p + 3, p + 3 + pk[p + 2])])
+		p += 3 + pk[p + 2]
+	map_marks = marks
+	map_told = true
+
+
+# The game's picture of the whole ground, as its map panels draw it (0x2774c0), from his own game files in the
+# game's palette: 513 x 513, a pixel for a point of the map. Null: no map yet, or files without the tables.
+# Not done: the picture a few missions lay over a part of their map (the game's resource 0x18C + mission).
+func _ground() -> Image:
+	var vp := get_parent()
+	if vp == null or not ("current" in vp) or hud_pal.is_empty():
+		return null
+	var cur: Dictionary = vp.current
+	var path := str(cur.get("map_path", ""))
+	if path != pal_map:
+		return null                                          # (the palette of the map before: wait for this one's)
+	if path == ground_of:
+		return ground
+	ground_of = path
+	ground = null
+	if path == "":
+		return null
+	var mission := str(cur["entry"]["file"]).get_file().to_upper().trim_prefix("MISS").to_int()
+	var m = LGRes.open(path)
+	var pl = LGRes.open(vp.data.resolve(cur["entry"]["file"], str(cur["map"].get("planet", ""))))
+	if m == null or pl == null or not m.has(86) or not pl.has(43) or not pl.has(71) or not pl.has(54):
+		return null
+	var d: PackedByteArray = m.data(86)
+	var material: PackedByteArray = pl.data(43)
+	var by_height: PackedByteArray = pl.data(71)
+	var lit: PackedByteArray = pl.data(54)
+	const N := 513 * 513
+	if d.size() < N * 3 or material.size() < 64 or by_height.size() < 4096 or lit.size() < 2048:
+		return null
+	var light := (MAP_LIGHT_8 if mission == 8 else MAP_LIGHT).hex_decode()
+	var rgba := PackedByteArray()
+	rgba.resize(N * 4)
+	rgba.fill(255)
+	var h := (d[2] << 4) | (d[1] >> 4)                       # 12-bit heights, signed
+	h = h - 4096 if h >= 2048 else h
+	for i in N:
+		var east := h
+		if i + 1 < N:
+			east = (d[3 * i + 5] << 4) | (d[3 * i + 4] >> 4)
+			east = east - 4096 if east >= 2048 else east
+		var c := 0
+		if mission != 29:                                    # (mission 29: the game leaves its map black)
+			var lv := light[clampi(((h - east + 8192) >> 1) - 4096 + 32, 0, 63)]
+			c = lit[lv * 256 + by_height[(material[d[3 * i] & 0x3F] & 15) * 256 + ((h + 0x800) >> 4)]]
+		var col := hud_pal[c]
+		rgba[4 * i] = col.r8
+		rgba[4 * i + 1] = col.g8
+		rgba[4 * i + 2] = col.b8
+		h = east
+	ground = Image.create_from_data(513, 513, false, Image.FORMAT_RGBA8, rgba)
+	return ground
+
+
+# the map picture's size, in the game's pixels: the panel's, or (M) the 3D window's
+func _map_size() -> Vector2i:
+	if big_map and win.size.y > 0:
+		return Vector2i(int(win.size.x) - 24, (int(win.size.y) - 16) & ~1)
+	return MAP_BOX.size
+
+
+func _map_box() -> Rect2:
+	if big_map and win.size.y > 0:
+		var sz := _map_size()
+		return _grect(win.position.x + 12.0, win.position.y + 8.0, win.position.x + 12.0 + sz.x, win.position.y + 8.0 + sz.y)
+	return _grect(MAP_BOX.position.x, MAP_BOX.position.y, MAP_BOX.end.x, MAP_BOX.end.y)
+
+
+# a place of the world (1/64 units, two words of a mark) -> its pixel of the map picture, as the game's (a screen
+# row is half a pixel)
+func _map_at(d: PackedByteArray, o: int, plus := Vector2i.ZERO) -> Vector2i:
+	if o + 4 > d.size():
+		return Vector2i(-99, -99)
+	var w := Vector2(d.decode_u16(o) + plus.x, d.decode_u16(o + 2) + plus.y) / 64.0
+	return Vector2i(floori((w.x - map_from.x) / map_step), floori((w.y - map_from.y) * 2.0 / map_step))
+
+
+func _dot(img: Image, x: int, y: int, c: Color) -> void:
+	if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
+		img.set_pixel(x, y, c)
+
+
+func _line(img: Image, a: Vector2i, b: Vector2i, c: Color) -> void:
+	var n := maxi(absi(b.x - a.x), absi(b.y - a.y))
+	if n > 2000:
+		return
+	for i in n + 1:
+		var t := float(i) / maxf(n, 1.0)
+		_dot(img, roundi(lerpf(a.x, b.x, t)), roundi(lerpf(a.y, b.y, t)), c)
+
+
+# a unit's mark as the game's (0x277bac, its 400-row screen): 3 pixels across, 5 rows down
+func _cross(img: Image, p: Vector2i, c: Color, rows := 2) -> void:
+	for k in range(-1, 2):
+		_dot(img, p.x + k, p.y, c)
+	for k in range(-rows, rows + 1):
+		_dot(img, p.x, p.y + k, c)
+
+
+# The map panel's picture: the ground around him (north up, him in the middle, kept inside the map: 0x2779a0) and the
+# marks the host's game would draw for him, in its order: the mission's notes, the squad's contacts (a building: its
+# outline), himself with a line where he faces (6 pixels), the squad's waypoints, the nav marker (0x276ef8).
+func _map_paint() -> void:
+	map_dirty = false
+	var size := _map_size()
+	if size.x < 8 or size.y < 8:
+		return
+	map_step = 2 if big_map else 1                           # world units a pixel (the game's zooms 2 and 4)
+	var span := Vector2i(size.x * map_step, size.y / 2 * map_step)
+	map_from = Vector2i(clampi(floori(guest_xy.x) - span.x / 2, 0, maxi(0, 512 - span.x)),
+			clampi(floori(guest_xy.y) - span.y / 2, 0, maxi(0, 512 - span.y)))
+	var img := Image.create_empty(size.x, size.y, false, Image.FORMAT_RGBA8)
+	img.fill(Color.BLACK)
+	var g := _ground()
+	if g != null:
+		var part := Image.create_empty(span.x, span.y, false, Image.FORMAT_RGBA8)
+		part.fill(Color.BLACK)
+		part.blit_rect(g, Rect2i(map_from, span), Vector2i.ZERO)
+		part.resize(size.x, size.y, Image.INTERPOLATE_NEAREST)
+		img = part
+	var pal := hud_pal
+	for m in map_marks:
+		var d: PackedByteArray = m[2]
+		var c: Color = pal[m[1]] if not pal.is_empty() else Color.WHITE
+		var p := _map_at(d, 0)
+		match m[0]:
+			M_CROSS:
+				_cross(img, p, c)
+			M_SELF:
+				_cross(img, p, c)
+				var a := heading / 65536.0 * TAU
+				_line(img, p, p + Vector2i(roundi(6.0 * cos(a)), roundi(12.0 * sin(a))), c)
+			M_SHAPE:
+				for k in range(0, d.size() - 3, 4):
+					_line(img, _map_at(d, k), _map_at(d, (k + 4) % (d.size() & ~3)), c)
+			M_WAYPOINT:
+				_frame(img, p - Vector2i(2, 2), p + Vector2i(1, 1), c)
+			M_NAV:
+				_cross(img, p, c, 1)
+			M_RECT, M_ROUND, M_TEXT:
+				if d.size() < 8:
+					continue
+				var q := _map_at(d, 0, Vector2i(d.decode_u16(4), d.decode_u16(6)))
+				if m[0] == M_RECT:
+					_frame(img, p, q, c)
+				elif m[0] == M_ROUND:
+					var r := (q.x - p.x) / 2.0
+					for k in 64:
+						_dot(img, roundi((p.x + q.x) / 2.0 + r * cos(k * TAU / 64.0)), roundi((p.y + q.y) / 2.0 + r * sin(k * TAU / 64.0)), c)
+				else:
+					_write(img, p, d.slice(8), c)
+	if not map_told:                                         # an older host: the squad from the view's entities
+		_map_squad(img)
+	map_img = img
+	if map_tex == null or Vector2i(map_tex.get_size()) != size:
+		map_tex = ImageTexture.create_from_image(img)
+	else:
+		map_tex.update(img)
+
+
+# a note's letters in the game's small font (RESHLMHI.RES 503: first and last letter at +36, +38, the bits at the
+# offset of +76 in rows of +80 bytes, +82 rows high, each letter's first column from +84), its top left corner at p
+func _letters() -> PackedByteArray:
+	if note_font.is_empty():
+		_helmet_frames(0)
+		note_font = hl_res.data(503) if hl_res and hl_res.has(503) else PackedByteArray([0])
+	return note_font
+
+
+# how wide a text is in those letters
+func _written(text: PackedByteArray) -> int:
+	var f := _letters()
+	var n := 0
+	for ch in text:
+		var k := ch - (f.decode_s16(36) if f.size() >= 88 else 0)
+		if f.size() >= 88 and k >= 0 and 88 + 2 * k <= f.size():
+			n += f.decode_s16(86 + 2 * k) - f.decode_s16(84 + 2 * k)
+	return n
+
+
+func _write(img: Image, p: Vector2i, text: PackedByteArray, c: Color) -> void:
+	var f := _letters()
+	if f.size() < 88:
+		return
+	var first := f.decode_s16(36)
+	var bits := f.decode_s32(76)
+	var row := f.decode_s16(80)
+	var x := p.x
+	for ch in text:
+		if ch < first or ch > f.decode_s16(38) or 86 + 2 * (ch - first) + 2 > f.size():
+			continue
+		var a := f.decode_s16(84 + 2 * (ch - first))
+		var b := f.decode_s16(86 + 2 * (ch - first))
+		for yy in f.decode_s16(82):
+			for xx in range(a, b):
+				var at := bits + yy * row + (xx >> 3)
+				if at < f.size() and f[at] & (0x80 >> (xx & 7)):
+					_dot(img, x + xx - a, p.y + yy, c)
+		x += b - a
+
+
+# a box's outline, corners included
+func _frame(img: Image, a: Vector2i, b: Vector2i, c: Color) -> void:
+	_line(img, a, Vector2i(b.x, a.y), c)
+	_line(img, Vector2i(a.x, b.y), b, c)
+	_line(img, a, Vector2i(a.x, b.y), c)
+	_line(img, Vector2i(b.x, a.y), b, c)
+
+
+# without the host's marks: his squad and the other suits from the entities of the view (teammates green, the host
+# blue, others red), and himself in white
+func _map_squad(img: Image) -> void:
 	var vp := get_parent()
 	if vp == null or not ("live_ents" in vp) or guest_xy == Vector2.ZERO:
 		return
-	var h := heading / 65536.0 * TAU
-	var fwd := Vector2(cos(h), sin(h))
-	var right := Vector2(-fwd.y, fwd.x)
-	var box := _map_box().grow(-1.0)
-	var c := box.get_center()
-	var k := box.size.y / map_cam.size                      # screen pixels per game unit (the map camera's height)
 	var host_e: int = squad[0][0] if not squad.is_empty() else -1
 	var mates := {}
 	for w in squad:
 		mates[w[0]] = true
+	var me := Vector2i.ZERO
 	for idx in vp.live_ents:
 		var e: Array = vp.live_ents[idx]
-		if e[0] < 1 or e[0] > 3 or e[2] == 0 or idx == entity:
+		if e[0] < 1 or e[0] > 3 or e[2] == 0:
 			continue
-		var rel := Vector2(e[3], e[4]) - guest_xy
-		var p := c + Vector2(rel.dot(right), -rel.dot(fwd)) * k
-		if not box.has_point(p):
-			continue
-		var col := Color(0.4, 0.8, 1.0) if idx == host_e else (Color(0.3, 1.0, 0.35) if mates.has(idx) else Color(1.0, 0.3, 0.25))
-		panel.draw_rect(Rect2(p - Vector2(2.5, 2.5), Vector2(5, 5)), Color.BLACK)
-		panel.draw_rect(Rect2(p - Vector2(1.5, 1.5), Vector2(3, 3)), col)
+		var p := Vector2i(floori((e[3] - map_from.x) / map_step), floori((e[4] - map_from.y) * 2.0 / map_step))
+		if idx == entity:
+			me = p
+		else:
+			_cross(img, p, Color(0.4, 0.8, 1.0) if idx == host_e else (Color(0.3, 1.0, 0.35) if mates.has(idx) else Color(1.0, 0.3, 0.25)))
+	if me == Vector2i.ZERO:
+		me = Vector2i(floori((guest_xy.x - map_from.x) / map_step), floori((guest_xy.y - map_from.y) * 2.0 / map_step))
+	var a := heading / 65536.0 * TAU
+	_cross(img, me, Color.WHITE)
+	_line(img, me, me + Vector2i(roundi(6.0 * cos(a)), roundi(12.0 * sin(a))), Color.WHITE)
+
+
+# The small box over the map: his weapon's picture as the game's box shows the player's (0x265094), through the game's
+# colour table when it cannot fire (table 0: destroyed or out of ammunition, 1: not ready yet; -1: as it is), then its
+# ammunition in the game's small letters, grey (palette 0x22), in the lower right corner
+func _box_pic(t: int, table: int, ammo := 0xFFFF) -> Texture2D:
+	var key := (t * 4 + table + 1) * 65536 + ammo
+	if box_pics.has(key):
+		return box_pics[key]
+	if box_pics.size() > 64:
+		box_pics.clear()
+	var tex: Texture2D = null
+	if t < BOX_FRAME.size() and not hud_pal.is_empty():
+		var fr := _helmet_frames(BOX_PICS)
+		var f: PackedByteArray = fr[BOX_FRAME[t]] if BOX_FRAME[t] < fr.size() else PackedByteArray()
+		var idx := TNObjects._bitmap_idx(f)
+		if not idx.is_empty():
+			var through: PackedByteArray = tints[table] if table >= 0 and tints[table].size() == 256 else PackedByteArray()
+			var rgba := PackedByteArray()
+			rgba.resize(idx.size() * 4)
+			for p in idx.size():
+				var col := hud_pal[through[idx[p]] if not through.is_empty() else idx[p]]
+				rgba[4 * p] = col.r8
+				rgba[4 * p + 1] = col.g8
+				rgba[4 * p + 2] = col.b8
+				rgba[4 * p + 3] = 255
+			var w := f.decode_u16(8)
+			var img := Image.create_from_data(w, idx.size() / w, false, Image.FORMAT_RGBA8, rgba)
+			if ammo != 0xFFFF:
+				var digits := str(ammo).to_ascii_buffer()
+				_write(img, Vector2i(img.get_width() - _written(digits), img.get_height() - 12), digits, hud_pal[0x22])
+			tex = ImageTexture.create_from_image(img)
+	box_pics[key] = tex
+	return tex
 
 
 func _face(pilot: int) -> Texture2D:
@@ -520,8 +811,9 @@ func _draw_panel() -> void:
 		_draw_indicator()
 	if not looking:                                  # free look: no crosshair (his aim stays ahead)
 		_draw_cross()
-	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21)
-	var bearing := fposmod(360.0 - heading / 65536.0 * 360.0, 360.0)
+	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21);
+	# the game's heading 0 is east and grows towards the south (its map: x to the east, y to the south)
+	var bearing := fposmod(heading / 65536.0 * 360.0 + 90.0, 360.0)
 	var amber := Color(1.0, 0.8, 0.25)
 	for k in 8:
 		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0
@@ -572,14 +864,15 @@ func _draw_panel() -> void:
 		_text("%d%%" % int(round(f * 100.0)), 219.0, 335.0, 10.0, Color(0.95, 0.95, 1.0))
 		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0, 353.0, 10.0,
 			Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
-	_draw_map_units()
-	# map: the guest in the middle, pointing up
-	var c := _map_box().get_center()
-	var u := _g(0, 6).y
+	if map_tex:
+		panel.draw_texture_rect(map_tex, _map_box(), false)
 	if big_map:
 		_text("MAP  (M: back)", win.position.x + 16.0, win.position.y + 10.0, 10.0, Color(0.9, 0.9, 1.0))
-	panel.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -u), c + Vector2(u * 0.6, u * 0.6),
-		c + Vector2(-u * 0.6, u * 0.6)]), Color(1, 1, 1))
+	# the small box over the map: his weapon, as the game's
+	if not rear_on:
+		var bp := _box_pic(weapon_type, 0 if weapon_state in [1, 2] else (1 if weapon_state in [4, 5] else -1), weapon_ammo)
+		if bp:
+			panel.draw_texture_rect(bp, _grect(BOX.position.x, BOX.position.y, BOX.end.x, BOX.end.y), false)
 
 
 # one top bar: its pixels from a to b (counted from its left end) lit, in the game's own led colours (kind 0), the
@@ -707,8 +1000,10 @@ func _draw_mate() -> void:
 	if cam.is_position_behind(top):
 		return
 	var c := _pixel(cam, top)
-	var d := cam.global_position.distance_to(top)
 	var fs := int(clampf(root.size.y * 0.028, 12.0, 26.0))
+	if win.size.y > 0 and not _grect(win.position.x, win.position.y, win.end.x, win.end.y).grow_individual(0, -fs - 6.0, 0, 0).has_point(c):
+		return                                               # (not over the cockpit around the 3D window: its compass, its panels)
+	var d := cam.global_position.distance_to(top)
 	var t := "%s  %dm" % [mate_name, int(round(d * 6.0))]   # the game's metres (its lock reads 51 m where 8.5 units)
 	var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 	var p := c - Vector2(w / 2.0, 6.0)
@@ -767,38 +1062,17 @@ func _draw_status() -> void:
 
 func toggle_map() -> void:
 	big_map = not big_map
+	map_dirty = true
 
 
-func _map_box() -> Rect2:
-	if big_map and win.size.y > 0:
-		return _grect(win.position.x + 12.0, win.position.y + 8.0, win.end.x - 12.0, win.end.y - 8.0)
-	return _grect(118.0, 264.0, 204.0, 372.0)
-
-
+# TN_GUEST_REAR=1: the box as a rear view
 func _rear_follow() -> void:
 	var cam := get_viewport().get_camera_3d()
 	rear_rect.visible = cockpit.visible and state == 0 and cam != null
 	if not rear_rect.visible:
 		return
-	rear_rect.position = _g(146.0, 226.0)
-	rear_rect.size = _g(172.0, 252.0) - _g(146.0, 226.0)
+	rear_rect.position = _g(BOX.position.x, BOX.position.y)
+	rear_rect.size = _g(BOX.end.x, BOX.end.y) - rear_rect.position
 	var back := cam.global_transform
 	back.basis = back.basis.rotated(Vector3.UP, PI)
 	rear_cam.global_transform = back
-
-
-func _map_follow() -> void:
-	var box := _map_box()
-	map_rect.position = box.position
-	map_rect.size = box.size
-	map_cam.size = 220.0 if big_map else 60.0
-	map_view.size = Vector2i(maxi(16, int(box.size.x)), maxi(16, int(box.size.y)))
-	var cam := get_viewport().get_camera_3d()
-	if cam == null:
-		return
-	var p := cam.global_position
-	var fwd := -cam.global_transform.basis.z
-	fwd.y = 0.0
-	if fwd.length() < 0.01:
-		fwd = Vector3.FORWARD
-	map_cam.global_transform = Transform3D(Basis.looking_at(Vector3.DOWN, fwd.normalized()), p + Vector3.UP * 150.0)

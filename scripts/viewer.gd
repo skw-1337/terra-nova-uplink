@@ -4924,6 +4924,20 @@ func _play_send(bytes: PackedByteArray) -> void:
 	play_udp.put_packet(bytes)
 
 
+# coop guest: his right button pressed, with the units he sees under his crosshair (coop_hud.gd pick_units, the
+# game's click rule on what this window draws), nearest first: the host's bridge locks the first it allows
+func _guest_lock_packet() -> PackedByteArray:
+	var b := PackedByteArray([0x42, 2, 1])
+	for n in get_children():
+		if n.has_method("pick_units"):
+			for idx in n.pick_units():
+				var k := b.size()
+				b.resize(k + 2)
+				b.encode_u16(k, idx)
+			break
+	return b
+
+
 func _host_online(versus := false) -> void:
 	host_btn.get_parent().queue_free()
 	host_btn = null
@@ -5323,9 +5337,11 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton:
 		if not play_started:
-			if event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed and event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE]:
 				play_started = true
-				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click only takes the mouse
+				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED   # this click takes the mouse (a left one only that)
+				if guest_win and event.button_index == MOUSE_BUTTON_RIGHT:
+					_play_send(_guest_lock_packet())                # coop guest: a right click is his lock, not lost
 		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
 			free_look = event.pressed
 		elif guest_win and not captured and event.pressed and _guest_map_click(event):
@@ -5342,7 +5358,10 @@ func _input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
 			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
 			if captured:
-				_play_send(PackedByteArray([0x42, bt, 1 if event.pressed else 0]))
+				if guest_win and bt == 2 and event.pressed:
+					_play_send(_guest_lock_packet())
+				else:
+					_play_send(PackedByteArray([0x42, bt, 1 if event.pressed else 0]))
 				if event.pressed:
 					play_buttons[bt] = true
 				else:

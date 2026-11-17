@@ -52,7 +52,7 @@ CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of 
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
 SENSOR = 0xB6
-PICK_HALF, PICK_GROW, PICK_SIZE = 149.0, 20.0, 0.4   # (the game's 3D window's half width, its click margin, a unit's half size)
+PICK_HALF, PICK_GROW, PICK_SIZE, PICK_NEAR = 149.0, 20.0, 0.8, math.radians(8)   # (the game's 3D window's half width, its click margin, a unit's half size, the nearest's cone)
 TARGET_KEYS = {0x14: 1, 0x15: -1}   # the game's next / previous target keys (T, Y; his own keys turned into them)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
@@ -274,6 +274,7 @@ class Guest:
         # walking time to the next footstep, the end of its stance (game clock), his last place and clock
         self.pending, self.clk, self.jet_n, self.jet_air = [0, 0, 0], None, None, None
         self.lock, self.lock_req, self.pad_lock, self.lock_step = 0, False, False, 0
+        self.lock_seen = []
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
@@ -472,41 +473,56 @@ class Guest:
         """his suit's sensor range (units), as the game keeps a lock (0x262B00)"""
         return self.i32(self.suit(self.gid) + SENSOR) / 65536 / 6
 
+    def lockable(self, i, me):
+        """a unit he may lock: not himself, not the host (co-op), not one of his squad, not a suit of his own side
+        without a pilot record; and where the game has it (types 1-3)"""
+        if not 0 < i < self.nent or i == self.gid or (i == me and not self.versus) or i in self.squad:
+            return False
+        if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
+            return False
+        return self.target_pos(i) is not None
+
     def in_view(self, me, eye, view):
         """the units he could lock now (the game's list of those on its screen): [(distance, entity)], nearest first"""
         out = []
         for i in range(1, self.nent):
-            if i == self.gid or (i == me and not self.versus) or i in self.squad:
-                continue
-            if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
+            if not self.lockable(i, me):
                 continue
             t = self.target_pos(i)
-            if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
+            if math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
             if side < LOCK_PICK and up < LOCK_PICK_V:
                 out.append((math.dist(t, eye), i))
         return sorted(out)
 
-    def pick_target(self, me, eye, view):
+    def pick_target(self, me, eye, view, seen=()):
         """his right button, as the game's click on its 3D view picks its player's target (0x269F28): of the units it
         drew (its list 0x397CA0 of their boxes on the screen), those whose box grown by 20 pixels holds the click (here
-        his crosshair), the one whose box's middle is nearest it (squared distance in the game's pixels); none: no
-        target. Each unit's box: its middle on his screen (the game's 3D window, 298 pixels for 84.5 degrees across,
-        rows half a pixel high) and about 0.4 units around it"""
-        best, pick = None, 0
+        his crosshair), the one whose box's middle is nearest it. His window does that on what it draws and sends the
+        units it found, nearest first (seen): the first he may lock. An older window sends none: the same rule here,
+        each unit's box about PICK_SIZE units around its middle on his screen (the game's 3D window, 298 pixels for
+        84.5 degrees across, rows half a pixel high); and none of those, the unit nearest his crosshair within
+        PICK_NEAR. None at all: no target, and why"""
+        for i in seen:
+            if self.lockable(i, me):
+                print('guest: lock', i, '(under his crosshair)', flush=True)
+                return i
+        best, pick, near, near_a, cands = None, 0, 0, None, 0
         f = PICK_HALF / math.tan(math.radians(84.5) / 2)       # (pixels a unit of tangent)
         for i in range(1, self.nent):
-            if i == self.gid or (i == me and not self.versus) or i in self.squad:
+            if not self.lockable(i, me):
                 continue
-            if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
-                continue                                       # a suit of his own side without a pilot record
             t = self.target_pos(i)
-            if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
+            if math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
             if side > LOCK_PICK or up > LOCK_PICK_V:
                 continue
+            cands += 1
+            a = math.hypot(side, up)
+            if near_a is None or a < near_a:
+                near, near_a = i, a
             d = max(0.5, math.dist(t, eye))
             sx, sy = f * math.tan(side), 2 * f * math.tan(up)  # (rows: two a pixel)
             r = f * PICK_SIZE / d
@@ -515,7 +531,14 @@ class Guest:
             score = sx * sx + sy * sy
             if best is None or score < best:
                 best, pick = score, i
-        print('guest: lock', pick or 'nothing', flush=True)
+        if not pick and near_a is not None and near_a <= PICK_NEAR:
+            pick = near
+        if pick:
+            print('guest: lock', pick, flush=True)
+        else:
+            print('guest: lock nothing (%d lockable in his view%s; his window saw %s)' % (
+                cands, ', nearest %.1f deg off' % math.degrees(near_a) if near_a is not None else '',
+                list(seen) or 'none'), flush=True)
         return pick
 
     def clock(self):
@@ -1336,7 +1359,8 @@ class Guest:
         view = (math.cos(gh) * math.cos(self.pitch), math.sin(gh) * math.cos(self.pitch), math.sin(self.pitch))
         if self.lock_req:
             self.lock_req = False
-            self.lock = 0 if self.lock else self.pick_target(me, eye, view)
+            self.lock = 0 if self.lock else self.pick_target(me, eye, view, self.lock_seen)
+            self.lock_seen = []
         if self.lock_step:                                     # the game's next / previous target keys (T, Y): the
             seen = [i for _, i in self.in_view(me, eye, view)]   # units in his view by distance, round from his target
             if seen:
@@ -1437,8 +1461,9 @@ class Guest:
                     turn += dx * self.sens_x
                     self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 2:
-                if pk[2] and active:
+                if pk[2] and active:                           # (then the units his window drew under his crosshair)
                     self.lock_req = True
+                    self.lock_seen = list(struct.unpack('<%dH' % ((len(pk) - 3) // 2), pk[3:3 + (len(pk) - 3) // 2 * 2]))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
             elif pk[:1] == b'C' and len(pk) >= 3 and pk[1] == 1 and not pk[2]:

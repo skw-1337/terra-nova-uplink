@@ -1125,18 +1125,7 @@ func _draw_lock() -> void:
 	var green: Color = hud_pal[0x84]
 	var red: Color = hud_pal[0x44]
 	var white: Color = hud_pal[0x1D]
-	# the brackets
-	var x0 := cx - 5.0
-	var x1 := cx + 5.0
-	var y0 := cy - 9.0
-	var y1 := cy + 8.0
-	var aw := maxf(2.0, floorf((x1 - x0) / 4.0))
-	var ah := maxf(2.0, floorf((y1 - y0) / 4.0))
-	for corner in [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]:
-		var px: float = corner[0]
-		var py: float = corner[1]
-		_gline(px, py, px + corner[2] * aw, py, green)
-		_gline(px, py, px, py + corner[3] * ah, green)
+	_brackets(cx, cy, green)
 	# the armour bar
 	var arm: int = lock_info[0] if lock_info.size() >= 4 else 100
 	var by := cy + 12.0
@@ -1159,6 +1148,22 @@ func _draw_lock() -> void:
 	for t in lines:
 		_glyphs(str(t), cx + 12.0, y, red)
 		y += 12.0
+
+
+# the game's brackets (0x26A380) around cx, cy of its screen: x - 5 to x + 5, y - 9 to y + 8 (the 400-row screen),
+# each corner a quarter of the box's width and of its height (2 at least)
+func _brackets(cx: float, cy: float, col: Color) -> void:
+	var x0 := cx - 5.0
+	var x1 := cx + 5.0
+	var y0 := cy - 9.0
+	var y1 := cy + 8.0
+	var aw := maxf(2.0, floorf((x1 - x0) / 4.0))
+	var ah := maxf(2.0, floorf((y1 - y0) / 4.0))
+	for corner in [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]:
+		var px: float = corner[0]
+		var py: float = corner[1]
+		_gline(px, py, px + corner[2] * aw, py, col)
+		_gline(px, py, px, py + corner[3] * ah, col)
 
 
 # a unit's box on the window, as the game keeps each drawn unit's (its list 0x397CA0): its meshes' corners seen
@@ -1185,6 +1190,36 @@ func _screen_box(cam: Camera3D, n: Node3D) -> Rect2:
 				else:
 					r = r.expand(px)
 	return r
+
+
+# his right button: the units under his crosshair as the game's click picks its player's target (0x269F28) from the
+# boxes of the units it drew (0x397CA0): each drawn unit's box on this window (in the game's 320 x 400 units) grown
+# by 20 holding the crosshair's tip, the nearest box middle first (8 at most)
+func pick_units() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var cam := get_viewport().get_camera_3d()
+	var vp := get_parent()
+	if cam == null or vp == null or not ("live_ents" in vp) or root == null or root.size.x < 1.0 or root.size.y < 1.0:
+		return out
+	var at := Vector2(160.0, 200.0)
+	if win.size != Vector2.ZERO:
+		at = Vector2(win.position.x + win.size.x / 2.0, win.position.y + win.size.y / 2.0 + 3.0)
+	var kx := 320.0 / root.size.x
+	var ky := 400.0 / root.size.y
+	var found := []
+	for idx in vp.live_ents:
+		if idx == entity:
+			continue
+		var b := _screen_box(cam, _drawn(idx))
+		if b.size == Vector2.ZERO:
+			continue
+		var g := Rect2(b.position.x * kx, b.position.y * ky, b.size.x * kx, b.size.y * ky)
+		if g.grow(20.0).has_point(at):
+			found.append([g.get_center().distance_squared_to(at), idx])
+	found.sort()
+	for f in found.slice(0, 8):
+		out.append(f[1])
+	return out
 
 
 # a line of the game's screen, a game pixel thick, from (ax, ay) to (bx, by), ends included

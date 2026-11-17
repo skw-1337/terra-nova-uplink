@@ -1861,15 +1861,33 @@ static class Uplink
     static string TnpCoopDir { get { return Path.Combine(Comp, "tnplus_coop"); } }       // TN+ co-op build: HOST
     static string TnpCoopExe { get { return Path.Combine(TnpCoopDir, "TNPlus.exe"); } }
     static string PythonExe { get { return Path.Combine(Comp, "python", "python.exe"); } }
-    // Uplink's own folder (Godot's user://: under %APPDATA%, which Godot reads from the environment)
+    // Uplink's own folder (Godot's user://: under %APPDATA%, which Godot reads from the environment). An Uplink that
+    // comes with an override.cfg naming a folder of its own (a test copy) keeps its files there, as Godot does.
     static string GodotData
     {
         get
         {
             string a = Environment.GetEnvironmentVariable("APPDATA");
             if (string.IsNullOrEmpty(a)) a = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            try
+            {
+                string o = Path.Combine(UplinkDir, "override.cfg"), t = File.Exists(o) ? File.ReadAllText(o) : "";
+                Match m = Regex.Match(t, "(?m)^\\s*config/custom_user_dir_name\\s*=\\s*\"([^\"]+)\"");
+                if (m.Success && Regex.IsMatch(t, "(?m)^\\s*config/use_custom_user_dir\\s*=\\s*true")) return Path.Combine(a, m.Groups[1].Value);
+            }
+            catch { }
             return Path.Combine(a, "Godot", "app_userdata", "Terra Nova Uplink");
         }
+    }
+
+    // A test folder: with a file no_update.txt beside the exe, nothing is looked for on GitHub and nothing is
+    // downloaded, built or replaced (Uplink, Terra Nova Plus, Godot, Python, the launcher itself): what is in
+    // components\ is used as it is, and what is missing is said. Not for a normal installation.
+    static bool NoUpdate { get { return File.Exists(Path.Combine(Root, "no_update.txt")); } }
+
+    static void Missing(string what)
+    {
+        if (NoUpdate) throw new Exception(what + " is not in this folder, and updates are off here (no_update.txt).");
     }
 
     // ------------------------------------------------------------------ the game folder (GOG, Steam, or picked)
@@ -2886,6 +2904,7 @@ static class Uplink
         Background(delegate {
             if (!File.Exists(TnpExe))
             {
+                Missing("Terra Nova Plus");
                 Status("Downloading and building Terra Nova Plus (for its key settings)...", CAmber);
                 BuildTnp(false);
                 string tp = Get(Heads(), Head(TNPLUS_REPO, TNPLUS_BRANCH));
@@ -3308,6 +3327,7 @@ static class Uplink
         string up = Get(heads, Head(UPLINK_REPO, UPLINK_BRANCH));
         if (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha")))
         {
+            Missing("Uplink");
             Status("Downloading Uplink...", CAmber);
             Repo(UPLINK_REPO, UPLINK_BRANCH, UplinkDir);
             if (up != null) Set("uplink_sha", up);
@@ -3316,6 +3336,7 @@ static class Uplink
         SelfUpdate();
         if (!File.Exists(GodotExe))
         {
+            Missing("Godot " + GODOT_VER);
             Status("Downloading Godot " + GODOT_VER + " (about 90 MB, once)...", CAmber);
             string z = Download(GODOT_URL, "godot.zip");
             Unzip(z, Path.GetDirectoryName(GodotExe));
@@ -3327,6 +3348,7 @@ static class Uplink
             string tp = Get(heads, Head(TNPLUS_REPO, coop ? TNPLUS_COOP_BRANCH : TNPLUS_BRANCH)), key = coop ? "tnplus_coop_sha" : "tnplus_sha";
             if (!File.Exists(coop ? TnpCoopExe : TnpExe) || (tp != null && tp != Cfg(key)))
             {
+                Missing(coop ? "Terra Nova Plus's co-op build (components\\tnplus_coop)" : "Terra Nova Plus");
                 Status("Downloading and building Terra Nova Plus" + (coop ? " (co-op build)" : "") + "...", CAmber);
                 BuildTnp(coop);
                 if (tp != null) Set(key, tp);
@@ -3334,6 +3356,7 @@ static class Uplink
             }
             if (!File.Exists(PythonExe) || !File.Exists(Path.Combine(Comp, "python", "Lib", "site-packages", "psutil", "__init__.py")))
             {
+                Missing("Python");
                 Status("Downloading Python for the live mode (about 30 MB, once)...", CAmber);
                 InstallPython();
             }
@@ -3348,6 +3371,7 @@ static class Uplink
     static Dictionary<string, string> Heads()
     {   // the last commits of Uplink (stable), TN+ (stable) and its co-op build (coop-stable): both co-op PCs must run the same
         Dictionary<string, string> d = new Dictionary<string, string>();
+        if (NoUpdate) return d;
         foreach (string[] rb in new[] { new[] { UPLINK_REPO, UPLINK_BRANCH }, new[] { TNPLUS_REPO, TNPLUS_BRANCH }, new[] { TNPLUS_REPO, TNPLUS_COOP_BRANCH } })
             try
             {
@@ -3366,7 +3390,8 @@ static class Uplink
         Dictionary<string, string> h = Heads();
         string up = Get(h, Head(UPLINK_REPO, UPLINK_BRANCH));
         Ui(delegate {
-            if (up == null) { verLabel.Text = "Couldn't check for updates (offline?)"; verLabel.On = CLedOff; }
+            if (NoUpdate) { verLabel.Text = "Updates are off in this folder (no_update.txt)"; verLabel.On = CLedOff; }
+            else if (up == null) { verLabel.Text = "Couldn't check for updates (offline?)"; verLabel.On = CLedOff; }
             else if (Cfg("uplink_sha") == "") { verLabel.Text = "Uplink " + up.Substring(0, 7) + " will be installed"; verLabel.On = CAmber; }
             else if (up == Cfg("uplink_sha")) { verLabel.Text = "Uplink " + VERSION + ", up to date"; verLabel.On = CGreen; }
             else { verLabel.Text = "Update available at the next start"; verLabel.On = CAmber; }
@@ -3381,7 +3406,7 @@ static class Uplink
     static void SelfUpdate()
     {
         string src = Path.Combine(UplinkDir, "launcher", "TerraNovaUplink.cs");
-        if (selfAsked || !File.Exists(src) || form == null) return;
+        if (selfAsked || !File.Exists(src) || form == null || NoUpdate) return;
         Match m = Regex.Match(File.ReadAllText(src), "const string VERSION = \"([0-9.]+)\"");
         Version now, theirs;
         if (!m.Success || !Version.TryParse(VERSION, out now) || !Version.TryParse(m.Groups[1].Value, out theirs) || theirs <= now) return;
@@ -3404,6 +3429,7 @@ static class Uplink
     static void Repair()
     {
         if (busy) return;
+        if (NoUpdate) { Status("Updates are off in this folder (no_update.txt): nothing to repair from.", CRed); return; }
         if (!Ask("Download and install everything again? (your settings and keys are kept)")) return;
         Background(delegate {
             StopAll();

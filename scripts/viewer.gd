@@ -3839,13 +3839,20 @@ func _order_sight(m: Dictionary, from: Vector3, to: Vector3) -> bool:
 	return true
 
 
-# what the player aims at: the crosshair (the look mode; the game's cursor on the 3D view in the cursor mode)
+# what the player aims at: the crosshair (the look mode; the game's cursor on the 3D view in the cursor mode); with
+# the game's map in the HUD, what its cursor is on there (_map_pick)
 func _order_pick() -> Dictionary:
 	var vs := get_viewport().get_visible_rect().size
 	var at := (Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		if hud_win.size.y > 0 and hud_win.has_point(_play_game_pos(order_mouse)):
 			at = order_mouse
+	if _map_on():                                          # (the cursor's, wherever it is: off the map, nothing)
+		var on_map := {} if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else _map_pick(order_mouse)
+		if on_map.is_empty():
+			return {"ent": -1, "point": null}
+		order_centre = order_mouse                         # (the wheel opens there)
+		return on_map
 	var m: Dictionary = current["map"]
 	var from := camera.global_position
 	var dir := _order_ray(at)
@@ -3909,6 +3916,7 @@ func _order_button(down: bool) -> void:
 	if down:
 		if order_state != 0 or not _order_ready():
 			return
+		order_centre = null
 		order_aim = _order_pick()
 		order_t = Time.get_ticks_msec()
 		order_ptr = Vector2.ZERO
@@ -3995,6 +4003,15 @@ func _order_send(order: int, who: int) -> void:
 func _order_on_screen(tg: Array) -> Array:
 	if tg.is_empty() or int(tg[0]) == 0 or current.is_empty():
 		return [0, Vector2.ZERO]
+	if _map_on():                                          # the game's map in the HUD: where the map has it
+		var w: Vector2 = tg[1] if int(tg[0]) == 1 else Vector2.ZERO
+		if int(tg[0]) == 2:
+			var u = live_ents.get(int(tg[1]))
+			if u == null:
+				return [0, Vector2.ZERO]
+			w = Vector2(u[3], u[4])
+		var px := _map_pixel(w)
+		return [int(tg[0]), px] if _map_rect().has_point(px) else [0, Vector2.ZERO]
 	var p: Vector3
 	if int(tg[0]) == 2:
 		var e = live_ents.get(int(tg[1]))
@@ -4033,6 +4050,11 @@ func _order_update() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	w.k = _order_scale()
 	w.centre = ((Vector2(_cross_pixel()) + Vector2(0.5, 0.5)) / Vector2(320.0, 400.0) * vs).round()
+	if order_state == 2 and order_centre != null:          # on the map: at the cursor, the whole wheel in the window
+		var room := Vector2(OrderWheel.RF + 8.0, OrderWheel.RF + 8.0) * w.k
+		var low := vs - Vector2(OrderWheel.RF + 8.0, OrderWheel.RF + 72.0) * w.k
+		w.centre = (order_centre as Vector2).clamp(room, low.max(room)).round()
+	w.marker_k = 0.5 if _map_on() else 1.0
 	w.shown = order_state == 2
 	var mark := [0, Vector2.ZERO]
 	if order_state == 2:
@@ -4060,6 +4082,8 @@ func _order_input(event: InputEvent) -> bool:
 		return false
 	if event is InputEventMouse:
 		order_mouse = event.position
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and _map_click(event):
+		return true
 	if event is InputEventMouseButton:
 		if int(order_key[0]) != 0 and event.button_index == int(order_key[0]):
 			_order_button(event.pressed)
@@ -4098,6 +4122,182 @@ func _order_input(event: InputEvent) -> bool:
 		_order_button(true)
 		return true
 	return false
+
+
+# ------------------------------------------------------------------ orders on the map
+# With the order wheel on, the game's map shown in the HUD (its full screen map: key M, the MAP button) takes orders
+# too. A click on it sends the entire squad to that place (MOVE THERE), a click on an enemy's mark orders the attack
+# on it (ATTACK TARGET; the units the map shows and the game lets be attacked: the bridge's 'MAPV' and 'ORDS'). The
+# wheel's button held on the map opens the wheel at the cursor, on that place or unit (who gets the order: the mouse
+# wheel, as ever); a short press is the click. The order's mark is drawn on the map. A click with Shift, Ctrl or Alt
+# held is the game's own, as without the option (it puts the player's nav marker there), and so are a click on the
+# map's box of switches and any click while the game itself waits for one on its map (an order of its COMM menu that
+# asks for a place or a target).
+const MAP_NEAR := 5.0                    # an enemy's mark is clicked within that of it (pixels of the game's screen)
+var map_news := -100000                  # when the bridge last said the map is in the HUD
+var map_wait := false                    # the game itself waits for a click on its map
+var map_box := Rect2()                   # the map on the game's 320 x 400 screen
+var map_origin := Vector2.ZERO           # the world's x, y at its top left corner
+var map_step := Vector2.ONE              # the world's length of one of its columns, of one of its rows
+var map_keys := Rect2()                  # its box of switches (the game's own: what the map shows), on the game's screen
+var map_ents := {}                       # the units it shows (the game's contacts)
+var map_click := false                   # the left button went down on it for an order
+var order_centre = null                  # the wheel's middle when it opened on the map (else: the crosshair)
+
+
+# the bridge's 'MAPV': flags, the map's rectangle, its corner in the world, a column's and a row's length, its box of
+# switches, the contacts
+func _map_status(q: PackedByteArray) -> void:
+	if q.size() < 39:
+		return
+	if q[4] & 1 == 0:
+		map_news = -100000
+		return
+	map_news = Time.get_ticks_msec()
+	map_wait = q[4] & 2 != 0
+	map_box = Rect2(q.decode_s16(5), q.decode_s16(7), q.decode_s16(9) - q.decode_s16(5), q.decode_s16(11) - q.decode_s16(7))
+	map_origin = Vector2(q.decode_float(13), q.decode_float(17))
+	map_step = Vector2(maxf(q.decode_float(21), 0.0001), maxf(q.decode_float(25), 0.0001))
+	map_keys = Rect2(q.decode_s16(29), q.decode_s16(31), q.decode_s16(33) - q.decode_s16(29), q.decode_s16(35) - q.decode_s16(31))
+	map_ents.clear()
+	for i in mini(q.decode_u16(37), (q.size() - 39) / 2):
+		map_ents[q.decode_u16(39 + 2 * i)] = true
+
+
+# the game's map is in the HUD and orders can be given on it
+func _map_on() -> bool:
+	return order_on and Time.get_ticks_msec() - map_news < 600 and not menu_mode and map_box.size.x > 0.0
+
+
+# the map in the window
+func _map_rect() -> Rect2:
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	return Rect2(map_box.position * s, map_box.size * s)
+
+
+# a place of the world -> where the map shows it in the window, and back
+func _map_pixel(w: Vector2) -> Vector2:
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	return (map_box.position + (w - map_origin) / map_step) * s
+
+
+func _map_world(at: Vector2) -> Vector2:
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	return map_origin + (at / s - map_box.position) * map_step
+
+
+# what a point of the window is on, on the map: the enemy whose mark is nearest within MAP_NEAR, else the place (a
+# point of the world inside the mission's ground). Empty: not on the map.
+func _map_pick(at: Vector2) -> Dictionary:
+	if not _map_rect().has_point(at):
+		return {}
+	var s := get_viewport().get_visible_rect().size / Vector2(320.0, 400.0)
+	if map_keys.has_point(at / s):
+		return {}                                          # (its box of switches: the game's)
+	var ent := -1
+	var best := MAP_NEAR
+	for id in order_enemies:
+		var e = live_ents.get(id)
+		if e == null or int(e[2]) & 1 == 0 or not map_ents.has(id):
+			continue
+		var d := ((_map_pixel(Vector2(e[3], e[4])) - at) / s).length()
+		if d <= best:
+			best = d
+			ent = id
+	var w := _map_world(at)
+	var point = w if w.x >= 10.0 and w.y >= 10.0 and w.x <= 502.0 and w.y <= 502.0 else null
+	return {"ent": ent, "point": point}
+
+
+# the left button on the map: an order for the entire squad when it is let go (true: the click was the order's)
+func _map_click(event: InputEventMouseButton) -> bool:
+	if not event.pressed:
+		if not map_click:
+			return false
+		map_click = false
+		if order_state == 0 and _order_ready() and _map_on():
+			if int(order_aim.get("ent", -1)) >= 0:
+				_order_send(0, 0)
+			elif order_aim.get("point") != null:
+				_order_send(1, 0)
+		return true
+	if order_state != 0 or play_hold or map_wait or not _map_on() or not _order_ready() \
+			or Input.mouse_mode == Input.MOUSE_MODE_CAPTURED or event.shift_pressed or event.ctrl_pressed or event.alt_pressed:
+		return false
+	var aim := _map_pick(event.position)
+	if aim.is_empty():
+		return false
+	order_aim = aim
+	map_click = true
+	return true
+
+
+# ------------------------------------------------------------------ the squadmates' subtitles
+# What a squadmate says, written (the launcher's "Subtitles": TN_SUBTITLES = 1; off unless asked). The game plays a
+# voice clip and shows nothing; the bridge says who plays which clip and what it means (live_bridge.py 'SUBT',
+# subtitles.py: the game's own reply texts where it has them), again every fifth of a second while the clip plays.
+# One line a speaker (subtitles.gd), kept as long as he speaks and no less than SUBS_MIN_MS. Not on a game screen,
+# not for a coop guest.
+const Subtitles = preload("res://scripts/subtitles.gd")
+const SUBS_MIN_MS := 1500                # a line stays at least that long (a one-word answer lasts half a second)
+const SUBS_LATE_MS := 450                # no news of a clip for that long: it is over
+var subs_on := OS.get_environment("TN_SUBTITLES") == "1"
+var subs := {}                           # squadmate (1-3) -> {n, pilot, text, since, seen, playing, ms, clip, event}
+var subs_view: Subtitles
+
+
+# the bridge's 'SUBT': number, squadmate, pilot, event, flags (bit 0: playing), clip, length (ms), text
+func _subs_packet(q: PackedByteArray) -> void:
+	if not subs_on or q.size() < 13 or guest_win:
+		return
+	var mate := int(q[5])
+	var now := Time.get_ticks_msec()
+	var s = subs.get(mate)
+	if s == null or int(s["n"]) != int(q[4]):
+		if q[8] & 1 == 0:
+			return                                         # (the end of a line never shown)
+		s = {"n": int(q[4]), "pilot": int(q[6]), "event": int(q[7]), "clip": q.decode_u16(9), "ms": q.decode_u16(11),
+				"text": q.slice(13).get_string_from_utf8(), "since": now}
+		subs[mate] = s
+	s["seen"] = now
+	s["playing"] = q[8] & 1 == 1
+
+
+func _subs_update() -> void:
+	if not subs_on:
+		return
+	var now := Time.get_ticks_msec()
+	var shown := []
+	for mate in subs.keys():
+		var s: Dictionary = subs[mate]
+		var end := int(s["seen"]) + (SUBS_LATE_MS if bool(s["playing"]) else 0)
+		if now >= maxi(end, int(s["since"]) + SUBS_MIN_MS):
+			subs.erase(mate)
+		else:
+			shown.append([int(s["since"]), mate])
+	if subs_view == null:
+		if shown.is_empty():
+			return
+		var sl := CanvasLayer.new()
+		sl.layer = 4                                       # over the game's HUD and the old school look, under the order wheel
+		add_child(sl)
+		subs_view = Subtitles.new()
+		sl.add_child(subs_view)
+	shown.sort()                                           # the newest line lowest
+	var lines := []
+	for it in shown:
+		var s: Dictionary = subs[it[1]]
+		var text := str(s["text"])
+		lines.append([_order_name([it[1], 0, int(s["pilot"])]), it[1], text, text.begins_with("[")])
+	var vs := get_viewport().get_visible_rect().size
+	var v := subs_view
+	v.k = vs.y / 1080.0
+	# at the bottom of the game's 3D window (its cockpit's dashboard rises in the middle), far under the crosshair
+	var win := Rect2(hud_win) if hud_win.size.y > 0 else Rect2(11, 42, 298, 199)
+	v.foot = Vector2((win.position.x + win.size.x * 0.5) / 320.0 * vs.x, (win.position.y + win.size.y * 0.89) / 400.0 * vs.y).round()
+	v.lines = lines
+	v.visible = not lines.is_empty() and not menu_mode
+	v.queue_redraw()
 
 
 # look <-> cursor (the look key, Pause, or a bind): the cursor starts on the view's centre
@@ -4189,6 +4389,7 @@ func _play_release_all() -> void:
 	bind_tap = ""
 	order_state = 0                                      # (the order wheel closes, nothing sent)
 	order_rmb = false
+	map_click = false
 	for bt in [1, 2]:                                    # a button let go elsewhere (alt-tab) would fire forever
 		_play_send(PackedByteArray([0x42, bt, 0]))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -4682,6 +4883,7 @@ func _live_update() -> void:
 		_play_cursor()
 		_bind_taps()
 		_order_update()
+		_subs_update()
 	if host_btn:
 		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 		if versus_btn:
@@ -4725,6 +4927,10 @@ func _live_update() -> void:
 			_order_status(q)                                # the squad and who can be attacked (live_bridge.py, orders.py)
 		elif q.size() == 8 and q.slice(0, 4).get_string_from_ascii() == "ORDR":
 			_order_result(q)
+		elif q.size() >= 39 and q.slice(0, 4).get_string_from_ascii() == "MAPV":
+			_map_status(q)                                  # the game's map in the HUD, for the orders given on it
+		elif q.size() >= 13 and q.slice(0, 4).get_string_from_ascii() == "SUBT":
+			_subs_packet(q)                                 # a squadmate speaks (live_bridge.py, subtitles.py)
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)

@@ -1135,6 +1135,39 @@ hud_mobile = None                         # the HUD's pixels of the last picture
 hud_last = None
 
 
+# Uplink's own HUD colours (the viewer's, TN_HUD_COLOURS): where the energy bar and the armour indicator are on the
+# game's screen. The game keeps its screen's regions in one array (English exe: 69 records of 0x62 bytes from
+# 0x389F38, French + 0xB0: rectangle x0, y0, x1, y1 at +8, drawing routine at +0x1C), each view's regions after the
+# record of its 3D window (routine 0x269028): the cockpit's, the full view's (G), the bare full screen's. In the list
+# of the view shown (the record whose rectangle is the 3D window): the energy bar (0x26541C) and the armour indicator
+# (0x2637DC), none in a view that has none. Read twice a second.
+HUD_REGIONS, HUD_REGION_N, HUD_REGION_COUNT = 0x389F38, 0x62, 69
+R_VIEW, R_ENERGY, R_ARMOUR = 0x269028, 0x26541C, 0x2637DC
+hud_places_last = (0.0, None, (0,) * 8)
+
+
+def hud_places(win):
+    """(energy bar x0, y0, x1, y1, armour indicator x0, y0, x1, y1) on the game's 320 x 400 screen, zeros: not shown"""
+    global hud_places_last
+    t, w, out = hud_places_last
+    if w == win and time.time() - t < 0.5:
+        return out
+    raw = g.read(HUD_REGIONS + (0xB0 if FR else 0), HUD_REGION_N * HUD_REGION_COUNT)
+    recs = [struct.unpack_from('<4h', raw, HUD_REGION_N * k + 8) + struct.unpack_from('<I', raw, HUD_REGION_N * k + 0x1C)
+            for k in range(HUD_REGION_COUNT)]
+    views = [k for k, r in enumerate(recs) if r[4] == R_VIEW]
+    size = lambda r: (r[0], r[1], r[2] - r[0], r[3] - r[1])
+    mine = [k for k in views if size(recs[k]) == win] or [k for k in views if recs[k][:2] == win[:2]]
+    out = [0] * 8
+    if mine and win[2] > 0:
+        for x0, y0, x1, y1, fn in recs[mine[0] + 1:([k for k in views if k > mine[0]] + [HUD_REGION_COUNT])[0]]:
+            if fn in (R_ENERGY, R_ARMOUR) and 0 <= x0 < x1 <= 320 and 0 <= y0 < y1 <= 400:
+                o = 0 if fn == R_ENERGY else 4
+                out[o:o + 4] = x0, y0, x1, y1
+    hud_places_last = (time.time(), win, tuple(out))
+    return hud_places_last[2]
+
+
 def send_hud():
     import numpy as np
     global hud_n, hud_copies, hud_rate, hud_rect, hud_mobile
@@ -1227,7 +1260,8 @@ def send_hud():
     pal = g.read(PAL, 768)
     if pal_fade(pal) < 0.999 and pal_ref is not None:
         pal = pal_ref                         # (fading: the viewer darkens the whole window itself, 'FAD')
-    s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + pal, ('127.0.0.1', 47823))
+    s.sendto(b'PAL' + struct.pack('<I4h', hud_n, fx0, fy0, fw, fh) + pal + struct.pack('<8h', *hud_places((fx0, fy0, fw, fh))),
+             ('127.0.0.1', 47823))
     # what is clear goes without its colour (the viewer never shows it): in the full view (G) the screen is all 3D, and
     # with its colours the packet went over what one packet holds (66 to 80 KB) as soon as the picture was busy (the
     # player in the air): not sent, the HUD stayed as it was until he landed. 6 KB without them

@@ -193,6 +193,13 @@ var hud_rect: TextureRect
 var hud_parts := {}
 var hud_frame := -1
 var hud_win := Rect2i()           # 3D window in the game's 320 x 400 screen
+# Uplink's own colours on the game's cockpit, as on the co-op guest's (coop_hud.gd): the energy bar's leds and its "E"
+# in orange where the game has its green ramp (palette 0x83 to 0x8B), and the whole parts of the armour indicator
+# (the game's green, 0x84) in light blue; its damaged parts keep the game's yellow and red. Only inside those two
+# places, which the bridge tells with the palette (their rectangles on the game's screen, live_bridge.py hud_places):
+# nothing else that is green changes. TN_HUD_COLOURS=0: the game's colours.
+var hud_colours := OS.get_environment("TN_HUD_COLOURS") != "0"
+var hud_places := PackedByteArray()
 # --play: keyboard and mouse go to the game through the bridge (port 47824): keys as PC scancodes of their physical
 # position ('K'), mouse moves ('M', the bridge turns them into the look), left / right buttons ('B'). A click in the
 # window captures the mouse; Pause gives it back (also when the window loses the focus).
@@ -2775,9 +2782,28 @@ func _hud_setup() -> void:
 	var sh := Shader.new()
 	sh.code = """shader_type canvas_item;
 uniform sampler2D pal : filter_nearest;
+uniform vec4 energy = vec4(0.0);   // the energy bar on the game's screen: x0, y0, x1, y1 (none: zeros)
+uniform vec4 armour = vec4(0.0);   // the armour indicator
+const vec3 LIT = vec3(255.0, 165.0, 40.0) / 255.0;
+const vec3 DIM = vec3(170.0, 95.0, 25.0) / 255.0;
+const vec3 BLUE = vec3(135.0, 200.0, 255.0) / 255.0;
+bool inside(vec2 p, vec4 r) { return p.x >= r.x && p.x < r.z && p.y >= r.y && p.y < r.w; }
 void fragment() {
 	vec4 t = texture(TEXTURE, UV);
-	COLOR = vec4(texture(pal, vec2((floor(t.r * 255.0 + 0.5) + 0.5) / 256.0, 0.5)).rgb, t.g);
+	float i = floor(t.r * 255.0 + 0.5);
+	vec3 c = texture(pal, vec2((i + 0.5) / 256.0, 0.5)).rgb;
+	vec2 p = UV * vec2(320.0, 400.0);
+	if (i >= 131.0 && i <= 139.0 && energy.z > energy.x) {
+		if (inside(p, energy)) {            // the leds, from the brightest (0x83) to the dimmest (0x8B)
+			c = mix(LIT, DIM, (i - 131.0) / 8.0);
+		} else if (inside(p, vec4(energy.x - 9.0, energy.y - 6.0, energy.x - 1.0, energy.y + 8.0))) {
+			c = mix(LIT, DIM, clamp((i - 136.0) / 3.0, 0.0, 1.0));   // the "E" left of them: its two greens, 0x88 and 0x8B
+		}
+	}
+	if (i == 132.0 && inside(p, armour)) {
+		c = BLUE;
+	}
+	COLOR = vec4(c, t.g);
 }"""
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
@@ -3105,6 +3131,12 @@ func _hud_update() -> void:
 		hud_win = Rect2i(last_pal.decode_s16(7), last_pal.decode_s16(9), last_pal.decode_s16(11), last_pal.decode_s16(13))
 		hud_pal_img.set_data(256, 1, false, Image.FORMAT_RGB8, last_pal.slice(15, 15 + 768))
 		hud_pal.update(hud_pal_img)
+		var places := last_pal.slice(15 + 768, 15 + 768 + 16)
+		if hud_colours and places.size() == 16 and places != hud_places:
+			hud_places = places
+			var m := hud_rect.material as ShaderMaterial
+			m.set_shader_parameter("energy", Vector4(places.decode_s16(0), places.decode_s16(2), places.decode_s16(4), places.decode_s16(6)))
+			m.set_shader_parameter("armour", Vector4(places.decode_s16(8), places.decode_s16(10), places.decode_s16(12), places.decode_s16(14)))
 	if not last_huz.is_empty():
 		var raw := last_huz.slice(7).decompress(320 * 400 * 2, FileAccess.COMPRESSION_DEFLATE)
 		if raw.size() == 320 * 400 * 2:

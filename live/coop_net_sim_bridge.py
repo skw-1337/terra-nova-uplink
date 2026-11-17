@@ -65,6 +65,10 @@ while time.time() - t0 < SECONDS:
                     struct.pack('<2H', 7000, 21000) + bytes([8, 0, 4]) + struct.pack('<2H', 7100, 21100)   # colour tables (about 650 bytes)
             s.sendto(pk, ('127.0.0.1', VIEW_PORT))
             out.write('H %s\n' % pk.hex())
+            snd = b'SND' + bytes([101, 2]) + b'S' + struct.pack('<BHBBBH3f', state % 16, 2046, 2, 0, 90, me, 0, 0, 0) + \
+                b'E' + bytes([(state + 15) % 16])              # the game's sounds (coop_guest.py sounds)
+            s.sendto(snd, ('127.0.0.1', VIEW_PORT))
+            out.write('H %s\n' % snd.hex())
         out.flush()
     time.sleep(max(0.0, t0 + step / 60 - time.time()))
 out.write('END messages %d resyncs %d\n' % (msgs, resyncs))

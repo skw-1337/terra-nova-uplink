@@ -401,6 +401,11 @@ func _run() -> void:
 		if not ref_huds.has(h[1]):
 			wrong += 1
 	check(huds.size() > 0 and wrong == 0, "every GHD packet as the bridge sent it", "%d, %d wrong" % [huds.size(), wrong])
+	var snds := 0
+	for h in huds:
+		if str(h[1]).begins_with("534e44"):
+			snds += 1
+	check(snds > 0, "the game's sounds ('SND') reach the guest's coop_hud.gd", "%d" % snds)
 	_end()
 
 

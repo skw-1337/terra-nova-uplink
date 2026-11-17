@@ -152,6 +152,15 @@ M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = r
 # playing; +0x10 length, +0x18 position, +0x30 loops left, 0 = for ever) is told instead that this pass is its last:
 # it ends by itself, the game frees the voice and empties the suit's.
 SOUND, VOICES, VOICE_N, SAMPLES = 0x82, 0x370738, 0x4F, 0x44B600
+# The game's sounds for the guest's window (coop_sound.gd): the game's voices (VOICES: 16 here, their number at
+# 0x35982D) as it starts and ends them, seen each update. A voice: byte 0 the driver's sample (-1: free), +1 its kind
+# (0 not placed; 1 at a place of the world, x y z 16.16 at +0x1A; 2 and 5 at a unit, its entity at +0x1A), +0x15 its
+# volume now (0-127), +0x17 1 = played once (0: until stopped), +0x18 the sound (RESSOUND.RES). A sound the game
+# plays as its player's (kind 0) is a shot of the suit whose voice it is (suit +0x82): placed at that suit for the
+# guest. The game's sound volume: 0x35982F. A voice started again (the driver's sample back near its start, or
+# another sound) is a new sound. 'SND' + master volume + count, then 'S' starts (voice, sound, kind, once, volume,
+# entity, x, y, z) and 'E' ends (voice); sent when something happened, reliable online.
+VOICE_MAX, SFX_VOLUME = 0x35982D, 0x35982F
 # A map marker for each player. The host's is the game's own nav marker. The guest's is Uplink's: his window asks for
 # it ('W' + world x, y, floats; x = 0: none), the bridge keeps it (the game is not told: it has one marker only) and
 # says it back to both windows: to his in the marks of his map (M_MATE), to the host's as 'GNAV' + x, y (floats; x = 0:
@@ -236,7 +245,8 @@ class Guest:
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
         self.gnav, self.gnav_t, self.gnav_told, self.gnav_mis = None, 0.0, False, None   # his map marker (world x, y)
-        self.fired_t = 0.0                                     # when he last held the fire (his laser's sound: laser_off)
+        self.fired_t, self.laser_said = 0.0, None             # when he last held the fire (his laser's sound: laser_off)
+        self.voices = {}                                       # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
         self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
@@ -924,10 +934,54 @@ class Guest:
         if not 0x100000 <= p < 0x2000000:
             return
         status, length, pos, loops = (struct.unpack('<i', g.read(p + o, 4))[0] for o in (4, 0x10, 0x18, 0x30))
+        said = (v, k, status, loops)
         if status == 4 and loops == 0:
             g.write(p + 0x30, struct.pack('<i', 1))
             if 0 < pos < length - 2048:
                 g.write(p + 0x18, struct.pack('<i', length - 1024))   # (and its end now: under a twentieth of a second)
+            print('guest: laser sound stopped (voice %d, sample %d, entity %d)' % (v, k, e), flush=True)
+        elif loops == 0 and said != self.laser_said:           # (once a case: a sound that would go on and is not stopped)
+            print('guest: laser sound NOT stopped: voice %d, sample %d, status %d, loops %d' % said, flush=True)
+        self.laser_said = said
+
+    def sounds(self, me):
+        """the game's sounds started and ended since the last update, for the guest's window (see VOICE_MAX)"""
+        g = self.g
+        n = min(g.read(VOICE_MAX, 1)[0], 32)
+        t = g.read(VOICES, VOICE_N * n)
+        owners = {}                                            # a suit's own sound (kind 0): whose
+        for e in [me] + list(self.squad) + ([self.gid] if self.gid else []):
+            if 0 < e < 300:
+                owners.setdefault(self.i32(self.suit(e) + SOUND), e)
+        out, now = [], {}
+        for k in range(n):
+            r = t[VOICE_N * k:VOICE_N * (k + 1)]
+            drv = struct.unpack_from('<b', r, 0)[0]
+            if drv < 0:
+                continue
+            sound, kind = struct.unpack_from('<H', r, 0x18)[0], struct.unpack_from('<I', r, 1)[0]
+            ent, at = 0, (0.0, 0.0, 0.0)
+            if kind in (2, 5):
+                ent = struct.unpack_from('<H', r, 0x1A)[0]
+            elif kind == 1:
+                at = tuple(v / 65536 for v in struct.unpack_from('<3i', r, 0x1A))
+            elif kind == 0 and k in owners:
+                ent = owners[k]
+            p = self.i32(SAMPLES + 4 * drv) if 0 <= drv < 16 else 0
+            pos = self.i32(p + 0x18) if 0x100000 <= p < 0x2000000 else 0
+            now[k] = (sound, kind, ent, pos)
+            was = self.voices.get(k)
+            if was is None or was[:3] != (sound, kind, ent) or pos + 4096 < was[3]:
+                if was is not None:
+                    out.append(b'E' + bytes([k]))
+                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, r[0x17], r[0x15], ent, *at))
+        for k in self.voices:
+            if k not in now:
+                out.append(b'E' + bytes([k]))
+        self.voices = now
+        if out:
+            pk = b'SND' + bytes([g.read(SFX_VOLUME, 1)[0], min(len(out), 255)]) + b''.join(out[:255])
+            self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
 
     def take(self, gid):
         g = self.g
@@ -1126,6 +1180,10 @@ class Guest:
                 self.take(gid)
         self.next = False
         self.hud()
+        try:
+            self.sounds(me)
+        except (OSError, struct.error):
+            pass
         self.tag.retry()
         self.lobby_step(True)
         if self.versus and self.state == OK:

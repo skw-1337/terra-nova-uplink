@@ -146,6 +146,7 @@ var hl_res = null                     # RESHLMHI.RES
 var preview_steam: Object
 var win := Rect2()                   # the game's 3D window (320 x 400 units), from the cockpit packet
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
+var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -288,6 +289,11 @@ func _process(delta: float) -> void:
 			_cockpit(pk)
 		elif tag == "GLB":
 			lobby.feed(pk)
+		elif tag == "SND":
+			if sound == null:
+				sound = preload("res://scripts/coop_sound.gd").new()
+				add_child(sound)
+			sound.feed(pk)
 		elif tag == "GHD" and pk.size() >= 10:
 			state = pk.decode_u8(3)
 			armour = pk.decode_s16(4)

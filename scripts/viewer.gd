@@ -2242,10 +2242,28 @@ func _add_mech(holder: Node3D) -> float:
 			return 0.0
 		var part := MeshInstance3D.new()
 		part.mesh = md["mesh"]
+		_mech_ir(part, 877 + int(sg[2]))
 		holder.add_child(part)
 		parts.append([part, sg[0], sg[1]])
 	holder.set_meta("mech", parts)
 	return _pose_mech(holder, p) + 0.1
+
+
+# Infrared: the walker is drawn by the soldier draw, which swaps the view's remap for table 62 around the whole unit
+# (0x29C96E), its 3D parts included: their materials' twins with that table (live, model.gdshader).
+func _mech_ir(part: MeshInstance3D, rid: int) -> void:
+	if not live or part.mesh == null:
+		return
+	for s in part.mesh.get_surface_count():
+		var sm := part.mesh.surface_get_material(s) as ShaderMaterial
+		if sm == null or sm.shader != TNObjects.MODEL_SHADER or not sm.get_shader_parameter("has_ir"):
+			continue
+		var k := "mechir%d/%d/%s" % [rid, s, pal_key]
+		if not mats.has(k):
+			var tw := sm.duplicate() as ShaderMaterial
+			tw.set_shader_parameter("ir_table", 3)
+			mats[k] = tw
+		part.set_surface_override_material(s, mats[k])
 
 
 # Puts a mech's parts (3D models, not stretched) on its joints: this standing pose at load, the game's own
@@ -2300,6 +2318,11 @@ func _limb_mat(suit: int, part: int, ld: Dictionary, shade := -1.0) -> ShaderMat
 	sm.set_shader_parameter("views", ld["tex"])
 	sm.set_shader_parameter("view_count", ld["views"])
 	sm.set_shader_parameter("shade", shade if shade >= 0.0 else 1.0)
+	if live and cur_ir.has(62) and objects_ok:      # infrared: the suits and their pieces through table 62
+		var ti := objects.limb_ir(suit, part, pal_key, 62, cur_ir[62])
+		if ti != null:
+			sm.set_shader_parameter("views_ir", ti)
+			sm.set_shader_parameter("has_ir", true)
 	if shade < 0.0:                                 # a standing suit: lit like the game's (_limb_light)
 		sm.set_meta("lit", true)
 		_limb_light_set(sm)

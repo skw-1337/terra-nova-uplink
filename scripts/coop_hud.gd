@@ -811,8 +811,9 @@ func _draw_panel() -> void:
 		_draw_indicator()
 	if not looking:                                  # free look: no crosshair (his aim stays ahead)
 		_draw_cross()
-	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21)
-	var bearing := fposmod(360.0 - heading / 65536.0 * 360.0, 360.0)
+	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21);
+	# the game's heading 0 is east and grows towards the south (its map: x to the east, y to the south)
+	var bearing := fposmod(heading / 65536.0 * 360.0 + 90.0, 360.0)
 	var amber := Color(1.0, 0.8, 0.25)
 	for k in 8:
 		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0

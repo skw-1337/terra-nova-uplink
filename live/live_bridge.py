@@ -613,6 +613,7 @@ def fumees(tab):
 # A first entry (-1, 9) says that this bridge sends a jetpack's particles too ('PART', poussieres): the viewer then
 # draws them as the game does, not as smoke puffs of its own.
 FX_SORTES = {}                           # (entite, fiche) -> sorte
+FX_CHAUD = {}                            # (entity, record) -> (hot, times read): see the entities' state, bit 2
 
 
 def sortes_29(tab):
@@ -2145,6 +2146,7 @@ while True:
             s.sendto(pk, ('127.0.0.1', 47821))
             if guest: guest.relay(pk)
     piles = decor = None
+    chauds_vus = set()
     body_at = {}                              # entity -> its place in body (a suit posed below gets its pose's place)
     for i in range(NENT):
         o = 0x25 * i
@@ -2158,12 +2160,25 @@ while True:
             if piles is None: piles = armures_piles()
             eh = float(armure_pile(i, struct.unpack_from('<H', tab, o + 3)[0], piles))
         actif = 1 if tab[o] else 0
+        if tab[o + 1] == 6 and actif and FUM and tab[o + 2] not in (28, 29, 31, 32, 33):
+            # an animated effect the game holds "hot" (flag 0x40 at +0x2A of its record, set where it is born: 0x28C860,
+            # 0x28C9B6, 0x28BDBD): full bright, and through table 62 in infrared (its sprite draw 0x29BE78) -> bit 2.
+            # Read twice per effect; an older viewer only tests this value against 0.
+            cle = (i, struct.unpack_from('<H', tab, o + 3)[0])
+            ch = FX_CHAUD.get(cle)
+            if ch is None or ch[1] < 2:           # (read twice: the first may fall between its birth and its flag)
+                if len(FX_CHAUD) > 2000: FX_CHAUD.clear()
+                r = g.read(FUM['REC'] + cle[1] * 0x2C + 0x2A, 1)
+                ch = FX_CHAUD[cle] = (bool(r and r[0] & 0x40), 1 if ch is None else 2)
+            chauds_vus.add(cle)
+            if ch[0]: actif |= 4
         if tab[o + 1] == 0 and actif and DECOR_ETAT is not None:   # decor : touche une fois -> bit 1 (sa souche)
             if decor is None: decor = g.read(DECOR_ETAT - 6, 256 * 9)
             nd = struct.unpack_from('<h', tab, o + 3)[0]
             if 0 <= nd < 256 and decor[9 * nd + 6]: actif |= 2
         body_at[i] = len(body)
         body.append(struct.pack('<4i4f', i, tab[o + 1], tab[o + 2], actif, ex / 65536, ey / 65536, ez / 65536, eh))
+    for cle in [c for c in FX_CHAUD if c not in chauds_vus]: del FX_CHAUD[cle]
     # the main view through the player's drone (see VUE_ENT)
     vue = u16(VUE_ENT)
     sonde = vue != pid and 0 < vue < NENT and bool(tab[0x25 * vue]) and tab[0x25 * vue + 1] == 3

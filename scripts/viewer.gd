@@ -150,6 +150,8 @@ var sky_clouds: Texture2D
 var sky_haze_lut: ImageTexture = null    # the sky's haze rows (SKY 150) as colours: 256 indices x 16 levels
 var sky_haze_idx: ImageTexture = null    # the same as palette indices (R8)
 var cur_ir := {}                         # the planet's IR tables (TNData.ir_palettes)
+var fx_ir := true                        # the effects in infrared through those tables (tests: false = as before, the fitted ramp)
+var ir_smoke := Color(0, 0, 0, 0)        # what the game's smoke discs lift the picture towards in infrared (_ir_colours); a 0: unknown
 var sky_haze := Color(0.7, 0.76, 0.84)
 var sky_light := Color(0.91, 0.94, 0.97)     # the lightest cloud colour (the horizon)
 var sun_to := Vector3(0, 0.7, 0.7)           # towards the sun (the map's light direction)
@@ -1263,6 +1265,23 @@ func _sky_to(sm: ShaderMaterial) -> void:
 # The planet's IR colours (RESPLNT 66 through tables 59-62) to the passes over the view (old school, infrared): in IR,
 # what the ground, the plants and the models drew in them is kept, the rest goes through the old luma ramp.
 func _ir_colours(pl: Dictionary) -> void:
+	# The particles' see-through discs (a shell's smoke, a jetpack's trail, a smoke grenade's cloud) in the game's
+	# infrared: not their veil but pixel = table 62 [44 - the mean of r, g, b of what is behind / 16] (0x2A6478 /
+	# 0x2A6564 through the 256 bytes 0x2A63C0 builds at 0x423630): the dark is lifted, the bright kept, and disc over
+	# disc the picture climbs to the one colour that maps onto itself (255, 191, 127 on every planet), a quarter of
+	# the way with each disc (IR_SMOKE: fitted on the table's own steps). Here: that colour laid at that strength.
+	ir_smoke = Color(0, 0, 0, 0)
+	if cur_ir.has(62):
+		var k := 44
+		for n in 24:
+			var c: Color = cur_ir[62][k]
+			var k2 := 44 - ((c.r8 + c.g8 + c.b8) / 3 >> 4)
+			if k2 == k:
+				ir_smoke = Color(c.r, c.g, c.b, 1.0)
+				break
+			k = k2
+	if puff_mat != null:
+		puff_mat.set_shader_parameter("ir_veil", ir_smoke if fx_ir else Color(0, 0, 0, 0))
 	var cols: Array = pl.get("ir_colours", [])
 	var img := Image.create(64, 1, false, Image.FORMAT_RGB8)
 	for i in mini(cols.size(), 64):
@@ -5865,7 +5884,7 @@ func _live_fx(idx: int, e) -> void:
 	if cls == 6 and typ == 28 and pulsar_dust.has(idx):
 		return                                          # a pulsar bolt's trail: drawn with its bolt
 	if cls == 6 and _fx_anim(typ):
-		_live_anim(idx, typ, Vector3(e[3], e[5], e[4]))
+		_live_anim(idx, typ, Vector3(e[3], e[5], e[4]), int(e[2]) & 4 != 0)
 		return
 	# kinds: 0 other shot, 1 red beam (laser 5/4), 2 orange spark, 3 red dust (6/29), 4 blue beam (5/11),
 	# 5 blue dust (6/28), 6 missile (5/10), 7 red particle shot (5/6), 8 green plasma (5/22 the enemies' slow
@@ -6119,6 +6138,7 @@ const SHOT_BALL_W := 0.05                        # 0x1555 / 65536 x the sprites'
 var ball_mesh: QuadMesh
 var ball_mat: StandardMaterial3D
 var ball_key := ""
+var ball_ir := false                             # its material holds the infrared picture
 
 
 func _live_ball(idx: int, e) -> void:
@@ -6127,6 +6147,7 @@ func _live_ball(idx: int, e) -> void:
 		if sp.is_empty():
 			return
 		ball_key = pal_key
+		ball_ir = false
 		ball_mesh = QuadMesh.new()
 		ball_mesh.size = Vector2(SHOT_BALL_W, SHOT_BALL_W * sp["aspect"] * 1.2)   # (the game's pixels: 1.2 x taller than wide)
 		ball_mat = StandardMaterial3D.new()
@@ -6151,6 +6172,17 @@ func _live_ball(idx: int, e) -> void:
 		live_fx[idx] = mi
 	mi.mesh = ball_mesh
 	mi.material_override = ball_mat
+	if _fx_ir(60) != ball_ir:                        # infrared: its sprite through table 60 (_ir_colour)
+		ball_ir = not ball_ir
+		var bt: Texture2D = objects.sprite(Vector2i(1164, 0), pal, pal_key).get("texture")
+		if ball_ir:
+			var c60 := PackedColorArray()
+			for c in (cur_ir[60] as PackedColorArray):
+				c60.append(_screen_exact(c).linear_to_srgb())
+			var it := objects.sprite_ir(Vector2i(1164, 0), pal_key + "/fx", 60, c60)
+			if it != null:
+				bt = it
+		ball_mat.albedo_texture = bt
 	var pos := Vector3(e[3], e[5], e[4])
 	mi.transform = Transform3D(Basis.IDENTITY, pos)
 	mi.visible = pos.distance_to(camera.position) > 0.05    # (the game draws it from the gun on: huge for a picture)
@@ -6183,6 +6215,7 @@ const PART_THIN := {10: 0.25}
 const PART_TINT := {248: Color(0.882, 0.882, 0.882, 0.200), 249: Color(0.813, 0.813, 0.813, 0.304),
 		250: Color(0.682, 0.682, 0.682, 0.414), 251: Color(0.506, 0.506, 0.506, 0.349), 252: Color(0.394, 0.394, 0.394, 0.398),
 		253: Color(0.098, 0.098, 0.098, 0.561), 254: Color(0.138, 0.138, 0.138, 0.340), 255: Color(0.050, 0.050, 0.050, 0.316)}
+const IR_SMOKE := 0.26                           # how far one disc takes the picture towards ir_smoke in infrared
 var part_mode := false                          # the bridge sends the particles (an older one: the dots, as before)
 var part_node: MultiMeshInstance3D = null       # dots and see-through discs
 var haze_node: MultiMeshInstance3D = null       # the thermal disruptor's
@@ -6217,6 +6250,8 @@ func _live_parts(q: PackedByteArray) -> void:
 		part_node = _part_cloud(DUST)
 		haze_node = _part_cloud(HAZE)
 	(part_node.material_override as ShaderMaterial).set_shader_parameter("px", part_px)
+	var pir := _fx_ir(59) and ir_smoke.a > 0.0       # infrared: the dots through table 59, the discs' own rule (_ir_colours)
+	(part_node.material_override as ShaderMaterial).set_shader_parameter("ir_exact", pir)
 	var buf := PackedFloat32Array()
 	buf.resize(PART_MAX * 16)                        # per particle: a transform (12: its width, its place), a colour (4)
 	var hbuf := PackedFloat32Array()
@@ -6244,6 +6279,8 @@ func _live_parts(q: PackedByteArray) -> void:
 		var ci := q[o + 12] + (0 if kind == 7 else 1000 * kind)
 		if not cols.has(ci):
 			var c: Color = _game_colour(ci) if kind == 7 else PART_TINT.get(q[o + 12], Color(0.6, 0.6, 0.6, 0.3))
+			if pir:
+				c = _ir_colour(ci, 59) if kind == 7 else Color(ir_smoke.r, ir_smoke.g, ir_smoke.b, IR_SMOKE)
 			cols[ci] = Color(c.srgb_to_linear(), c.a * float(PART_THIN.get(kind, 1.0)))
 		var cc: Color = cols[ci]
 		buf[b + 12] = cc.r
@@ -6304,8 +6341,8 @@ func _live_bolts(q: PackedByteArray) -> void:
 		var a0: Vector3 = across * p0.distance_to(cam.origin) * px
 		var a1: Vector3 = across * p1.distance_to(cam.origin) * px
 		var ci := q[o + 24]
-		if not cols.has(ci):
-			cols[ci] = _game_colour(ci)
+		if not cols.has(ci):                              # (infrared: through table 62, _ir_colour)
+			cols[ci] = _screen_exact(_ir_colour(ci, 62)) if _fx_ir(62) else _game_colour(ci)
 		im.surface_set_color(cols[ci])
 		for v in [p0 - a0, p0 + a0, p1 + a1, p0 - a0, p1 + a1, p1 - a1]:
 			im.surface_add_vertex(v)
@@ -6452,6 +6489,76 @@ func _game_colour(i: int) -> Color:
 	return pal[i & 0xFF] if pal.size() > (i & 0xFF) else Color(1.0, 0.0, 0.0)
 
 
+# The effects in the game's infrared view. The game draws everything through its 2D library's colour table (the
+# canvas's fill table, [0x44B1A0] + 0x24): the planet's table 59 unless a draw swaps it. From its code:
+# - an effect's sprite (the animated ones: sparks, blasts, fireballs, flames; 0x29BE78): table 60, or 62 for a "hot"
+#   effect (flag 0x40 of its record, set where it is born from the impact's definition; the bridge sends it as bit 2
+#   of the entity's state) - _spawn_anim, anim.gdshader;
+# - a beam (6/28, 0x29DE8C) and a dust particle (kind 7, 0x2A6478): plain colours through the table in place, 59 -
+#   _live_beam, _live_parts;
+# - the see-through discs (smoke): see _ir_colours - _live_parts, puff.gdshader;
+# - the SIR's lightning (0x2B3898): table 62 - _live_bolts;
+# - a shot's ball (class 5: never hot): table 60 - _live_ball.
+# i: the game's colour, table: 59 to 62; the colour it shows in infrared.
+func _ir_colour(i: int, table: int) -> Color:
+	return cur_ir[table][i & 0xFF]
+
+
+func _fx_ir(table: int) -> bool:
+	return fx_ir and ir_on and cur_ir.has(table)
+
+
+# A see-through effect's veils (its pixels 248 and 249: a blast's smoke, its flash) in infrared. The game's span
+# routine with a colour table (0x332941) writes table[veil[what is behind]], and a veil's table (0x2F1C64, built at
+# the mission's start from the planet's palette) is the palette colour nearest to veil x opacity + behind x
+# (1 - opacity) x veil / 64, "behind" being the planet's own colour at that index: under the infrared colours
+# (176-230) that is unrelated to how bright they are, so the veil is no veil there but an opaque mottled patch. Here:
+# an opaque patch of the mean of what that gives over the 55 infrared colours.
+var ir_veil_cache := {}
+
+
+func _ir_veils(table: int) -> Dictionary:
+	var key := "%s/%d" % [pal_key, table]
+	if ir_veil_cache.has(key):
+		return ir_veil_cache[key]
+	var out := {}
+	for veil in [[248, 240.0 / 256.0, 0.5], [249, 224.0 / 256.0, 0.25]]:
+		var k: float = veil[1]
+		var o: float = veil[2]
+		var sum := Vector3.ZERO
+		for d in range(176, 231):
+			var c: Color = pal[d]
+			var b := Vector3(k * o + c.r * (1.0 - o) * k, k * o + c.g * (1.0 - o) * k, k * o + c.b * (1.0 - o) * k)
+			var best := 0
+			var bd := 1e9
+			for i in 256:
+				var e: Color = pal[i]
+				var dd := Vector3(e.r, e.g, e.b).distance_squared_to(b)
+				if dd < bd:
+					bd = dd
+					best = i
+			var ic: Color = cur_ir[table][best]
+			sum += Vector3(ic.r, ic.g, ic.b)
+		sum /= 55.0
+		out[veil[0]] = Color(sum.x, sum.y, sum.z, 1.0)
+	ir_veil_cache[key] = out
+	return out
+
+
+# A colour of the game as the linear colour that shows it on the screen through the view's adjustments (the shaders'
+# tn_game_colour, tn_haze.gdshaderinc): for the materials that are no shader of ours.
+func _screen_exact(c: Color) -> Color:
+	var v := Vector3(c.r, c.g, c.b)
+	var b := 1.0
+	if live and env.adjustment_enabled:
+		var m := (v.x + v.y + v.z) / 3.0
+		v = Vector3(m, m, m) + (v - Vector3(m, m, m)) / maxf(env.adjustment_saturation, 0.01)
+		v = Vector3(0.5, 0.5, 0.5) + (v - Vector3(0.5, 0.5, 0.5)) / maxf(env.adjustment_contrast, 0.01)
+		b = maxf(env.adjustment_brightness, 0.01)
+	var lin := Color(clampf(v.x, 0.0, 1.0), clampf(v.y, 0.0, 1.0), clampf(v.z, 0.0, 1.0)).srgb_to_linear()
+	return Color(lin.r / b, lin.g / b, lin.b / b, c.a)
+
+
 func _live_beam(idx: int, b: Array) -> void:
 	var mi: MeshInstance3D = live_fx.get(idx)
 	if mi == null or mi.get_meta("kind", -1) != 13:
@@ -6471,8 +6578,10 @@ func _live_beam(idx: int, b: Array) -> void:
 		bm.set_shader_parameter("core_frac", 0x50 / float(0xC0) if col == 0x28 else 0xC0 / float(0x200))
 		beam_mats[col] = bm
 	var mat: ShaderMaterial = beam_mats[col]
-	mat.set_shader_parameter("core", _game_colour(0x20 if col == 0x28 else col))
-	mat.set_shader_parameter("edge", _game_colour(0x25 if col == 0x28 else col + 6))
+	var bir := _fx_ir(59)                            # infrared: its two colours through table 59 (_ir_colour)
+	mat.set_shader_parameter("ir_exact", bir)
+	mat.set_shader_parameter("core", _ir_colour(0x20 if col == 0x28 else col, 59) if bir else _game_colour(0x20 if col == 0x28 else col))
+	mat.set_shader_parameter("edge", _ir_colour(0x25 if col == 0x28 else col + 6, 59) if bir else _game_colour(0x25 if col == 0x28 else col + 6))
 	var hw := BEAM_W * (0xC0 / float(0x200) if col == 0x28 else 1.0) * beam_scale * 0.5
 	var p0: Vector3 = b[0]
 	var p1: Vector3 = b[1]
@@ -6598,7 +6707,7 @@ func _fx_anim(typ: int) -> bool:
 	return objects_ok and not objects.fx_def(typ).is_empty()
 
 
-func _live_anim(idx: int, typ: int, pos: Vector3) -> void:
+func _live_anim(idx: int, typ: int, pos: Vector3, hot := false) -> void:
 	var now := Time.get_ticks_msec()
 	var seen = anim_seen.get(idx)
 	var fresh: bool = seen == null or seen[1] != typ or now - int(seen[0]) > FX_GAP_MS or (seen[2] as Vector3).distance_to(pos) > 0.5
@@ -6611,6 +6720,9 @@ func _live_anim(idx: int, typ: int, pos: Vector3) -> void:
 			smoke_pending.append([Vector3(pos.x, pos.y - GAME_Z, pos.z), now])   # a tree's black smoke, unless it was a soldier (see below)
 	elif node != null and is_instance_valid(node):
 		node.position = pos                             # (it moves with its entity: a blast's fireballs, flames)
+	if node != null and is_instance_valid(node) and node.get_meta("hot", false) != hot:
+		node.set_meta("hot", hot)                       # a hot effect: its own table in infrared (_ir_colour)
+		node.set_instance_shader_parameter("hot", 1.0 if hot else 0.0)
 	anim_seen[idx] = [now, typ, pos, node]
 
 
@@ -6631,6 +6743,13 @@ func _spawn_anim(pos: Vector3, typ: int, idx := -1) -> MeshInstance3D:
 		am.set_shader_parameter("frame_count", frames)
 		am.set_shader_parameter("fps", fps)
 		am.set_shader_parameter("loop", fd["loop"])
+		if live and fx_ir and cur_ir.has(60) and cur_ir.has(62):   # infrared: its frames through tables 60 and 62
+			var a60: Dictionary = objects.anim(fd["res"], cur_ir[60], pal_key + "/ir60", _ir_veils(60))
+			var a62: Dictionary = objects.anim(fd["res"], cur_ir[62], pal_key + "/ir62", _ir_veils(62))
+			if not a60.is_empty() and not a62.is_empty():
+				am.set_shader_parameter("frames_ir", a60["tex"])
+				am.set_shader_parameter("frames_hot", a62["tex"])
+				am.set_shader_parameter("has_ir", true)
 		var sc: float = fd["width"] * fx_scale / ad["size"].x     # world units per pixel of its bitmap
 		var w: float = ad["size"].x * sc
 		var h: float = ad["size"].y * sc
@@ -7003,6 +7122,7 @@ func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, t
 		puff_mat.set_shader_parameter("frames", sm["tex"])
 		puff_mat.set_shader_parameter("frame_count", sm["frames"])
 		puff_mat.set_shader_parameter("life", PUFF_LIFE)
+		puff_mat.set_shader_parameter("ir_veil", ir_smoke if fx_ir else Color(0, 0, 0, 0))
 		puff_mesh = QuadMesh.new()
 		puff_mesh.size = Vector2(1.0, 1.0)
 	var mi := MeshInstance3D.new()

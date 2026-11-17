@@ -2,10 +2,14 @@
 // animation (RESTNOBJ 1186) once, growing and fading out over its life.
 shader_type spatial;
 render_mode unshaded, cull_disabled, depth_draw_never;
+#include "res://tn_haze.gdshaderinc"
 
 uniform sampler2DArray frames : source_color, filter_linear_mipmap, repeat_disable;
 uniform int frame_count = 13;
 uniform float life = 1.2;
+// infrared (live, tn_ir): the game's smoke is no veil there, each of its discs lifts what is behind it towards one
+// warm colour (viewer.gd ir_smoke, _ir_colours): rgb that colour (sRGB), a 1 when known
+uniform vec4 ir_veil = vec4(0.0);
 instance uniform float age = 0.0;      // seconds since the puff appeared
 instance uniform float size = 1.0;     // jetpack 1, missile trail smaller, explosion bigger
 instance uniform float tint = 1.0;     // 1 = the game's grey smoke, lower = darker (a burning tree's black smoke)
@@ -29,4 +33,8 @@ void fragment() {
 	ALBEDO = c.rgb * tint;
 	ALPHA = min(1.0, c.a * clamp(1.0 - age / life, 0.0, 1.0) * 0.85 * dense);
 	ALPHA *= mix(1.0, smoothstep(1.0, 4.0, cam_dist), near_fade);
+	if (ir_veil.a > 0.5 && tn_ir > 0.5) {
+		ALBEDO = tn_game_colour(ir_veil.rgb);
+		ALPHA = 1.0 - pow(1.0 - ALPHA, 0.56);       // (as many discs as the veil stands for, each 0.26 strong against 0.41)
+	}
 }

@@ -266,7 +266,8 @@ const SMOKE_TYPE := 61
 
 # An effect animation (explosions, fire: RESTNOBJ 1162-1193), all its frames in a texture array; its frames share
 # one size and one anchor (header +16 / +18: the point standing on the effect's position, near the bottom).
-func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
+# veils: what its see-through pixels lay (BITMAP_VEILS; the infrared pictures have their own, viewer.gd _ir_veils).
+func anim(rid: int, pal: PackedColorArray, pal_key: String, veils := BITMAP_VEILS) -> Dictionary:
 	var key := "a%d/%s" % [rid, pal_key]
 	if tex_cache.has(key):
 		return tex_cache[key]
@@ -278,7 +279,7 @@ func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
 	for fr in LGRes.frames(res.data(rid)):
 		var f: PackedByteArray = fr
 		var see_through := f.size() > 5 and f[4] == 5      # (a translucent one: smoke, the white flash)
-		var img := _soft_bitmap(f, pal) if see_through else _bitmap(f, pal)
+		var img := _soft_bitmap(f, pal, veils) if see_through else _bitmap(f, pal)
 		if img == null:
 			continue
 		if size == Vector2i.ZERO:
@@ -302,7 +303,7 @@ func anim(rid: int, pal: PackedColorArray, pal_key: String) -> Dictionary:
 # opacity 1/2), 249 = 56 + 0.656 x behind (colour 224 at 1/4); as a grey laid at an opacity. Any other pixel is drawn
 # as its palette colour, opaque and unlit (span routine 0x3328C2).
 const BITMAP_VEILS := {248: Color(0.886, 0.886, 0.886, 0.531), 249: Color(0.639, 0.639, 0.639, 0.344)}
-static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
+static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray, veils := BITMAP_VEILS) -> Image:
 	if f.size() < 0x1c:
 		return null
 	var w := f.decode_u16(8)
@@ -314,8 +315,8 @@ static func _soft_bitmap(f: PackedByteArray, pal: PackedColorArray) -> Image:
 	for y in h:
 		for x in w:
 			var v := f[0x1c + y * row + x]
-			if BITMAP_VEILS.has(v):
-				img.set_pixel(x, y, BITMAP_VEILS[v])
+			if veils.has(v):
+				img.set_pixel(x, y, veils[v])
 			elif v != 0:
 				var c: Color = pal[v]
 				img.set_pixel(x, y, Color(c.r, c.g, c.b, 1.0))

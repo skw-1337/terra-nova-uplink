@@ -4733,6 +4733,8 @@ func _photo_show() -> void:
 			cross_dot.visible = false
 		if drag_cur != null:
 			drag_cur.visible = false
+		if subs_view != null:
+			subs_view.visible = false               # (a squadmate's line that was up: back when it is left, _subs_update)
 	if not photo_on:
 		if photo_help != null:
 			photo_help.visible = false

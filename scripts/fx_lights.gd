@@ -70,7 +70,7 @@ func _on_fired(_idx: int, typ: int, pos: Vector3) -> void:
 	if pos.distance_to(cam.origin) < 2.5:              # the player's own gun: beside the view, a little ahead
 		var rel := cam.affine_inverse() * pos
 		pos = cam * Vector3(0.3 * (-1.0 if rel.x < 0.0 else 1.0), -0.08, -0.45)
-	flashes.append([pos, FLASH_RANGE, w[0], FLASH_ENERGY * float(w[1]), Time.get_ticks_msec() / 1000.0, FLASH_S])
+	flashes.append([pos, FLASH_RANGE, w[0], FLASH_ENERGY * float(w[1]), v._ticks() / 1000.0, FLASH_S])
 
 
 func _on_blast(_typ: int, pos: Vector3, width: float) -> void:
@@ -78,11 +78,11 @@ func _on_blast(_typ: int, pos: Vector3, width: float) -> void:
 	if width < 0.45:
 		return                                          # (sparks and small impacts: none)
 	flashes.append([pos + Vector3(0.0, 0.3, 0.0), 2.5 + 4.5 * width, BLAST_COLOUR, BLAST_ENERGY * clampf(width, 0.5, 1.5),
-			Time.get_ticks_msec() / 1000.0, BLAST_S])
+			v._ticks() / 1000.0, BLAST_S])
 
 
 func _process(_dt: float) -> void:
-	var now := Time.get_ticks_msec() / 1000.0
+	var now: float = v._ticks() / 1000.0
 	var cam: Vector3 = v.camera.global_position
 	var want := []                                     # [score, position, range, colour, energy, casts shadows]
 	for k in range(flashes.size() - 1, -1, -1):

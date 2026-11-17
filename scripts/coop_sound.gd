@@ -69,7 +69,7 @@ func feed(pk: PackedByteArray) -> void:
 		if pk[p] == 0x45 and p + 2 <= pk.size():
 			_stop(pk[p + 1])
 			p += 2
-		elif pk[p] == 0x53 and p + 22 <= pk.size():
+		elif pk[p] == 0x53 and p + 21 <= pk.size():
 			_start(pk[p + 1], pk.decode_u16(p + 2), pk[p + 4], pk[p + 5], pk[p + 6], pk.decode_u16(p + 7),
 					Vector3(pk.decode_float(p + 9), pk.decode_float(p + 13), pk.decode_float(p + 17)))
 			p += 21

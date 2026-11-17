@@ -1,6 +1,9 @@
 # Co-op guest: where the host's game is, in a line at the top of his window (the host's bridge sends it,
 # live/host_state.py: 'HST' + version, state, mission number, the video playing, flags). Plain and short: what the
 # host is doing and what the guest is waiting for. Nothing while the mission is being played.
+# While the host watches the briefing (a Smacker video Godot cannot play), the guest reads it: the game's own text
+# briefing of that mission (its options' "Briefings: Text"), from his own game files: RESPTERM.RES 1455, the string of
+# the mission's number (MISSn.RES -> [n]).
 extends Node
 
 const LGRes = preload("res://scripts/lgres.gd")
@@ -24,6 +27,11 @@ var last := -100.0
 var clock := 0.0
 var names := PackedStringArray()
 var names_read := false
+var briefs := PackedStringArray()
+var briefs_read := false
+var panel: PanelContainer
+var panel_text: Label
+var panel_of := -1
 
 
 func _ready() -> void:
@@ -53,6 +61,7 @@ func _process(delta: float) -> void:
 			movie = pk.slice(7, 15).get_string_from_ascii().strip_edges()
 			custom = pk[15] & 2 != 0
 			last = clock
+	_briefing_text()
 	var t := _text()
 	label.visible = t != ""
 	if t == "":
@@ -118,3 +127,56 @@ func _mission_name() -> String:
 	var num := "Mission %d" % (pos + 1) if pos >= 0 else "MISS%d" % mission
 	return num + (" (" + nm + ")" if nm != "" else "")
 
+
+# the text briefing, over the guest's view, while the host's game plays the briefing's video
+func _briefing_text() -> void:
+	var want := state == BRIEFING and clock - last < 6.0 and mission > 0 and not custom
+	if not want:
+		if panel:
+			panel.visible = false
+		return
+	if not briefs_read:
+		briefs_read = true
+		if v.get("data") and v.data.has_method("data_dir"):
+			var res = LGRes.open(v.data.data_dir().path_join("RESPTERM.RES"))
+			if res and res.has(1455):
+				briefs = res.strings(1455)
+	if mission >= briefs.size() or briefs[mission].strip_edges().length() < 40:
+		return
+	var vs: Vector2 = get_viewport().get_visible_rect().size
+	var k := clampf(vs.y / 1080.0, 0.7, 2.2)
+	if panel == null:
+		panel = PanelContainer.new()
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.05, 0.10, 0.094, 0.93)
+		sb.border_color = BLUE
+		sb.border_width_left = 4
+		sb.set_corner_radius_all(6)
+		sb.set_content_margin_all(22 * k)
+		panel.add_theme_stylebox_override("panel", sb)
+		var col := VBoxContainer.new()
+		panel.add_child(col)
+		var head := Label.new()
+		head.name = "head"
+		head.add_theme_font_override("font", label.get_theme_font("font"))
+		head.add_theme_color_override("font_color", ORANGE)
+		head.add_theme_font_size_override("font_size", maxi(12, roundi(24 * k)))
+		col.add_child(head)
+		panel_text = Label.new()
+		panel_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		var f := SystemFont.new()
+		f.font_names = PackedStringArray(["Bahnschrift", "Segoe UI", "Arial"])
+		panel_text.add_theme_font_override("font", f)
+		panel_text.add_theme_font_size_override("font_size", maxi(11, roundi(21 * k)))
+		panel_text.add_theme_color_override("font_color", Color8(214, 226, 220))
+		col.add_child(panel_text)
+		layer.add_child(panel)
+	if panel_of != mission:
+		panel_of = mission
+		(panel.get_child(0).get_node("head") as Label).text = "BRIEFING  ·  " + _mission_name()
+		panel_text.text = briefs[mission].strip_edges()
+	var w := minf(vs.x * 0.62, 1100.0 * k)
+	panel_text.custom_minimum_size.x = w - 44 * k
+	panel.reset_size()
+	panel.position = Vector2(roundf((vs.x - panel.size.x) * 0.5), roundf(vs.y * 0.13))
+	panel.visible = true

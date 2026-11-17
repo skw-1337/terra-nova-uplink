@@ -23,7 +23,7 @@ class HostState:
     def __init__(self, g, master, pid_addr, send):
         """g: the game's memory; send(packet): to the guest's window (the bridge's own way: local or through Steam)"""
         self.g, self.master, self.pid_addr, self.send = g, master, pid_addr, send
-        self.state, self.last_t, self.was_in, self.seen_t = NONE, 0.0, False, 0.0
+        self.state, self.last_t, self.was_in, self.seen_t, self.outfitted = NONE, 0.0, False, 0.0, False
         self.said = None
 
     def _u16(self, a):
@@ -42,18 +42,20 @@ class HostState:
         mission = mission if 0 < mission < 0x10000 else 0
         if in_mission:
             st = PAUSED if menu_flag else MISSION_ON
-            self.was_in = True
+            self.was_in, self.outfitted = True, False
         elif pos in SCRIPT:                             # (first: the last video's name stays after it ended)
             st = SCRIPT[pos]
             if st in (MENU, SAVES, BASE):
-                self.was_in = False
+                self.was_in = self.outfitted = False
+            if st == OUTFIT:
+                self.outfitted = True
         elif movie.startswith('BRIEF'):
             st = BRIEFING
         elif movie in ('LGA', 'OPENERA'):
             st = INTRO
         elif self.was_in:
             st = AFTER                                  # the mission over: its end, the debriefing, back to the base
-        elif self.state in (OUTFIT, LAUNCH):
+        elif self.outfitted:
             st = LAUNCH                                 # Outfit Complete: its video, the mission loading
         else:
             st = self.state if self.state != NONE else LOADING

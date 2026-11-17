@@ -228,7 +228,7 @@ func _show(p: String) -> void:
 	box.add_child(col)
 	match p:
 		"main":
-			_place(400, 360 if guest else 300)
+			_place(400, 360 if guest else 262)
 			_title(col, "UPLINK", ORANGE if not guest else BLUE)
 			var sub := Label.new()
 			sub.text = "The game goes on meanwhile." if guest else "The game is not paused by this menu."

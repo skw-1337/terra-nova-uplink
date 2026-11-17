@@ -31,6 +31,14 @@ uniform bool has_haze_lut = false;
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of tables 59, 60, 61, 62
 uniform bool has_ir = false;
 uniform float shadow_dark = 0.6;               // an object's shadow takes this much away
+// cloud shadows (an extra, off unless TN_FX_CLOUD_SHADOWS=1: viewer.gd _cloud_cover): the sky's cloud layer seen from
+// the ground along the sun's direction, where it stands over the map (its texels are a world unit, shifted by the
+// same wind offset as the sky's: cloud_off), takes up to cloud_rows rows of the planet's light table away
+uniform bool cloud_shadows = false;
+uniform sampler2D cloud_cover : filter_linear, repeat_enable;   // 256 x 256: how thick the cloud is (0: clear sky)
+uniform vec2 cloud_off = vec2(0.0);            // texels (column, row), as the sky's
+uniform vec4 cloud_sun = vec4(0.0, 1.0, 0.0, 50.0);   // xyz towards the sun, w the ceiling's height
+uniform float cloud_rows = 2.2;
 // burnt ground (live: a tree destroyed, a blast): the game stamps one of its 4 burn pictures over the whole square of a
 // burnt point, as part of the ground (lit and hazed with it). burn_map: one texel per point, 0 or 1 + its picture;
 // burn_idx: the pictures' palette indices (0 = the ground shows through); burn_pal: the planet's palette (viewer.gd
@@ -273,7 +281,12 @@ void fragment() {
 	vec2 dx = dFdx(g);
 	vec2 dy = dFdy(g);
 	vec3 n_geo = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-	int frow = 15 - clamp(int(floor(vlight)), 0, 15);       // the row's file row (0 = full light)
+	float vl = vlight;
+	if (cloud_shadows) {
+		vec3 up = wpos + cloud_sun.xyz * max(cloud_sun.w - wpos.y, 0.0) / cloud_sun.y;   // where the sun's ray meets the ceiling
+		vl -= cloud_rows * smoothstep(0.4, 0.9, texture(cloud_cover, (up.zx + cloud_off) / 256.0).r);
+	}
+	int frow = 15 - clamp(int(floor(vl)), 0, 15);           // the row's file row (0 = full light)
 	float row_light = per_index ? 1.0 : light_rows[frow];
 	float loff = float(frow) * tile_count;
 	bool ir = tn_ir > 0.5 && has_ir;

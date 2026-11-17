@@ -1245,6 +1245,12 @@ func _sky_to(sm: ShaderMaterial) -> void:
 	sm.set_shader_parameter("sun_dir", sun_to)
 	sm.set_shader_parameter("desat", 1.0 / LIVE_SATURATION if live else 1.0)
 	sm.set_shader_parameter("modern", _is_modern())
+	if fx_cloud_shadows:                              # (an extra: the clouds' shadows on the ground, _cloud_cover)
+		sm.set_shader_parameter("cloud_shadows", cloud_cover != null)
+		if cloud_cover != null:
+			sm.set_shader_parameter("cloud_cover", cloud_cover)
+			sm.set_shader_parameter("cloud_sun", Vector4(sun_to.x, maxf(sun_to.y, 0.15), sun_to.z,
+					sky_ref_y + 0.0478 * (float(mis_params.get("cloud_h", 1024)) - 8.0 * sky_ref_y)))
 
 
 # The planet's IR colours (RESPLNT 66 through tables 59-62) to the passes over the view (old school, infrared): in IR,
@@ -2583,6 +2589,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 	var to_light := Vector3(cos(light.y) * cos(light.x), sin(light.y), cos(light.y) * sin(light.x))
 	sun.look_at_from_position(Vector3.ZERO, -to_light, Vector3.UP if absf(to_light.y) < 0.99 else Vector3.FORWARD)
 	sun_to = to_light
+	cloud_cover = null
 	if sk.is_empty():
 		var sm := ProceduralSkyMaterial.new()
 		sm.sky_top_color = Color(0.32, 0.5, 0.78)
@@ -2591,6 +2598,8 @@ func _set_sky(path: String, light: Vector2) -> void:
 		env.sky.sky_material = sm
 		env.fog_light_color = Color(0.7, 0.76, 0.84)
 		_haze_globals()
+		for gm in ground_mats:
+			gm.set_shader_parameter("cloud_shadows", false)
 		return
 	var mat := ShaderMaterial.new()
 	mat.shader = SKY_SHADER
@@ -2629,6 +2638,7 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
+	cloud_cover = _cloud_cover(sk["clouds"]) if fx_cloud_shadows else null
 	mat.set_shader_parameter("has_ir", false)
 	if live and cur_ir.has(60) and sk.get("cloud_idx") != null:   # infrared: the cloud layer through table 60 (0x2A7654)
 		var c60: PackedColorArray = cur_ir[60]
@@ -6692,6 +6702,7 @@ func _process(delta: float) -> void:
 # environment), each in its own script, nothing of them made when off:
 # TN_FX_MARKS=1    impact marks where the shots hit the ground (fx_marks.gd)
 # TN_FX_LIGHTS=1   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
+# TN_FX_CLOUD_SHADOWS=1  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
 var fx_shots: Node               # the game's shots followed (fx_shots.gd), for the extras that need them
 
 
@@ -6714,3 +6725,47 @@ func _fx_shots() -> Node:
 		fx_shots.v = self
 		add_child(fx_shots)
 	return fx_shots
+
+
+# Cloud shadows (TN_FX_CLOUD_SHADOWS=1): how thick the sky's cloud layer is, texel by texel, for the ground's shader
+# (terrain.gdshader cloud_shadows), which looks it up where the sun's ray from the ground meets the cloud ceiling
+# (the height the sky is drawn with at the drop zone: 0.0478 x (the mission's cloud height - 8 x the eye's), _sky_to)
+# and darkens by rows of the planet's light table. The sky's wind offset moves it (_clouds_update gives the ground's
+# materials the sky's cloud_off): the shadows drift with the clouds. On the planets' skies the clouds are the light,
+# pale texels on a deeper sky (thick = light); a storm sky is grey all over, its darker texels the thicker cloud,
+# and shades half as much. No clouds (the space skies): no shadows.
+var fx_cloud_shadows := OS.get_environment("TN_FX_CLOUD_SHADOWS") == "1"
+var cloud_cover: ImageTexture
+
+
+func _cloud_cover(clouds: Texture2D) -> ImageTexture:
+	if clouds == null:
+		return null
+	var img := clouds.get_image()
+	if img == null or img.get_width() != 256 or img.get_height() != 256:
+		return null
+	img.convert(Image.FORMAT_RGB8)
+	var d := img.get_data()
+	var lum := PackedFloat32Array()
+	lum.resize(65536)
+	var sat := 0.0
+	for i in 65536:
+		var r := d[3 * i] / 255.0
+		var g := d[3 * i + 1] / 255.0
+		var b := d[3 * i + 2] / 255.0
+		lum[i] = 0.3 * r + 0.59 * g + 0.11 * b
+		sat += maxf(r, maxf(g, b)) - minf(r, minf(g, b))
+	var sorted := lum.duplicate()
+	sorted.sort()
+	var lo: float = sorted[6553]
+	var hi: float = sorted[58982]
+	if hi - lo < 0.02:
+		return null                                     # (a plain sky: nothing to cast)
+	var grey := sat / 65536.0 < 0.04                    # a storm's ceiling
+	lum = _box_blur(lum, 256, 2)
+	var out := PackedByteArray()
+	out.resize(65536)
+	for i in 65536:
+		var c := clampf((lum[i] - lo) / (hi - lo), 0.0, 1.0)
+		out[i] = int((0.4 + 0.25 * (1.0 - c) if grey else c) * 255.0)   # (a storm: 0.4 to 0.65, a row at most)
+	return ImageTexture.create_from_image(Image.create_from_data(256, 256, false, Image.FORMAT_R8, out))

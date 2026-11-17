@@ -51,6 +51,7 @@ CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of 
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
 SENSOR = 0xB6
+TARGET_KEYS = {0x14: 1, 0x15: -1}   # the game's next / previous target keys (T, Y; his own keys turned into them)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
@@ -94,6 +95,7 @@ SEL, SLOTS, SLOT_N = 0xCE, 0x45, 0xF                # selected slot, 4 weapon sl
 # 0x446AE8), suit byte +7, per weapon type t (0x24 bytes at 0x395100): 0x395111 its two-slot flag, 0x395124 its switch delay
 SLOT_READY, SUIT_B7, CLOCK = 0x0A, 0x07, 0x446AE8
 W_TWO, W_DELAY, W_N = 0x395111, 0x395124, 0x24
+W_RANGE = 0x39511E               # (a weapon's range, units: the game's lock text 0x26AA49)
 HUD_PORT = 47832              # the guest window's coop_hud.gd: 'GHD' state, armour, max, entity (online: via 47841)
 PBA, PBA_N = 0x3A5608, 0x582     # English exe: suit records
 # the suit's power plant, 16.16 dwords: +0x86 the energy (shots draw from it), +0x8A its maximum (a hit on the
@@ -261,7 +263,7 @@ class Guest:
         self.feet_c, self.walk, self.stance, self.at = 0, 0, None, None   # feet not drawn: when they last moved, the
         # walking time to the next footstep, the end of its stance (game clock), his last place and clock
         self.pending, self.clk, self.jet_n, self.jet_air = [0, 0, 0], None, None, None
-        self.lock, self.lock_req, self.pad_lock = 0, False, False
+        self.lock, self.lock_req, self.pad_lock, self.lock_step = 0, False, False, 0
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
@@ -438,9 +440,43 @@ class Guest:
         up = abs(math.atan2(d[2], math.hypot(d[0], d[1])) - math.asin(max(-1.0, min(1.0, view[2]))))
         return side, up
 
+    def lock_info(self):
+        """the end of 'GHD' while he has a target, what the game writes beside its player's (0x26A7C8): 'LCK', the
+        target's armour (% left, as its bar under the box; 100 for what has no armour record), 1 when it is beyond
+        his weapon's range (the game's "Out of Range" instead of "LOCKED": its range, word +0x1E of the weapon's
+        record 0x395100, against the distance), the distance in the game's metres (6 a unit)"""
+        g, e = self.g, self.lock
+        b = g.read(self.master + 0x25 * e, 0x1B)
+        t = [v / 65536 for v in struct.unpack_from('<3i', b, 0x0F)]
+        me = [v / 65536 for v in struct.unpack('<3i', g.read(self.master + 0x25 * self.gid + 0x0F, 12))]
+        d = math.dist(t, me)
+        arm = 100
+        if b[1] == 1 and struct.unpack_from('<H', b, 3)[0] <= 200:
+            arm = max(0, min(100, self.armour(e) * 100 // self.armour_max(e)))
+        p = self.suit(self.gid)
+        wt = g.read(p + SLOTS + SLOT_N * (g.read(p + SEL, 1)[0] & 3), 1)[0]
+        far = 1 if d >= self.u16(W_RANGE + W_N * wt) else 0
+        return b'LCK' + struct.pack('<BBH', arm, far, min(65535, int(d * 6)))
+
     def sensor(self):
         """his suit's sensor range (units), as the game keeps a lock (0x262B00)"""
         return self.i32(self.suit(self.gid) + SENSOR) / 65536 / 6
+
+    def in_view(self, me, eye, view):
+        """the units he could lock now (the game's list of those on its screen): [(distance, entity)], nearest first"""
+        out = []
+        for i in range(1, self.nent):
+            if i == self.gid or (i == me and not self.versus) or i in self.squad:
+                continue
+            if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
+                continue
+            t = self.target_pos(i)
+            if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
+                continue
+            side, up = self.off_aim(eye, view, t)
+            if side < LOCK_PICK and up < LOCK_PICK_V:
+                out.append((math.dist(t, eye), i))
+        return sorted(out)
 
     def pick_target(self, me, eye, view):
         best, pick = None, 0
@@ -1069,6 +1105,11 @@ class Guest:
                 if not self.map_said:
                     self.map_said = True
                     print('guest: no map marks (%r)' % (ex,), flush=True)
+            if self.lock:
+                try:
+                    pk += self.lock_info()
+                except (OSError, struct.error):
+                    pass
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
@@ -1251,6 +1292,13 @@ class Guest:
         if self.lock_req:
             self.lock_req = False
             self.lock = 0 if self.lock else self.pick_target(me, eye, view)
+        if self.lock_step:                                     # the game's next / previous target keys (T, Y): the
+            seen = [i for _, i in self.in_view(me, eye, view)]   # units in his view by distance, round from his target
+            if seen:
+                k = seen.index(self.lock) if self.lock in seen else (-1 if self.lock_step > 0 else 0)
+                self.lock = seen[(k + self.lock_step) % len(seen)]
+                print('guest: lock', self.lock, '(next)' if self.lock_step > 0 else '(previous)', flush=True)
+            self.lock_step = 0
         aim = None
         if self.lock:
             t = self.target_pos(self.lock)
@@ -1323,6 +1371,8 @@ class Guest:
                     self.next = True
                 if sc in WEAPON_KEYS and down and active and self.gid:
                     self.select_weapon(WEAPON_KEYS[sc])
+                if sc in TARGET_KEYS and down and active:
+                    self.lock_step = TARGET_KEYS[sc]
                 if sc == DROPSHIP and down and active:
                     self.call_dropship()
                 if sc in SHIFT:

@@ -1771,7 +1771,7 @@ func _facing(left: Vector3, right: Vector3) -> Vector3:
 # _pose_apply; without refs every limb takes the view of its front (limb.gdshader).
 # The eye in the suit's frame, where it is now (null without refs).
 func _pose_eye(holder: Node3D, refs: Array) -> Variant:
-	if refs.size() != 6:
+	if refs.size() != 6 or not holder.is_inside_tree():
 		return null
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
@@ -1791,7 +1791,9 @@ const REFS_OWN := [-1.0, Vector3(-1, 0, 0), Vector3(-1, 0, 0), Vector3(-1, 0, 0)
 func _pose_refs(holder: Node3D) -> Array:
 	var refs: Array = holder.get_meta("refs", [])
 	holder.remove_meta("refs")
-	if refs.size() != 6 and live and not holder.has_meta("corpse"):
+	# (not for a suit still being built, outside the scene tree: it has no place to see the camera from yet; its first
+	# pose takes the views of its front, limb.gdshader, the next one, a frame later, these)
+	if refs.size() != 6 and live and holder.is_inside_tree() and not holder.has_meta("corpse"):
 		return REFS_OWN
 	return refs
 

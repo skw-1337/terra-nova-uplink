@@ -99,7 +99,8 @@ static class Uplink
             try { Install(m); Console.WriteLine("installed"); Environment.Exit(0); }
             catch (Exception e) { Log(e.ToString()); Environment.Exit(1); }
         }
-        if (args.Length > 1 && args[1] == "--report") { Report(); Environment.Exit(0); }   // the report, without the window
+        if (args.Length > 1 && args[1] == "--report")           // the report, without the window (checks: into that folder)
+        { if (args.Length > 2) Report(args[2]); else Report(); Environment.Exit(0); }
         if (args.Length > 3 && (args[1] == "--labsave" || args[1] == "--makesave"))   // checks: the save of mission N in a TNOVA copy
         { Set("game_dir", args[3]); Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1, args[1] == "--makesave" ? COOP_SAVE : PLAY_SAVE) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
@@ -167,7 +168,7 @@ static class Uplink
     static Toast toast;
     static bool loading;                                      // the options are being put on the pages: nothing is saved
     static int capValue;                                      // the frame limit (0: none)
-    // Uplink's extras on top of the game's look, each off unless switched on (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
+    // Uplink's extras on top of the game's look, each on unless switched off (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
     static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars" };
     static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars" };
     static Switch[] fxTicks = new Switch[6];
@@ -1590,7 +1591,7 @@ static class Uplink
         ContextMenuStrip m = Menu();
         m.Items.Add("What's new", null, delegate { WhatsNew(); });
         m.Items.Add(logBox.Visible ? "Hide the log" : "Show the log", null, delegate { ToggleLog(); });
-        m.Items.Add("Report a bug (makes a zip with the logs)", null, delegate { Report(); });
+        m.Items.Add("Report a bug (a zip of the logs, without your name or folders)", null, delegate { Report(); });
         m.Items.Add("Discord", null, delegate { Open(DISCORD); });
         return m;
     }
@@ -1819,7 +1820,7 @@ static class Uplink
         oldBox.Checked = Cfg("old_school") != "0";
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
         subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
-        for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) == "1";   // (the extras: off unless asked for)
+        for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) != "0";   // (the extras: on unless turned off)
         int cap;
         capValue = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap : 0;
         FillCap();
@@ -2306,6 +2307,7 @@ static class Uplink
         string req = Path.Combine(Comp, "play_request.txt");
         try { File.Delete(req); } catch { }
         env["TN_PLAY_REQUEST"] = req;
+        env["TN_OLDSCHOOL"] = "0";                             // ("Old school look" is the live game's: here F12 turns it on)
         Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + (size == "native" ? "-- --native" : ""), UplinkDir, env, true);
         string open = "Map viewer open: right mouse button to look, WASD to move, Tab for the mission list." + (editor ? " F6: the mission editor." : "");
         Status(open, CGreen);
@@ -2387,7 +2389,7 @@ static class Uplink
         env["TN_ORDER_TAP_ENEMY"] = Num("tap_enemy", 0, -1, ORDERS.Length - 1).ToString();
         env["TN_ORDER_TAP_MS"] = Num("tap_ms", TAP_MS0, 100, 350).ToString();
         env["TN_ORDER_DEAD"] = Num("wheel_dead", DEAD0, 24, 104).ToString();
-        foreach (string fx in FX) env["TN_FX_" + fx.ToUpperInvariant()] = Cfg("fx_" + fx) == "1" ? "1" : "0";
+        foreach (string fx in FX) env["TN_FX_" + fx.ToUpperInvariant()] = Cfg("fx_" + fx) == "0" ? "0" : "1";
         return env;
     }
 
@@ -2822,54 +2824,140 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ bug report: one zip on the desktop
-    static void Report()
+    // Nothing personal goes into it. Every file is text, and each is cleaned as the zip is made (so lines written
+    // long ago are covered too): the folders of this PC (the user's own become %USERPROFILE%, %APPDATA%...; the
+    // game's becomes its edition; any other absolute path keeps its last name only), the Windows user name, the PC's
+    // name, Steam names (the player's: "me"; the others': "friend1", "friend2"..., found on the lines of the co-op log
+    // that name them), long numbers (Steam and lobby ids), e-mail addresses. What stays: the logs, the settings of
+    // Uplink and Terra Nova Plus, the versions, Windows' version and, in Godot's log, the graphics card's name.
+    const string REPORT_NOTE =
+        "WHAT IS IN THIS REPORT\r\n\r\n" +
+        "- the launcher's log, Uplink's own logs (co-op, Godot) and the bridge's\r\n" +
+        "- the settings of Uplink and of Terra Nova Plus (options, keys)\r\n" +
+        "- the versions installed, Windows' version, and in Godot's log the name of the graphics card\r\n\r\n" +
+        "Taken out before the zip was made: the Windows user name and the folders of the PC (written as\r\n" +
+        "%USERPROFILE%, <game STEAM>, <folder>...), the PC's name, Steam names (written as me, friend1...),\r\n" +
+        "Steam and lobby numbers, e-mail addresses. No save and no file of the game is in it.\r\n";
+
+    static void Report() { Report(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)); }
+
+    static void Report(string folder)
     {
-        string zip = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-            "TerraNovaUplink_report_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm") + ".zip");
+        string zip = Path.Combine(folder, "TerraNovaUplink_report_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm") + ".zip");
         try
         {
+            List<string[]> files = new List<string[]>();              // [its name in the zip, its text]
+            StringBuilder info = new StringBuilder();
+            string g = Game();
+            Version v = Environment.OSVersion.Version;
+            info.AppendLine(TITLE + " " + VERSION + ", Windows " + (v.Major == 10 ? (v.Build >= 22000 ? "11" : "10") : v.Major + "." + v.Minor) +
+                " (build " + v.Build + ")" + (Environment.Is64BitOperatingSystem ? ", 64-bit" : ""));
+            info.AppendLine("game: " + (g == null ? "none" : Edition(g) + (IsEnglish(g) ? " (English)" : " (not English)")));
+            info.AppendLine("uplink " + Cfg("uplink_sha") + ", tnplus " + Cfg("tnplus_sha") + ", tnplus coop " + Cfg("tnplus_coop_sha"));
+            info.AppendLine("options: mode " + Cfg("mode") + ", window " + Cfg("window") + ", mouse " + Cfg("mouse") +
+                            ", invert " + Cfg("invert_y") + ", gamepad " + Cfg("gamepad") + ", start at " + Cfg("start_at"));
+            string session = sessionLabel != null ? sessionLabel.Text : "-";
+            info.AppendLine("session: " + (sessionName != "" ? session.Replace(sessionName, "friend") : session));
+            foreach (Proc p in Procs()) info.AppendLine("running: " + p.Name + " " + p.Id);
+            files.Add(new[] { "info.txt", info.ToString() });
+            files.Add(new[] { "WHAT IS IN THIS REPORT.txt", REPORT_NOTE });
+            Add(files, LogPath, "launcher.log");
+            Add(files, Path.Combine(TnpDir, "TNPlus.ini"), "TNPlus.ini");
+            Add(files, Path.Combine(TnpCoopDir, "TNPlus.ini"), "TNPlus_coop.ini");
+            Newest(files, Path.Combine(UplinkDir, "live", "logs"), "coop_host_*.log", 3, "bridge/");
+            Newest(files, Path.Combine(GodotData, "coop_logs"), "*.log", 4, "uplink_coop/");
+            Newest(files, Path.Combine(GodotData, "logs"), "*.log", 2, "uplink_godot/");
+            List<string[]> names = SteamNames(files);
             using (ZipArchive a = ZipFile.Open(zip, ZipArchiveMode.Create))
-            {
-                StringBuilder info = new StringBuilder();
-                string g = Game();
-                info.AppendLine(TITLE + " " + VERSION + ", " + Environment.OSVersion + (Environment.Is64BitOperatingSystem ? ", 64-bit" : ""));
-                info.AppendLine("game: " + g + (g != null && IsEnglish(g) ? " (English)" : " (not English)"));
-                info.AppendLine("uplink " + Cfg("uplink_sha") + ", tnplus " + Cfg("tnplus_sha") + ", tnplus coop " + Cfg("tnplus_coop_sha"));
-                info.AppendLine("options: mode " + Cfg("mode") + ", window " + Cfg("window") + ", mouse " + Cfg("mouse") +
-                                ", invert " + Cfg("invert_y") + ", gamepad " + Cfg("gamepad") + ", start at " + Cfg("start_at"));
-                info.AppendLine("session: " + (sessionLabel != null ? sessionLabel.Text : "-"));
-                foreach (Proc p in Procs()) info.AppendLine("running: " + p.Name + " " + p.Id);
-                using (StreamWriter w = new StreamWriter(a.CreateEntry("info.txt").Open())) w.Write(info.ToString());
-                Add(a, LogPath, "launcher.log");
-                Add(a, Path.Combine(TnpDir, "TNPlus.ini"), "TNPlus.ini");
-                Add(a, Path.Combine(TnpCoopDir, "TNPlus.ini"), "TNPlus_coop.ini");
-                Newest(a, Path.Combine(UplinkDir, "live", "logs"), "coop_host_*.log", 3, "bridge/");
-                Newest(a, Path.Combine(GodotData, "coop_logs"), "*.log", 4, "uplink_coop/");
-                Newest(a, Path.Combine(GodotData, "logs"), "*.log", 2, "uplink_godot/");
-            }
-            Status("Report saved on your desktop: send it on Discord with a few words on what happened.", CGreen);
+                foreach (string[] f in files)
+                    using (StreamWriter w = new StreamWriter(a.CreateEntry(f[0]).Open(), new UTF8Encoding(false))) w.Write(Scrub(f[1], names));
+            Status("Report saved on your desktop (logs and settings, no name, no folder of yours): send it on Discord with a few words on what happened.", CGreen);
             if (form != null) Process.Start("explorer.exe", "/select,\"" + zip + "\"");
             else Console.WriteLine(zip);
         }
         catch (Exception e) { Status("Report failed: " + e.Message, CRed); }
     }
 
-    static void Add(ZipArchive a, string file, string name)
+    static void Add(List<string[]> files, string file, string name)
     {
         try
         {   // the logs are still open in the programs writing them: read them shared
             using (FileStream f = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (Stream o = a.CreateEntry(name).Open()) f.CopyTo(o);
+            using (StreamReader r = new StreamReader(f, Encoding.UTF8)) files.Add(new[] { name, r.ReadToEnd() });
         }
         catch { }
     }
 
-    static void Newest(ZipArchive a, string dir, string pattern, int n, string into)
+    static void Newest(List<string[]> files, string dir, string pattern, int n, string into)
     {
         if (!Directory.Exists(dir)) return;
         List<FileInfo> fs = new List<FileInfo>(new DirectoryInfo(dir).GetFiles(pattern));
         fs.Sort((x, y) => y.LastWriteTime.CompareTo(x.LastWriteTime));
-        for (int i = 0; i < Math.Min(n, fs.Count); i++) Add(a, fs[i].FullName, into + fs[i].Name);
+        for (int i = 0; i < Math.Min(n, fs.Count); i++) Add(files, fs[i].FullName, into + fs[i].Name);
+    }
+
+    // The Steam names the logs hold, each with what is written in its place. Uplink's co-op lines name the player
+    // himself ("ONLINE  <name> - waiting...") and his friends ("CONNECTED TO HOST  <name>", "invited <name>"...)
+    static readonly Regex NAME_ME = new Regex(@"ONLINE  (.+?) - (?:opening a friends-only lobby|waiting for an invite)");
+    static readonly Regex[] NAME_FRIEND = {
+        new Regex(@"ONLINE  joining (.+?)\.\.\.\s*$"), new Regex(@"GUEST CONNECTED  (.+?)   "), new Regex(@"CONNECTED TO HOST  (.+?)   "),
+        new Regex(@"GUEST HAS ANOTHER VERSION  (.+?): both need"), new Regex(@"GUEST JOINING  (.+?)\s*$"), new Regex(@"\] status: (.+?), "),
+        new Regex(@"\] guest (.+?) said HELLO"), new Regex(@"\] invited (.+?)\s*$") };
+
+    static List<string[]> SteamNames(List<string[]> files)
+    {
+        List<string[]> names = new List<string[]>();
+        Action<string, bool> add = delegate(string n, bool me) {
+            n = n.Trim();
+            if (n.Length == 0 || names.Exists(x => x[0] == n)) return;
+            names.Add(new[] { n, me ? "me" : "friend" + (names.FindAll(x => x[1] != "me").Count + 1) });
+        };
+        foreach (string[] f in files)
+            foreach (string l in f[1].Split('\n'))
+            {
+                Match m = NAME_ME.Match(l);
+                if (m.Success) add(m.Groups[1].Value, true);
+            }
+        foreach (string[] f in files)
+            foreach (string raw in f[1].Split('\n'))
+            {
+                string l = raw.TrimEnd('\r');
+                foreach (Regex r in NAME_FRIEND) { Match m = r.Match(l); if (m.Success) add(m.Groups[1].Value, false); }
+            }
+        names.Sort((x, y) => y[0].Length.CompareTo(x[0].Length));    // (the longest first: one name may hold another)
+        return names;
+    }
+
+    // a folder of this PC, written with \ or / (or \\, as in a quoted string), whatever the case
+    static string Unfold(string t, string folder, string with)
+    {
+        if (string.IsNullOrEmpty(folder) || folder.TrimEnd('\\').Length < 4) return t;
+        return Regex.Replace(t, Regex.Escape(folder.TrimEnd('\\')).Replace(@"\\", @"[\\/]+"), with.Replace("$", "$$"), RegexOptions.IgnoreCase);
+    }
+
+    static string Scrub(string t, List<string[]> names)
+    {
+        List<string[]> known = new List<string[]>();
+        string g = null;
+        try { g = Game(); } catch { }
+        if (g != null) known.Add(new[] { g, "<game " + Edition(g) + ">" });
+        known.Add(new[] { GodotData, "<Uplink's settings>" });
+        known.Add(new[] { Root, "<launcher>" });
+        foreach (string e in new[] { "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERPROFILE", "OneDrive" })
+            known.Add(new[] { Environment.GetEnvironmentVariable(e), "%" + e + "%" });
+        known.RemoveAll(x => string.IsNullOrEmpty(x[0]));
+        known.Sort((x, y) => y[0].Length.CompareTo(x[0].Length));
+        foreach (string[] k in known) t = Unfold(t, k[0], k[1]);
+        // any other absolute path: its last name only; and whatever still follows a "Users" folder
+        t = Regex.Replace(t, @"(?i)(?<![a-z])[a-z]:[\\/]+(?:[^\\/""<>|:*?\r\n]+[\\/]+)*([^\\/""<>|:*?\s]*)", "<folder>\\$1");
+        t = Regex.Replace(t, @"(?i)([\\/]Users[\\/]+)[^\\/""\s]+", "$1<user>");
+        foreach (string[] n in names) t = t.Replace(n[0], n[1]);
+        foreach (string[] w in new[] { new[] { Environment.UserName, "<user>" }, new[] { Environment.MachineName, "<pc>" } })
+            if (!string.IsNullOrEmpty(w[0]) && w[0].Length >= 3)
+                t = Regex.Replace(t, @"(?<![A-Za-z0-9])" + Regex.Escape(w[0]) + @"(?![A-Za-z0-9])", w[1], RegexOptions.IgnoreCase);
+        t = Regex.Replace(t, @"(?<![0-9a-fA-F.])\d{15,20}(?![0-9])", "<id>");                 // Steam ids, lobby ids
+        t = Regex.Replace(t, @"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.-]+", "<e-mail>");
+        return t;
     }
 
     // ------------------------------------------------------------------ TN+ settings: HD 848x480 (the live mode's)

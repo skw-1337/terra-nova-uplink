@@ -21,7 +21,7 @@ uniform vec2 cloud_off = vec2(0.0);        // texels (column, row): the game's w
 uniform float desat = 1.0;                 // live mode: undoes the view's saturation boost (the game's own colours)
 uniform float gain = 1.0;                  // live mode: the game's sky is brighter than this viewer's
 uniform float star_pixel = 0.00307;        // radians per star map pixel (TAU / 4 / 512)
-// sharp stars (an extra, off unless TN_FX_STARS=1): star_scale = pixels of the picture per pixel of the star map
+// sharp stars (an extra, on unless TN_FX_STARS=0): star_scale = pixels of the picture per pixel of the star map
 // (viewer.gd _sky_rows; 0: off, the map's own pixels as blocks). Each lit pixel of the game's map is then a round
 // point of its own colour at the pixel's place, as big on the screen whatever the picture's size (the brighter the
 // bigger: 2 to 4 pixels across in a 1280 pixel wide picture, growing as the square root of the picture's width: far

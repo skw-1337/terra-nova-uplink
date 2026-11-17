@@ -1,4 +1,4 @@
-# Light from the shots (an extra on top of the game's look: off unless TN_FX_LIGHTS=1; the game's shots light
+# Light from the shots (an extra on top of the game's look: on unless TN_FX_LIGHTS=0; the game's shots light
 # nothing). A short flash in the weapon's colour where a shot leaves its gun, a light that flies with the energy
 # bolts and the missiles, a flash where one of the game's blasts goes off. The ground takes them as real lights
 # (terrain.gdshader light(): the two strongest flashes also cast the shadows of what stands around them); the suits,

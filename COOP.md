@@ -37,7 +37,7 @@ It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: 
 | M | big map |
 | F8 | next squadmate |
 | Enter | call the dropship |
-| Y | free the mouse |
+| F | free the mouse (Y on an installation made before this version; the freelook key of **Game keys**) |
 
 A gamepad works too: switch on **Gamepad for the guest** on the launcher's Co-op page.
 
@@ -50,7 +50,7 @@ Keys changed in the launcher's **Game keys** follow for the guest too: forward, 
 - **Your friend isn't in the list**: you must be Steam friends, and he must have clicked HOST A GAME.
 - **"Different versions"**: both close Uplink and click again, it updates.
 - **The guest keeps firing**: a gamepad trigger that doesn't go back to zero. Switch **Gamepad for the guest** off.
-- **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/AHpqNeT7s), with a few words on what happened.
+- **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/AHpqNeT7s), with a few words on what happened. The zip holds the logs and settings of Uplink and Terra Nova Plus; your Windows user name, your folders and Steam names are taken out of it (it says so inside).
 
 <details>
 <summary>Without the launcher (developers)</summary>

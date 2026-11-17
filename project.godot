@@ -26,6 +26,10 @@ anti_aliasing/quality/msaa_3d=2
 
 [shader_globals]
 
+tn_time={
+"type": "float",
+"value": 0.0
+}
 tn_haze_color={
 "type": "vec4",
 "value": Vector4(0.7, 0.76, 0.84, 0)

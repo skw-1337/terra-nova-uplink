@@ -269,6 +269,9 @@ static class Uplink
         mapBtn.Click += delegate { Start(Mode.Maps); };
         pg.Controls.Add(mapBtn);
         pg.Controls.Add(new Label { Text = "Every map of the game in 3D, without starting the game.", AutoSize = true, Location = new Point(X + 2, 118), ForeColor = CDim, Font = FSmall });
+        // the map viewer's mission editor (a prototype: off unless asked; TN_EDITOR)
+        editTick = new Tick { Text = "Mission editor (prototype): F6 in the map viewer", AutoSize = false, Size = new Size(W - 4, 22), Location = new Point(X + 2, 150), ForeColor = CText, BackColor = CBack };
+        pg.Controls.Add(editTick);
 
         // ---- In game: what shows and how it plays in a mission, one switch a line
         pg = pages[3];
@@ -288,7 +291,10 @@ static class Uplink
         ig.Controls.Add(Caption("CROSSHAIR", 12, ry + 6));       // (the look mode's: the game's own, a dot, or none)
         crossBox = Combo(new Point(120, ry + 1), 130);
         crossBox.Items.AddRange(new object[] { "The game's", "A dot", "None" });
-        ig.Controls.Add(crossBox); ry += RH;
+        ig.Controls.Add(crossBox);
+        // Uplink's own colours on the cockpit: orange energy bar, light blue armour indicator (off: the game's; TN_HUD_COLOURS)
+        hudTick = new Tick { Text = "Uplink HUD colours", AutoSize = false, Size = new Size(230, 22), Location = new Point(270, ry + 4), ForeColor = CText, BackColor = CPanel };
+        ig.Controls.Add(hudTick); ry += RH;
         oldBox = new Tick { Text = "Old school look at start", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
         ig.Controls.Add(oldBox);
         shotKeyLabel = new Label { AutoSize = true, Location = new Point(258, ry + 6), ForeColor = CDim, BackColor = CPanel, Font = FSmall };
@@ -304,7 +310,11 @@ static class Uplink
         // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
         // leap at the same pace (Uplink's bridge: TN_RUN)
         runTick = new Tick { Text = "Run instead of Bound (Shift + move, no leap)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
-        ig.Controls.Add(runTick); ry += RH;
+        ig.Controls.Add(runTick);
+        // the photo mode's key (TN_KEY_PHOTO): the game paused, a free camera, pictures
+        photoKeyBtn = new Tile("", null, CButton, CButtonLine, CText) { Location = new Point(330, ry), Size = new Size(178, 28), Small = true };
+        photoKeyBtn.Click += delegate { AskPhotoKey(); };
+        ig.Controls.Add(photoKeyBtn); ry += RH;
         invertBox = new Tick { Text = "Invert mouse (up / down)", AutoSize = true, Location = new Point(12, ry + 4), ForeColor = CText, BackColor = CPanel };
         ig.Controls.Add(invertBox);
         // the Looking Glass logo and the opening film skipped at the game's start (the bridge presses Esc on them, once each)
@@ -699,6 +709,8 @@ static class Uplink
         runBox.SelectedIndex = Cfg("shift_run") == "1" ? 1 : 0;
         runTick.Checked = runBox.SelectedIndex == 1;
         fpsBox.Checked = Cfg("fps_counter") == "1";              // (off unless asked for: ticket #13)
+        hudTick.Checked = Cfg("hud_colours") != "0";             // (on unless turned off)
+        editTick.Checked = Cfg("mission_editor") == "1";         // (off unless asked for)
         introBox.Checked = Cfg("skip_intro") == "1";
         oldBox.Checked = Cfg("old_school") != "0";
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
@@ -722,6 +734,8 @@ static class Uplink
         Set("crosshair", CROSSHAIRS[Math.Max(0, crossBox.SelectedIndex)]);
         Set("shift_run", runBox.SelectedIndex == 1 ? "1" : "0");
         Set("fps_counter", fpsBox.Checked ? "1" : "0");
+        Set("hud_colours", hudTick.Checked ? "1" : "0");
+        Set("mission_editor", editTick.Checked ? "1" : "0");
         Set("skip_intro", introBox.Checked ? "1" : "0");
         Set("old_school", oldBox.Checked ? "1" : "0");
         Set("order_wheel", wheelTick.Checked ? "1" : "0");
@@ -1121,11 +1135,12 @@ static class Uplink
     {
         Status("Getting things ready...", CAmber);
         Install(Mode.Maps);
+        bool editor = Cfg("mission_editor") == "1";
         Status("Opening the map viewer...", CAmber);
         string size = Cfg("window");
         string win = size == "native" ? "" : "--resolution " + size + " ";
         Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + (size == "native" ? "-- --native" : ""), UplinkDir, Env(), true);
-        Status("Map viewer open: right mouse button to look, WASD to move, Tab for the mission list.", CGreen);
+        Status("Map viewer open: right mouse button to look, WASD to move, Tab for the mission list." + (editor ? " F6: the mission editor." : ""), CGreen);
         while (!stopping && !g.HasExited) Thread.Sleep(500);
         if (!stopping) Status("Uplink was closed.", CText);
     }
@@ -1162,6 +1177,9 @@ static class Uplink
         env["TN_KEY_SHARP"] = SharpKey();
         env["TN_KEY_SHOT"] = ShotKey();
         env["TN_KEY_FPS"] = FpsKey();
+        env["TN_KEY_PHOTO"] = PhotoKey();
+        env["TN_HUD_COLOURS"] = Cfg("hud_colours") == "0" ? "0" : "1";
+        env["TN_EDITOR"] = Cfg("mission_editor") == "1" ? "1" : "0";
         env["TN_SKIP_INTRO"] = Cfg("skip_intro") == "1" ? "1" : "0";
         env["TN_BINDS"] = Binds();
         env["TN_CROSSHAIR"] = Cfg("crosshair");
@@ -1854,6 +1872,16 @@ static class Uplink
         return k == "M4" || k == "M5" || (KeyOk(k) && k != "") ? k : "MID";
     }
 
+    static Tick hudTick, editTick;                            // Uplink HUD colours (In game), Mission editor (Maps)
+    static Tile photoKeyBtn;
+
+    // The photo mode's key (key_photo in the ini): O unless another is chosen, written as the other keys
+    static string PhotoKey()
+    {
+        string k = Cfg("key_photo").ToUpperInvariant();
+        return KeyOk(k) && k != "" ? k : "18";
+    }
+
     // "SHIFT+58" -> "Shift+F12", the key named as this keyboard prints it
     static string KeyName(string spec)
     {
@@ -1874,6 +1902,8 @@ static class Uplink
         fpsKeyLabel.Text = FpsKey() != "" ? "in game: " + KeyName(FpsKey()) : "";
         wheelKeyBtn.Text = "Its button: " + KeyName(OrderKey());
         wheelKeyBtn.Invalidate();
+        photoKeyBtn.Text = "Photo mode: " + KeyName(PhotoKey());
+        photoKeyBtn.Invalidate();
         shotKeyLabel.Text = ShotKey() != "" ? "Screenshot: " + KeyName(ShotKey()) + "  (saved in Pictures)" : "";
     }
 
@@ -1941,7 +1971,7 @@ static class Uplink
         {
             if (d.ShowDialog(form) != DialogResult.OK) return;
             string spec = d.Spec;                             // ("": the middle button it came with)
-            if (spec != "" && (spec == OldKey() || spec == SharpKey() || spec == ShotKey() || spec == FpsKey()))
+            if (spec != "" && (spec == OldKey() || spec == SharpKey() || spec == ShotKey() || spec == FpsKey() || spec == PhotoKey()))
             { Status(KeyName(spec) + " is already one of Uplink's keys.", CAmber); return; }
             if (spec == FreelookScan().ToString("X2") || spec == "45")
             { Status(KeyName(spec) + " already swaps the look and the game's cursor.", CAmber); return; }
@@ -1951,6 +1981,27 @@ static class Uplink
             string game = spec != "" && spec.IndexOf('+') < 0 && spec[0] != 'M' ? GameUses(Convert.ToInt32(spec, 16)) : null;
             Status("Order wheel: " + KeyName(OrderKey()) + " (from the next time Uplink starts)." +
                 (game != null ? " " + KeyName(spec) + " is one of the game's keys too (" + game + "): the game will not get it while the wheel is on." : ""),
+                game != null ? CAmber : CGreen);
+        }
+    }
+
+    static void AskPhotoKey()
+    {
+        using (KeyAsk d = new KeyAsk("the photo mode", KeyName(PhotoKey())))
+        {
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            string spec = d.Spec;                             // ("": O, the key it came with)
+            string now = spec == "" ? "18" : spec;
+            if (now == OldKey() || now == SharpKey() || now == ShotKey() || now == FpsKey() || now == OrderKey())
+            { Status(KeyName(now) + " is already one of Uplink's keys.", CAmber); return; }
+            if (now == FreelookScan().ToString("X2") || now == "45")
+            { Status(KeyName(now) + " already swaps the look and the game's cursor.", CAmber); return; }
+            Set("key_photo", spec);
+            SaveCfg();
+            KeyLabels();
+            string game = now.IndexOf('+') < 0 ? GameUses(Convert.ToInt32(now, 16)) : null;
+            Status("Photo mode: " + KeyName(PhotoKey()) + " (from the next time Uplink starts)." +
+                (game != null ? " " + KeyName(now) + " is one of the game's keys too (" + game + "): the game will not get it in a mission any more." : ""),
                 game != null ? CAmber : CGreen);
         }
     }

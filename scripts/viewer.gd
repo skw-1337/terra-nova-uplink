@@ -297,6 +297,25 @@ const SCANCODES := {
 	KEY_INSERT: 0xE052, KEY_DELETE: 0xE053}
 
 
+# Uplink's clock for all it animates by itself (the units' easing, puffs, flashes, the effects' pictures): the
+# engine's, less the time spent with the scene frozen (the photo mode, _photo_set): on leaving, everything goes on
+# from where it stood. The shaders' time is the same (tn_time, set each frame: the water's waves freeze too).
+# Everything in this file that times something reads _ticks(), never the engine's clock: the two are apart by
+# clock_lag after a photo mode. (The engine's own is read only here, for the clouds' refresh and by the photo mode.)
+var clock_lag := 0                 # msec spent frozen so far
+var clock_stop := -1               # the engine's msec when the scene froze (-1: it runs)
+var scene_t := 0.0                 # the shaders' seconds (as their TIME: back to 0 every hour)
+var weather_t := 0.0               # the snow's and the rain's own (they may go on falling over a frozen scene)
+
+
+func _ticks() -> int:
+	return (clock_stop if clock_stop >= 0 else Time.get_ticks_msec()) - clock_lag
+
+
+func _ticks_usec() -> int:
+	return (clock_stop * 1000 if clock_stop >= 0 else Time.get_ticks_usec()) - clock_lag * 1000
+
+
 func _ready() -> void:
 	RenderingServer.frame_pre_draw.connect(_sky_rows)
 	_build_scene()
@@ -607,7 +626,7 @@ func _load(index: int) -> void:
 	if entry.get("gallery", false):
 		_load_gallery()
 		return
-	var t0 := Time.get_ticks_msec()
+	var t0 := _ticks()
 	var mis: Dictionary = data.load_mission(entry["file"])
 	if mis.is_empty():
 		info.text = "Cannot read " + entry["file"]
@@ -724,7 +743,7 @@ func _load(index: int) -> void:
 	_place_camera(m, mis)
 	info.text = "%s\nmap %s (%s), %d objects, %d named zones, %d plants%s\nloaded in %.1f s" % [
 		entry["label"], mis["map"], m["planet"], mis["entities"].size(), mis["zones"].size(), nveg, note,
-		(Time.get_ticks_msec() - t0) / 1000.0]
+		(_ticks() - t0) / 1000.0]
 	print(info.text.replace("\n", " | "))
 	var args := OS.get_cmdline_user_args()
 	var s := args.find("--shot")
@@ -1188,10 +1207,10 @@ func _ground_mat(pl: Dictionary, grid: Dictionary, origin: Vector2, step: float)
 	if rows.size() == 16:
 		sm.set_shader_parameter("light_rows", rows)
 	sm.set_shader_parameter("ground_light", Vector3(ground_light.r, ground_light.g, ground_light.b))
-	var t0 := Time.get_ticks_msec()
+	var t0 := _ticks()
 	sm.set_shader_parameter("relief", ImageTexture.create_from_image(_relief_image(grid["h"], grid["n"], step)))
 	sm.set_shader_parameter("has_relief", true)
-	print("relief %dx%d : %d ms" % [grid["n"], grid["n"], Time.get_ticks_msec() - t0])
+	print("relief %dx%d : %d ms" % [grid["n"], grid["n"], _ticks() - t0])
 	ground_mats.append(sm)
 	_sky_to(sm)
 	return sm
@@ -1401,7 +1420,7 @@ func _sky_rows() -> void:
 func _clouds_update() -> void:
 	if mis_params.is_empty():
 		return
-	var now := Time.get_ticks_msec() / 1000.0
+	var now := Time.get_ticks_msec() / 1000.0        # (the engine's own: their size follows the camera in photo mode too)
 	if now - cloud_set.y < 0.1:
 		return
 	var dt := now - cloud_set.y if cloud_set.y > 0.0 else 0.0
@@ -2035,7 +2054,7 @@ func _gait_stale(node: Node3D, now: int) -> int:
 # the walk taken over from the game's pose needs it at once (_gait_game), and a suit that moves leaves the game's
 # pose sooner (_gait_stale). No move for 120 ms: stopped (a late picture of the game: not yet).
 func _note_move(node: Node3D, p2: Vector2) -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if not node.has_meta("mv"):
 		node.set_meta("mv", [[now, p2]])
 		return
@@ -2062,7 +2081,7 @@ func _gait_update(dt: float) -> void:
 	if current.is_empty() or dt <= 0.0:
 		return
 	var m: Dictionary = current["map"]
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	for node in live_nodes + live_extra.values():
 		if node == null or not is_instance_valid(node) or not node.visible or not node.has_meta("soldier"):
 			continue
@@ -2116,7 +2135,7 @@ func _gait_place(node: Node3D, now: int) -> void:
 # a suit's pose from the game or from its own steps (_gait): from one to the other cross-faded over POSE_FADE (the
 # upper body jumped from the game's aim to standing, the feet from its stride to theirs)
 func _pose_suit(node: Node3D, q: Array, own: bool, later := false) -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if bool(node.get_meta("own", own)) != own and node.has_meta("pose_last"):
 		var last: Array = node.get_meta("pose_last")
 		node.set_meta("fade_t", now)
@@ -2198,7 +2217,7 @@ func _gait(node: Node3D, m: Dictionary, dt: float) -> void:
 	# off the ground (a jump: rising with it, no jump at the start)
 	var ez: float = (node.get_meta("gait", {}) as Dictionary).get("ez", node.get_meta("ez", ground))
 	var gy := ground + maxf(ez - GAIT_FEET - ground - 0.04, 0.0)
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if not node.has_meta("gait") and absf(node.position.y - gy) < 1.0:
 		node.set_meta("y_off", [node.position.y - gy, now])   # (from the game's pose: its height eased, _y_ease)
 	node.set_meta("gait_y", gy)
@@ -2364,7 +2383,7 @@ var gait_full := OS.get_environment("TN_GAIT_DETAIL") == "full"
 
 func _gait_game(node: Node3D, m: Dictionary, dt: float) -> void:
 	var gk: Array = node.get_meta("gk")
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var st: Dictionary = node.get_meta("gait", {})
 	var sg: RefCounted = st.get("sg")
 	var fresh := sg == null
@@ -3278,7 +3297,7 @@ func _compass_update() -> void:
 	if hud_win.size.y > 0 and hud_win.intersects(COMPASS):
 		compass_rect.visible = false
 		return
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var yaw: float = cam_to[1]
 	if absf(angle_difference(compass_yaw, yaw)) > deg_to_rad(0.5):
 		compass_yaw = yaw
@@ -3359,7 +3378,7 @@ func _hud_update() -> void:
 			continue
 		if tag == "FAD" and pk.size() >= 11:             # the game's own fade (its palette), see _menu_fade
 			game_fade = clampf(pk.decode_float(7), 0.0, 1.0)
-			game_fade_t = Time.get_ticks_msec()
+			game_fade_t = _ticks()
 			continue
 		if tag == "MIS":                                 # back in the game's 3D: another mission?
 			var mf := pk.slice(7).get_string_from_ascii().to_upper()
@@ -3382,7 +3401,7 @@ func _hud_update() -> void:
 						play_cur_img = im3
 						play_cur_hot = hot3
 						play_cur_n += 1
-					play_cur_t = Time.get_ticks_msec()
+					play_cur_t = _ticks()
 				else:
 					play_cur_t = -100000
 				continue
@@ -3400,7 +3419,10 @@ func _hud_update() -> void:
 			if own != menu_cursor_own:
 				menu_cursor_own = own
 				_menu_cursor_apply()
-			_set_menu_mode(pk[7] == 1)
+			var screen := pk[7] == 1
+			if screen and menu_frame.x < 640 and ((photo_on and photo_freeze) or Time.get_ticks_msec() - photo_end_t < 1500):
+				screen = false                              # (the mission paused for the photo mode, or just resumed)
+			_set_menu_mode(screen)
 			continue
 		if tag == "SCR" and pk.size() > 11:
 			if frame != menu_img_n:
@@ -3702,7 +3724,7 @@ func _key_hold(sc: int, who: String, down: bool) -> void:
 
 # the wheel's notches, each frame: one pressed for 50 ms, the next 30 ms after it is let go
 func _bind_taps() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if bind_tap != "":
 		if now >= bind_tap_t:
 			_bind_set(bind_tap, false)
@@ -3771,7 +3793,7 @@ static func _order_key() -> Array:
 # dragging a map
 func _order_ready() -> bool:
 	if not (order_on and play and play_started and not menu_mode and not guest_win and not play_hold and order_can) \
-			or current.is_empty() or Time.get_ticks_msec() - order_news >= 1500:
+			or current.is_empty() or _ticks() - order_news >= 1500:
 		return false
 	# (the mission's own map is the one loaded: the aim is taken on its ground)
 	return live_mis_name == "" or str(current["entry"]["file"]).get_file().to_upper() == live_mis_name
@@ -3782,7 +3804,7 @@ func _order_ready() -> bool:
 func _order_status(q: PackedByteArray) -> void:
 	if q.size() < 22:
 		return
-	order_news = Time.get_ticks_msec()
+	order_news = _ticks()
 	order_can = q[4] & 1 == 1
 	order_lock = q.decode_u16(6)
 	order_mates.clear()
@@ -3801,7 +3823,7 @@ func _order_result(q: PackedByteArray) -> void:
 		order_line = "ORDER NOT SENT"
 		order_line_bad = true
 		order_mark = {}
-		order_mark_end = Time.get_ticks_msec() + ORDER_SHOW_MS
+		order_mark_end = _ticks() + ORDER_SHOW_MS
 
 
 func _order_name(mate: Array) -> String:
@@ -3934,7 +3956,7 @@ func _order_button(down: bool) -> void:
 			return
 		order_centre = null
 		order_aim = _order_pick()
-		order_t = Time.get_ticks_msec()
+		order_t = _ticks()
 		order_ptr = Vector2.ZERO
 		order_who = 0
 		order_state = 1
@@ -4012,7 +4034,7 @@ func _order_send(order: int, who: int) -> void:
 	order_line = "ORDER: %s > %s" % [OrderWheel.LABELS[order], to]
 	order_line_bad = false
 	order_mark = {"at": tg} if order <= 1 else {}
-	order_mark_end = Time.get_ticks_msec() + ORDER_SHOW_MS
+	order_mark_end = _ticks() + ORDER_SHOW_MS
 
 
 # where a target is on the screen: [1 the ground / 2 an enemy / 0 not in view, its pixel]
@@ -4046,7 +4068,7 @@ func _order_on_screen(tg: Array) -> Array:
 func _order_update() -> void:
 	if not order_on:
 		return
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if order_state != 0 and not _order_ready():
 		order_state = 3                                    # (a game screen came, the squad is gone)
 	if order_state == 1 and now - order_t >= ORDER_TAP_MS:
@@ -4351,17 +4373,26 @@ func _look_keys(event: InputEventKey) -> bool:
 # The window's picture as it is (the view, the HUD, a game screen) saved as a PNG: in the player's Pictures folder,
 # "Terra Nova Uplink" (TN_SHOT_DIR: another folder, the tests'). Its name is the date and the time.
 func _shot_key() -> void:
-	var dir := OS.get_environment("TN_SHOT_DIR")
-	if dir == "":
-		dir = OS.get_system_dir(OS.SYSTEM_DIR_PICTURES).path_join("Terra Nova Uplink")
-	DirAccess.make_dir_recursive_absolute(dir)
-	var t := Time.get_datetime_dict_from_system()
-	var path := dir.path_join("uplink_%04d-%02d-%02d_%02d-%02d-%02d.png" % [t.year, t.month, t.day, t.hour, t.minute, t.second])
+	if photo_on:                                          # (the photo mode's own capture: without its help line)
+		_photo_shot()
+		return
+	var path := _shot_path()
+	var dir := path.get_base_dir()
 	var img := get_viewport().get_texture().get_image()
 	if img != null and img.save_png(path) == OK:
 		_note("Screenshot saved: " + path)
 	else:
 		_note("The screenshot could not be saved in " + dir)
+
+
+# the folder (made if it is not there) and the name of a new picture; tag: added to the name
+func _shot_path(tag := "") -> String:
+	var dir := OS.get_environment("TN_SHOT_DIR")
+	if dir == "":
+		dir = OS.get_system_dir(OS.SYSTEM_DIR_PICTURES).path_join("Terra Nova Uplink")
+	DirAccess.make_dir_recursive_absolute(dir)
+	var t := Time.get_datetime_dict_from_system()
+	return dir.path_join("uplink_%04d-%02d-%02d_%02d-%02d-%02d%s.png" % [t.year, t.month, t.day, t.hour, t.minute, t.second, tag])
 
 
 func _fps_toggle() -> void:
@@ -4373,6 +4404,413 @@ func _fps_toggle() -> void:
 func look_key_name() -> String:
 	var s := OS.get_keycode_string(DisplayServer.keyboard_get_keycode_from_physical(look_key))
 	return s if s != "" else OS.get_keycode_string(look_key)
+
+
+# ------------------------------------------------------------------ photo mode
+# A key of Uplink's window, in a mission (O unless the player chose another in the launcher: TN_KEY_PHOTO, a PC
+# scancode in hex after SHIFT+, CTRL+ or ALT+ if any, as Uplink's other keys). Nothing of it runs until the key is
+# pressed. Then:
+# - the game is paused, by its own Pause command: the bridge presses the game's key for it and watches the game's
+#   pause flag ('X' + 1 / 0 on the play port, live_bridge.py photo_step; its news: 'PHOT'). The game's own screen of
+#   a paused mission is not shown: Uplink goes on drawing the scene as it stood, its own clock stopped (_ticks), so
+#   that puffs, flashes, animations, the units' easing, the water and (unless asked) the snow hold still;
+# - nothing goes to the game any more: the keys and buttons held are let go there first, then the mouse and the keys
+#   are the camera's until the mode is left;
+# - the camera is free: the mouse turns it (as far as straight up and down), the map viewer's keys fly it (W A S D,
+#   Space / Ctrl up / down, Shift four times faster, the wheel sets the speed), Q / E roll it, Z / C narrow and widen
+#   the field of view, R puts it back in the player's eyes;
+# - the cockpit and the HUD are hidden (H shows them), the old school look stays as it was (its own key switches it),
+#   the weather holds still (T lets it fall); the player's own suit, which the main view never draws, is drawn once
+#   the camera has left it;
+# - Enter (or the screenshot key) saves the picture as a PNG in the screenshots' folder, without the help line or
+#   any note; 2 switches to pictures twice the window's size (the whole view drawn at that size for the capture).
+# The key again, or Esc: the camera back in the player's view, the field, the look and the mouse as they were, the
+# game resumed. Not on the game's screens (a menu, a paused mission: the key is the game's there) and not in a coop
+# guest's window (he cannot pause the host's game).
+const PHOTO_LOOK := 0.003                # radians a pixel of mouse (the map viewer's camera)
+const PHOTO_BODY := 0.35                 # the player's own suit is drawn once the camera is that far from his eyes
+var photo_key := _photo_key()            # [physical key, modifiers]
+var photo_key_held := false              # (its release is the photo mode's too)
+var photo_on := false
+var photo_freeze := false                # the game is paused for it, the scene holds still
+var photo_pos := Vector3.ZERO
+var photo_yaw := 0.0
+var photo_pitch := 0.0
+var photo_roll := 0.0
+var photo_fov := 90.0                    # horizontal, degrees
+var photo_speed := 6.0                   # units a second
+var photo_hud := false                   # the cockpit and the HUD shown
+var photo_still := true                  # the weather's flakes held in place
+var photo_big := false                   # pictures twice the window's size
+var photo_game_fov := 90.0               # the game's own field meanwhile (the way back)
+var photo_was := {}                      # what is put back on leaving
+var photo_held := {}                     # its keys that are down
+var photo_up := {}                       # those still down when it was left: their release is not the game's either
+var photo_state := 0                     # the bridge's news: 0 the game runs, 1 its key is going, 2 paused, 3 it would not pause
+var photo_sent_t := 0                    # when the bridge was last told (the engine's msec)
+var photo_again := 0                     # left: told that many times more
+var photo_end_t := -100000               # when it was left
+var photo_last := 0                      # the last frame (the engine's usec: its own clock is stopped)
+var photo_t0 := 0                        # when it was entered (the engine's msec)
+var photo_busy := false                  # a picture is being taken
+var photo_help: Label
+var photo_help_key := ""
+
+
+static func _photo_key() -> Array:
+	var k := _own_key(OS.get_environment("TN_KEY_PHOTO"))
+	return k if not k.is_empty() else [KEY_O, 0]
+
+
+# in a mission that is being played, on Uplink's own view
+func _photo_can() -> bool:
+	if not (live and play) or guest_win or menu_mode or start_hold or current.is_empty() or live_units_seen < 2:
+		return false
+	if game_fade < 0.999:                                 # (the mission ends: the game is fading out)
+		return false
+	for n in get_children():                             # (typing in the coop chat: a letter of his message)
+		if n.has_method("wants_keys") and n.wants_keys():
+			return false
+	return true
+
+
+func _photo_hides() -> bool:
+	return photo_on and not photo_hud
+
+
+# the photo mode's key, and everything while it is on: true if the event was its
+func _photo_input(event: InputEvent) -> bool:
+	var pk := int(photo_key[0])
+	if event is InputEventKey and pk != KEY_NONE and event.physical_keycode == pk:
+		if not event.pressed:
+			if photo_key_held:
+				photo_key_held = false
+				return true
+		elif event.echo:
+			if photo_key_held:
+				return true
+		else:
+			# (a Shift held on top of it is the run's or the fast flight's, not another key: the mode is entered in the
+			# middle of a sprint and left in the middle of a fast flight)
+			var want := int(photo_key[1])
+			var mods := (KEY_MASK_SHIFT if event.shift_pressed and want & KEY_MASK_SHIFT else 0) | \
+					(KEY_MASK_CTRL if event.ctrl_pressed else 0) | (KEY_MASK_ALT if event.alt_pressed else 0)
+			if mods == want and not photo_busy and (photo_on or _photo_can()):
+				photo_key_held = true
+				_photo_set(not photo_on)
+				return true
+	if not photo_on:
+		if event is InputEventKey and not photo_up.is_empty() and not event.echo and photo_up.erase(event.physical_keycode):
+			return not event.pressed                    # (let go after the way out; pressed again: the game's)
+		return false
+	if event is InputEventMouseMotion:
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			photo_yaw = wrapf(photo_yaw - event.relative.x * PHOTO_LOOK, -PI, PI)
+			photo_pitch = clampf(photo_pitch - event.relative.y * PHOTO_LOOK, -1.55, 1.55)
+	elif event is InputEventMouseButton:
+		if event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			photo_speed = minf(photo_speed * 1.25, 400.0)
+		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			photo_speed = maxf(photo_speed / 1.25, 0.25)
+		elif event.pressed and event.button_index == MOUSE_BUTTON_LEFT and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED    # (the window was left: this click takes the mouse again)
+	elif event is InputEventKey:
+		var k: int = event.physical_keycode
+		if _look_keys(event):                               # the look's own keys: old school on / off, its grid, a picture
+			pass
+		elif not event.pressed:
+			photo_held.erase(k)
+		elif not event.echo:
+			photo_held[k] = true
+			match k:
+				KEY_ESCAPE:
+					_photo_set(false)
+				KEY_ENTER, KEY_KP_ENTER:
+					_photo_shot()
+				KEY_H:
+					photo_hud = not photo_hud
+				KEY_T:
+					photo_still = not photo_still
+				KEY_2:
+					photo_big = not photo_big
+				KEY_R:
+					photo_pos = cam_to[0]
+					photo_yaw = cam_to[1]
+					photo_pitch = cam_to[2]
+					photo_roll = 0.0
+					photo_fov = photo_game_fov
+	return true
+
+
+# what the game holds of the player's is let go: his keys, the second binds', the order wheel, the buttons
+func _photo_release() -> void:
+	_play_hold_end()                                      # (the right button held on a map)
+	for sc in play_held.keys():
+		_play_key(sc, false)
+	key_holders.clear()
+	bind_down.clear()
+	bind_taps.clear()
+	bind_tap = ""
+	order_state = 0
+	order_rmb = false
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:     # (the look mode: a shot being fired, a lock being taken)
+		for bt in [1, 2]:
+			_play_send(PackedByteArray([0x42, bt, 0]))
+	elif play_started and play_cursor.x >= 0:             # (the cursor mode: the left button, where the cursor is)
+		var lb := PackedByteArray([0x43, 1, 0, 0, 0, 0, 0])
+		lb.encode_s16(3, play_cursor.x)
+		lb.encode_s16(5, play_cursor.y)
+		_play_send(lb)
+	play_dx = 0.0
+	play_dy = 0.0
+	free_look = false
+
+
+# the bridge is told (twice a second while it lasts): the game paused for the photo mode, or resumed
+func _photo_tell() -> void:
+	photo_sent_t = Time.get_ticks_msec()
+	_play_send(PackedByteArray([0x58, 1 if photo_on and photo_freeze else 0]))
+
+
+func _photo_set(on: bool) -> void:
+	if on == photo_on:
+		return
+	var real := Time.get_ticks_msec()
+	if on:
+		_photo_release()
+		photo_was = {"mouse": Input.mouse_mode, "started": play_started,
+				"old": oldschool_rect != null and oldschool_rect.visible, "mask": camera.cull_mask,
+				"proj": camera.projection, "near": camera.near, "size": camera.size, "off": camera.frustum_offset,
+				"keep": camera.keep_aspect}
+		photo_on = true
+		photo_freeze = not guest_win
+		photo_pos = camera.position
+		photo_yaw = camera.rotation.y
+		photo_pitch = camera.rotation.x
+		photo_roll = 0.0
+		photo_fov = camera.fov
+		photo_game_fov = camera.fov
+		photo_hud = false
+		photo_still = true
+		photo_held.clear()
+		photo_up.clear()
+		photo_state = 0
+		photo_again = 0
+		photo_last = Time.get_ticks_usec()
+		photo_t0 = real
+		Input.set_custom_mouse_cursor(null)
+		play_cur_set = ""                                 # (the game's cursor is set again afterwards, _play_cursor)
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		photo_on = false
+		photo_up = photo_held.duplicate()
+		photo_held.clear()
+		if clock_stop >= 0:
+			clock_lag += real - clock_stop
+			clock_stop = -1
+		photo_end_t = real
+		photo_again = 3
+		camera.cull_mask = int(photo_was["mask"])
+		camera.projection = int(photo_was["proj"]) as Camera3D.ProjectionType
+		camera.near = float(photo_was["near"])
+		camera.size = float(photo_was["size"])
+		camera.frustum_offset = photo_was["off"]
+		camera.keep_aspect = int(photo_was["keep"]) as Camera3D.KeepAspect
+		camera.fov = photo_game_fov
+		if hud or hud_win.size.y > 0:
+			_hud_camera(camera.fov)
+		_live_smooth()                                    # the camera in the player's eyes again, where the game has them
+		if oldschool_rect != null and oldschool_key != "" and oldschool_rect.visible != bool(photo_was["old"]):
+			_oldschool_toggle()
+		# the mouse as it was: the look mode's, or the cursor's (shown by _play_cursor), or free (the window was left);
+		# on one of the game's screens: its arrow
+		if menu_mode:
+			play_started = true
+			_menu_cursor_apply()
+		elif int(photo_was["mouse"]) == Input.MOUSE_MODE_CAPTURED:
+			play_started = true
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		elif bool(photo_was["started"]):
+			play_started = true
+			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		else:
+			play_started = false
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_photo_tell()
+	_photo_show()
+
+
+# each frame while it is on: the camera flown, its picture set up
+func _photo_update() -> void:
+	var us := Time.get_ticks_usec()
+	var dt := clampf((us - photo_last) / 1e6, 0.0, 0.1)
+	photo_last = us
+	if menu_mode or current.is_empty():                   # one of the game's screens came
+		_photo_set(false)
+		return
+	if photo_freeze:
+		var real := Time.get_ticks_msec()
+		if photo_state == 2 and clock_stop < 0:
+			clock_stop = real                             # the game is paused: the scene holds still from here
+		elif photo_state == 3 or (clock_stop < 0 and real - photo_t0 > 2500):
+			_photo_set(false)                             # (no pause: no bridge for it, or the game would not take its key)
+			_note("Photo mode: the game would not pause")
+			return
+		if real - photo_sent_t > 500:
+			_photo_tell()
+	var b := Basis.from_euler(Vector3(photo_pitch, photo_yaw, 0.0))
+	var move := Vector3.ZERO
+	if photo_held.has(KEY_W):
+		move -= b.z
+	if photo_held.has(KEY_S):
+		move += b.z
+	if photo_held.has(KEY_A):
+		move -= b.x
+	if photo_held.has(KEY_D):
+		move += b.x
+	if photo_held.has(KEY_SPACE):
+		move += Vector3.UP
+	if photo_held.has(KEY_CTRL):
+		move -= Vector3.UP
+	if move != Vector3.ZERO:
+		photo_pos += move.normalized() * photo_speed * (4.0 if photo_held.has(KEY_SHIFT) else 1.0) * dt
+	photo_roll = wrapf(photo_roll + (float(photo_held.has(KEY_Q)) - float(photo_held.has(KEY_E))) * 0.9 * dt, -PI, PI)
+	photo_fov = clampf(photo_fov + (float(photo_held.has(KEY_C)) - float(photo_held.has(KEY_Z))) * 40.0 * dt, 8.0, 150.0)
+	camera.position = photo_pos
+	camera.rotation = Vector3(photo_pitch, photo_yaw, photo_roll)
+	camera.fov = photo_fov                               # (what the rest reads: the waypoint's letters)
+	if photo_hud and (hud or hud_win.size.y > 0):
+		_hud_camera(photo_fov)                           # in the game's 3D window, as the cockpit frames it
+	else:
+		var near := 0.05
+		camera.projection = Camera3D.PROJECTION_FRUSTUM
+		camera.keep_aspect = Camera3D.KEEP_WIDTH
+		camera.near = near
+		camera.size = 2.0 * near * tan(deg_to_rad(photo_fov) / 2.0)
+		camera.frustum_offset = Vector2.ZERO
+		for sm in water_mats:                             # (the water mirrors over the whole window)
+			(sm as ShaderMaterial).set_shader_parameter("view_top", 0.0)
+			(sm as ShaderMaterial).set_shader_parameter("view_bottom", 1.0)
+	var mask := int(photo_was["mask"])
+	camera.cull_mask = mask | PLAYER_LAYER if photo_pos.distance_to(cam_to[0]) > PHOTO_BODY else mask
+	_photo_show()
+
+
+# what the photo mode hides and shows: the cockpit, the HUD and what Uplink draws for it; its help line
+func _photo_show() -> void:
+	var show := not _photo_hides()
+	if hud_rect != null:
+		hud_rect.visible = show
+	if sub_layer != null:
+		sub_layer.visible = show
+	if compass_rect != null and not show:
+		compass_rect.visible = false
+	if waypoint != null:
+		waypoint.visible = show and waypoint_at.x != 0.0 and not current.is_empty()
+	if photo_on:
+		if order_wheel != null:
+			order_wheel.visible = false
+		if cross_dot != null:
+			cross_dot.visible = false
+		if drag_cur != null:
+			drag_cur.visible = false
+	if not photo_on:
+		if photo_help != null:
+			photo_help.visible = false
+		return
+	if photo_help == null:
+		var hl := CanvasLayer.new()
+		hl.layer = 20                                     # over the game's HUD
+		add_child(hl)
+		photo_help = Label.new()
+		photo_help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+		photo_help.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		photo_help.offset_left = 12
+		photo_help.offset_right = -12
+		photo_help.offset_bottom = -6
+		photo_help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		photo_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		photo_help.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		photo_help.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
+		photo_help.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+		photo_help.add_theme_constant_override("outline_size", 4)
+		hl.add_child(photo_help)
+	var vs := get_viewport().get_visible_rect().size
+	var key := "%s %s %s %d" % [photo_big, photo_freeze, clock_stop >= 0, int(vs.y)]
+	if key != photo_help_key:
+		photo_help_key = key
+		var n := func(k: int) -> String: return _photo_key_name([k, 0])
+		var parts := ["PHOTO MODE" + ("" if not photo_freeze or clock_stop >= 0 else " (pausing the game...)"),
+				"mouse: look", "%s %s %s %s: move" % [n.call(KEY_W), n.call(KEY_A), n.call(KEY_S), n.call(KEY_D)],
+				"Space / Ctrl: up / down", "Shift: fast", "wheel: speed", "%s / %s: roll" % [n.call(KEY_Q), n.call(KEY_E)],
+				"%s / %s: zoom" % [n.call(KEY_Z), n.call(KEY_C)], "%s: reset" % n.call(KEY_R),
+				"%s: cockpit" % n.call(KEY_H)]
+		if oldschool_rect != null and int(own_keys[0][0]) != KEY_NONE:
+			parts.append("%s: old school" % _photo_key_name(own_keys[0]))
+		if photo_freeze:
+			parts.append("%s: weather still / falling" % n.call(KEY_T))
+		parts.append("%s: picture size (now x%d)" % [n.call(KEY_2), 2 if photo_big else 1])
+		parts.append("Enter: take the picture")
+		parts.append("%s: leave" % _photo_key_name(photo_key))
+		photo_help.text = "   ".join(parts)
+		photo_help.add_theme_font_size_override("font_size", clampi(roundi(vs.y / 72.0), 11, 28))
+	photo_help.visible = not photo_busy                   # (not in its pictures)
+
+
+# a key as this keyboard prints it, with its Shift, Ctrl or Alt ([physical key, modifiers])
+func _photo_key_name(k: Array) -> String:
+	var s := OS.get_keycode_string(DisplayServer.keyboard_get_keycode_from_physical(int(k[0])))
+	if s == "":
+		s = OS.get_keycode_string(int(k[0]))
+	var m := int(k[1])
+	return ("Ctrl+" if m & KEY_MASK_CTRL else "") + ("Shift+" if m & KEY_MASK_SHIFT else "") + ("Alt+" if m & KEY_MASK_ALT else "") + s
+
+
+# The picture: the window as it is drawn, less the help line, the notes and Uplink's own marks; at twice its size
+# when asked (the whole view is drawn at that size for the capture: the window's own picture is that one, scaled
+# down, for those few frames). Saved where the screenshots go.
+func _photo_shot() -> void:
+	if photo_busy or not photo_on:
+		return
+	photo_busy = true
+	var hidden := []
+	photo_help.visible = false
+	var marks: Array = [note_label, fps_label, host_btn, versus_btn]
+	for n in get_children():                              # (the coop's own panels and chat)
+		if n is CanvasLayer and n.has_method("wants_keys"):
+			marks.append(n)
+	for c in marks:
+		if c != null and is_instance_valid(c) and c.visible:
+			c.visible = false
+			hidden.append(c)
+	var win := get_window()
+	var big := photo_big and maxi(win.size.x, win.size.y) * 2 <= 16384
+	var was := [win.content_scale_mode, win.content_scale_aspect, win.content_scale_size]
+	if big:
+		win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_IGNORE
+		win.content_scale_size = win.size * 2
+		win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
+	for i in (4 if big else 2):                           # (drawn without them, at the new size)
+		await RenderingServer.frame_post_draw
+	var img := get_viewport().get_texture().get_image()
+	if big:
+		win.content_scale_mode = was[0]
+		win.content_scale_aspect = was[1]
+		win.content_scale_size = was[2]
+	for c in hidden:
+		if is_instance_valid(c):
+			c.visible = true
+	var path := _shot_path("_photo")
+	var k := 2
+	while FileAccess.file_exists(path):                   # (several in the same second)
+		path = _shot_path("_photo_%d" % k)
+		k += 1
+	photo_help_key = ""                                   # (its help line shown again by the next frame)
+	if img != null and img.save_png(path) == OK:
+		_note("Picture saved: %s  (%d x %d)  in %s" % [path.get_file(), img.get_width(), img.get_height(), path.get_base_dir()])
+	else:
+		_note("The picture could not be saved in " + path.get_base_dir())
+	photo_busy = false
 
 
 func _play_send(bytes: PackedByteArray) -> void:
@@ -4444,11 +4882,11 @@ func _set_menu_mode(on: bool) -> void:
 	menu_mode = on
 	if not on and live:
 		start_hold = true                               # (black until the mission is ready, _start_ready)
-		start_hold_t = Time.get_ticks_msec()
+		start_hold_t = _ticks()
 		live_units_seen = 0
 	if on:
 		menu_fresh = false                              # its picture: one taken from now on (the last one is an old screen)
-		menu_mode_t = Time.get_ticks_msec()
+		menu_mode_t = _ticks()
 	if not play:
 		return
 	_play_hold_end()                                    # (a button held when one of the game's screens comes)
@@ -4488,7 +4926,7 @@ func _menu_cursor_apply() -> void:
 func _play_cursor() -> void:
 	if guest_win:                                     # (a coop guest's window: no game of its own to tell)
 		return
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var free := play_started and not menu_mode and (play_drag or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED)
 	# (the game's cursor emptied: for the free cursor, shown here, and for a look mode without the game's crosshair)
 	var empty := free or _cross_own(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
@@ -4627,10 +5065,10 @@ func _menu_fade() -> void:
 	if menu_rect == null:
 		return
 	var want := 0.0
-	if menu_mode and menu_tex != null and (menu_fresh or Time.get_ticks_msec() - menu_mode_t > 600):
+	if menu_mode and menu_tex != null and (menu_fresh or _ticks() - menu_mode_t > 600):
 		want = 1.0
 	var step := get_process_delta_time() / MENU_FADE_S
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if game_fade < 1.0 and now - game_fade_t > 2000:
 		game_fade = 1.0                                      # (no news: the bridge went away)
 	if start_hold and (now - start_hold_t > 4000 or _start_ready()):
@@ -4702,6 +5140,9 @@ func _input(event: InputEvent) -> void:
 	if lobby_was_open:                                     # the mission starts: the next click takes the mouse again
 		lobby_was_open = false
 		play_started = false
+	if _photo_input(event):                                # the photo mode: its key, and every input while it is on
+		get_viewport().set_input_as_handled()
+		return
 	# Two modes, swapped by the freelook key (Y unless the player changed it, see look_key) or Pause, which stay in
 	# the viewer: look (mouse captured, it turns the view, clicks at the view's centre) and cursor (the game's own
 	# cursor follows the mouse, clicks where it is: the HUD's buttons, the map, free aiming).
@@ -4870,6 +5311,10 @@ func _notification(what: int) -> void:
 	if play and what == NOTIFICATION_APPLICATION_FOCUS_OUT:
 		_play_hold_end()
 		_play_release_all()
+		if photo_on:                                       # (the mouse is free: a click in the window takes it again,
+			photo_held.clear()                             # and it stays free on leaving the photo mode)
+			photo_was["mouse"] = Input.MOUSE_MODE_VISIBLE
+			photo_was["started"] = false
 
 
 func _live_update() -> void:
@@ -4898,13 +5343,16 @@ func _live_update() -> void:
 		r.encode_s16(1, clampi(mv.x, -32000, 32000))
 		r.encode_s16(3, clampi(mv.y, -32000, 32000))
 		_play_send(r)
-	if play:
+	if play and not photo_on:
 		_play_cursor()
 		_bind_taps()
 		_order_update()
 		_subs_update()
+	if play and not photo_on and photo_again > 0 and Time.get_ticks_msec() - photo_sent_t > 300:
+		_photo_tell()                                      # (left: said again, a lost packet would leave the game paused)
+		photo_again -= 1
 	if host_btn:
-		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
+		host_btn.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED and not photo_busy
 		if versus_btn:
 			versus_btn.visible = host_btn.visible
 	if hud:
@@ -4950,6 +5398,8 @@ func _live_update() -> void:
 			_map_status(q)                                  # the game's map in the HUD, for the orders given on it
 		elif q.size() >= 13 and q.slice(0, 4).get_string_from_ascii() == "SUBT":
 			_subs_packet(q)                                 # a squadmate speaks (live_bridge.py, subtitles.py)
+		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "PHOT":
+			photo_state = q[4]                              # the photo mode's pause, as the bridge has it (_photo_update)
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
 			if ir_on != (q[4] == 1):
 				ir_on = q[4] == 1                           # the game's infrared view (key I)
@@ -5011,7 +5461,7 @@ func _live_update() -> void:
 			cloud_base = Vector2(q.decode_float(4), q.decode_float(8))   # the game's wind offset of its clouds
 			if q.size() >= 16:
 				cloud_sway = q.decode_u32(12)            # its cloud sway's phase ([0x427DB0], +193 a tick)
-			cloud_live_t = Time.get_ticks_msec()
+			cloud_live_t = _ticks()
 		else:
 			pk = q
 	if pk.size() < 24:
@@ -5020,10 +5470,13 @@ func _live_update() -> void:
 	var h := pk.decode_float(12)
 	# game heading 0 = +x, then towards +y (Godot +z)
 	_cam_target(Vector3(pk.decode_float(0), pk.decode_float(8), pk.decode_float(4)), atan2(-cos(h), -sin(h)), pk.decode_float(16))
-	camera.keep_aspect = Camera3D.KEEP_WIDTH        # the game gives its horizontal field of view
-	camera.fov = pk.decode_float(20)
+	if photo_on:                                    # (the photo mode's camera is its own: the game's field is kept
+		photo_game_fov = pk.decode_float(20)        # for the way back)
+	else:
+		camera.keep_aspect = Camera3D.KEEP_WIDTH    # the game gives its horizontal field of view
+		camera.fov = pk.decode_float(20)
 	_live_smooth()
-	if hud or hud_win.size.y > 0:                     # coop guest: its cockpit's window (coop_hud.gd)
+	if not photo_on and (hud or hud_win.size.y > 0):  # coop guest: its cockpit's window (coop_hud.gd)
 		_hud_camera(camera.fov)
 	live_seen += 1
 	if play and OS.has_environment("TN_PLAYTEST") and (live_seen == 100 or live_seen == 220):
@@ -5120,12 +5573,12 @@ func _live_waypoint(at: Vector2) -> void:
 	(waypoint.get_node("label") as Label3D).modulate = col
 	(waypoint.get_node("label") as Label3D).outline_modulate = col
 	waypoint.position = Vector3(at.x, TNData.height_at(current["map"], at.x, at.y) + 1.0, at.y)
-	waypoint.visible = true
+	waypoint.visible = not _photo_hides()
 	_waypoint_update(0.0)
 
 
 func _waypoint_word(w: int) -> void:
-	var now := Time.get_ticks_usec() / 1e6
+	var now := _ticks_usec() / 1e6
 	var dt := now - wp_t
 	if wp_word < 0.0 or dt > 0.5:
 		wp_rate = 0.0                                   # (the first, or after a gap: no rate from stale data)
@@ -5140,7 +5593,7 @@ func _waypoint_update(delta: float) -> void:
 		return
 	var spin := waypoint.get_node("spin") as Node3D
 	if wp_word >= 0.0:
-		var wd := wp_word + wp_rate * minf(Time.get_ticks_usec() / 1e6 - wp_t, 0.25)
+		var wd := wp_word + wp_rate * minf(_ticks_usec() / 1e6 - wp_t, 0.25)
 		spin.rotation.y = fposmod(-wd / 65536.0 * TAU - PI / 2.0, TAU)
 	else:
 		spin.rotation.y = fposmod(spin.rotation.y - TAU * WAYPOINT_TURN * delta, TAU)
@@ -5358,7 +5811,7 @@ func _live_units(pk: PackedByteArray) -> void:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
 		if live_extra.has(idx):
 			_live_place(live_extra[idx], e, m)
-	if draw_distance and not live_drawn.is_empty() and not free_look:
+	if draw_distance and not live_drawn.is_empty() and not free_look and not photo_on:
 		# as in the game (its distances per type, see the bridge's DRAW): hidden, not freed (a suit keeps its steps)
 		var all_idx: Array = ents.keys()
 		for o in fx_at:
@@ -5388,7 +5841,7 @@ func _live_units(pk: PackedByteArray) -> void:
 		if node == null and live_off >= 0 and idx - live_off >= 0 and idx - live_off < live_nodes.size():
 			node = live_nodes[idx - live_off]
 		if node != null and node.visible and node.has_meta("soldier"):
-			var now_ms := Time.get_ticks_msec()
+			var now_ms := _ticks()
 			# a pose read half written (_arms_off) is left out: the suit keeps its last one, and with none for
 			# GAIT_STALE (a far suit the game no longer animates) walks on its own steps. (Each one put the suit on its own
 			# steps for 3 s: one the game drew in all but 2 frames in 760 walked on them most of the time, its feet on
@@ -5420,7 +5873,7 @@ func _live_units(pk: PackedByteArray) -> void:
 # position, from the shared viewpoint the game draws them with) facing the unit's heading, laid over the game's own
 # small view in the HUD. Hidden when the bridge stops seeing it (button off, probe recalled) or on the game's screens.
 func _sub_views(q: PackedByteArray) -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var vs := get_viewport().get_visible_rect().size
 	var k := vs / Vector2(320, 400)
 	if sub_layer == null:
@@ -5625,23 +6078,24 @@ func _cam_target(p: Vector3, y: float, pt: float) -> void:
 	var to: Vector3 = cam_to[0]
 	if p.is_equal_approx(to) and is_equal_approx(y, cam_to[1]) and is_equal_approx(pt, cam_to[2]):
 		return
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var gap := now - sm_last
 	if gap > 4 and gap < 200:
 		sm_int = lerpf(sm_int, float(gap), 0.1)
 	sm_last = now
-	cam_from = [camera.position, yaw, pitch] if smooth and p.distance_to(to) < SMOOTH_JUMP else [p, y, pt]
+	cam_from = [camera.position, yaw, pitch] if smooth and not photo_on and p.distance_to(to) < SMOOTH_JUMP else [p, y, pt]
 	cam_to = [p, y, pt]
 	cam_t = now
 
 
 func _live_smooth() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var a := clampf(float(now - cam_t) / sm_int, 0.0, 1.0)
-	camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
 	yaw = lerp_angle(cam_from[1], cam_to[1], a)
 	pitch = lerpf(cam_from[2], cam_to[2], a)
-	camera.rotation = Vector3(pitch + look_off.y + (look_dn.extra if look_dn != null else 0.0), yaw + look_off.x, 0)
+	if not photo_on:                                  # (the photo mode flies its own camera, _photo_update)
+		camera.position = (cam_from[0] as Vector3).lerp(cam_to[0], a)
+		camera.rotation = Vector3(pitch + look_off.y + (look_dn.extra if look_dn != null else 0.0), yaw + look_off.x, 0)
 	for node in smooth_nodes:
 		if is_instance_valid(node):
 			_unit_smooth(node, now)
@@ -5660,7 +6114,7 @@ var sm_n := 0                                     # the units' captures so far (
 
 # after the units are placed (their game positions): each one eased from where it is drawn to there
 func _smooth_capture() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	smooth_nodes.clear()
 	if not (smooth or unit_smooth):
 		return
@@ -5892,7 +6346,7 @@ func _live_debris(idx: int, e) -> void:
 	# changes (at rest the game's ground and this one can differ by a few hundredths: a pile left that much above it
 	# was taken for flying, its pieces turned for ever)
 	var gc := TNData.height_at(m, e[3], e[4])
-	var t := Time.get_ticks_msec() / 1000.0
+	var t := _ticks() / 1000.0
 	if absf(float(e[5]) - float(holder.get_meta("z", e[5]))) > 0.003:
 		holder.set_meta("z_t", t)
 	holder.set_meta("z", e[5])
@@ -6164,7 +6618,7 @@ func _live_fx(idx: int, e) -> void:
 			mi.set_meta("mine", rel.length() < 2.5)
 			mi.set_meta("side", -1.0 if rel.x < 0.0 else 1.0)
 			mi.set_meta("tail", pos)
-			mi.set_meta("born", Time.get_ticks_msec())
+			mi.set_meta("born", _ticks())
 		mi.set_meta("near", near)
 		# the player's own bolt: like the game, one beam from the gun to the bolt for a single game frame as it
 		# leaves, then nothing (the bolt flies unseen to its impact; a held trigger fires every 0.125 s and the
@@ -6173,7 +6627,7 @@ func _live_fx(idx: int, e) -> void:
 		var w_tail := 0.004
 		var w_bolt := 0.004
 		if mi.get_meta("mine"):
-			if Time.get_ticks_msec() - int(mi.get_meta("born")) >= FLASH_MS:
+			if _ticks() - int(mi.get_meta("born")) >= FLASH_MS:
 				mi.visible = false
 				return
 			tail = cam * Vector3(MUZZLE.x * float(mi.get_meta("side")), MUZZLE.y, MUZZLE.z)
@@ -6208,7 +6662,7 @@ func _live_fx(idx: int, e) -> void:
 	if dust:
 		if mi.get_meta("dust_pos", Vector3.INF) != pos:   # a new particle (they do not move): drawn by _dust_update
 			mi.set_meta("dust_pos", pos)
-			mi.set_meta("dust_born", Time.get_ticks_msec())
+			mi.set_meta("dust_born", _ticks())
 		mi.global_transform = Transform3D.IDENTITY
 		mi.extra_cull_margin = 2.0
 	elif kind == 2 or kind == 7 or kind == 10:
@@ -6271,7 +6725,7 @@ const DUST_LIFE := 0.3
 
 
 func _dust_update() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var tick := int(now * DUST_HZ / 1000.0)
 	var cb := camera.global_transform.basis
 	for idx in live_fx:
@@ -6628,12 +7082,12 @@ func _beam_flash_note(idx: int) -> void:
 		if f[0] == idx and (f[1][0] as Vector3) == (b[0] as Vector3) and (f[1][1] as Vector3) == (b[1] as Vector3):
 			return
 	if beam_flash.size() < 64:
-		beam_flash.append([idx, b, Time.get_ticks_msec(), false])
+		beam_flash.append([idx, b, _ticks(), false])
 
 
 # with each view: the noted beams the game's state no longer has, not drawn yet (or held: TN_BEAM_HOLD)
 func _beam_flashes() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var keep := []
 	for f in beam_flash:
 		var b: Array = f[1]
@@ -6801,7 +7255,7 @@ func _fx_anim(typ: int) -> bool:
 
 
 func _live_anim(idx: int, typ: int, pos: Vector3) -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var seen = anim_seen.get(idx)
 	var fresh: bool = seen == null or seen[1] != typ or now - int(seen[0]) > FX_GAP_MS or (seen[2] as Vector3).distance_to(pos) > 0.5
 	var node: MeshInstance3D = null
@@ -6851,7 +7305,7 @@ func _spawn_anim(pos: Vector3, typ: int, idx := -1) -> MeshInstance3D:
 	mi.extra_cull_margin = 2.0
 	mi.position = pos
 	world.add_child(mi)
-	anims.append([mi, Time.get_ticks_msec(), anim_mats[typ][2], idx])
+	anims.append([mi, _ticks(), anim_mats[typ][2], idx])
 	return mi
 
 
@@ -6868,7 +7322,7 @@ func _smoke_column(pos: Vector3) -> void:
 
 
 func _anims_update() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	# a blast where a suit burst (its pile, 6/33, appears with it) has no smoke column: only a tree's has
 	for k in range(smoke_pending.size() - 1, -1, -1):
 		if now - int(smoke_pending[k][1]) < 250:
@@ -6953,7 +7407,7 @@ func _live_smoke(q: PackedByteArray) -> void:
 		smoke_clouds[idx] = true
 		smoke_counts[idx] = n
 		if not smoke_screens.has(idx) or (smoke_screens[idx][0] as Vector3).distance_to(centre) > 1.0:
-			smoke_screens[idx] = [centre, Time.get_ticks_msec()]     # (a new cloud, maybe in an old one's slot)
+			smoke_screens[idx] = [centre, _ticks()]     # (a new cloud, maybe in an old one's slot)
 		var p0 := o + 18
 		o = p0 + 14 * n
 		if n == 0:
@@ -7107,8 +7561,8 @@ func _live_weather(q: PackedByteArray) -> void:
 		# a single "none" now and then (the game's views rebuilt between two reads) blinked the snow off for a tenth
 		# of a second: hidden only once it has said so for WEATHER_OFF_MS
 		if weather_off_t == 0:
-			weather_off_t = Time.get_ticks_msec()
-		if weather_node != null and Time.get_ticks_msec() - weather_off_t >= WEATHER_OFF_MS:
+			weather_off_t = _ticks()
+		if weather_node != null and _ticks() - weather_off_t >= WEATHER_OFF_MS:
 			weather_node.visible = false
 		return
 	weather_off_t = 0
@@ -7159,7 +7613,7 @@ func _live_weather(q: PackedByteArray) -> void:
 # what the game's own particles no longer give, 20 times a second: puffs in its volume (up to ~3.5 above the ground,
 # ~1.8 around), and at its foot
 func _smoke_linger() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	if now - smoke_linger_t < 50 or smoke_screens.is_empty():
 		return
 	smoke_linger_t = now
@@ -7219,11 +7673,11 @@ func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, t
 	mi.set_instance_shader_parameter("tint", tint)
 	mi.set_instance_shader_parameter("dense", dense)
 	mi.set_instance_shader_parameter("near_fade", 1.0 if trail else 0.0)
-	puffs.append([mi, Time.get_ticks_msec() + int(delay * 1000.0), pos, vel])
+	puffs.append([mi, _ticks() + int(delay * 1000.0), pos, vel])
 
 
 func _puffs_update() -> void:
-	var now := Time.get_ticks_msec()
+	var now := _ticks()
 	var keep := []
 	for p in puffs:
 		var age := (now - int(p[1])) / 1000.0
@@ -7360,21 +7814,32 @@ func _process(delta: float) -> void:
 	if guest_win and look_off != Vector2.ZERO:
 		if not (free_look or Input.is_physical_key_pressed(KEY_ALT)):
 			look_off = look_off.move_toward(Vector2.ZERO, delta * 6.0)   # back to the suit's view in ~0.3 s
-		camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
+		if not photo_on:
+			camera.rotation = Vector3(pitch + look_off.y, yaw + look_off.x, 0)
 	if hd_movie_box != null and hd_movie_box.visible and hd_movie.get_video_texture() != null:
 		var vsz := hd_movie.get_video_texture().get_size()
 		if vsz.y > 0:
 			hd_movie_box.ratio = vsz.x / vsz.y           # the video at its own proportions, black around
+	# the shaders' time (tn_time: the water, a disruptor's haze) and the weather's: Uplink's own, stopped with its clock
+	var still := clock_stop >= 0
+	if not still:
+		scene_t = fmod(scene_t + delta, 3600.0)
+		RenderingServer.global_shader_parameter_set("tn_time", scene_t)
+	if weather_node != null and not (still and photo_still):
+		weather_t = fmod(weather_t + delta, 3600.0)
+		(weather_node.material_override as ShaderMaterial).set_shader_parameter("now", weather_t)
 	_sync_sun_half()
 	_clouds_update()
 	_sky_items_place()
 	sky_root.position = camera.position
 	if live:
 		_live_update()
+		if photo_on:
+			_photo_update()
 		_dust_update()
-		_gait_update(delta)
-		_waypoint_update(delta)
-		if hud:
+		_gait_update(0.0 if still else delta)
+		_waypoint_update(0.0 if still else delta)
+		if hud and not _photo_hides():
 			_compass_update()
 		sky_root.position = camera.position
 		return

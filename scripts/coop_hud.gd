@@ -1117,6 +1117,9 @@ func _draw_lock() -> void:
 	if cam.is_position_behind(at):
 		return
 	var c := _pixel(cam, at)
+	var box := _screen_box(cam, n)                    # (the game: the middle of the unit's box on its screen)
+	if box.size != Vector2.ZERO:
+		c = box.get_center()
 	var cx := floorf(c.x * 320.0 / root.size.x)
 	var cy := floorf(c.y * 400.0 / root.size.y)
 	var green: Color = hud_pal[0x84]
@@ -1156,6 +1159,32 @@ func _draw_lock() -> void:
 	for t in lines:
 		_glyphs(str(t), cx + 12.0, y, red)
 		y += 12.0
+
+
+# a unit's box on the window, as the game keeps each drawn unit's (its list 0x397CA0): its meshes' corners seen
+# by the camera (empty: not drawn, or behind him)
+func _screen_box(cam: Camera3D, n: Node3D) -> Rect2:
+	if n == null:
+		return Rect2()
+	var r := Rect2()
+	var first := true
+	var todo: Array = [n]
+	while not todo.is_empty():
+		var x = todo.pop_back()
+		todo.append_array(x.get_children())
+		if x is MeshInstance3D and (x as MeshInstance3D).visible and (x as MeshInstance3D).mesh != null:
+			var ab: AABB = (x as MeshInstance3D).global_transform * (x as MeshInstance3D).get_aabb()
+			for k in 8:
+				var pt := ab.get_endpoint(k)
+				if cam.is_position_behind(pt):
+					return Rect2()
+				var px := _pixel(cam, pt)
+				if first:
+					r = Rect2(px, Vector2.ZERO)
+					first = false
+				else:
+					r = r.expand(px)
+	return r
 
 
 # a line of the game's screen, a game pixel thick, from (ax, ay) to (bx, by), ends included

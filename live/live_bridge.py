@@ -581,6 +581,8 @@ def fumees(tab):
 # chez chacun ; mesure le 23/10/2026 : 445 en une minute, toutes au pied d'un soldat). Uplink ne dessine en poussiere
 # rouge que la premiere : 'FX29' + nombre (u16) + (entite i32, sorte u8) des autres, a chaque changement, avant les
 # entites. Lu une fois par entite (sa fiche ne change pas de sa vie)
+# A first entry (-1, 9) says that this bridge sends a jetpack's particles too ('PART', poussieres): the viewer then
+# draws them as the game does, not as smoke puffs of its own.
 FX_SORTES = {}                           # (entite, fiche) -> sorte
 
 
@@ -603,7 +605,7 @@ def sortes_29(tab):
             k = FX_SORTES[cle] = g.read(ds + 16 * si + 0xE, 1)[0]
         if k != 7: out.append((i, k))
     for cle in [c for c in FX_SORTES if c not in vus]: del FX_SORTES[cle]
-    return tuple(out)
+    return ((-1, 9),) + tuple(out)
 
 
 # Beams (class 6 type 28: a laser's, an ion rifle's, each bar of a pulsar's bolt...). The game draws one as a line
@@ -672,7 +674,9 @@ debris_prev = False
 # the game's translucency tables (byte +9: 248 a thin white veil ... 253 nearly black): kind 10 a railgun's thin
 # smoke (64 particles, table 249), kind 8 the smoke of a shell or a missile (16 particles, table 250; see petite),
 # kind 11 a thermal disruptor's haze (8 particles, which warp what is behind them). They were not drawn (10, 11) or
-# drawn as a smoke screen (8).
+# drawn as a smoke screen (8). Kind 9, a jetpack's trail: the same discs, smaller (a disc 16 pixels wide at one unit
+# against 40 for a shell's smoke: 0x2A5A7C); Uplink drew smoke puffs of its own, up to 1.4 units wide, which veiled
+# the view when the player's own were next to the camera.
 #   'PART' + number (u16) + per particle: world x, y, z (3 f32), colour (u8), kind (u8), 60 times a second
 def poussieres(tab):
     if not FUM: return []
@@ -681,7 +685,7 @@ def poussieres(tab):
         o = 0x25 * i
         if tab[o] and tab[o + 1] == 6 and tab[o + 2] == 29:
             cle = (i, struct.unpack_from('<H', tab, o + 3)[0])
-            if FX_SORTES.get(cle) in (7, 8, 10, 11): quels.append(cle)   # (its kind: sortes_29, just before)
+            if FX_SORTES.get(cle) in (7, 8, 9, 10, 11): quels.append(cle)   # (its kind: sortes_29, just before)
     if not quels: return []
     hd, ds, rg, pt, an = (struct.unpack('<I', g.read(FUM[k], 4))[0] for k in ('HANDLES', 'DESCS', 'RANGES', 'PARTS', 'ANGLES'))
     t_hd, t_ds, t_rg, t_an = g.read(hd, 0x40 * 4), g.read(ds, 0x40 * 16), g.read(rg, 0x41 * 4), g.read(an, 0x40 * 8)
@@ -692,7 +696,7 @@ def poussieres(tab):
         if not 0 <= h < 0x40: continue
         si = struct.unpack_from('<i', t_hd, 4 * h)[0]
         sorte = t_ds[16 * si + 0xE]
-        if not 0 <= si < 0x40 or sorte not in (7, 8, 10, 11): continue
+        if not 0 <= si < 0x40 or sorte not in (7, 8, 9, 10, 11): continue
         a0, a1 = struct.unpack_from('<2I', t_rg, 4 * si)
         if not 0 <= a0 <= a1 <= 0x400: continue
         if sorte == 8 and not petite(i, nf, a1 - a0): continue   # (a cloud: fumees)

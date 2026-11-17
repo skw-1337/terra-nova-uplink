@@ -4976,12 +4976,17 @@ func _live_fx(idx: int, e) -> void:
 	if cls == 6 and typ == 29 and fx29.get(idx, 7) == 8:
 		return                                          # the same smoke from a blown-up tree: its column is drawn
 	if cls == 6 and typ == 29 and fx29.get(idx, 7) == 9:
+		if fx29.get(-1, 0) == 9:
+			return                                      # a jetpack's trail: the game's own particles (_live_parts)
 		if puff_seen.get(idx, -10) != live_seen - 1:
-			_spawn_puff(pos0, 1.0)                      # a jetpack's trail (anyone's), not a shot's red dust
+			_spawn_puff(pos0, 1.0, 0.0, Vector3.ZERO, 1.0, 1.0, true)   # (an older bridge: a puff, not a shot's red dust)
 		puff_seen[idx] = live_seen
 		return
-	if cls == 6 and typ == 29 and _live_puff(idx, pos0, e):
-		return                                          # at the player's feet: his jetpack's smoke
+	# (an older bridge, which does not say what a 6/29 is: one at the player's feet is taken for his jetpack's smoke.
+	# With the particles' kinds known this took the dust that settles at his feet, and a trail's first picture, for
+	# his jetpack: puffs born against the camera, a grey veil over the view as soon as he stepped back)
+	if cls == 6 and typ == 29 and not part_mode and _live_puff(idx, pos0, e):
+		return
 	if cls == 6 and typ == 29 and part_mode:
 		return                                          # a shot's dust: its own particles (_live_parts)
 	if cls == 6 and typ == 33:
@@ -5146,7 +5151,7 @@ func _live_fx(idx: int, e) -> void:
 		mi.visible = false
 		return
 	if kind == 6 and not part_mode:
-		_spawn_puff(pos, 1.4)                          # missile: its thick grey smoke trail (the game's own: _live_parts)
+		_spawn_puff(pos, 1.4, 0.0, Vector3.ZERO, 1.0, 1.0, true)   # missile: its thick grey smoke trail (the game's own: _live_parts)
 	if dust:
 		if mi.get_meta("dust_pos", Vector3.INF) != pos:   # a new particle (they do not move): drawn by _dust_update
 			mi.set_meta("dust_pos", pos)
@@ -5305,13 +5310,19 @@ func _live_ball(idx: int, e) -> void:
 # dust (8 to 32 particles a system, 0.4 s): dots that keep their size on the screen, in the colour the game gives
 # them (the dark reds of a laser, the dark blues of an ion rifle). Kinds 10 and 8, the thin smoke of a railgun and
 # the puffs of a shell or a missile: flat see-through discs through one of the game's veils, which grow as they come
-# near (dust.gdshader). Kind 11, a thermal disruptor's haze: discs that warp what is behind them (haze.gdshader).
+# near (dust.gdshader). Kind 9, a jetpack's trail: the same discs, 16 pixels of the game's picture wide at one unit
+# and single pixels past 4 units (0x2A5A7C; before: smoke puffs of Uplink's own, up to 1.4 units wide, a grey veil
+# over the view when the player's own trail was next to the camera). Kind 11, a thermal disruptor's haze: discs that
+# warp what is behind them (haze.gdshader).
 # Before: for each system red dots scattered at random around its entity whatever the weapon (_dust_update), and
 # a shell's smoke taken for a smoke grenade's screen.
 const PART_MAX := 1024                           # the game's engine holds no more particles
 # a particle's kind -> its disc's width in world units (the game: a disc 40 pixels of its 848 wide at one unit for
 # a shell's smoke, 4 for a railgun's, and 413 pixels to the radian; 0: a dot whatever the distance)
-const PART_WIDTH := {7: 0.0, 8: 0.097, 10: 0.0097}
+const PART_WIDTH := {7: 0.0, 8: 0.097, 9: 0.0388, 10: 0.0097}   # (9, a jetpack's trail: 16 pixels at one unit)
+# how far a kind is still a disc: beyond, the game plots the particle as ONE pixel through its veil (0x2A59DC: kind 9
+# past 4 units; a soldier's jetpack 5 units away drawn as discs was a grey cloud where the game shows a faint speckle)
+const PART_FAR := {9: 4.0}
 const HAZE_WIDTH := 0.24                         # a thermal disruptor's haze (100 pixels at one unit)
 # how much of its veil a kind lays: a railgun's 64 particles a system pile up into a white bar at the veil's own
 # strength, where the game shows a faint pale streak (seen side by side)
@@ -5370,7 +5381,7 @@ func _live_parts(q: PackedByteArray) -> void:
 		var w: float = HAZE_WIDTH if haze else maxf(PART_WIDTH.get(kind, 0.0), 0.00001)
 		var into := hbuf if haze else buf
 		into[b] = w
-		into[b + 5] = w
+		into[b + 5] = w if haze else float(PART_FAR.get(kind, 1.0e6))   # (the discs' shader reads it there)
 		into[b + 10] = w
 		into[b + 3] = q.decode_float(o)
 		into[b + 7] = q.decode_float(o + 8)          # (the game's z is up)
@@ -5844,7 +5855,7 @@ func _live_puff(idx: int, pos: Vector3, e) -> bool:
 	var fresh: bool = puff_seen.get(idx, -10) != live_seen - 1
 	puff_seen[idx] = live_seen
 	if fresh:
-		_spawn_puff(pos, 1.0)
+		_spawn_puff(pos, 1.0, 0.0, Vector3.ZERO, 1.0, 1.0, true)
 	return true
 
 
@@ -6102,7 +6113,9 @@ func _smoke_linger() -> void:
 					Vector3(cos(a) * 0.2, 0.1, sin(a) * 0.2), 0.9, SMOKE_DENSE * fill)
 
 
-func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, tint := 1.0, dense := 1.0) -> void:
+# trail: a puff of a trail (a jetpack's, a missile's with an older bridge), born next to who leaves it: it fades out
+# as the camera comes near instead of veiling the view (the others, a smoke screen's, do screen it)
+func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, tint := 1.0, dense := 1.0, trail := false) -> void:
 	if puff_mat == null:
 		var sm: Dictionary = objects.smoke_anim(pal, pal_key) if objects_ok else {}
 		if sm.is_empty():
@@ -6125,6 +6138,7 @@ func _spawn_puff(pos: Vector3, size: float, delay := 0.0, vel := Vector3.ZERO, t
 	mi.set_instance_shader_parameter("size", size)
 	mi.set_instance_shader_parameter("tint", tint)
 	mi.set_instance_shader_parameter("dense", dense)
+	mi.set_instance_shader_parameter("near_fade", 1.0 if trail else 0.0)
 	puffs.append([mi, Time.get_ticks_msec() + int(delay * 1000.0), pos, vel])
 
 

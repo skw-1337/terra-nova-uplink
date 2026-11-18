@@ -14,7 +14,8 @@ const DIST := [100, 80, 64, 54, 46, 40, 34, 30, 26, 23, 21, 18, 16, 14, 13, 12, 
 const SIDE := [128, 128, 128, 128, 128, 128, 127, 127, 127, 127, 126, 126, 126, 125, 125, 125, 124, 124, 123, 122, 122, 121,
 	121, 120, 120, 120, 119, 118, 117, 116, 116, 115, 115, 114, 113, 112, 111, 111, 110, 109, 109, 108, 107, 106, 106, 105,
 	104, 103, 102, 102, 101, 100, 99, 99, 98, 97, 96, 96, 95, 94, 94, 93, 92, 91]
-const VOICES := 16
+const VOICES := 20                       # the game's 16, then 4 of his own (his footsteps: coop_guest.py own_steps)
+const GAME_VOICES := 16
 const OWN_VOL := 2204                    # RESSOUND.RES: one byte a sound, for 1900 + n
 const OWN_FIRST := 1900
 
@@ -22,7 +23,8 @@ var res = null                           # RESSOUND.RES
 var own_vol := PackedByteArray()
 var streams := {}                        # sound -> AudioStreamWAV (null: not in his files)
 var voices := []                         # slot -> {player, bus, sound, kind, ent, at, vol, once}
-var master := 101                        # the game's sound volume (0-127)
+var master := 127                        # the game's sound volume (0-127): full scale, his own (Options, Game sound) on top
+var host_master := 127                   # the host's (the 'SND' packets): not applied, his settings are his own
 var log_to: FileAccess                   # TN_SOUND_LOG: what is played, for tests (no sound card needed)
 var t0 := 0
 var own_voice := {}
@@ -93,7 +95,7 @@ func _viewer() -> Node:
 func feed(pk: PackedByteArray) -> void:
 	if pk.size() < 5:
 		return
-	master = pk[3]
+	host_master = pk[3]                                # (the host turning his sound down or off: not the guest's)
 	var p := 5
 	for i in pk[4]:
 		if p >= pk.size():
@@ -105,7 +107,7 @@ func feed(pk: PackedByteArray) -> void:
 			var on := {}                                   # the voices the game plays now: any other of his ends
 			for i2 in pk[p + 1]:
 				on[pk[p + 2 + 3 * i2]] = pk.decode_u16(p + 3 + 3 * i2)
-			for k in VOICES:
+			for k in GAME_VOICES:
 				if voices[k]["sound"] != 0 and on.get(k, -1) != voices[k]["sound"]:
 					_stop(k)
 			p += 2 + 3 * pk[p + 1]

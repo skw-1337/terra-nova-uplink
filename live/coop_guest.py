@@ -858,8 +858,8 @@ class Guest:
         return struct.pack('<HH', cur, mx) + lv + struct.pack('<hh', *(self.ind_at or (-1, -1))) + bytes(hp + [255] * (3 - len(hp)))
 
     def weapon_state(self):
-        """his selected weapon as the game's small box shows the player's (0x28f024): 0 it can fire (or lacks the
-        energy: the box shows nothing of that), 1 destroyed, 2 no ammunition, 5 not ready yet; and its ammunition, the
+        """his selected weapon as the game's small box shows the player's (0x28f024): 0 it can fire, 1 destroyed, 2 no
+        ammunition, 3 not enough energy for a shot (the box shows nothing of it), 5 not ready yet; and its ammunition, the
         number the box writes in its corner (0xFFFF: a weapon that counts none)"""
         p = self.suit(self.gid)
         slot = p + SLOTS + SLOT_N * (self.g.read(p + SEL, 1)[0] & 3)
@@ -869,6 +869,10 @@ class Guest:
             return 1, ammo
         if ammo == 0:
             return 2, ammo
+        # 3: a weapon that counts no ammunition and needs more energy for a shot than the suit holds (word 0x395118 of
+        # its type, 16.16 against the suit's +0x86: 0x28f05f); the panel writes "CHARGING", the box shows nothing
+        if ammo == 0xFFFF and (self.u16(W_AMMO - 2 + W_N * r[0]) << 16) > self.i32(p + EN_CUR):
+            return 3, ammo
         return (5 if self.clock() < struct.unpack_from('<I', r, SLOT_READY)[0] else 0), ammo
 
     def map_colour(self, e, b, pilots):
@@ -1056,7 +1060,7 @@ class Guest:
             c, m = self.health(e)
             act, tgt = self.activity(e)
             out.append((M_ROW, 0, struct.pack('<HBBBBHB', e, self.energy_pct(e), c * 100 // m if m else 255,
-                                              self.specialty(e), act, tgt, self.label(tgt))))
+                                              self.specialty(e), act, tgt, self.label(tgt)) + self.row_look(e)))
         if self.gid:                                           # M_WPN: his weapon panel's percentage (0x272086: the
             p = self.suit(self.gid)                            # slot's health over the type's, word 0x39511C)
             slot = p + SLOTS + SLOT_N * (self.g.read(p + SEL, 1)[0] & 3)
@@ -1075,6 +1079,33 @@ class Guest:
                     return 104
                 return 104 + self.g.read(SPECIALTY + 0x1EE * self.g.read(PILOT_REC + r[6], 1)[0], 1)[0]
         return 0
+
+    def row_look(self, e):
+        """the rest of a COMM row as the game draws a squadmate's (0x26cd00): his name's colour (pilot record +0x31,
+        the squad colour SQUAD_COL + byte +7), the record's state word +0 (1: in the squad, its specialty and bars;
+        2: "EVAC MODE" in yellow; else "Dead Duck"; one byte, 255: more), then his 4 armour parts as the first of the
+        row's two small bars counts them (0x27022c, suit +0x15 + 7k current, +0x17 max): 3 above 73 % of the max
+        (green), 1 under 37 % and not 0 (red), 0 at 0 (0x25), else 2 (yellow); then his armour indicator's five levels
+        (the STAT page's picture of his suit, 0x2635c8). No pilot record: colour 0x1D, state 1"""
+        col, st = 0x1D, 1
+        for a in range(PILOTS, PILOTS + 4 * PILOT_N, PILOT_N):
+            r = self.g.read(a, PILOT_N)
+            if (r[0] | r[1]) and struct.unpack_from('<H', r, 2)[0] == e:
+                col, st = r[0x31], min(255, struct.unpack_from('<H', r, 0)[0])
+                break
+        cats = []
+        rec = self.g.read(self.suit(e), 0x30)
+        for c, m in PARTS:
+            cur, mx = struct.unpack_from('<h', rec, c)[0], struct.unpack_from('<h', rec, m)[0]
+            if cur > int(mx * 73 / 100):
+                cats.append(3)
+            elif cur < int(mx * 37 / 100) and cur > 0:
+                cats.append(1)
+            elif cur == 0:
+                cats.append(0)
+            else:
+                cats.append(2)
+        return bytes([col, st] + cats) + self.levels(e)
 
     def activity(self, e):
         """what the squadmate is doing, as the game's STAT page writes it (0x270FB0): a RESGAME 367 string (0: none)

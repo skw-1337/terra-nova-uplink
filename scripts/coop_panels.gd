@@ -260,14 +260,14 @@ func draw_left() -> void:
 	var lm: Vector2 = hud.reg_move[0]
 	var m := mate()
 	var e := int(m[0])
-	var nm: String = hud.mate_name if sel_row == 0 else hud._pilot_name(int(m[1]), e)
+	var nm: String = (hud.mate_name if hud.mate_name != "Host" else "Player 1") if sel_row == 0 else hud._pilot_name(int(m[1]), e)
 	var x0 := LEFT_BOX.position.x + lm.x
 	var y0 := LEFT_BOX.position.y + lm.y
 	match left_page:
 		VIEW:
 			if view_port != null and view_port.render_target_update_mode == SubViewport.UPDATE_ALWAYS:
 				hud.panel.draw_texture_rect(view_port.get_texture(), hud._grect(x0, y0 + 1, x0 + LEFT_BOX.size.x, y0 + LEFT_BOX.size.y - 17), false)
-			hud._text(nm.to_upper(), x0 + 41.0, y0 + 90.0, 10.0, Color(0.95, 0.95, 1.0), true)
+			_name_strip(e, nm, x0, x0 + 82.0, y0)
 		MAP:
 			if hud.clock - left_t > 0.1:
 				left_t = hud.clock
@@ -281,37 +281,71 @@ func draw_left() -> void:
 					left_img.update(img)
 			if left_img:
 				hud.panel.draw_texture_rect(left_img, hud._grect(x0, y0, x0 + LEFT_BOX.size.x, y0 + LEFT_BOX.size.y), false)
+			_name_strip(e, nm, x0, x0 + 82.0, y0)
 		STAT:
 			_draw_stat(e, nm, x0, y0)
+			_name_strip(e, nm, x0 + 1.0, x0 + 50.0, y0)
 
 
-# STAT, laid out as the game's (read live in mission 30): his specialty at the top (his name for an older host), the H
-# bar (the pilot's health, in the game's red) and the E bar (the suit's energy, green) on the right, then what he is
-# doing (the bridge's activity, coop_guest.py: "Following %s"...) and his armour.
-func _draw_stat(e: int, nm: String, x0: float, y0: float) -> void:
-	var white := Color(0.95, 0.95, 1.0)
+# the squadmate's name under the STAT, VIEW and MAP pages as the game writes it (0x26d1f4): a black band over the
+# panel's last 16 rows (STAT: x 1-49 only, its pictures beside it; read on the game's screen), his name in his colour
+# (pilot record +0x31) at 3, 89 of the panel
+func _name_strip(e: int, nm: String, xa: float, xb: float, y0: float) -> void:
+	if hud.hud_pal.size() < 256:
+		return
+	hud.panel.draw_rect(hud._grect(xa, y0 + 88.0, xb, y0 + 104.0), hud.hud_pal[0])
+	var r := row_of(e)
+	hud._gtext(nm, LEFT_BOX.position.x + hud.reg_move[0].x + 3.0, y0 + 89.0, r[6] if r.size() >= 9 and int(r[6]) >= 0 else 0x1D)
+
+
+# STAT as the game draws it (0x26d764): its page picture (RESHLMHI.RES 573 frame 7: the WEAPONS and DAMAGE boxes, H
+# and E with their full bars), each bar put out in black from its value to its end (the boxes of RESHLMHI 576 against
+# its frame 0: H x 44-79 rows 8-16, E rows 22-30, 35 pixels for 100 %), the squadmate's armour indicator in the
+# game's colours at 8, 39 (0x2635c8 in the box 3, 39 - 35, 82), what he is doing in the game's green (0x84) from 42,
+# 39, its words wrapped in the box 40 - 78. His name under it: _name_strip. x0, y0: the panel's corner
+func _draw_stat(e: int, _nm: String, x0: float, y0: float) -> void:
+	var pal: PackedColorArray = hud.hud_pal
+	if pal.size() < 256:
+		return
 	var row := clampi(sel_row, 0, maxi(0, hud.squad.size() - 1))
-	var arm: int = hud.squad[row][1] if row < hud.squad.size() else 0
 	var r := row_of(e)
 	var hp: int = r[1] if not r.is_empty() else (hud.squad_health[row] if row < hud.squad_health.size() else 255)
-	var spec: String = text(366, r[2]) if not r.is_empty() and r[2] > 0 else ""
-	hud._text((spec if spec != "" else nm).to_upper(), x0 + 3.0, y0 + 3.0, 10.0, Color(0.95, 0.95, 1.0) if spec != "" else Color(1.0, 0.8, 0.2))
-	if not r.is_empty() and r[3] > 0:
-		var act := text(367, r[3])
-		var who := _unit_name(r[4], r[5])
-		act = act.replace("%s", who).strip_edges()
-		hud._text(act.to_upper(), x0 + 3.0, y0 + 78.0, 10.0, Color(0.4, 1.0, 0.45))
+	var bg := _stat_pic()
+	if bg:
+		hud.panel.draw_texture_rect(bg, hud._grect(x0, y0, x0 + bg.get_width(), y0 + bg.get_height()), false)
 	for k in 2:
 		var v: int = hp if k == 0 else (r[0] if not r.is_empty() else 255)
-		var y := y0 + 18.0 + 13.0 * k
-		hud._text("H" if k == 0 else "E", x0 + 40.0, y - 2.0, 10.0, white)
-		hud.panel.draw_rect(hud._grect(x0 + 47.0, y, x0 + 79.0, y + 6.0), Color(0.05, 0.05, 0.12))
-		if v <= 100:
-			hud.panel.draw_rect(hud._grect(x0 + 47.0, y, x0 + 47.0 + 32.0 * v / 100.0, y + 6.0),
-					Color(0.9, 0.15, 0.1) if k == 0 else Color(0.2, 0.85, 0.25))
-	hud._text("ARMOUR %d%%" % arm, x0 + 3.0, y0 + 50.0, 10.0, white)
-	hud._text("FULLY OPERATIONAL" if arm > 50 else "DAMAGED", x0 + 3.0, y0 + 64.0, 10.0,
-			white if arm > 50 else Color(1.0, 0.6, 0.2))
+		var n := 35 * clampi(v, 0, 100) / 100 if v <= 100 else 35
+		if n < 35:
+			hud.panel.draw_rect(hud._grect(x0 + 44.0 + n, y0 + 8.0 + 14.0 * k, x0 + 79.0, y0 + 16.0 + 14.0 * k), pal[0])
+	if r.size() >= 10 and (r[9] as PackedByteArray).size() == 5:
+		var ind: Texture2D = hud.indicator_texture(r[9], false)
+		if ind:
+			hud.panel.draw_texture_rect(ind, hud._grect(x0 + 8.0, y0 + 39.0, x0 + 8.0 + ind.get_width(), y0 + 39.0 + ind.get_height()), false)
+	if not r.is_empty() and r[3] > 0:
+		var act := text(367, r[3]).replace("%s", _unit_name(r[4], r[5])).strip_edges()
+		var lines := [""]
+		for w in act.split(" ", false):
+			var tryl: String = (lines[-1] + " " + w) if lines[-1] != "" else w
+			if lines[-1] != "" and hud._glyphs_w(tryl) > 38:
+				lines.append(w)
+			else:
+				lines[-1] = tryl
+		for k in lines.size():
+			hud._gtext(lines[k], x0 + 42.0, y0 + 39.0 + 12.0 * k, 0x84)
+
+
+var stat_pic: Texture2D
+var stat_tried := false
+func _stat_pic() -> Texture2D:
+	if not stat_tried and not hud.hud_pal.is_empty():
+		stat_tried = true
+		var fr: Array = hud._helmet_frames(573)
+		if fr.size() > 7:
+			var img: Image = hud.TNObjects._bitmap(fr[7], hud.hud_pal)
+			if img:
+				stat_pic = ImageTexture.create_from_image(img)
+	return stat_pic
 
 
 # the weapon slot after (d = 1) or before (-1) his selected one that holds a weapon: its key (1-4) to the host's bridge
@@ -333,14 +367,17 @@ func sys() -> PackedByteArray:
 	return PackedByteArray()
 
 
-# a COMM row's entity: [energy %, pilot's health %] (M_ROW; empty: not sent)
+# a COMM row's entity: [energy %, pilot's health %, specialty, activity, its unit, label, name colour (-1: not sent),
+# record state, armour parts' states, indicator levels] (M_ROW; empty: not sent)
 func row_of(e: int) -> Array:
 	for m in hud.map_marks:
 		var d: PackedByteArray = m[2]
 		if m[0] == hud.M_ROW and d.size() >= 4 and d.decode_u16(0) == e:
+			if d.size() >= 15:                        # (and its name's colour, its record's state, its 4 armour parts,
+				return [d[2], d[3], d[4], d[5], d.decode_u16(6), d[8], d[9], d[10], d.slice(11, 15), d.slice(15, 20)]   # its indicator's levels)
 			if d.size() >= 9:                         # (and its specialty, activity, the unit it names and that one's label)
-				return [d[2], d[3], d[4], d[5], d.decode_u16(6), d[8]]
-			return [d[2], d[3], 0, 0, 0, 0]
+				return [d[2], d[3], d[4], d[5], d.decode_u16(6), d[8], -1, 1, PackedByteArray(), PackedByteArray()]
+			return [d[2], d[3], 0, 0, 0, 0, -1, 1, PackedByteArray(), PackedByteArray()]
 	return []
 
 
@@ -370,20 +407,39 @@ func _unit_name(e: int, label: int) -> String:
 	return text(375, label) if label > 0 else ""
 
 
-# his weapon panel's two lines as the game's (0x271e14): the slot's health %, then its state (RESGAME 367 string 71 +
-# 0x28f024's result: fully operational, inoperable, out of ammo, not charged, overheated, loading); empty: older host
+# his weapon panel's two lines as the game's (0x271e14, both in its white 0x1D at 2, 70 and 2, 88 of the panel): the
+# slot's health % ("%d%%"), then by 0x28f024's result: 0 "AMMO COUNT = %d" (RESGAME 369 string 39) for a weapon that
+# counts its ammunition, else 367 string 71 "FULLY OPERATIONAL"; 3 (not enough energy) 369 string 41 "CHARGING";
+# 1, 2, 4, 5 367 string 71 + the state (INOPERABLE, OUT OF AMMO, OVERHEATED, LOADING). Written as the files have them.
+# Empty: an older host
 func weapon_lines() -> Array:
 	for m in hud.map_marks:
 		if m[0] == hud.M_WPN and (m[2] as PackedByteArray).size() >= 1:
-			var st := text(367, 71 + clampi(hud.weapon_state, 0, 5))
-			if hud.weapon_state == 0 and hud.weapon_ammo != 0xFFFF:   # (a weapon that counts it: its ammunition instead,
-				st = text(369, 39).replace("%d", str(hud.weapon_ammo))   # "AMMO COUNT = %d", 0x271f4b)
-			return ["%d%%" % m[2][0], st.to_upper() if st != "" else ("FULLY OPERATIONAL" if hud.weapon_state == 0 else "LOADING")]
+			var ws: int = hud.weapon_state
+			var st := ""
+			if ws == 0 and hud.weapon_ammo != 0xFFFF:
+				st = t369(39).replace("%d", str(hud.weapon_ammo))
+			elif ws == 3:
+				st = t369(41)
+			else:
+				st = text(367, 71 + clampi(ws, 0, 5))
+			if st == "":
+				st = "FULLY OPERATIONAL" if ws == 0 else "LOADING"
+			return ["%d%%" % m[2][0], st]
 	return []
 
 
-# STATUS, as the game's (its pages, read live in mission 30): "SYSTEM STATUS 1/2" sensors, targdisc, jumpjets,
-# infrared, target; "2/2" video, drone; the power plant under both; then "ARMOR LEVELS" front, left, back, right
+# RESGAME 369 string k of the English files (the French table has one string fewer before these: 64, not 65)
+func t369(k: int) -> String:
+	text(369, 0)
+	return text(369, k - (1 if (texts[369] as PackedStringArray).size() == 64 else 0))
+
+
+# STATUS, as the game's (0x271930, 0x271740; read live in mission 30): "System Status  1/2" (RESGAME 369 string 42,
+# at 9, 2) then sensors, targdisc, jumpjets, infrared, target (366 string 96 + the system, at 5, 18 + 14 k; their "%d%%",
+# 369 string 45, at 50), "2/2" video, drone; "Power plant: %d%%" (369 string 43) at 4, 89 under both, all in white
+# (0x1D); then "Armor Levels" (369 string 44, yellow 0x4E, at 20, 2) and front, left, back, right (369 strings 55-58,
+# at 5 and 50, 18 + 12 k) in their part's colour (green 0x82 above 73 %, yellow 0x4D, red 0x41 under 37 %, 0x25 at 0)
 func draw_status() -> bool:
 	var s := sys()
 	if s.is_empty():
@@ -391,24 +447,23 @@ func draw_status() -> bool:
 	var wm: Vector2 = hud.reg_move[2]
 	var x0 := RIGHT_BOX.position.x + wm.x
 	var y0 := RIGHT_BOX.position.y + wm.y
-	var white := Color(0.95, 0.95, 1.0)
-	var col := func(v: int) -> Color: return white if v >= 100 else (Color(1.0, 0.85, 0.3) if v > 50 else Color(1.0, 0.35, 0.3))
 	if status_n == 2:
 		var bg := _armour_pic()                     # the game's green suit behind the levels (RESHLMHI 537, frame 1)
 		if bg:
 			hud.panel.draw_texture_rect(bg, hud._grect(x0, y0, x0 + bg.get_width(), y0 + bg.get_height()), false)
-		hud._text("ARMOR LEVELS", x0 + 41.0, y0 + 3.0, 10.0, Color(0.85, 1.0, 0.3), true)
-		var names := ["FRONT", "LEFT", "BACK", "RIGHT"]
-		for k in 4:
-			hud._text(names[k], x0 + 6.0, y0 + 17.0 + 12.0 * k, 10.0, Color(0.6, 1.0, 0.4))
-			hud._text("%d%%" % s[8 + k], x0 + 50.0, y0 + 17.0 + 12.0 * k, 10.0, col.call(s[8 + k]))
+		hud._gtext(t369(44), x0 + 20.0, y0 + 2.0, 0x4E)
+		for k in 4:                                   # (0x2717a7: a part's line in its state's colour)
+			var v: int = s[8 + k]
+			var c := 0x82 if v > 73 else (0x41 if v < 37 and v > 0 else (0x25 if v == 0 else 0x4D))
+			hud._gtext(t369(55 + k), x0 + 5.0, y0 + 18.0 + 12.0 * k, c)
+			hud._gtext(t369(45).replace("%d%%", "%d%%" % v), x0 + 50.0, y0 + 18.0 + 12.0 * k, c)
 		return true
-	hud._text("SYSTEM STATUS %d/2" % (status_n + 1), x0 + 41.0, y0 + 3.0, 10.0, white, true)
-	var rows := [["SENSORS", 0], ["TARGDISC", 1], ["JUMPJETS", 2], ["INFRARED", 3], ["TARGET", 4]] if status_n == 0 			else [["VIDEO", 5], ["DRONE", 6]]
-	for k in rows.size():
-		hud._text(rows[k][0], x0 + 4.0, y0 + 17.0 + 12.0 * k, 10.0, white)
-		hud._text("%d%%" % s[rows[k][1]], x0 + 52.0, y0 + 17.0 + 12.0 * k, 10.0, col.call(s[rows[k][1]]))
-	hud._text("POWER PLANT: %d%%" % s[7], x0 + 4.0, y0 + 86.0, 10.0, col.call(s[7]))
+	hud._gtext("%s  %d/%d" % [t369(42), status_n + 1, 2], x0 + 9.0, y0 + 2.0, 0x1D)
+	var ids := [1, 2, 3, 4, 5] if status_n == 0 else [6, 7]
+	for k in ids.size():
+		hud._gtext(text(366, 96 + ids[k]), x0 + 5.0, y0 + 18.0 + 14.0 * k, 0x1D)
+		hud._gtext(t369(45).replace("%d%%", "%d%%" % s[ids[k] - 1]), x0 + 50.0, y0 + 18.0 + 14.0 * k, 0x1D)
+	hud._gtext(t369(43).replace("%d%%", "%d%%" % s[7]), x0 + 4.0, y0 + 89.0, 0x1D)
 	return true
 
 
@@ -484,7 +539,9 @@ func draw_buttons() -> void:
 	if buttons.size() < 8:
 		return
 	var rp := _right_page()
-	var on := [left_page == COMM, left_page == STAT, left_page == VIEW, left_page == MAP, rp == 0, rp == 1, rp == 2, rp == 3]
+	# (COMM: the game lights it in its own mode 2 only, its squad orders, 0x26c72c with table 0x35A9A9; the squad's
+	# list he sees is its mode 1, the button unlit: blue, as on the host's screen)
+	var on := [false, left_page == STAT, left_page == VIEW, left_page == MAP, rp == 0, rp == 1, rp == 2, rp == 3]
 	for k in 8:
 		var m: Vector2 = hud.reg_move[0] if k < 4 else hud.reg_move[2]
 		var r: Rect2 = BUTTON_RECTS[k]

@@ -129,6 +129,7 @@ var map_img: Image                   # the panel's picture: the ground around hi
 var map_tex: ImageTexture
 var map_dirty := true
 var big_font := PackedByteArray()     # the game's small HUD letters, for the panel (the lock's lines)
+var letters: RefCounted               # ... made into pictures (game_letters.gd): every text of his cockpit's panels
 var note_font := PackedByteArray()    # the game's small letters (the map's written notes)
 var pal_map := ""                    # the map file the palette was taken with (another planet: other ground colours)
 var map_from := Vector2i.ZERO        # its top left corner in the world, and the world units of a pixel
@@ -1000,10 +1001,8 @@ func _draw_panel() -> void:
 			panel.draw_texture_rect(fb, _grect(views.full_box.position.x, views.full_box.position.y, views.full_box.end.x,
 					views.full_box.end.y), false)
 		return
-	# COMM: his squad as the game lists it, in the game's rows: the host (Steam avatar, else his pilot's portrait),
-	# then his other teammates (their portraits and names from his game files), each with one bar: the game's top
-	# health bar, filled from the left with the pilot's health in red (half the bar when whole), then the suit's
-	# armour in the indicator's light blue (the other half), the rest unlit
+	# COMM: his squad as the game lists its player's (0x26cd00), in the game's rows: the host (Steam avatar, else his
+	# pilot's portrait), then his other teammates (their portraits and names from his game files)
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
 	if around:                                       # (the 360 view's camera in the left panel: no page)
 		rows = []
@@ -1019,10 +1018,9 @@ func _draw_panel() -> void:
 			panel.draw_texture_rect(pic, _grect(18.0 + x0, y0, 39.0 + x0, y0 + 27.0), false)
 		else:
 			panel.draw_rect(_grect(18.0 + x0, y0, 39.0 + x0, y0 + 27.0), Color(0.05, 0.05, 0.1))
-		var nm: String = mate_name if i == 0 else _pilot_name(who[2], who[0])
-		_text(nm.to_upper(), 42.0 + x0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
-		var hp: float = squad_health[i] / 100.0 if i < squad_health.size() and squad_health[i] <= 100 else 1.0
-		_draw_mini_bar(Rect2(42.0 + x0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
+		_draw_comm_row(i, who, Vector2(17.0 + x0, y0 - 1.0))
+	if rows.size() >= 2:
+		_draw_entire_squad(Vector2(17.0, 276.0) + reg_move[0])
 	panels.draw_buttons()                                # his own pages' buttons lit (coop_panels.gd)
 	# (the game's STATUS pages: coop_panels.gd; an older host: this; none in the 360 view: its camera is there)
 	if status_page and not around and not panels.draw_status():
@@ -1032,17 +1030,16 @@ func _draw_panel() -> void:
 	var wpic := null if status_page or around else _weapon_pic(weapon_type)
 	if wpic:
 		panel.draw_texture_rect(wpic, _grect(217.0 + wm.x, 264.0 + wm.y, 217.0 + wm.x + wpic.get_width(), 264.0 + wm.y + wpic.get_height()), false)
-	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
+	var wn: String = WEAPONS[weapon_type].to_upper() if weapon_type < WEAPONS.size() else "?"
 	if not status_page and not around:
-		_text(wn.to_upper(), 257.0 + wm.x, 267.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0), true)
+		# the game's (0x271e14): the name centred in the panel (82 wide) at row 2, the two lines at 2, 70 and 2, 88, in
+		# its letters and its white (0x1D)
+		_gtext(wn, 217.0 + wm.x + floorf((82 - _glyphs_w(wn)) / 2.0), 266.0 + wm.y, 0x1D)
 		var wl: Array = panels.weapon_lines()            # (the game's: his weapon's health and state, coop_panels.gd)
-		if not wl.is_empty():
-			_text(wl[0], 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
-			_text(wl[1], 219.0 + wm.x, 353.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
-		else:
-			_text("%d%%" % int(round(f * 100.0)), 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
-			_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0 + wm.x, 353.0 + wm.y, 10.0,
-				Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
+		if wl.is_empty():
+			wl = ["%d%%" % int(round(f * 100.0)), "FULLY OPERATIONAL"]   # (an older host: not sent)
+		_gtext(wl[0], 219.0 + wm.x, 334.0 + wm.y, 0x1D)
+		_gtext(wl[1], 219.0 + wm.x, 352.0 + wm.y, 0x1D)
 	if map_tex and (big_map or not around):
 		panel.draw_texture_rect(map_tex, _map_box(), false)
 	if big_map:
@@ -1062,20 +1059,49 @@ func _draw_panel() -> void:
 # cockpit: at, its corner; the full view's strip: 180 wide, its turn in those); the game's heading 0 is east and grows
 # towards the south (its map: x to the east, y to the south)
 func _draw_compass(at: Vector2, width := 256.0) -> void:
+	# as the game's strip (read on its screen): N E S W only, 64 pixels apart, in its 5 x 5 letters (game_letters.gd)
+	# and its white (0x1D) at rows 12-16, the letter he faces centred on x 161 (cut at the strip's ends), and the fixed
+	# yellow (0x4E) brackets of x 121-123 and 197-199, rows 6-21
+	if hud_pal.size() < 256:
+		return
 	var cm := at - REG_HOME[3] + Vector2((width - 256.0) / 2.0, 0.0)   # (the strip's middle where the cockpit's is)
 	var bearing := fposmod(heading / 65536.0 * 360.0 + 90.0, 360.0)
-	var amber := Color(1.0, 0.8, 0.25)
-	for k in 8:
-		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0
-		var x := 161.0 + cm.x + d * width / 4.0 / 90.0
-		if x < 161.0 + cm.x - width / 2.0 + 5.0 or x > 161.0 + cm.x + width / 2.0 - 5.0:
+	var lo := 161.0 + cm.x - width / 2.0 - 0.5
+	var hi := lo + width - 1.0
+	var white: Color = hud_pal[0x1D]
+	for k in 4:
+		var d := fposmod(k * 90.0 - bearing + 180.0, 360.0) - 180.0
+		var x0 := roundf(161.0 + cm.x + d * 64.0 / 90.0) - 2.0
+		if x0 + 5.0 <= lo or x0 >= hi:
 			continue
-		if k % 2 == 0:
-			_text(["N", "E", "S", "W"][k / 2], x, 8.0 + cm.y, 10.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
-		else:
-			panel.draw_rect(_grect(x - 0.5, 11.0 + cm.y, x + 0.5, 16.0 + cm.y), Color(0.6, 0.6, 0.8))
-	panel.draw_rect(_grect(160.0 + cm.x, 6.0 + cm.y, 162.0 + cm.x, 8.0 + cm.y), amber)
-	panel.draw_rect(_grect(160.0 + cm.x, 20.0 + cm.y, 162.0 + cm.x, 22.0 + cm.y), amber)
+		var rows: Array = preload("res://scripts/game_letters.gd").COMPASS[["N", "E", "S", "W"][k]]
+		for yy in 5:
+			var line: String = rows[yy]
+			for xx in 5:
+				if line[xx] == "1" and x0 + xx >= lo and x0 + xx < hi:
+					panel.draw_rect(_grect(x0 + xx, 12.0 + cm.y + yy, x0 + xx + 1.0, 13.0 + cm.y + yy), white)
+	# his squadmates' directions, as the game marks its player's: a line at rows 9-19 in each one's colour (pilot
+	# record +0x31; the host's row too, his seat's squadmate)
+	var vp := get_parent()
+	var me: Array = vp.live_ents[entity] if vp != null and "live_ents" in vp and vp.live_ents.has(entity) else []
+	if not me.is_empty():
+		for w in squad:
+			var e: int = w[0]
+			var r: Array = panels.row_of(e)
+			if e == entity or not vp.live_ents.has(e) or r.size() < 9 or int(r[6]) < 0:
+				continue
+			var o: Array = vp.live_ents[e]
+			var mb := rad_to_deg(atan2(float(o[4]) - float(me[4]), float(o[3]) - float(me[3]))) + 90.0
+			var d := fposmod(mb - bearing + 180.0, 360.0) - 180.0
+			var lx := roundf(161.0 + cm.x + d * 64.0 / 90.0)
+			if absf(d) < 150.0 and lx >= lo and lx < hi:     # (the game showed none behind him, 157 degrees off)
+				_gline(lx, 9.0 + cm.y, lx, 19.0 + cm.y, hud_pal[int(r[6])])
+	var y: Color = hud_pal[0x4E]
+	for b in [[121.0, 1.0], [199.0, -1.0]]:
+		var bx: float = b[0] + cm.x
+		_gline(bx, 6.0 + cm.y, bx + 2.0 * b[1], 6.0 + cm.y, y)
+		_gline(bx, 21.0 + cm.y, bx + 2.0 * b[1], 21.0 + cm.y, y)
+		_gline(bx, 6.0 + cm.y, bx, 21.0 + cm.y, y)
 
 
 # one top bar: its pixels from a to b (counted from its left end) lit, in the game's own led colours (kind 0), the
@@ -1099,17 +1125,62 @@ func _draw_leds(cells: Array, a: int, b: int, kind: int, dest := Rect2()) -> voi
 			panel.draw_rect(_grect(o.x + x0 * k.x, o.y + 30.0 * k.y, o.x + x1 * k.x, o.y + 34.0 * k.y), col)
 
 
-# a squadmate in the COMM panel: the game's own left top bar (its pixels from the cockpit picture, leds put out there)
-# scaled into dest, lit from the left: his pilot's health hp in the game's reds, then his armour in light blue
-func _draw_mini_bar(dest: Rect2, hp: float, arm: float) -> void:
-	if cockpit.texture == null:
+# A row of the COMM panel as the game draws a squadmate's (0x26cd00; o: the row's corner, the panel's x and row 28 k):
+# his name at 24, 2 in his colour (pilot record +0x31, the bridge's M_ROW), then 12 rows lower his specialty in white
+# (RESGAME 366 string 104 + specialty; "EVAC MODE" in yellow for a record in state 2, "Dead Duck" else), and on the
+# right two small bars 10 wide from x 71: his armour parts (0x27022c, 2 rows high at row 3: a quarter of the bar for
+# each part, green 0x82 above 73 %, yellow 0x4D, red 0x41 under 37 %, 0x25 at 0) and his pilot's health (0x27016c,
+# 1 row at row 7: its length 10 x health %, red 0x41 under 50 %, yellow 0x4D under 90 %, else green 0x82). In the
+# game's letters, written as its files have them. The host's row (his seat's squadmate) is the host as the game names
+# the guest's suit on the host's screen: his Steam name, "Player 1" in local co-op (the host's game shows "Player 2")
+func _draw_comm_row(i: int, who: Array, o: Vector2) -> void:
+	if hud_pal.size() < 256:
 		return
-	var r := _grect(dest.position.x, dest.position.y, dest.end.x, dest.end.y)
-	panel.draw_texture_rect_region(cockpit.texture, r, BAR_SRC)
-	var w: int = LEFT_LEDS[LEFT_LEDS.size() - 1][1] - LEFT_LEDS[0][0]
-	var n := int(round(clampf(hp, 0.0, 1.0) * w / 2.0))
-	_draw_leds(LEFT_LEDS, 0, n, 0, dest)
-	_draw_leds(LEFT_LEDS, n, n + int(round(clampf(arm, 0.0, 1.0) * w / 2.0)), 2, dest)
+	var r: Array = panels.row_of(who[0]) if who[0] > 0 else []
+	var col := 0x1D
+	var st := 1
+	if r.size() >= 9 and int(r[6]) >= 0:
+		col = r[6]
+		st = r[7]
+	var nm: String = (mate_name if mate_name != "Host" else "Player 1") if i == 0 else _pilot_name(who[2], who[0])
+	_gtext(nm, o.x + 24.0, o.y + 2.0, col)
+	if st != 1:
+		_gtext(panels.text(366, 193 if st == 2 else 194), o.x + 24.0, o.y + 14.0, 0x4E if st == 2 else 0x1D)
+		return
+	if r.size() >= 3 and int(r[2]) > 0:
+		_gtext(panels.text(366, r[2]), o.x + 24.0, o.y + 14.0, 0x1D)
+	var x0 := o.x + 71.0
+	var cats: PackedByteArray = r[8] if r.size() >= 9 and (r[8] as PackedByteArray).size() == 4 else PackedByteArray()
+	if cats.is_empty():                              # (an older host: the suit's armour % for all four)
+		var a: int = who[1]
+		var c := 3 if a > 73 else (1 if a < 37 and a > 0 else (0 if a == 0 else 2))
+		cats = PackedByteArray([c, c, c, c])
+	var acc := 0.0
+	for c in [[3, 0x82], [2, 0x4D], [1, 0x41], [0, 0x25]]:
+		var k := cats.count(c[0])
+		if k > 0:
+			panel.draw_rect(_grect(x0 + floorf(acc), o.y + 3.0, x0 + 10.0, o.y + 5.0), hud_pal[c[1]])
+			acc += k * 2.5
+	var hp: int = squad_health[i] if i < squad_health.size() and squad_health[i] <= 100 else 100
+	var n := 10 * hp / 100
+	if hp > 0 and n < 1:
+		n = 1
+	if n > 0:
+		panel.draw_rect(_grect(x0, o.y + 7.0, x0 + n, o.y + 8.0), hud_pal[0x41 if hp < 50 else (0x4D if hp < 90 else 0x82)])
+
+
+# the COMM panel's "ENTIRE SQUAD" box (0x26cec9, when the squad has two at least): the panel's region from row 85 to
+# its end (104), framed in the game's green (0x84), RESGAME 367 string 70 centred in it (o: the panel's corner)
+func _draw_entire_squad(o: Vector2) -> void:
+	if hud_pal.size() < 256:
+		return
+	var g: Color = hud_pal[0x84]
+	_gline(o.x, o.y + 85.0, o.x + 81.0, o.y + 85.0, g)
+	_gline(o.x, o.y + 103.0, o.x + 81.0, o.y + 103.0, g)
+	_gline(o.x, o.y + 85.0, o.x, o.y + 103.0, g)
+	_gline(o.x + 81.0, o.y + 85.0, o.x + 81.0, o.y + 103.0, g)
+	var t: String = panels.text(367, 70)
+	_gtext(t, o.x + floorf((82 - _glyphs_w(t)) / 2.0), o.y + 85.0 + floorf((19 - _game_letters().height()) / 2.0), 0x84)
 
 
 func _helmet_frames(rid: int) -> Array:
@@ -1146,7 +1217,19 @@ func _draw_cross() -> void:
 func _draw_indicator(place := Vector2i(-1, -1)) -> void:
 	if levels.size() < 5 or hud_pal.is_empty():
 		return
-	var key := levels.hex_encode()
+	var t := indicator_texture(levels, true)
+	if t == null:
+		return
+	var at := place if place.x >= 0 else (indicator_at if indicator_at.x >= 0 else Vector2i(win.position) + INDICATOR_AT)
+	panel.draw_texture_rect(t, _grect(at.x, at.y, at.x + t.get_width(), at.y + t.get_height()), false)
+
+
+# the indicator's picture for five levels; own: his suit's (whole parts light blue), else the game's own colours
+# (whole parts its green 0x84: a squadmate's, on the STAT page)
+func indicator_texture(lv5: PackedByteArray, own: bool) -> Texture2D:
+	if lv5.size() < 5 or hud_pal.is_empty():
+		return null
+	var key := lv5.hex_encode() + ("o" if own else "g")
 	if not indicator_tex.has(key):
 		if indicator_idx.is_empty():
 			var fr := _helmet_frames(INDICATOR)
@@ -1164,9 +1247,9 @@ func _draw_indicator(place := Vector2i(-1, -1)) -> void:
 				var on := c != 0
 				if c >= 0xB0 and c <= 0xF0:
 					var part := mini((c - 0xB0) >> 4, 4)
-					var lv := mini(levels[part], 6)
+					var lv := mini(lv5[part], 6)
 					on = lv > 0 and (part == 4 or (c & 15) >= 6 - lv)
-					col = ARMOUR_LIT if lv >= 5 else hud_pal[ARMOUR_WARN[lv]]
+					col = (ARMOUR_LIT if own else hud_pal[0x84]) if lv >= 5 else hud_pal[ARMOUR_WARN[lv]]
 				rgba[4 * p] = col.r8
 				rgba[4 * p + 1] = col.g8
 				rgba[4 * p + 2] = col.b8
@@ -1175,11 +1258,7 @@ func _draw_indicator(place := Vector2i(-1, -1)) -> void:
 		if indicator_tex.size() > 64:
 			indicator_tex.clear()
 		indicator_tex[key] = tex
-	var t: Texture2D = indicator_tex[key]
-	if t == null:
-		return
-	var at := place if place.x >= 0 else (indicator_at if indicator_at.x >= 0 else Vector2i(win.position) + INDICATOR_AT)
-	panel.draw_texture_rect(t, _grect(at.x, at.y, at.x + t.get_width(), at.y + t.get_height()), false)
+	return indicator_tex[key]
 
 
 # A point of the world on the screen. Not Camera3D.unproject_position: with the cockpit's camera (the viewer's
@@ -1443,29 +1522,33 @@ func _gline(ax: float, ay: float, bx: float, by: float, col: Color) -> void:
 	panel.draw_rect(_grect(minf(ax, bx), minf(ay, by), maxf(ax, bx) + 1.0, maxf(ay, by) + 1.0), col)
 
 
-# a text in the game's small HUD letters (RESHLMHI.RES 503, as _write's), drawn at x, y of the game's screen
+# a text in the game's HUD letters (RESHLMHI.RES 503, game_letters.gd), drawn at x, y of the game's screen (its top
+# left corner, as the game's 0x2e4304 takes it)
 func _glyphs(text: String, x: float, y: float, col: Color) -> void:
-	if big_font.is_empty():
+	var t: Texture2D = _game_letters().pic(text, col)
+	if t:
+		panel.draw_texture_rect(t, _grect(x, y, x + t.get_width(), y + t.get_height()), false)
+
+
+# how wide a text is in those letters (game pixels)
+func _glyphs_w(text: String) -> int:
+	return _game_letters().width(text)
+
+
+# a text in a colour of the game's palette (idx), as the game writes it
+func _gtext(text: String, x: float, y: float, idx: int) -> void:
+	if hud_pal.size() >= 256:
+		_glyphs(text, x, y, hud_pal[idx])
+
+
+func _game_letters() -> RefCounted:
+	if letters == null:
+		letters = preload("res://scripts/game_letters.gd").new()
+	if not letters.ok() and big_font.is_empty():
 		_helmet_frames(0)
 		big_font = hl_res.data(503) if hl_res and hl_res.has(503) else PackedByteArray([0])
-	var f := big_font
-	if f.size() < 88 or text == "":
-		return
-	var first := f.decode_s16(36)
-	var bits := f.decode_s32(76)
-	var row := f.decode_s16(80)
-	var h := f.decode_s16(82)
-	for ch in text.to_ascii_buffer():
-		if ch < first or ch > f.decode_s16(38) or 88 + 2 * (ch - first) > f.size():
-			continue
-		var a := f.decode_s16(84 + 2 * (ch - first))
-		var b := f.decode_s16(86 + 2 * (ch - first))
-		for yy in h:
-			for xx in range(a, b):
-				var at := bits + yy * row + (xx >> 3)
-				if at < f.size() and f[at] & (0x80 >> (xx & 7)):
-					panel.draw_rect(_grect(x + xx - a, y + yy, x + xx - a + 1, y + yy + 1), col)
-		x += b - a
+		letters.f = big_font
+	return letters
 
 
 func toggle_status() -> void:
@@ -1475,17 +1558,13 @@ func toggle_status() -> void:
 # STATUS page (the WEAPON panel's other tab): his 4 weapon slots, the selected one lit, jump and lock
 func _draw_status() -> void:
 	var wm := reg_move[2]
-	_text("STATUS", 257.0 + wm.x, 267.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0), true)
+	_gtext("STATUS", 217.0 + wm.x + floorf((82 - _glyphs_w("STATUS")) / 2.0), 266.0 + wm.y, 0x1D)
 	for k in 4:
 		var t: int = slot_types[k]
 		var nm: String = WEAPONS[t] if t < WEAPONS.size() and t > 0 else "-"
-		var sel := k == weapon_slot
-		_text("%d %s" % [k + 1, nm.to_upper()], 219.0 + wm.x, 284.0 + wm.y + 13.0 * k, 10.0,
-			Color(0.4, 1.0, 0.45) if sel else Color(0.75, 0.78, 0.9))
-	_text("JUMP %s" % ("READY" if jump_ready else "..."), 219.0 + wm.x, 337.0 + wm.y, 10.0,
-		Color(0.4, 1.0, 0.45) if jump_ready else Color(1.0, 0.7, 0.25))
-	_text("LOCK %s" % ("#%d" % lock if lock else "-"), 219.0 + wm.x, 351.0 + wm.y, 10.0,
-		Color(0.4, 1.0, 0.45) if lock else Color(0.75, 0.78, 0.9))
+		_gtext("%d %s" % [k + 1, nm.to_upper()], 219.0 + wm.x, 282.0 + wm.y + 13.0 * k, 0x84 if k == weapon_slot else 0x1D)
+	_gtext("JUMP %s" % ("READY" if jump_ready else "..."), 219.0 + wm.x, 336.0 + wm.y, 0x84 if jump_ready else 0x4E)
+	_gtext("LOCK %s" % ("#%d" % lock if lock else "-"), 219.0 + wm.x, 350.0 + wm.y, 0x84 if lock else 0x1D)
 
 
 # the mouse free, a button pressed at a place of the window: true if it was on his map (his marker's, see own_mark)

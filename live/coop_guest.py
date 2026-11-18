@@ -309,6 +309,7 @@ class Guest:
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
         self.fov_now, self.s = fov_now, sock
+        self.fov_rest = None          # the game's field without the host's helmet zoom (the bridge's): the guest's view
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
@@ -1734,7 +1735,7 @@ class Guest:
                 # after the index: the height of the feet in the world (the game's entity height minus its 0.12)
                 joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
         dv = self.equip.camera((*eye, gh, self.pitch))         # his view through his drone: from it, the drone hidden
-        view = (struct.pack('<6f2i', *(dv[:5] if dv else (*eye, gh, self.pitch)), self.fov_now(), len(body), self.gid) +
+        view = (struct.pack('<6f2i', *(dv[:5] if dv else (*eye, gh, self.pitch)), (self.fov_rest or self.fov_now)(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
                 struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', dv[5] if dv else self.gid, 1 if alarm else 0))
         self.send(view)

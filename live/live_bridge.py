@@ -869,6 +869,11 @@ FOV_SANS_ZOOM = 104.58                     # avant la camera (menus) : la vue du
 ZOOM_NORMAL = 0.88916                      # --fov N, comme avant : le champ a ce zoom (0xE3A0), suivant 1 / zoom
 
 
+def fov_rest():
+    # the field at the game's own zoom, the host's helmet zoom (+ / -) left out: a co-op guest's view (his own suit's)
+    return FOV_SANS_ZOOM if FOV is None else FOV
+
+
 def fov_now():
     # le champ du jeu au zoom lu ; --fov N : ce champ au zoom normal, suivant 1 / zoom (91.5 = auto, voir FOV)
     z = d32(A_ZOOM) / 65536 if A_ZOOM else 0
@@ -2267,7 +2272,7 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
                              view_hz=arg('--view-hz', 40.0),   # online: views a second to the guest
                              versus='--versus' in sys.argv,     # 1v1 (Terra Nova Coop's mode)
                              eye_fixed='--eye' in sys.argv, oeil=OEIL)   # (his suit's eye: the game's, as the host's)
-    guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
+    guest.hud_src, guest.post_key, guest.fov_rest = (lambda: hud_last), (post_key if PLAY else None), fov_rest
 atexit.register(cursor_restore)
 atexit.register(maj_lacher)               # (a Shift still down when the bridge stops: the player would bound on)
 atexit.register(courir_fin)               # (the run: the suit's own pace and the Bound back)
@@ -2405,7 +2410,7 @@ while True:
     if db or debris_prev:
         pk = b'DEBR' + struct.pack('<H', len(db)) + b''.join(db)
         s.sendto(pk, ('127.0.0.1', 47821))
-        if guest and not guest.remote: guest.s.sendto(pk, ('127.0.0.1', coop_guest.LIVE_PORT))
+        if guest: guest.relay(pk, force=not db)   # (the guest's window too; online 10 a second, the last one always)
     debris_prev = bool(db)
     an = animations(tab)                      # the animated effects' frames, before the entities
     if an or anim_prev:

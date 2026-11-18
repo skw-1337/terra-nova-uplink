@@ -409,7 +409,8 @@ func _test(dt: float) -> void:
 
 # tests: TN_BODY_TRACE = a file: each frame, the camera against his body (the view's own suit): time (ms), the body's
 # entity, the camera's place, the body's place, its height from the game (ez), on its own steps, in the air, the view
-# turned past the limit (rad)
+# turned past the limit (rad), the camera's yaw, the body's heading, his own body eased with his camera (viewer.gd
+# _own_body_place). A file TN_BODY_TRACE.old: the guest's body as before (TN_COOP_OWN_BODY=0)
 const TRACE := "TN_BODY_TRACE"
 var trace_f: FileAccess
 
@@ -418,14 +419,17 @@ func _trace() -> void:
 		trace_f = FileAccess.open(OS.get_environment(TRACE) + ("_guest.csv" if guest else "_host.csv"), FileAccess.WRITE)
 		if trace_f == null:
 			return
-		trace_f.store_line("unix,ms,body,cx,cy,cz,bx,by,bz,ez,gait,gait_y,extra")
+		trace_f.store_line("unix,ms,body,cx,cy,cz,bx,by,bz,ez,gait,gait_y,extra,cyaw,bh,own")
+	if guest:                                    # (tests: the guest's own body as before, viewer.gd own_body_on)
+		v.own_body_on = not FileAccess.file_exists(OS.get_environment(TRACE) + ".old")
 	if FileAccess.file_exists(OS.get_environment(TRACE) + ".down"):   # (tests: the view held 70 degrees down meanwhile)
 		extra = clampf(-(deg_to_rad(70.0) - float(head) / float(unit) * rad), -max_extra, 0.0)
 	var b: Node3D = v.live_player_node
 	var c: Vector3 = v.camera.global_position
 	var ok := b != null and is_instance_valid(b)
 	var p: Vector3 = b.global_position if ok else Vector3.ZERO
-	trace_f.store_line("%.3f,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f" % [Time.get_unix_time_from_system(), Time.get_ticks_msec(), v.live_player, c.x, c.y, c.z,
+	trace_f.store_line("%.3f,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f,%.4f,%.4f,%d" % [Time.get_unix_time_from_system(), Time.get_ticks_msec(), v.live_player, c.x, c.y, c.z,
 			p.x, p.y, p.z, float(b.get_meta("ez", 0.0)) if ok else 0.0, 1 if ok and b.has_meta("gait") else 0,
-			float(b.get_meta("gait_y", 0.0)) if ok else 0.0, extra])
+			float(b.get_meta("gait_y", 0.0)) if ok else 0.0, extra, float(v.yaw), b.rotation.y if ok else 0.0,
+			1 if ok and b.has_meta("own_to") else 0])
 	trace_f.flush()

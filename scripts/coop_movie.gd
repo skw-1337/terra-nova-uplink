@@ -7,7 +7,7 @@
 # palette shader, the sound as an AudioStreamWAV on the master bus (his "Game sound" volume) at the game's sound volume.
 # Shown as the game shows it (measured on its screen, 18/11/2026): a briefing (320 x 240) at its size in the middle of
 # a 640 x 480 screen; a launch video (320 x 160) on a 320 x 200 screen, 20 lines down; that screen as a 4:3 picture in
-# the middle of the window, black around. Off unless asked for (TN_COOP_VIDEOS = 1, or the guest's Options: "Briefing videos"); without it, or
+# the middle of the window, black around. On by default (TN_COOP_VIDEOS = 0, or the guest's Options: "Briefing videos", turns it off); without it, or
 # while the video is not ready, or with an older host that does not say the frame, host_state.gd's text briefing.
 # Times here are the engine's own clock: the video follows the host's game in real time, never Uplink's frozen scene.
 extends Node
@@ -65,10 +65,10 @@ var log_to: FileAccess                              # TN_COOP_VIDEO_LOG: each fr
 func _ready() -> void:
 	if v == null:
 		v = get_parent().get("v")
-	on = OS.get_environment("TN_COOP_VIDEOS") == "1"
+	on = OS.get_environment("TN_COOP_VIDEOS") != "0"      # on unless turned off (owner's choice, 18/11/2026)
 	var cfg := ConfigFile.new()
 	if cfg.load(CFG) == OK and cfg.has_section_key("launcher", "coop_videos"):
-		on = str(cfg.get_value("launcher", "coop_videos", "0")) == "1"
+		on = str(cfg.get_value("launcher", "coop_videos", "1")) == "1"
 	layer = CanvasLayer.new()
 	layer.layer = 27                                # over the HUD and host_state.gd's panels, under Uplink's menu
 	layer.visible = false

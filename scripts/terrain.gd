@@ -6,9 +6,12 @@ const CHUNK := 64
 
 # grid: {"n", "h", "col"}; step: spacing in game units; origin: world position of vertex (0, 0);
 # skip: cells (in grid coordinates) to leave out (the outer grid under the detailed map); only: when given, the cells
-# to build (1 at the cell's first point, y * n + x: the water drawn over the ground), without shadows.
+# to build (1 at the cell's first point, y * n + x: the water drawn over the ground), without shadows. skirt: a wall
+# that deep hangs under the grid's outer edges (the detailed map: where it meets the coarse grid around it, every 4 of
+# its points on one edge of the coarse one, the coarse edge's straight line between them left gaps a pixel wide that
+# showed the sky through the ground, at the map's borders)
 static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2, skip: Rect2i,
-		mat: Material, only: PackedByteArray = PackedByteArray()) -> void:
+		mat: Material, only: PackedByteArray = PackedByteArray(), skirt := 0.0) -> void:
 	var n: int = grid["n"]
 	var h: PackedFloat32Array = grid["h"]
 	var cols: PackedColorArray = grid["col"]
@@ -59,6 +62,30 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 						colors[k] = cols[i]
 						light[k] = Vector2(15.5 - 2.0 * lv[i] if lv.size() == n * n else 15.5, 0.0)
 						k += 1
+				if skirt > 0.0:
+					var edges := []                                # [vertex indices along an outer edge]
+					if cx == 0:
+						edges.append(range(hh + 1).map(func(yy): return yy * (w + 1)))
+					if cx + w == n - 1:
+						edges.append(range(hh + 1).map(func(yy): return yy * (w + 1) + w))
+					if cy == 0:
+						edges.append(range(w + 1))
+					if cy + hh == n - 1:
+						edges.append(range(w + 1).map(func(xx): return hh * (w + 1) + xx))
+					for e in edges:
+						var base := verts.size()
+						for vi in e:
+							verts.append(verts[vi] - Vector3(0.0, skirt, 0.0))
+							norms.append(norms[vi])
+							colors.append(colors[vi])
+							light.append(light[vi])
+						for j in e.size() - 1:
+							var a0: int = e[j]
+							var a1: int = e[j + 1]
+							var b0 := base + j
+							var b1 := base + j + 1
+							for q in [a0, a1, b1, a0, b1, b0, a0, b1, a1, a0, b0, b1]:   # (both ways: seen from either side)
+								idx.append(q)
 				var arr := []
 				arr.resize(Mesh.ARRAY_MAX)
 				arr[Mesh.ARRAY_VERTEX] = verts

@@ -675,7 +675,7 @@ func _load(index: int) -> void:
 		if not m["outer"].is_empty():
 			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0)
 			snow_mats.append(out_mat)
-	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
+	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat, PackedByteArray(), 0.0 if m["outer"].is_empty() else 3.0)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
 	# the hills cast no shadow: the map's light levels already hold them (the ground is drawn with them, see

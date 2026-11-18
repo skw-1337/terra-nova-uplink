@@ -531,10 +531,13 @@ void fragment() {
 			// the modern look, tiles lit through the palette's rows: between the rows of the two light levels around
 			// (light_smooth), each texel's colour in both rows mixed (the rows change the hue too: from one row only, the
 			// step stayed as a line of colour)
-			float ra = floor(rsm);
-			vec3 ca = cells_blend(g, dx, dy, wpos, ra * tile_count, cw, cbuilt);
-			vec3 cb = cells_blend(g, dx, dy, wpos, min(ra + 1.0, 15.0) * tile_count, cw, cbuilt);
-			col = mix(ca, cb, rsm - ra);
+			// (the second row only where the light is between two rows: none where the points around share a level)
+			float ra = floor(rsm + 0.001);
+			float rf = max(rsm - ra, 0.0);
+			col = cells_blend(g, dx, dy, wpos, ra * tile_count, cw, cbuilt);
+			if (rf > 0.001) {
+				col = mix(col, cells_blend(g, dx, dy, wpos, min(ra + 1.0, 15.0) * tile_count, cw, cbuilt), rf);
+			}
 		} else {
 			col = cells_blend(g, dx, dy, wpos, loff, cw, cbuilt);   // cells blended
 		}

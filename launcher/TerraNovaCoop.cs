@@ -116,6 +116,8 @@ static partial class Uplink
         { Set("game_dir", args[3]); Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1, args[1] == "--makesave" ? COOP_SAVE : PLAY_SAVE) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
+        if (args.Length > 1 && args[1] == "--running")     // checks: what is open, whose it is, and what PLAY / HOST / JOIN would say (nothing asked, nothing closed)
+        { Console.WriteLine(RunningReport()); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--binds")       // checks: TN+'s second binds, as Uplink is told them
         { Console.WriteLine(Binds()); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
@@ -974,16 +976,21 @@ static partial class Uplink
         DateTime t0 = DateTime.Now;
         while (!stopping)
         {
-            if ((tnp == null || tnp.HasExited) && Process.GetProcessesByName("dosbox-staging").Length == 0)
+            if ((tnp == null || tnp.HasExited) && !GameOpen())
             { Status("The game was closed.", CText); Session("No session.", CDim); return; }
             if ((DateTime.Now - t0).TotalMinutes > 5)
             { Status("The game didn't load in 5 minutes: see the log (Log).", CRed); return; }
             Thread.Sleep(3000);
+            if (stopping) break;
             bridge = Bridge(host, dir);
             DateTime b0 = DateTime.Now;
-            while (!bridge.HasExited && (DateTime.Now - b0).TotalSeconds < 12) Thread.Sleep(250);
+            while (!stopping && !bridge.HasExited && (DateTime.Now - b0).TotalSeconds < 12) Thread.Sleep(250);
             if (!bridge.HasExited) break;
             Log("bridge not ready yet (" + bridge.ExitCode + "), trying again");
+        }
+        if (stopping && bridge != null && !bridge.HasExited)
+        {   // STOP while the bridge was being started: STOP may have closed what it knew before this one came
+            try { Log("closing the bridge started during STOP (" + bridge.Id + ")"); bridge.Kill(); bridge.WaitForExit(3000); } catch { }
         }
         if (stopping || bridge == null) return;
         if (host)
@@ -1002,7 +1009,7 @@ static partial class Uplink
         if (!stopping)
         {
             Status(tnp != null && CloseOurGame() ? "Closed." :
-                Process.GetProcessesByName("dosbox-staging").Length == 0 ? "The game was closed." :
+                !GameOpen() ? "The game was closed." :
                 "Uplink was closed. Click " + (host ? "HOST A GAME" : "PLAY") + " to open it again.", CText);
             Session("No session.", CDim);
         }
@@ -1067,7 +1074,8 @@ static partial class Uplink
         env["PYTHONIOENCODING"] = "utf-8";
         env["PYTHONUNBUFFERED"] = "1";
         // the game this launcher started: with another DOSBox open too, the bridge would not know which one to read
-        Proc game = Procs().Find(p => p.Name == "dosbox-staging.exe" && p.Cmd.IndexOf(dir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+        // (always named: the bridge's own fallback, "the only DOSBox open", would pick any DOSBox of the PC)
+        Proc game = TheGame(dir);
         if (game != null) env["TNRE_PID"] = game.Id.ToString();
         return Run(PythonExe, "-u \"" + Path.Combine(UplinkDir, "live", "live_bridge.py") + "\" --launch --hud --play" +
             (host ? " --guest-remote" : "") + " --fov 91.5 --res " + Cfg("window") + (host && Cfg("mode") == "versus" ? " --versus" : ""),
@@ -1079,7 +1087,7 @@ static partial class Uplink
         Status("Getting things ready...", CAmber);
         Install(Mode.Join);
         bool running;
-        if (!Preflight(false, out running) || !SteamUp()) return;
+        if (!Preflight(false, out running, true) || !SteamUp()) return;
         Status("Opening Uplink...", CAmber);
         Session("Opening Uplink...", CAmber);
         string size = Cfg("window");
@@ -1152,31 +1160,219 @@ static partial class Uplink
     }
 
     // ------------------------------------------------------------------ checks before starting
-    class Proc { public int Id; public string Name, Cmd; }
+    class Proc { public int Id; public string Name, Cmd, Exe; public DateTime Start; }
 
-    static List<Proc> Procs()
+    static List<Proc> Procs() { return Procs("Name = 'python.exe' OR Name LIKE 'Godot%' OR Name = 'dosbox-staging.exe' OR Name = 'TNPlus.exe'"); }
+
+    static List<Proc> Procs(string where)
     {
         List<Proc> l = new List<Proc>();
         try
         {
-            using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT ProcessId, Name, CommandLine FROM Win32_Process " +
-                "WHERE Name = 'python.exe' OR Name LIKE 'Godot%' OR Name = 'dosbox-staging.exe' OR Name = 'TNPlus.exe'"))
+            using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT ProcessId, Name, CommandLine, ExecutablePath, CreationDate FROM Win32_Process WHERE " + where))
                 foreach (ManagementObject o in s.Get())
-                    l.Add(new Proc { Id = Convert.ToInt32(o["ProcessId"]), Name = (string)o["Name"], Cmd = (string)o["CommandLine"] ?? "" });
+                {
+                    Proc q = new Proc { Id = Convert.ToInt32(o["ProcessId"]), Name = (string)o["Name"] ?? "", Cmd = (string)o["CommandLine"] ?? "", Exe = (string)o["ExecutablePath"] ?? "" };
+                    try { q.Start = ManagementDateTimeConverter.ToDateTime((string)o["CreationDate"]).ToUniversalTime(); } catch { }
+                    l.Add(q);
+                }
         }
         catch (Exception e) { Log("process list: " + e.Message); }
         return l;
     }
 
-    // running: the game is already open (started by the player with TN+): PLAY attaches to it. HOST needs the game
-    // started by its co-op build: another one is closed first (asked)
-    static bool Preflight(bool host, out bool running)
+    // ---- what belongs to THIS install. Only that is counted, asked about or closed: what this launcher started (each
+    // one's pid and start time kept in components\logs\started.txt, so that a launcher closed and opened again still
+    // knows them; the start time tells a pid Windows gave again to another program), and what runs from its own
+    // components folder (Uplink's Godot and bridge, TN+, the game's DOSBox started with our conf). A program of the same
+    // name run from anywhere else (another copy of Uplink, a test, the player's own TN+) is never ours: never closed.
+    static readonly object startedLock = new object();
+    static string StartedFile { get { return Path.Combine(Comp, "logs", "started.txt"); } }
+
+    static void Track(Process p)
+    {
+        try
+        {
+            long t = p.StartTime.ToUniversalTime().Ticks;
+            lock (startedLock)
+            {
+                List<string> keep = new List<string>();
+                foreach (string l in Started())
+                {
+                    string[] f = l.Split(' ');
+                    int id; long lt;
+                    if (f.Length >= 2 && int.TryParse(f[0], out id) && long.TryParse(f[1], out lt) && Alive(id, lt)) keep.Add(l);
+                }
+                keep.Add(p.Id + " " + t + " " + Path.GetFileName(p.StartInfo.FileName));
+                File.WriteAllLines(StartedFile, keep.ToArray());
+            }
+        }
+        catch (Exception e) { Log("started.txt: " + e.Message); }
+    }
+
+    static string[] Started()
+    {
+        try { return File.Exists(StartedFile) ? File.ReadAllLines(StartedFile) : new string[0]; } catch { return new string[0]; }
+    }
+
+    static bool SameStart(DateTime a, long ticks) { return Math.Abs((a - new DateTime(ticks, DateTimeKind.Utc)).TotalSeconds) < 1.5; }
+
+    static bool Alive(int id, long ticks)
+    {
+        try { using (Process p = Process.GetProcessById(id)) return !p.HasExited && SameStart(p.StartTime.ToUniversalTime(), ticks); }
+        catch { return false; }
+    }
+
+    static bool Tracked(Proc p)
+    {
+        if (p.Start == DateTime.MinValue) return false;
+        foreach (string l in Started())
+        {
+            string[] f = l.Split(' ');
+            int id; long t;
+            if (f.Length >= 2 && int.TryParse(f[0], out id) && id == p.Id && long.TryParse(f[1], out t) && SameStart(p.Start, t)) return true;
+        }
+        return false;
+    }
+
+    static string CompSlash { get { return Path.GetFullPath(Comp).TrimEnd('\\') + "\\"; } }
+
+    static bool Mine(Proc p)
+    {
+        string c = CompSlash;
+        return Tracked(p) || p.Exe.StartsWith(c, StringComparison.OrdinalIgnoreCase) || p.Cmd.IndexOf(c, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    static bool IsLive(Proc p)
+    {
+        return (p.Name.StartsWith("Godot", StringComparison.OrdinalIgnoreCase) && p.Cmd.Contains("--live")) ||
+               (p.Name == "python.exe" && (p.Cmd.Contains("live_bridge.py") || p.Cmd.Contains("mission_play.py")));
+    }
+
+    // a DOSBox of another copy of Uplink (its own components\tnplus): that copy's, never attached to nor closed
+    static bool OtherCopysGame(Proc p)
+    {
+        return !Mine(p) && Regex.IsMatch(p.Cmd + " " + p.Exe, @"\\components\\tnplus(_coop)?\\", RegexOptions.IgnoreCase);
+    }
+
+    // the player's own Terra Nova (started with his TN+ or the store's launcher: a DOSBox with the game's conf): PLAY
+    // attaches to it, as before. Another DOSBox (another game, a test) is nobody's business here
+    static bool PlayersGame(Proc p)
+    {
+        return p.Name == "dosbox-staging.exe" && !Mine(p) && !OtherCopysGame(p) && p.Cmd.IndexOf("dosbox_terranova", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    static int attachPid = 0;                                  // the player's own game PLAY attached to (0: none)
+
+    // the game this launch reads: ours (started with the conf of dir), else the player's game PLAY attached to
+    static Proc TheGame(string dir)
+    {
+        List<Proc> ps = Procs("Name = 'dosbox-staging.exe'");
+        Proc g = ps.Find(p => Mine(p) && p.Cmd.IndexOf(dir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+        return g ?? ps.Find(p => Mine(p)) ?? (attachPid > 0 ? ps.Find(p => p.Id == attachPid) : null);
+    }
+
+    static bool GameOpen() { return Procs("Name = 'dosbox-staging.exe'").Exists(p => Mine(p) || (attachPid > 0 && p.Id == attachPid)); }
+
+    // Uplink's local ports, by what is started: PLAY (viewer.gd 47821 / 47823, the bridge 47824), HOST (those and the
+    // co-op's 47834 / 47841), JOIN (the guest window's 47831 / 47832 / 47834 / 47836). A program that is not ours
+    // holding one of them would take the packets of this launch: the only case where another copy really conflicts
+    static readonly int[] PLAY_PORTS = { 47821, 47823, 47824 }, HOST_PORTS = { 47821, 47823, 47824, 47834, 47841 },
+                          JOIN_PORTS = { 47831, 47832, 47834, 47836 };
+
+    [DllImport("iphlpapi.dll")]
+    static extern uint GetExtendedUdpTable(IntPtr table, ref int size, bool order, int af, int cls, int reserved);
+
+    static List<int> PortHolders(int[] ports)
+    {
+        List<int> l = new List<int>();
+        int size = 0;
+        GetExtendedUdpTable(IntPtr.Zero, ref size, false, 2, 1, 0);           // AF_INET, UDP_TABLE_OWNER_PID
+        size += 4096;
+        IntPtr t = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (GetExtendedUdpTable(t, ref size, false, 2, 1, 0) != 0) return l;
+            int n = Marshal.ReadInt32(t);
+            for (int i = 0; i < n; i++)
+            {
+                int port = Marshal.ReadInt32(t, 4 + i * 12 + 4), pid = Marshal.ReadInt32(t, 4 + i * 12 + 8);
+                port = ((port & 0xFF) << 8) | ((port >> 8) & 0xFF);
+                if (Array.IndexOf(ports, port) >= 0 && !l.Contains(pid)) l.Add(pid);
+            }
+        }
+        catch (Exception e) { Log("port list: " + e.Message); }
+        finally { Marshal.FreeHGlobal(t); }
+        return l;
+    }
+
+    // the folder another copy runs from, by its name only (never the whole path: it is shown and may be logged)
+    static string FolderName(Proc p)
+    {
+        // an installed copy: the folder that holds its components\. Else the copy's folder as its command line names
+        // it (a bridge run by another Python: the folder of live\live_bridge.py; a Godot: its --path), else the exe's
+        foreach (string s in new[] { p.Exe, p.Cmd })
+        {
+            Match m = Regex.Match(s, @"(?:^|[\\/""])([^\\/""]+)[\\/]components[\\/]", RegexOptions.IgnoreCase);
+            if (m.Success) return m.Groups[1].Value.Trim();
+        }
+        Match q = Regex.Match(p.Cmd, @"""([^""]+)[\\/]live[\\/](?:live_bridge|mission_play|coop_guest)\.py""|(\S+)[\\/]live[\\/](?:live_bridge|mission_play|coop_guest)\.py", RegexOptions.IgnoreCase);
+        if (!q.Success) q = Regex.Match(p.Cmd, @"--path\s+(?:""([^""]+)""|(\S+))");
+        string f = q.Success ? Leaf(q.Groups[1].Success ? q.Groups[1].Value : q.Groups[2].Value) : "";
+        if (f != "" && f != "." && f != "..") return f;
+        string e = p.Exe != "" ? Path.GetDirectoryName(p.Exe) : "";
+        return e != "" ? Leaf(e) : p.Name;
+    }
+
+    static string Leaf(string path)
+    {
+        path = path.TrimEnd('\\', '/');
+        int i = path.LastIndexOfAny(new[] { '\\', '/' });
+        return i >= 0 ? path.Substring(i + 1) : path;
+    }
+
+    // a program of another install that holds Uplink's ports: what to tell the player (null: none)
+    static string PortConflict(int[] ports)
+    {
+        int me = Process.GetCurrentProcess().Id;
+        foreach (int pid in PortHolders(ports))
+        {
+            if (pid == me || pid == 0) continue;
+            Proc q = Procs("ProcessId = " + pid).Find(x => true);
+            if (q == null || Mine(q)) continue;
+            Log("Uplink's ports are held by " + q.Name + " " + pid + " (folder " + FolderName(q) + "): not ours, left alone");
+            return IsLive(q) || q.Name.StartsWith("Godot", StringComparison.OrdinalIgnoreCase) || q.Name == "python.exe"
+                ? "Another copy of Uplink is running from \"" + FolderName(q) + "\" and uses the same ports: close it there first."
+                : "Another program (" + q.Name + ", in \"" + FolderName(q) + "\") uses Uplink's ports (" + string.Join(", ", Array.ConvertAll(ports, x => x.ToString())) + "): close it first.";
+        }
+        return null;
+    }
+
+    // checks (--running): the programs Preflight looks at, whose each one is, and the message of each start
+    static string RunningReport()
+    {
+        StringBuilder sb = new StringBuilder();
+        foreach (Proc p in Procs())
+            sb.AppendLine(p.Name + " " + p.Id + ": " + (Mine(p) ? "ours" : OtherCopysGame(p) ? "another copy's game" : PlayersGame(p) ? "the player's game" : "not ours") +
+                          (IsLive(p) ? ", live" : "") + ", folder " + FolderName(p));
+        sb.AppendLine("play: " + (PortConflict(PLAY_PORTS) ?? "free"));
+        sb.AppendLine("host: " + (PortConflict(HOST_PORTS) ?? "free"));
+        sb.AppendLine("join: " + (PortConflict(JOIN_PORTS) ?? "free"));
+        return sb.ToString().TrimEnd();
+    }
+
+    // running: the game is already open (ours, or started by the player with TN+): PLAY attaches to it. HOST needs the
+    // game started by its co-op build: one of ours started otherwise is closed first (asked)
+    static bool Preflight(bool host, out bool running, bool join = false)
     {
         List<Proc> ps = Procs();
         running = false;
-        // an Uplink or bridge already open (another launch, a .bat): same ports, the new one would not get its packets
-        List<Proc> old = ps.FindAll(p => (p.Name.StartsWith("Godot") && p.Cmd.Contains("--live")) ||
-                                         (p.Name == "python.exe" && p.Cmd.Contains("live_bridge.py")));
+        attachPid = 0;
+        // an Uplink or bridge of this install already open (another launch, a launcher closed and opened again): same
+        // ports, the new one would not get its packets
+        List<Proc> old = ps.FindAll(p => IsLive(p) && Mine(p));
+        foreach (Proc p in ps.FindAll(q => IsLive(q) && !Mine(q)))
+            Log("another copy's " + p.Name + " " + p.Id + " (folder " + FolderName(p) + "): not ours, left alone");
         if (old.Count > 0)
         {
             if (!Ask("Uplink's live mode is already open (" + old.Count + " program(s)). Close it and start again?"))
@@ -1184,34 +1380,41 @@ static partial class Uplink
             foreach (Proc p in old) Kill(p.Id);
             Thread.Sleep(1000);
         }
-        List<Proc> games = ps.FindAll(p => p.Name == "dosbox-staging.exe");
-        ownGame = games.Exists(p => p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                    p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+        string clash = PortConflict(join ? JOIN_PORTS : host ? HOST_PORTS : PLAY_PORTS);
+        if (clash != null) { Status(clash, CRed); return false; }
+        List<Proc> games = ps.FindAll(p => p.Name == "dosbox-staging.exe" && Mine(p));
+        List<Proc> his = ps.FindAll(PlayersGame);
+        ownGame = games.Count > 0;
         if (host)
         {   // a game started without the co-op build has no co-op code: it must be started again from here
             bool ok = games.Exists(p => p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (!ok && his.Count > 0)
+            { Status("Terra Nova is already running, started outside Uplink: save, close it, then click HOST A GAME again.", CRed); return false; }
             if (games.Count > 0 && !ok)
             {
                 if (!Ask("Terra Nova is already running, started without the co-op build. Close it so it can start again for the co-op? (save your game first)"))
                 { Status("Close the game first.", CRed); return false; }
                 foreach (Proc p in games) Kill(p.Id);
-                foreach (Proc p in ps.FindAll(q => q.Name == "TNPlus.exe")) Kill(p.Id);
+                foreach (Proc p in ps.FindAll(q => q.Name == "TNPlus.exe" && Mine(q))) Kill(p.Id);
                 Thread.Sleep(1500);
             }
             else running = ok;
         }
-        else running = games.Count > 0;
+        else
+        {
+            running = games.Count > 0 || his.Count > 0;
+            if (games.Count == 0 && his.Count > 0) { attachPid = his[0].Id; Log("the player's own game (DOSBox " + attachPid + ")"); }
+        }
         return true;
     }
 
     // Uplink closed: the game this launcher started goes with it (its DOSBox, started by our TN+ with our conf, then
-    // TN+ itself, which ends with it). A game the player started himself is left alone.
+    // TN+ itself, which ends with it). A game the player started himself, or another copy's, is left alone.
     static bool CloseOurGame()
     {
         bool any = false;
-        foreach (Proc p in Procs())
-            if (p.Name == "dosbox-staging.exe" && (p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                                   p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0))
+        foreach (Proc p in Procs("Name = 'dosbox-staging.exe'"))
+            if (Mine(p))
             {
                 any = true;
                 try
@@ -1219,14 +1422,13 @@ static partial class Uplink
                     Process d = Process.GetProcessById(p.Id);
                     Log("closing the game (DOSBox " + p.Id + ")");
                     d.CloseMainWindow();
-                    if (!d.WaitForExit(3000)) d.Kill();
+                    if (!d.WaitForExit(3000)) { d.Kill(); d.WaitForExit(3000); }
                 }
                 catch { }
             }
         Thread.Sleep(500);
-        foreach (Proc p in Procs())
-            if (p.Name == "TNPlus.exe" && (p.Cmd.IndexOf(TnpDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                           p.Cmd.IndexOf(TnpCoopDir + "\\", StringComparison.OrdinalIgnoreCase) >= 0)) Kill(p.Id);
+        foreach (Proc p in Procs("Name = 'TNPlus.exe'"))
+            if (Mine(p)) Kill(p.Id);
         return any;
     }
 
@@ -1272,6 +1474,7 @@ static partial class Uplink
             p.BeginErrorReadLine();
         }
         lock (mine) mine.Add(p);
+        Track(p);
         return p;
     }
 

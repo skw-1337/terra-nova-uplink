@@ -2164,7 +2164,7 @@ static class Uplink
         hudTick.Checked = Cfg("hud_colours") != "0";             // (on unless turned off)
         editTick.Checked = Cfg("mission_editor") == "1";         // (off unless asked for)
         introBox.Checked = Cfg("skip_intro") == "1";
-        oldBox.Checked = Cfg("old_school") != "0";
+        oldBox.Checked = Cfg("old_school") == "1";          // off unless the player turned it on (2.8: new installs start modern)
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
         subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
         for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) != "0";   // (the extras: on unless turned off)
@@ -2750,7 +2750,7 @@ static class Uplink
         env["TN_RUN"] = Cfg("shift_run") == "1" ? "1" : "0";
         env["TN_FPS"] = Cfg("fps_counter") == "1" ? "1" : "0";
         env["TN_FPS_CAP"] = Cfg("fps_cap") == "" ? "0" : Cfg("fps_cap");
-        env["TN_OLDSCHOOL"] = Cfg("old_school") == "0" ? "0" : "1";
+        env["TN_OLDSCHOOL"] = Cfg("old_school") == "1" ? "1" : "0";
         env["TN_NO_PAD"] = Cfg("gamepad") == "1" ? "0" : "1";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
         env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";

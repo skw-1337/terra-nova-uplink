@@ -3006,7 +3006,7 @@ func _oldschool_palette() -> void:
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("pal_tex", ImageTexture.create_from_image(pimg))
 		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("first_index", pal_first)
 		if oldschool_key == "":
-			oldschool_rect.visible = (live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") != "0") \
+			oldschool_rect.visible = (live and not ("--smooth" in OS.get_cmdline_user_args()) and OS.get_environment("TN_OLDSCHOOL") == "1") \
 					or (not live and OS.get_environment("TN_OLDSCHOOL") == "1")     # (the map viewer: on when asked)
 			_apply_look()
 		oldschool_key = pal_key

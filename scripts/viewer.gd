@@ -4585,7 +4585,8 @@ var photo_help_key := ""
 
 static func _photo_key() -> Array:
 	var k := _own_key(OS.get_environment("TN_KEY_PHOTO"))
-	return k if not k.is_empty() else [KEY_O, 0]
+	# L by default: O is the game's own Options key (an old saved O is taken as L too)
+	return k if not k.is_empty() and not (k[0] == KEY_O and int(k[1]) == 0) else [KEY_L, 0]
 
 
 # in a mission that is being played, on Uplink's own view

@@ -13,6 +13,7 @@ import coop_lobby, coop_view
 from coop_name import NameTag
 from guest_equipment import GuestEquipment
 from coop_aim import GuestAim
+from coop_unit_hits import UnitHits, ON as UNIT_HITS_ON
 # his shots at what his crosshair is on (coop_aim.py; TN_COOP_AIM=0: 30 units along his view, as before), and each
 # shot's aim in the bridge's output (TN_COOP_AIMLOG=1)
 AIM_ON = os.environ.get('TN_COOP_AIM') != '0'
@@ -347,6 +348,7 @@ class Guest:
         # (False: none) and where the host's game draws it (his window draws his own there)
         self.equip = GuestEquipment(self)                     # his drone and A.S.F. (guest_equipment.py, TN_COOP_EQUIP=1)
         self.aimer = GuestAim(self)                           # what his crosshair is on (coop_aim.py)
+        self.unit_hits = UnitHits(self)                       # his shots' hits on that unit (coop_unit_hits.py)
         self.gpick = None                                     # (time, 15 bytes): what it is on in his window (coop_fire_pick.gd)
         self.aim_on, self.pick_on = AIM_ON, os.environ.get('TN_COOP_PICK') != '0'
         self.view_delay, self.held_views, self.ctl_t = 0.0, [], 0.0   # (tests: test_ctl)
@@ -1637,6 +1639,8 @@ class Guest:
         self.lobby_step(True)
         if self.versus and self.state == OK:
             self.versus_hits(me)
+        elif self.state == OK:
+            self.unit_hits.tick()                              # his shots on the unit he aims at (coop_unit_hits.py)
         turn = self.read_input(self.state == OK)
         self.equip.tick(self.state == OK)
         if self.state != OK:                                   # the guest watches through the host's eyes
@@ -1720,6 +1724,8 @@ class Guest:
             what = 'view 30'
         if aim is None:
             aim = tuple(e + v * 30 for e, v in zip(eye, view))
+        if fire:
+            self.unit_hits.aimed(what)
         if fire and AIM_LOG:
             print('aim: %.3f eye %.3f %.3f %.3f view %.4f %.4f %.4f aim %.3f %.3f %.3f -> %s at %.2f' % (
                 time.time(), *eye, *view, *aim, what, math.dist(eye, aim)), flush=True)
@@ -1946,19 +1952,23 @@ class Guest:
             self.s.sendto(b'PTS' + zlib.compress(struct.pack('<H', n) + pk[6:6 + 14 * n], 1), ('127.0.0.1', REMOTE_VIEW))
 
     def test_ctl(self):
-        """tests (TN_COOP_TEST_CTL = a file, read each second): 'aim=0|1 pick=0|1 delay=MS', the last his views held
-        back that long (the local guest window standing for one over Steam)"""
+        """tests (TN_COOP_TEST_CTL = a file, read again when it changes): 'aim=0|1 pick=0|1 hits=0|1 delay=MS', the last his
+        views held back that long (the local guest window standing for one over Steam)"""
         f = os.environ.get('TN_COOP_TEST_CTL')
-        if not f or time.time() - self.ctl_t < 1.0:
+        if not f:
             return
-        self.ctl_t = time.time()
         try:
+            mt = os.stat(f).st_mtime_ns
+            if mt == self.ctl_t:
+                return
             kv = dict(w.split('=', 1) for w in open(f).read().split() if '=' in w)
         except OSError:
             return
+        self.ctl_t = mt
         self.aim_on = kv.get('aim', '1') != '0'
         self.pick_on = kv.get('pick', '1') != '0'
         self.view_delay = float(kv.get('delay', '0')) / 1000
+        self.unit_hits.on = kv.get('hits', '1' if UNIT_HITS_ON else '0') != '0'
 
     def send(self, view):
         if not self.remote:

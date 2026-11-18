@@ -167,7 +167,8 @@ NOTES, NOTES_END, NOTE_ZOOM = 0x39A510, 0x39A518, 4   # (the panel's zoom 4: bit
 CONTACTS_AT = {1: (PBA, PBA_N, 0xB2), 2: (0x3A19E8, 0x128, 0x4D), 3: (0x39E590, 0x14F, 0x62)}
 SQUAD_COLOURS, DRONE, FOOTPRINTS, WAYPOINTS = 0x35B3ED, 0x396868, 0x3C5DD0, 0x392170
 WAYPOINT_COLOURS = (0x38, 0x3F, 0x7E, 0x84)
-M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_NOTEZ, M_SYS, M_ROW = range(12)
+M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_NOTEZ, M_SYS, M_ROW, M_WPN = range(13)
+AI_REC, GROUPS, SPECIALTY, PILOT_REC, W_HEALTH = 0x3832F0, 0x380599, 0x39034D, 0x391F4D, 0x39511C   # (English exe)
 # M_NOTEZ: a map note of any zoom (the game draws a note on a map of zoom z when bit (word 0x35B3DC + 2 z) of its byte
 # +0xD is set: zooms 0-7 -> bits 4 3 3 2 2 1 1 0, 0x2784ae); an older guest window ignores the kind
 # The guest's laser on the host's speakers. The cave fires for him as the game does for its player (the player's
@@ -1052,8 +1053,64 @@ class Guest:
             out.append((M_SYS, 0, bytes(pc)))
         for e in self.comm[:3]:
             c, m = self.health(e)
-            out.append((M_ROW, 0, struct.pack('<HBB', e, self.energy_pct(e), c * 100 // m if m else 255)))
+            act, tgt = self.activity(e)
+            out.append((M_ROW, 0, struct.pack('<HBBBBHB', e, self.energy_pct(e), c * 100 // m if m else 255,
+                                              self.specialty(e), act, tgt, self.label(tgt))))
+        if self.gid:                                           # M_WPN: his weapon panel's percentage (0x272086: the
+            p = self.suit(self.gid)                            # slot's health over the type's, word 0x39511C)
+            slot = p + SLOTS + SLOT_N * (self.g.read(p + SEL, 1)[0] & 3)
+            r = self.g.read(slot, 4)
+            top = self.u16(W_HEALTH + W_N * r[0])
+            out.append((M_WPN, 0, bytes([max(0, min(255, struct.unpack_from('<h', r, 2)[0] * 100 // top)) if top else 100])))
         return out
+
+    def specialty(self, e):
+        """the STAT page's first line (0x26ce09): RESGAME 366 string 104 + the pilot's specialty (pilot slot byte +6 =
+        p; 0x20: none, 104; else byte 0x39034D + 0x1EE x byte (0x391F4D + p)); 0: not a pilot of the squad"""
+        for a in range(PILOTS, PILOTS + 4 * PILOT_N, PILOT_N):
+            r = self.g.read(a, 8)
+            if (r[0] | r[1]) and struct.unpack_from('<H', r, 2)[0] == e:
+                if r[6] == 0x20:
+                    return 104
+                return 104 + self.g.read(SPECIALTY + 0x1EE * self.g.read(PILOT_REC + r[6], 1)[0], 1)[0]
+        return 0
+
+    def activity(self, e):
+        """what the squadmate is doing, as the game's STAT page writes it (0x270FB0): a RESGAME 367 string (0: none)
+        and the unit it names. AI record a (entity +0x21): its group g (+6) and the group's record (0x380599 +
+        0x170 g: the unit it follows at +0, its mode +0xAE, its order +0xB9); held, charge, repair: by the order
+        unless the mode is 0, 2 or 4; else the AI state (+0x30): 0-1 holding position, 2 and 4 following its unit
+        (none: moving), 8 and 0x10 attacking (its target, byte +0xCA), anything else planning. (Left out: the
+        rewiring of a turret, and the direction the game writes after "Moving".)"""
+        a = self.g.read(self.master + 0x25 * e + 0x21, 1)[0]
+        if not 0 < a < AI_MAX:
+            return 0, 0
+        ai = self.g.read(AI_REC + (self.master - 0x3C3240) + AI_N * a, 0xCC)
+        gr = self.g.read(GROUPS + 0x170 * ai[6], 0xC0)
+        if gr[0xAE] not in (0, 2, 4):
+            o = gr[0xB9]
+            if o == 1:
+                return 179, 0
+            if o in (0x19, 0x42):
+                return 176, 0
+            if o == 0x34:
+                return 177, 0
+        st = ai[0x30]
+        if st <= 1:
+            return 179, 0
+        if st in (2, 4):
+            t = struct.unpack_from('<H', gr, 0)[0]
+            return (166, t) if t else (168, 0)
+        if st in (8, 0x10):
+            return 167, ai[0xCA]
+        return 178, 0
+
+    def label(self, e):
+        """a unit's name label (entity +0x24, 0x26a6d4: 1-0x1D RESGAME 375 string; else 0)"""
+        if not 0 < e < 300:
+            return 0
+        b = self.g.read(self.master + 0x25 * e + 0x24, 1)[0]
+        return b if b <= 0x1D else 0
 
     def energy_pct(self, e):
         """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power

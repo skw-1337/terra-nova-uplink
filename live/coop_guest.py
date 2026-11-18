@@ -283,11 +283,14 @@ def axis(v, dead=7849):
 
 def launch(godot, vpath, mission):
     import subprocess
+    # (tests on one PC: TN_GUEST_SET_<NAME>=value gives the guest's window its own setting <NAME>, as his own PC would)
+    env = dict(os.environ)
+    env.update({k[len('TN_GUEST_SET_'):]: v for k, v in os.environ.items() if k.startswith('TN_GUEST_SET_')})
     return subprocess.Popen([godot, '--path', vpath, '--resolution', os.environ.get('TN_GUEST_RES', '1280x720')] +
                             (['--position', os.environ['TN_GUEST_POS']] if 'TN_GUEST_POS' in os.environ else []) +
                             ['--', '--live', '--live-port', str(LIVE_PORT), '--play', '--play-port', str(PLAY_PORT), '--coop-hud'] +
                             (['--coop-preview'] if os.environ.get('TN_COOP_PREVIEW') else []) +   # Steam name / avatar
-                            (['--mission', mission] if mission else []))
+                            (['--mission', mission] if mission else []), env=env)
 
 
 class Guest:

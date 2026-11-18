@@ -1,13 +1,19 @@
 # Uplink's own menu in a live window, drawn over the view (the game goes on: it runs on the host's PC, or behind).
-# A co-op guest opens it with Esc (his window had none: to quit he had to switch to the launcher); the host with
-# Uplink's menu key (F5 unless changed: Esc is the game's own menu). Resume; Controls (every key: controls.gd, the
-# same list as the launcher's Controls page); Options (the guest's sound, the mouse, the old school look, Uplink's
-# extras); for the guest, Leave the game (his teammate back to the game's AI on the host, his window closed: his
-# launcher is then as after STOP). Closing the guest's window leaves the same way.
+# Esc opens it: a co-op guest's always (his window had none: to quit he had to switch to the launcher); solo and the
+# host's in a mission, unless Options says Esc is the game's (viewer.cfg [launcher] esc_menu = 0). Uplink's menu key
+# opens it too (F5 unless changed). Esc stays the game's wherever the game shows one of its screens (its menus,
+# briefings, the pause...), with Ctrl+Esc (abort), in the photo mode, in a field being typed in (see _esc_ours). (In a
+# mission's 3D view the game itself does nothing with Esc alone: its own menu is its Options screen, on O.)
+# Resume; Game menu (solo / host: the game's own menu, its Options screen: sound, detail, abort, exit...); Controls (every
+# key: controls.gd, the same list as the launcher's Controls page); Graphics (the launcher's display settings, at once
+# where Uplink can, else at the next start); Options (the guest's sound, the mouse, Esc); Quit (solo / host: the game,
+# the bridge and Uplink closed, the launcher then as after STOP; a guest of the host is told the host left) or, for the
+# guest, Leave the game (his teammate back to the game's AI on the host, his window closed: his launcher is then as
+# after STOP). Closing the guest's window leaves the same way.
 # Also, once a session, when the player first takes the mouse in a mission: a line with the few keys to know (Esc,
 # the free look, the orders), fading out.
-# Options are kept: the sound in viewer.cfg [sound], the others in viewer.cfg [launcher] for the launcher to take
-# over (as the Controls page's keys: see controls.gd).
+# Settings are kept: the sound in viewer.cfg [sound], the pixel size in [look] (as the launcher has it), the others
+# in viewer.cfg [launcher] for the launcher to take over (as the Controls page's keys: see controls.gd).
 extends Node
 
 const Controls = preload("res://scripts/controls.gd")
@@ -23,6 +29,12 @@ const GROUPS := ["Move", "Fight", "View", "Squad", "Map", "Drone", "System", "To
 const FX := [["cloud_shadows", "Cloud shadows", true], ["cliffs", "Unstretched cliffs", true], ["stars", "Sharp stars", true],
 		["marks", "Impact marks", true], ["lights", "Light from shots", true], ["look_down", "Look further down", false],
 		["tracks", "Footprints and tracks", true]]
+const FX_NODES := {"marks": "fx_marks.gd", "lights": "fx_lights.gd", "tracks": "fx_tracks.gd"}
+# the launcher's lists (TerraNovaUplink.cs SIZES, CROSSHAIRS, FillCap), kept with the same values
+const SHARP := [[1, "1×"], [2, "2×"], [3, "3×"], [0, "Max"]]
+const CROSS := [["", "The game's"], ["dot", "A dot"], ["none", "None"]]
+const CAPS := [0, 60, 120, 144, 240]
+const SIZES := [["1280x720", "1280 × 720"], ["1696x960", "1696 × 960"], ["1920x1080", "1920 × 1080"], ["native", "Fullscreen"]]
 
 var v: Node                        # the viewer
 var guest := false
@@ -39,6 +51,8 @@ var search: LineEdit
 var rows_box: VBoxContainer
 var note_label: Label
 var leaving := false
+var esc_menu := true               # solo / host: Esc opens this menu in a mission (viewer.cfg [launcher] esc_menu = 0: the game's)
+var esc_eat := false               # the Esc that opened or closed the menu: its release is not the game's
 var hint: Label
 var hint_t := -1.0
 var hint_done := false
@@ -58,6 +72,7 @@ func _ready() -> void:
 	var mk2: Array = Controls.parse(str(cfg.get_value("launcher", "key_menu", "")))
 	if int(mk2[0]) > 0:
 		menu_key = _godot_key(mk2)
+	esc_menu = str(cfg.get_value("launcher", "esc_menu", "0" if OS.get_environment("TN_ESC_MENU") == "0" else "1")) != "0"
 	layer = CanvasLayer.new()
 	layer.layer = 40                                    # over the HUD, the game's screens and the lobby
 	add_child(layer)
@@ -90,19 +105,26 @@ func menu_input(event: InputEvent) -> bool:
 		return true
 	if not capture.is_empty():
 		return _capture_input(event)
+	if event is InputEventKey and event.physical_keycode == KEY_ESCAPE and not event.pressed and esc_eat:
+		esc_eat = false                                  # (the Esc that opened or closed the menu: not the game's)
+		get_viewport().set_input_as_handled()
+		return true
 	if event is InputEventKey and event.pressed and not event.echo:
-		var opens: bool = event.physical_keycode == KEY_ESCAPE if guest else _is_key(event, menu_key)
+		var esc: bool = event.physical_keycode == KEY_ESCAPE
+		var opens: bool = esc if guest else (_is_key(event, menu_key) or (esc and _esc_ours(event)))
 		if opens and not is_open():
 			if guest and _typing():
 				return false
 			open()
+			esc_eat = esc
 			get_viewport().set_input_as_handled()
 			return true
-		if is_open() and (event.physical_keycode == KEY_ESCAPE or (not guest and _is_key(event, menu_key))):
+		if is_open() and (esc or (not guest and _is_key(event, menu_key))):
 			if page == "main":
 				close()
-			else:
+			elif page != "closing":
 				_show("main")
+			esc_eat = esc
 			get_viewport().set_input_as_handled()
 			return true
 	return is_open()
@@ -113,6 +135,20 @@ func _typing() -> bool:
 		if n.has_method("wants_keys") and n.wants_keys():
 			return true
 	return false
+
+
+# Esc alone, solo or host: this menu's in a mission's 3D view, the game's everywhere the game itself takes it (its
+# menus and screens: its Options menu, briefings, the debriefing, the pause, a save's name being typed; a mission still loading),
+# and where Uplink has its own use for it (the photo mode leaves; a field of the co-op lobby being typed in). With
+# a modifier (Ctrl+Esc: the game's Abort mission) it stays the game's. Options can give Esc back to the game.
+func _esc_ours(e: InputEventKey) -> bool:
+	if not esc_menu or e.shift_pressed or e.ctrl_pressed or e.alt_pressed or e.meta_pressed:
+		return false
+	if v.get("menu_mode") or v.get("start_hold") or v.get("photo_on") or v.current.is_empty():
+		return false
+	if int(v.get("live_units_seen")) < 2 or _typing():
+		return false
+	return true
 
 
 func _is_key(e: InputEventKey, key: Array) -> bool:
@@ -230,7 +266,7 @@ func _show(p: String) -> void:
 	box.add_child(col)
 	match p:
 		"main":
-			_place(400, 360 if guest else 262)
+			_place(400, 370 if guest else 420)
 			_title(col, "UPLINK", ORANGE if not guest else BLUE)
 			var sub := Label.new()
 			sub.text = "The game goes on meanwhile." if guest else "The game is not paused by this menu."
@@ -238,11 +274,35 @@ func _show(p: String) -> void:
 			sub.add_theme_font_size_override("font_size", _px(16))
 			col.add_child(sub)
 			var first := _button(col, "Resume", close)
+			if not guest:
+				_button(col, "Game menu", _game_menu).tooltip_text = "The game's own menu (O in the game): sound, detail, abort the mission, exit Terra Nova"
 			_button(col, "Controls", func(): _show("controls"))
+			_button(col, "Graphics", func(): _show("graphics"))
 			_button(col, "Options", func(): _show("options"))
 			if guest:
 				_button(col, "Leave the game", func(): _show("leave"), RED)
+			else:
+				_button(col, "Quit", func(): _show("quit"), RED)
 			first.grab_focus()
+		"quit":
+			_place(560, 170)
+			_title(col, "QUIT TERRA NOVA?", RED)
+			var t := Label.new()
+			t.text = "Unsaved mission progress is lost." + ("\nYour co-op guest is told you left." if _hosting() else "")
+			t.autowrap_mode = TextServer.AUTOWRAP_WORD
+			col.add_child(t)
+			var row := HBoxContainer.new()
+			col.add_child(row)
+			var yes := _button(row, "Quit", quit_game, RED)
+			yes.custom_minimum_size.x = 240 * k
+			var no := _button(row, "Cancel", func(): _show("main"))
+			no.custom_minimum_size.x = 240 * k
+			no.grab_focus()
+		"closing":
+			_place(420, 110)
+			_title(col, "CLOSING TERRA NOVA...", ORANGE)
+		"graphics":
+			_graphics(col)
 		"leave":
 			_place(520, 260)
 			_title(col, "LEAVE THE GAME?", RED)
@@ -265,10 +325,8 @@ func _show(p: String) -> void:
 
 # ---------------------------------------------------------------- options
 func _options(col: VBoxContainer) -> void:
-	_place(560, 640)
+	_place(600, 480 if guest else 280)
 	_title(col, "OPTIONS", ORANGE)
-	var cfg := ConfigFile.new()
-	cfg.load(CFG)
 	if guest:
 		var db := AudioServer.get_bus_volume_db(0)
 		_slider(col, "Game sound", 0.0, 100.0, roundf(db_to_linear(db) * 100.0), func(x: float):
@@ -280,29 +338,206 @@ func _options(col: VBoxContainer) -> void:
 	_slider(col, "Mouse speed", 0.2, 3.0, float(v.mouse_sens), func(x: float):
 		v.mouse_sens = x
 		_keep("launcher", "mouse", "%.1f" % x), "x %.1f", 0.1)
-	var old_on := bool(v.oldschool_rect != null and v.oldschool_rect.visible)
-	_switch(col, "Old school look", old_on, func(on: bool):
+	if not guest:
+		_switch(col, "Esc opens this menu", esc_menu, func(on: bool):
+			esc_menu = on
+			_keep("launcher", "esc_menu", "1" if on else "0"))
+		_note(col, "In a mission. Off: Esc goes to the game as before; %s opens this menu. The game's own menu: O (or Game menu here)." % _menu_key_name())
+	var g := Label.new()
+	g.text = "The old school look and Uplink's extras: Graphics."
+	g.add_theme_color_override("font_color", DIM)
+	g.add_theme_font_size_override("font_size", _px(15))
+	col.add_child(g)
+	_button(col, "Back", func(): _show("main"))
+
+
+func _note(col: Control, text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD
+	l.add_theme_color_override("font_color", DIM)
+	l.add_theme_font_size_override("font_size", _px(15))
+	col.add_child(l)
+	return l
+
+
+func _head(col: Control, text: String) -> void:
+	var h := Label.new()
+	h.text = text
+	h.add_theme_font_override("font", font_b)
+	h.add_theme_color_override("font_color", ORANGE)
+	h.add_theme_font_size_override("font_size", _px(15))
+	col.add_child(h)
+
+
+func _menu_key_name() -> String:
+	if model == null:
+		model = Controls.new()
+	var n: String = model.name_of(model.find("menu")["key"])
+	return n if n != "" else "Uplink's menu key"
+
+
+func _hosting() -> bool:
+	for n in v.get_children():
+		if n.get("steam") and n.get("lobby_id") and n.get("peer"):
+			return true
+	return false
+
+
+# ---------------------------------------------------------------- graphics
+# The launcher's In game > Display and Extras, and its window mode, as one page: each saved where the launcher reads
+# it (viewer.cfg [launcher], with the stamp it takes over; the pixel size in [look] as it already was), so the
+# launcher shows the same. Applied at once where Uplink can; the rest is marked for the next start.
+func _graphics(col: VBoxContainer) -> void:
+	_place(1120, 700)
+	_title(col, "GRAPHICS", ORANGE)
+	var cfg := ConfigFile.new()
+	cfg.load(CFG)
+	var cols := HBoxContainer.new()
+	cols.add_theme_constant_override("separation", _px(36))
+	cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(cols)
+	var left := VBoxContainer.new()
+	left.custom_minimum_size.x = 560 * k
+	cols.add_child(left)
+	var right := VBoxContainer.new()
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cols.add_child(right)
+	_head(left, "DISPLAY")
+	_switch(left, "Old school look", bool(v.oldschool_rect != null and v.oldschool_rect.visible), func(on: bool):
 		if v.oldschool_rect != null and v.oldschool_rect.visible != on:
 			v._oldschool_toggle()
 		_keep("launcher", "old_school", "1" if on else "0"))
-	var head := Label.new()
-	head.text = "EXTRAS  (Uplink's own: from the next mission)"
-	head.add_theme_color_override("font_color", ORANGE)
-	head.add_theme_font_size_override("font_size", _px(15))
-	col.add_child(head)
+	var sharp_at := 0
+	for i in SHARP.size():
+		if int(SHARP[i][0]) == int(v.get("old_sharp")):
+			sharp_at = i
+	_seg(left, "Pixels", SHARP.map(func(s): return s[1]), sharp_at, func(i: int): _set_sharp(int(SHARP[i][0])))
+	if not guest:
+		_switch(left, "Uplink HUD colours", bool(v.get("hud_colours")), func(on: bool):
+			_set_hud_colours(on)
+			_keep("launcher", "hud_colours", "1" if on else "0"))
+		var ci := 0
+		for i in CROSS.size():
+			if CROSS[i][0] == str(v.get("crosshair")):
+				ci = i
+		_seg(left, "Crosshair", CROSS.map(func(c): return c[1]), ci, func(i: int):
+			v.crosshair = CROSS[i][0]
+			_keep("launcher", "crosshair", CROSS[i][0]))
+	var caps := CAPS.duplicate()
+	if Engine.max_fps > 0 and not caps.has(Engine.max_fps):
+		caps.append(Engine.max_fps)                      # (another chosen in the launcher: "Other...")
+	_seg(left, "Frame limit", caps.map(func(c): return "Unlimited" if c == 0 else str(c)), caps.find(Engine.max_fps), func(i: int):
+		Engine.max_fps = caps[i]
+		_keep("launcher", "fps_cap", str(caps[i])))
+	var fl = v.get("fps_label")
+	_switch(left, "Frame counter", fl != null and fl.visible, func(on: bool):
+		if v.get("fps_label") != null:
+			v.fps_label.visible = on
+		_keep("launcher", "fps_counter", "1" if on else "0"))
+	_head(left, "WINDOW  (at the next start)")
+	var win: String = str(cfg.get_value("launcher", "window", ""))
+	if get_window().mode == Window.MODE_FULLSCREEN or get_window().mode == Window.MODE_EXCLUSIVE_FULLSCREEN:
+		win = "native" if win == "" else win
+	elif win == "":
+		win = "%dx%d" % [get_window().size.x, get_window().size.y]
+	var wi := -1
+	for i in SIZES.size():
+		if SIZES[i][0] == win:
+			wi = i
+	_seg(left, "Mode", SIZES.map(func(s): return s[1]), wi, func(i: int): _keep("launcher", "window", SIZES[i][0]))
+	_head(right, "EXTRAS  (Uplink's own, not in the game)")
 	for fx in FX:
 		if guest and not fx[2]:
 			continue                                     # (the host's only: his shots, his own legs)
-		var env := "TN_FX_" + str(fx[0]).to_upper()
-		var on := str(cfg.get_value("launcher", "fx_" + str(fx[0]), "0" if OS.get_environment(env) == "0" else "1")) != "0"
 		var id: String = fx[0]
-		_switch(col, fx[1], on, func(x: bool):
-			if id == "cloud_shadows":
-				v.fx_cloud_shadows = x
-			elif id == "stars":
-				v.fx_stars = x
+		var later: bool = id == "look_down"
+		_switch(right, str(fx[1]) + ("  (next start)" if later else ""), _fx_on(id), func(x: bool):
+			_set_fx(id, x)
 			_keep("launcher", "fx_" + id, "1" if x else "0"))
-	_button(col, "Back", func(): _show("main"))
+	_note(right, "Each setting is kept for the next games, and the launcher shows it the same.")
+	var back := _button(col, "Back", func(): _show("main"))
+	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+
+
+# a choice among a few: a row of buttons, the chosen one lit (no drop-down: its list would be a window of its own)
+func _seg(col: Control, text: String, items: Array, sel: int, fn: Callable) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", _px(4))
+	col.add_child(row)
+	var l := Label.new()
+	l.text = text
+	l.custom_minimum_size.x = 140 * k
+	row.add_child(l)
+	var grp := ButtonGroup.new()
+	for i in items.size():
+		var b := Button.new()
+		b.text = str(items[i])
+		b.toggle_mode = true
+		b.button_group = grp
+		b.button_pressed = i == sel
+		b.custom_minimum_size = Vector2(0, 34 * k)
+		b.add_theme_font_size_override("font_size", _px(16))
+		b.add_theme_stylebox_override("pressed", _sb(Color8(30, 62, 56), ORANGE, 2))
+		b.toggled.connect(func(on: bool):
+			if on:
+				fn.call(i))
+		row.add_child(b)
+
+
+func _set_sharp(s: int) -> void:
+	v.old_sharp = s
+	v._oldschool_grid()
+	var cfg := ConfigFile.new()                          # (where Shift+the old school key keeps it, and the launcher reads it)
+	cfg.load(CFG)
+	cfg.set_value("look", "old_sharp", s)
+	cfg.save(CFG)
+
+
+func _set_hud_colours(on: bool) -> void:
+	v.hud_colours = on
+	v.hud_places = PackedByteArray()                     # (on: set again from the bridge's next picture)
+	if not on and v.get("hud_rect") != null and v.hud_rect.material is ShaderMaterial:
+		(v.hud_rect.material as ShaderMaterial).set_shader_parameter("energy", Vector4.ZERO)
+		(v.hud_rect.material as ShaderMaterial).set_shader_parameter("armour", Vector4.ZERO)
+
+
+func _fx_on(id: String) -> bool:
+	return OS.get_environment("TN_FX_" + id.to_upper()) != "0"
+
+
+# an extra on or off at once: its own node made or freed (as viewer.gd _extras makes them), its shader switch set;
+# the environment follows, for what the viewer makes again later (a new map's ground, a guest's window)
+func _set_fx(id: String, on: bool) -> void:
+	OS.set_environment("TN_FX_" + id.to_upper(), "1" if on else "0")
+	if FX_NODES.has(id):
+		var have: Node = null
+		for n in v.get_children():
+			if n.get_script() != null and (n.get_script() as Script).resource_path.get_file() == FX_NODES[id]:
+				have = n
+		if on and have == null:
+			var x: Node = load("res://scripts/" + FX_NODES[id]).new()
+			x.v = v
+			if id != "tracks":
+				x.shots = v._fx_shots()
+			v.add_child(x)
+		elif not on and have != null:
+			have.queue_free()
+	elif id == "cloud_shadows":
+		v.fx_cloud_shadows = on
+		v.cloud_cover = v._cloud_cover(v.sky_clouds) if on and v.sky_clouds != null and int(v.mis_params.get("weather_kind", 0)) == 0 else null
+		var gm: Array = v.ground_mats + ([v.mats["water"]] if v.mats.has("water") else [])
+		for sm in gm:
+			sm.set_shader_parameter("cloud_shadows", false)
+			if on:
+				v._sky_to(sm)                                # (its shadows set again as a new mission sets them)
+	elif id == "stars":
+		v.fx_stars = on
+		if not on and v.env != null and v.env.sky != null and v.env.sky.sky_material is ShaderMaterial:
+			(v.env.sky.sky_material as ShaderMaterial).set_shader_parameter("star_scale", 0.0)
+	elif id == "cliffs":
+		for sm in v.ground_mats:
+			sm.set_shader_parameter("cliffs", on)
 
 
 # the host's briefings and other videos played in the guest's window (coop_movie.gd), or the text briefing only
@@ -394,6 +629,7 @@ func _controls(col: VBoxContainer) -> void:
 	note_label.add_theme_color_override("font_color", DIM)
 	note_label.add_theme_font_size_override("font_size", _px(15))
 	note_label.text = ("Your keys change at once (they are kept for the next game too)." if guest else
+			("Esc opens this menu in a mission (Options), %s too; its Game menu is the game's own menu (O). " % _menu_key_name() if esc_menu else "") +
 			"Uplink's keys change at once. The game's keys change at the next start of the game (Terra Nova Plus reads them when it starts).") + \
 			"  Keys are places on the keyboard: the name shown is yours."
 	col.add_child(note_label)
@@ -630,13 +866,47 @@ func leave() -> void:
 	var t := get_tree().create_timer(0.7)                 # teammate again) (coop_net.gd sends it on: then out of the lobby)
 	t.timeout.connect(func():
 		v._play_send("X".to_ascii_buffer())              # (once more, last)
-		for n in v.get_children():
-			if n.get("steam") and n.get("lobby_id"):
-				if n.peer:
-					n.steam.closeP2PSessionWithUser(n.peer)
-				n.steam.leaveLobby(n.lobby_id)
-				n.lobby_id = 0
+		leave_steam(v)
 		get_tree().quit())
+
+
+# out of the co-op lobby (coop_net.gd): the other side is told at once (a guest who leaves: the host gives his
+# teammate back to the game's AI; a host who quits: his guest gets "the host left - waiting for an invite")
+static func leave_steam(viewer: Node) -> void:
+	for n in viewer.get_children():
+		if n.get("steam") and n.get("lobby_id"):
+			if n.peer:
+				n.steam.closeP2PSessionWithUser(n.peer)
+			n.steam.leaveLobby(n.lobby_id)
+			n.lobby_id = 0
+
+
+# ---------------------------------------------------------------- the game's own menu, quitting (solo / host)
+# "Game menu": the game's own menu in a mission, its Options key (O: fixed in the game, controls.txt "options";
+# Esc alone does nothing in a mission's 3D view, measured: Ctrl+Esc is its Abort mission). Sent as the key would be:
+# its screen comes, Uplink shows it, and Esc is the game's there.
+const GAME_MENU_SC := 0x18
+
+func _game_menu() -> void:
+	close()
+	v._key_hold(GAME_MENU_SC, "umenu", true)
+	get_tree().create_timer(0.12).timeout.connect(func(): v._key_hold(GAME_MENU_SC, "umenu", false))
+
+
+# "Quit": the bridge closes the game (as the launcher's STOP: its window asked to close, ended after 3 s) and stops;
+# Uplink closes itself meanwhile. The launcher then finds its bridge gone and closes what is left of what it started
+# (Terra Nova Plus): as after STOP. A host's guest is told he left (leave_steam).
+func quit_game() -> void:
+	if leaving:
+		return
+	leaving = true
+	_show("closing")
+	if v.has_method("_play_release_all"):
+		v._play_release_all()
+	leave_steam(v)
+	v._play_send("QUIT".to_ascii_buffer())
+	get_tree().create_timer(0.3).timeout.connect(func(): v._play_send("QUIT".to_ascii_buffer()))
+	get_tree().create_timer(1.5).timeout.connect(func(): get_tree().quit())
 
 
 func _notification(what: int) -> void:
@@ -659,7 +929,7 @@ func _hint_show() -> void:
 	if model == null:
 		model = Controls.new()
 	var parts := []
-	parts.append(("Esc" if guest else model.name_of(model.find("menu")["key"])) + ": menu")
+	parts.append(("Esc" if guest or esc_menu else model.name_of(model.find("menu")["key"])) + ": menu")
 	parts.append(model.name_of(model.find("freelook")["key"]) + ": free look")
 	if v.get("order_on") and not guest:
 		parts.append(model.name_of(model.find("order")["key"]) + ": orders")

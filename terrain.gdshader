@@ -58,6 +58,8 @@ uniform sampler2DArray tiles : source_color, filter_nearest_mipmap_anisotropic, 
 uniform sampler2DArray tiles_soft : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform sampler2DArray tiles_wrap : source_color, filter_linear_mipmap_anisotropic, repeat_enable;   // its grain
 uniform sampler2D tilemap : filter_nearest, repeat_disable;
+// 64 x 1: 1 for the built ground's tiles (concrete pads, base floors, hazard stripes: tn_data _built_tiles), 0 natural
+uniform sampler2D tile_built : hint_default_black, filter_nearest, repeat_disable;
 uniform vec2 origin;          // world XZ of grid vertex (0, 0)
 uniform float step_size;      // world units between grid vertices
 uniform float grid_n;         // vertices per side
@@ -218,10 +220,11 @@ vec3 cliff_tile(vec2 cell, vec2 q, vec2 dqx, vec2 dqy, float loff) {
 
 uniform float blend_width = 0.3;      // blend between two cells (share of a cell each side)
 
-// a cell's tile, its mean colour (its smallest level)
-vec3 cell_mean(vec2 cell) {
+// a cell's tile, its mean colour (its smallest level); built: 1 for built ground (tile_built)
+vec3 cell_mean(vec2 cell, out float built) {
 	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
 	float tile = floor(texture(tilemap, (cell + 0.5) / grid_n).r * 255.0 + 0.5);
+	built = texelFetch(tile_built, ivec2(int(tile), 0), 0).r;
 	return textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
 }
 
@@ -235,20 +238,24 @@ float same_kind(vec3 m1, vec3 m2) {
 // neighbours on its own: tiles of the same kind of ground blend, different ones (sand against a concrete pad, a road, a
 // striped line) meet on the cell's own straight edge as the game draws it (the uneven edge ran a third of a cell into
 // the next one: the sand spilled over the concrete pads, training 2). (One different tile among the four made all four
-// meet on square edges: straight seams between snow and snow wherever a rock tile was near, owner 18/11.)
-// w: the four cells' shares (for the grain).
-vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff, out vec4 w) {
+// meet on square edges: straight seams between snow and snow wherever a rock tile was near, owner 18/11.) Built ground
+// (concrete, base floors) never blends, even with itself: each slab on its own square, its drawn joint as the game's
+// (blended, the joint was drawn again along the uneven edge, mirrored: doubled, thicker, owner 18/11).
+// w: the four cells' shares (for the grain); built: the share of built ground here.
+vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff, out vec4 w, out float built) {
 	vec2 qc = q - 0.5;
 	vec2 c0 = floor(qc);
 	vec2 fb = fract(qc);
-	vec3 ma = cell_mean(c0);
-	vec3 mb = cell_mean(c0 + vec2(1.0, 0.0));
-	vec3 mc = cell_mean(c0 + vec2(0.0, 1.0));
-	vec3 md = cell_mean(c0 + vec2(1.0, 1.0));
-	float sab = same_kind(ma, mb);
-	float scd = same_kind(mc, md);
-	float sac = same_kind(ma, mc);
-	float sbd = same_kind(mb, md);
+	vec4 bt;
+	vec3 ma = cell_mean(c0, bt.x);
+	vec3 mb = cell_mean(c0 + vec2(1.0, 0.0), bt.y);
+	vec3 mc = cell_mean(c0 + vec2(0.0, 1.0), bt.z);
+	vec3 md = cell_mean(c0 + vec2(1.0, 1.0), bt.w);
+	vec4 nat = 1.0 - bt;
+	float sab = same_kind(ma, mb) * nat.x * nat.y;
+	float scd = same_kind(mc, md) * nat.z * nat.w;
+	float sac = same_kind(ma, mc) * nat.x * nat.z;
+	float sbd = same_kind(mb, md) * nat.y * nat.w;
 	float bw = game_colours ? blend_live : blend_width;
 	// the uneven edge's reach stops short of the cells' centres (where the next four take over: a share left there was
 	// a faint step)
@@ -261,6 +268,7 @@ vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff, out vec4 w) {
 	float bv = max(bw * sv, 0.002);
 	float wy = smoothstep(0.5 - bv, 0.5 + bv, fb.y + jit.y * sv);
 	w = vec4((1.0 - wab) * (1.0 - wy), wab * (1.0 - wy), (1.0 - wcd) * wy, wcd * wy);
+	built = dot(w, bt);
 	vec3 a = cell_tile(c0, q, dx, dy, loff);
 	vec3 b = cell_tile(c0 + vec2(1.0, 0.0), q, dx, dy, loff);
 	vec3 c = cell_tile(c0 + vec2(0.0, 1.0), q, dx, dy, loff);
@@ -297,7 +305,7 @@ uniform float slope_rock = 0.35;
 uniform float sparkle = 0.0;           // snow: crystals catching the light up close (the ice planet)
 
 // fine details, around 0 (-0.5 .. 0.5): grass (tufts, blades each tuft its own way), sand (wind ripples), rock
-// (grain, dark veins), snow (soft drifts)
+// (grain), snow (soft drifts)
 float grass_fine(vec2 p) {
 	float clump = detail_noised(p * 2.3).x;
 	float a = clump * 6.2832;
@@ -310,9 +318,10 @@ float sand_fine(vec2 p) {
 	return sin(dot(p, vec2(0.8, 0.6)) * 9.0 + w) * 0.35 + (detail_noised(p * 14.0).x - 0.5) * 0.4;
 }
 
+// (no dark veins any more: thin dark curves wherever the ground is grey, roads and pads too, that the game has
+// nowhere, owner 18/11)
 float rock_fine(vec2 p) {
-	float cr = abs(detail_noised(p * 3.0).x - 0.5) * 2.0;
-	return (detail_noised(p * 6.0).x - 0.5) * 0.5 + (detail_noised(p * 22.0).x - 0.5) * 0.35 - (1.0 - smoothstep(0.0, 0.12, cr)) * 0.4;
+	return (detail_noised(p * 6.0).x - 0.5) * 0.5 + (detail_noised(p * 22.0).x - 0.5) * 0.35;
 }
 
 float snow_fine(vec2 p) {
@@ -516,17 +525,18 @@ void fragment() {
 		// only added noise that shimmered as the view moved)
 		float tpp = max(length(dFdx(g)), length(dFdy(g))) * 64.0;
 		vec4 cw;                             // the four cells' shares
+		float cbuilt;                        // and the share of built ground among them
 		float rsm = light_smooth(vl);
 		if (modern && per_index) {
 			// the modern look, tiles lit through the palette's rows: between the rows of the two light levels around
 			// (light_smooth), each texel's colour in both rows mixed (the rows change the hue too: from one row only, the
 			// step stayed as a line of colour)
 			float ra = floor(rsm);
-			vec3 ca = cells_blend(g, dx, dy, wpos, ra * tile_count, cw);
-			vec3 cb = cells_blend(g, dx, dy, wpos, min(ra + 1.0, 15.0) * tile_count, cw);
+			vec3 ca = cells_blend(g, dx, dy, wpos, ra * tile_count, cw, cbuilt);
+			vec3 cb = cells_blend(g, dx, dy, wpos, min(ra + 1.0, 15.0) * tile_count, cw, cbuilt);
 			col = mix(ca, cb, rsm - ra);
 		} else {
-			col = cells_blend(g, dx, dy, wpos, loff, cw);   // cells blended
+			col = cells_blend(g, dx, dy, wpos, loff, cw, cbuilt);   // cells blended
 		}
 		float cliff = 0.0;                   // how much of this pixel is a cliff textured from the side
 		if (cliffs) {
@@ -583,8 +593,9 @@ void fragment() {
 			col *= 1.0 + mv * macro_amount;
 			col *= mix(vec3(1.0), vec3(1.05, 1.0, 0.93), clamp(mv, 0.0, 1.0) * macro_amount * 2.0);
 			float near = 1.0 - smoothstep(4.0, 40.0, length(CAMERA_POSITION_WORLD - wpos));
-			if (near > 0.0) {
-				col *= 1.0 + ground_fine(wpos.xz, col) * fine_amount * 2.0 * near;
+			// (not on built ground: the slabs keep the game's own picture, no rock grain over them)
+			if (near > 0.0 && cbuilt < 0.999) {
+				col *= 1.0 + ground_fine(wpos.xz, col) * fine_amount * 2.0 * near * (1.0 - cbuilt);
 			}
 			vec3 nwg = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 			float steep = 1.0 - smoothstep(0.55, 0.85, nwg.y);

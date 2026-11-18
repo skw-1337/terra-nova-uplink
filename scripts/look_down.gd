@@ -130,6 +130,8 @@ func sent(dy: int) -> void:
 func _process(dt: float) -> void:
 	if v == null or not v.live:
 		return
+	if OS.has_environment(TRACE):
+		_trace()
 	if guest and Time.get_ticks_msec() / 1000.0 - moved > 0.2:
 		head = clampi(int(round(-float(v.cam_to[2]) / rad)), -lim, lim)
 	if OS.has_environment(TEST) and known:
@@ -402,3 +404,27 @@ func _test(dt: float) -> void:
 		v.play_dy += take(rate * dt)
 	if int(t * 2.0) != int((t - dt) * 2.0) and t > -1.0 and t < 7.0 + hold:
 		print("look down test: t %.1f head %d extra %.3f rad, view pitch %.1f deg" % [t, head, extra, rad_to_deg(v.camera.rotation.x)])
+
+
+# tests: TN_BODY_TRACE = a file: each frame, the camera against his body (the view's own suit): time (ms), the body's
+# entity, the camera's place, the body's place, its height from the game (ez), on its own steps, in the air, the view
+# turned past the limit (rad)
+const TRACE := "TN_BODY_TRACE"
+var trace_f: FileAccess
+
+func _trace() -> void:
+	if trace_f == null:
+		trace_f = FileAccess.open(OS.get_environment(TRACE) + ("_guest.csv" if guest else "_host.csv"), FileAccess.WRITE)
+		if trace_f == null:
+			return
+		trace_f.store_line("unix,ms,body,cx,cy,cz,bx,by,bz,ez,gait,gait_y,extra")
+	if FileAccess.file_exists(OS.get_environment(TRACE) + ".down"):   # (tests: the view held 70 degrees down meanwhile)
+		extra = clampf(-(deg_to_rad(70.0) - float(head) / float(unit) * rad), -max_extra, 0.0)
+	var b: Node3D = v.live_player_node
+	var c: Vector3 = v.camera.global_position
+	var ok := b != null and is_instance_valid(b)
+	var p: Vector3 = b.global_position if ok else Vector3.ZERO
+	trace_f.store_line("%.3f,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f" % [Time.get_unix_time_from_system(), Time.get_ticks_msec(), v.live_player, c.x, c.y, c.z,
+			p.x, p.y, p.z, float(b.get_meta("ez", 0.0)) if ok else 0.0, 1 if ok and b.has_meta("gait") else 0,
+			float(b.get_meta("gait_y", 0.0)) if ok else 0.0, extra])
+	trace_f.flush()

@@ -2627,6 +2627,10 @@ while True:
              struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<i', vue if sonde else pid) +
              struct.pack('<i', alarm) + struct.pack('<i', len(refs)) + b''.join(refs), ('127.0.0.1', 47821))
     if guest: guest.step(body, joints, arts, cam, vue if sonde else pid, alarm)   # (cam: what he sees with no suit)
+    if guest and PLAY:                        # his suit in an AI group of its own: coop_squad.py
+        import coop_squad
+        coop_squad.keep_apart(guest.gid if guest.state == 0 else 0, lambda: ordres or __import__('orders').Orders(
+            g, code, A_MASTER, A_PID, post_key, tnp_touches, mods=ordre_mods, log=lambda *a: print(*a, flush=True)))
     if FUM and time.time() - fumee_t > 0.05:  # nuages de fumee : 20 fois par seconde, et un paquet vide a leur fin
         fumee_t = time.time()
         nuages = fumees(tab)

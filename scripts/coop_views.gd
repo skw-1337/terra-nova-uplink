@@ -69,12 +69,20 @@ func key(sc: int) -> bool:
 		KEY_FULL:
 			full = not full
 			apply()
+			_toast("Full view: " + ("on" if full else "off"))
 		KEY_AROUND:
 			around = not around
 			apply()
+			_toast("360 view: " + ("on" if around else "off"))
 		_:
 			return false
 	return true
+
+
+func _toast(text: String) -> void:
+	var vp := _vp()
+	if vp and vp.has_method("_mode_toast"):
+		vp._mode_toast(text)                             # (the modes' notice, mode_toast.gd)
 
 
 func full_on() -> bool:

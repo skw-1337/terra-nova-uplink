@@ -7,7 +7,11 @@
 # +0x10 the EVNT chunk (its 8-byte header), +0x14 the next event to play, +0x30 the intervals (1/120 s) still to wait
 # before it, +0x34 the intervals played, +0x38 its volume now (fades). The game's settings: [0x35982E] the music driver
 # (low 4 bits: music on; bit 4: General MIDI, else FM), [0x359832] its music volume (0-127, Miles' master volume).
-#   'MUS' + version (1) + music volume + flags (1 on, 2 General MIDI) + count, then per slot playing:
+# Which synthesizer plays the General MIDI: TN+ gives its DOSBox (-conf on its command line) a config with
+# 'mididevice = fluidsynth' and its AWE32 bank (TNPlus_music.conf, TNPlus_awe32.sf2) for Music = AWE32; else the
+# Windows synthesizer (Roland).
+#   'MUS' + version (1) + music volume + flags (1 on, 2 General MIDI, 4 played with TN+'s AWE32 bank, 8 the synthesizer
+#   known) + count, then per slot playing:
 #   slot (u8), cue (u16), resource (u16), sequence (u8), status (u8), volume (u8), offset in EVNT (u32), wait (u16),
 #   intervals played (u16)
 # Sent when what plays changes (a sequence starting, ending, its volume), and twice a second (the guest keeps its
@@ -33,6 +37,9 @@ class HostMusic:
         except (OSError, struct.error, ImportError):
             pass
         self.poll_t, self.sent_t, self.said, self.what = 0.0, 0.0, None, None
+        self.synth = synth(getattr(g, 'pid', None))
+        print("music: the host's MIDI synthesizer: %s" % ('AWE32 bank (FluidSynth)' if self.synth == 12 else
+                                                          'Windows (Roland / GS)' if self.synth == 8 else 'not known'), flush=True)
 
     def read(self):
         g = self.g
@@ -59,7 +66,7 @@ class HostMusic:
             rid = self.cues[cue][gm] if 0 <= cue < len(self.cues) else 0
             rows.append((i, cue & 0xFFFF, rid, seq & 0xFF, status, max(0, min(127, svol)),
                          max(0, ptr - evnt - 8), max(0, min(0xFFFF, wait)), played & 0xFFFF))
-        flags = (1 if drv & 0x0F else 0) | (2 if gm else 0)
+        flags = (1 if drv & 0x0F else 0) | (2 if gm else 0) | self.synth
         return vol, flags, rows
 
     def step(self):
@@ -81,6 +88,33 @@ class HostMusic:
             self.said, self.sent_t = key, now
             self.send(b'MUS' + bytes([1, vol, flags, len(playing)]) +
                       b''.join(struct.pack('<BHHBBBIHH', *r) for r in playing))
+
+
+def synth(pid):
+    """the DOSBox configs on its command line, read in order (a later one wins): 12 = FluidSynth (TN+'s AWE32 bank),
+    8 = another MIDI device (the Windows synthesizer), 0 = not known"""
+    try:
+        import psutil
+        args = psutil.Process(int(pid)).cmdline()
+        cwd = psutil.Process(int(pid)).cwd()
+    except Exception:
+        return 0
+    dev = None
+    for i, a in enumerate(args[:-1]):
+        if a.lower() != '-conf':
+            continue
+        f = args[i + 1] if os.path.isabs(args[i + 1]) else os.path.join(cwd, args[i + 1])
+        try:
+            sec = ''
+            for line in open(f, errors='replace'):
+                line = line.split('#')[0].strip()
+                if line.startswith('['):
+                    sec = line.lower()
+                elif sec == '[midi]' and '=' in line and line.split('=')[0].strip().lower() == 'mididevice':
+                    dev = line.split('=', 1)[1].strip().lower()
+        except OSError:
+            pass
+    return 12 if dev == 'fluidsynth' else 8 if args else 0
 
 
 def tick(guest):

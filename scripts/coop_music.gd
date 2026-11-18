@@ -5,8 +5,12 @@
 # GS sound set Windows has (System32\drivers\gm.dls, the bank of the "Microsoft GS Wavetable Synth" a host with
 # Music = Roland hears) played by Godot as samples (pitch, loops, the DLS envelopes, vibrato, pan, the channels'
 # volume, expression and pitch bend). Volume: the game's music volume and the sequence's (Miles scales the channels'
-# volume by both), then his own (Options, Music: 0 = off, the default; nothing is loaded then).
-#   'MUS' + version (1) + the game's music volume (0-127) + flags (1: music on, 2: the General MIDI arrangement)
+# volume by both), then his own (Options, Music: 100 % by default, the game's own level; 0 = off, nothing loaded).
+# A host playing with TN+'s AWE32 bank (Music = AWE32: FluidSynth in his DOSBox, flag 4) is heard with the same bank when
+# this PC has it: TNPlus_awe32.sf2, which TN+ builds next to its TNPlus.exe from the game's FF.SBK and the AWE32 ROM
+# the player brings (components	nplus_coop or tnplus of the Uplink launcher, or TN_MUSIC_SF2); without it, the GS set.
+#   'MUS' + version (1) + the game's music volume (0-127) + flags (1: music on, 2: the General MIDI arrangement,
+#   4: the host plays it with TN+'s AWE32 bank, 8: the host's synthesizer known)
 #   + count, then per sequence playing: slot (u8), cue (u16), resource (u16), sequence (u8), status (u8),
 #   volume (u8, the sequence's now), byte offset in its EVNT (u32), intervals to wait (u16)
 extends Node
@@ -28,6 +32,9 @@ var cues := []                       # cue -> [res A, res B, seq]
 var parsed := {}                     # res * 256 + seq -> sequence (see _parse)
 var dls := {}                        # instruments, waves (see _dls_open)
 var dls_ok := false
+var sf2 := {}                        # TN+'s AWE32 bank: presets, instruments, samples (see _sf2_open)
+var sf2_tried := false
+var awe := false                     # the host plays with the AWE32 bank, and this PC has it: notes from sf2
 var streams := {}                    # wave index -> AudioStreamWAV
 var player: AudioStreamPlayer
 var pb: AudioStreamPlaybackPolyphonic
@@ -53,7 +60,7 @@ static func user_volume() -> float:
 		return clampf(float(env), 0.0, 100.0)
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
-	return clampf(float(cfg.get_value("sound", "guest_music", 0.0)), 0.0, 100.0)
+	return clampf(float(cfg.get_value("sound", "guest_music", 100.0)), 0.0, 100.0)   # (no key: on)
 
 
 # the Options' Music slider (uplink_menu.gd): kept in viewer.cfg [sound] guest_music, applied at once
@@ -196,6 +203,11 @@ func feed(pk: PackedByteArray) -> void:
 	gm = (pk[5] & 2) != 0
 	if user_pct <= 0.5 or not _setup():
 		return
+	var want_awe := (pk[5] & 4) != 0 and _sf2_open()
+	if want_awe != awe:                                        # (another synthesizer: the notes again from the host's place)
+		_log("bank: %s" % ("TN+'s AWE32 bank %s" % sf2.get("path", "") if want_awe else "the GS set (gm.dls)"))
+		_stop_all()
+		awe = want_awe
 	var seen := {}
 	var p := 7
 	for i in pk[6]:
@@ -714,27 +726,65 @@ func _instrument(cs: Dictionary, ch: int) -> Dictionary:
 
 func _note_on(slot: int, s: Dictionary, ch: int, key: int, vel: int) -> void:
 	var cs: Dictionary = s["chans"][ch]
+	var specs := _specs_sf2(cs, ch, key, vel) if awe else _specs_dls(cs, ch, key, vel)
+	for sp in specs:
+		if int(sp["group"]) != 0:                                 # (a drum group: the open hi-hat cut by the closed)
+			for v in voices:
+				if v["slot"] == slot and v["ch"] == ch and v["group"] == int(sp["group"]) and not v["rel"]:
+					_release(v, 0.03)
+	for sp in specs:
+		var pan := clampf((int(cs["pan"]) - 64) / 64.0 + float(sp["pan"]), -1.0, 1.0)
+		var bus := "CoopMusicP%d" % int(roundf((pan + 1.0) * 0.5 * (PANS - 1)))
+		var v: Dictionary = sp.duplicate()
+		v.merge({"slot": slot, "ch": ch, "key": key, "vel": vel, "t": 0.0, "rel": false, "held": false, "rel_db": 0.0,
+				"env": -96.0 if float(sp["atk"]) > 0.0 or float(sp["dly"]) > 0.0 else 0.0}, true)
+		v.erase("stream")
+		var db := _gain(v, s)
+		var pitch := _pitch(v, cs)
+		if voices.size() >= POLY:                                  # (all voices taken: the oldest released one, or the oldest)
+			var victim: Dictionary = voices[0]
+			for o in voices:
+				if o["rel"]:
+					victim = o
+					break
+			pb.stop_stream(victim["id"])
+			voices.erase(victim)
+		v["id"] = pb.play_stream(sp["stream"], 0.0, db, pitch, AudioServer.PLAYBACK_TYPE_DEFAULT, bus)
+		voices.append(v)
+	notes_n += 1
+	if log_to and notes_n % 200 == 1:
+		_log("notes %d (slot %d ch %d prog %d key %d vel %d, %d sounding, %s)" % [notes_n, slot, ch, cs["prog"], key, vel,
+				voices.size(), "AWE32" if awe else "GS"])
+
+
+# what a note plays, from either bank: its sample (stream), pitch from it (base, cents), level (atten, dB), pan (-1..1),
+# volume envelope (dly, atk, hold, dcy, sus_db, rel_t: seconds, dB), vibrato LFO (lfo_hz, lfo_delay, vib, vib_mod:
+# cents), modulation LFO (mlfo_hz, mlfo_delay, mvib cents, trem dB), pitch envelope (eg2 cents, eg2_atk, eg2_dcy,
+# eg2_sus), exclusive group
+static func _spec() -> Dictionary:
+	return {"base": 0.0, "atten": 0.0, "pan": 0.0, "dly": 0.0, "atk": 0.0, "hold": 0.0, "dcy": 0.001, "sus_db": 0.0,
+			"rel_t": 0.02, "lfo_hz": 5.0, "lfo_delay": 0.0, "vib": 0.0, "vib_mod": 0.0, "mlfo_hz": 5.0, "mlfo_delay": 0.0,
+			"mvib": 0.0, "trem": 0.0, "eg2": 0.0, "eg2_atk": 0.0, "eg2_dcy": 0.0, "eg2_sus": 1.0, "group": 0}
+
+
+func _specs_dls(cs: Dictionary, ch: int, key: int, vel: int) -> Array:
 	var inst := _instrument(cs, ch)
 	if inst.is_empty():
-		return
+		return []
 	var rg: Dictionary = {}
 	for r in inst["regs"]:
 		if key >= int(r["lo"]) and key <= int(r["hi"]):
 			rg = r
 			break
 	if rg.is_empty():
-		return
+		return []
 	var smp: Dictionary = rg["smp"] if not (rg["smp"] as Dictionary).is_empty() else _wave_smp(int(rg["wave"]))
 	if smp.is_empty():
-		return
+		return []
 	var stream := _stream(int(rg["wave"]), smp)
 	if stream == null:
-		return
+		return []
 	var art: Dictionary = rg.get("art", inst["art"])
-	if int(rg["group"]) != 0:                                     # (a drum group: the open hi-hat cut by the closed)
-		for v in voices:
-			if v["slot"] == slot and v["ch"] == ch and v["group"] == int(rg["group"]) and not v["rel"]:
-				_release(v, 0.03)
 	# envelope 1 (volume): attack (velocity scales it), decay (the key scales it) to the sustain, release
 	var atk := _tc(art.get("0:0:206"))
 	if art.has("2:0:206"):
@@ -743,44 +793,216 @@ func _note_on(slot: int, s: Dictionary, ch: int, key: int, vel: int) -> void:
 	if art.has("3:0:207"):
 		dcy = _tc(float(art.get("0:0:207", -32768.0)) + float(art["3:0:207"]) * key / 128.0)
 	var sus := clampf(float(art.get("0:0:20a", 1000.0)) / 1000.0, 0.0, 1.0)
-	var rel := _tc(art.get("0:0:209"))
-	var pan := clampf((int(cs["pan"]) - 64) / 64.0 + float(art.get("0:0:4", 0.0)) / 500.0, -1.0, 1.0)
-	var bus := "CoopMusicP%d" % int(roundf((pan + 1.0) * 0.5 * (PANS - 1)))
-	var base := float(key - int(smp["unity"])) * 100.0 + float(smp["fine"])
-	var v := {"slot": slot, "ch": ch, "key": key, "vel": vel, "t": 0.0, "rel": false, "held": false, "group": int(rg["group"]),
-			"atk": atk, "dcy": maxf(dcy, 0.001), "sus_db": -96.0 * (1.0 - sus), "rel_t": maxf(rel, 0.02),
-			"atten": float(smp["atten"]), "base": base, "env": -96.0 if atk > 0.0 else 0.0, "rel_db": 0.0,
+	var sp := _spec()
+	sp.merge({"stream": stream, "group": int(rg["group"]), "atk": atk, "dcy": maxf(dcy, 0.001), "sus_db": -96.0 * (1.0 - sus),
+			"rel_t": maxf(_tc(art.get("0:0:209")), 0.02), "atten": float(smp["atten"]), "pan": float(art.get("0:0:4", 0.0)) / 500.0,
+			"base": float(key - int(smp["unity"])) * 100.0 + float(smp["fine"]),
 			"lfo_hz": 440.0 * pow(2.0, (float(art.get("0:0:104", -851.0)) - 6900.0) / 1200.0),
 			"lfo_delay": _tc(art.get("0:0:105")), "vib": float(art.get("1:0:3", 0.0)),
 			"vib_mod": float(art.get("1:81:3", 0.0)), "trem": float(art.get("1:0:1", 0.0)),
 			"eg2": float(art.get("5:0:3", 0.0)), "eg2_atk": _tc(art.get("0:0:30a")), "eg2_dcy": _tc(art.get("0:0:30b")),
-			"eg2_sus": clampf(float(art.get("0:0:30e", 1000.0)) / 1000.0, 0.0, 1.0), "loop": smp.get("loop", false)}
-	var db := _gain(v, s)
-	var pitch := _pitch(v, cs)
-	if voices.size() >= POLY:                                      # (all voices taken: the oldest released one, or the oldest)
-		var victim: Dictionary = voices[0]
-		for o in voices:
-			if o["rel"]:
-				victim = o
-				break
-		pb.stop_stream(victim["id"])
-		voices.erase(victim)
-	v["id"] = pb.play_stream(stream, 0.0, db, pitch, AudioServer.PLAYBACK_TYPE_DEFAULT, bus)
-	voices.append(v)
-	notes_n += 1
-	if log_to and notes_n % 200 == 1:
-		_log("notes %d (slot %d ch %d prog %d key %d vel %d, %d sounding)" % [notes_n, slot, ch, cs["prog"], key, vel,
-				voices.size()])
+			"eg2_sus": clampf(float(art.get("0:0:30e", 1000.0)) / 1000.0, 0.0, 1.0)}, true)
+	return [sp]
+
+
+# ---------------------------------------------------------------- TN+'s AWE32 bank (SoundFont 2)
+static func sf2_path() -> String:
+	var env := OS.get_environment("TN_MUSIC_SF2")
+	if env != "":
+		return env if FileAccess.file_exists(env) else ""
+	var comp := ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()   # the launcher's components
+	for d in ["tnplus_coop", "tnplus"]:
+		var f := comp.path_join(d).path_join("TNPlus_awe32.sf2")
+		if FileAccess.file_exists(f):
+			return f
+	return ""
+
+
+func _sf2_open() -> bool:
+	if sf2_tried:
+		return not sf2.is_empty()
+	sf2_tried = true
+	var path := sf2_path()
+	if path == "":
+		_log("AWE32 bank: no TNPlus_awe32.sf2 here, the GS set plays")
+		return false
+	var t0 := Time.get_ticks_usec()
+	var d := FileAccess.get_file_as_bytes(path)
+	if d.size() < 12 or d.slice(0, 4).get_string_from_ascii() != "RIFF" or d.slice(8, 12).get_string_from_ascii() != "sfbk":
+		return false
+	var c := {}
+	var smpl := -1
+	for top in _chunks(d, 12, d.size()):
+		if top[0] != "LIST":
+			continue
+		for c2 in _chunks(d, top[1] + 4, top[1] + top[2]):
+			if c2[0] == "smpl":
+				smpl = c2[1]
+			else:
+				c[c2[0]] = [c2[1], c2[2]]
+	for k in ["phdr", "pbag", "pgen", "inst", "ibag", "igen", "shdr"]:
+		if not c.has(k):
+			return false
+	if smpl < 0:
+		return false
+	var shdr := []
+	for i in int(c["shdr"][1]) / 46:
+		var o: int = c["shdr"][0] + 46 * i
+		shdr.append({"start": d.decode_u32(o + 20), "end": d.decode_u32(o + 24), "ls": d.decode_u32(o + 28),
+				"le": d.decode_u32(o + 32), "rate": d.decode_u32(o + 36), "root": d[o + 40], "corr": d.decode_s8(o + 41)})
+	var insts := []
+	var n_inst: int = int(c["inst"][1]) / 22
+	for i in n_inst - 1:
+		var b0 := d.decode_u16(c["inst"][0] + 22 * i + 20)
+		var b1 := d.decode_u16(c["inst"][0] + 22 * (i + 1) + 20)
+		insts.append(_sf2_zones(d, c["ibag"][0], c["igen"][0], b0, b1, 53))
+	var presets := {}
+	var n_ph: int = int(c["phdr"][1]) / 38
+	for i in n_ph - 1:
+		var o: int = c["phdr"][0] + 38 * i
+		var b0 := d.decode_u16(o + 24)
+		var b1 := d.decode_u16(o + 38 + 24)
+		var key := d.decode_u16(o + 22) * 128 + d.decode_u16(o + 20)
+		if not presets.has(key):
+			presets[key] = _sf2_zones(d, c["pbag"][0], c["pgen"][0], b0, b1, 41)
+		if i == 0:
+			presets[-1] = presets[key]                             # (a program the bank lacks: its first, as the card)
+	sf2 = {"d": d, "smpl": smpl, "shdr": shdr, "inst": insts, "presets": presets, "path": path}
+	_log("AWE32 bank: %s, %d presets, %d instruments, %d samples, %.0f ms" % [path, presets.size() - 1, insts.size(),
+			shdr.size(), (Time.get_ticks_usec() - t0) / 1000.0])
+	return true
+
+
+# the zones of an instrument (last = 53, its sample) or a preset (41, its instrument): [global gens, [zone gens...]]
+static func _sf2_zones(d: PackedByteArray, bag: int, gen: int, b0: int, b1: int, last: int) -> Array:
+	var glob := {}
+	var zones := []
+	for b in range(b0, b1):
+		var g0 := d.decode_u16(bag + 4 * b)
+		var g1 := d.decode_u16(bag + 4 * (b + 1))
+		var z := {}
+		for g in range(g0, g1):
+			z[d.decode_u16(gen + 4 * g)] = d.decode_s16(gen + 4 * g + 2)
+		if z.has(last):
+			zones.append(z)
+		elif b == b0:
+			glob = z
+	return [glob, zones]
+
+
+static func _in_range(z: Dictionary, op: int, x: int) -> bool:
+	if not z.has(op):
+		return true
+	var r: int = int(z[op]) & 0xFFFF
+	return x >= (r & 0xFF) and x <= (r >> 8)
+
+
+func _specs_sf2(cs: Dictionary, ch: int, key: int, vel: int) -> Array:
+	var presets: Dictionary = sf2["presets"]
+	var pr: Array = []
+	if ch == 9:
+		pr = presets.get(128 * 128 + int(cs["prog"]), presets.get(128 * 128, []))
+	else:
+		pr = presets.get(int(cs["bank"]) * 128 + int(cs["prog"]), presets.get(int(cs["prog"]), presets.get(-1, [])))
+	var out := []
+	if pr.is_empty():
+		return out
+	for pz in pr[1]:
+		var pzone: Dictionary = (pr[0] as Dictionary).merged(pz, true)
+		if not _in_range(pzone, 43, key) or not _in_range(pzone, 44, vel):
+			continue
+		var ii := int(pzone[41])
+		if ii < 0 or ii >= sf2["inst"].size():
+			continue
+		var inst: Array = sf2["inst"][ii]
+		for iz in inst[1]:
+			var g: Dictionary = (inst[0] as Dictionary).merged(iz, true)
+			if not _in_range(g, 43, key) or not _in_range(g, 44, vel):
+				continue
+			for op in pzone:                                           # (a preset's generators add to the instrument's)
+				if op not in [41, 43, 44]:
+					g[op] = int(g.get(op, _sf2_default(op))) + int(pzone[op])
+			var sp := _sf2_spec(g, key)
+			if not sp.is_empty():
+				out.append(sp)
+			if out.size() >= 4:
+				return out
+	return out
+
+
+static func _sf2_default(op: int) -> int:
+	match op:
+		8:
+			return 13500
+		21, 23, 25, 26, 27, 28, 30, 33, 34, 35, 36, 38:
+			return -12000
+		56:
+			return 100
+		58:
+			return -1
+	return 0
+
+
+func _gv(g: Dictionary, op: int) -> int:
+	return int(g.get(op, _sf2_default(op)))
+
+
+func _tcg(g: Dictionary, op: int, add := 0) -> float:                  # time cents (the lowest: none)
+	return pow(2.0, (_gv(g, op) + add) / 1200.0) if _gv(g, op) > -12000 else 0.0
+
+
+func _sf2_spec(g: Dictionary, key: int) -> Dictionary:
+	var si := _gv(g, 53)
+	if si < 0 or si >= sf2["shdr"].size():
+		return {}
+	var h: Dictionary = sf2["shdr"][si]
+	var start: int = int(h["start"]) + _gv(g, 0) + 32768 * _gv(g, 4)
+	var end: int = int(h["end"]) + _gv(g, 1) + 32768 * _gv(g, 12)
+	var ls: int = int(h["ls"]) + _gv(g, 2) + 32768 * _gv(g, 45)
+	var le: int = int(h["le"]) + _gv(g, 3) + 32768 * _gv(g, 50)
+	var loop := (_gv(g, 54) & 1) != 0 and le > ls
+	if end <= start:
+		return {}
+	var skey := "sf:%d:%d:%d:%d:%d" % [start, end, ls, le, 1 if loop else 0]
+	var stream: AudioStreamWAV = streams.get(skey)
+	if stream == null:
+		var d: PackedByteArray = sf2["d"]
+		var o: int = sf2["smpl"]
+		stream = AudioStreamWAV.new()
+		stream.format = AudioStreamWAV.FORMAT_16_BITS
+		stream.mix_rate = maxi(int(h["rate"]), 1000)
+		stream.data = d.slice(o + 2 * start, o + 2 * end)
+		if loop:
+			stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+			stream.loop_begin = clampi(ls - start, 0, end - start - 1)
+			stream.loop_end = clampi(le - start, 1, end - start)
+		streams[skey] = stream
+	var root: int = _gv(g, 58) if _gv(g, 58) >= 0 else int(h["root"])
+	var sp := _spec()
+	sp.merge({"stream": stream, "group": _gv(g, 57),
+			"base": float(key - root) * _gv(g, 56) + _gv(g, 51) * 100.0 + _gv(g, 52) + int(h["corr"]),
+			"atten": -0.4 * _gv(g, 48) / 10.0,                     # (FluidSynth's attenuation, as the EMU8000's)
+			"pan": clampf(_gv(g, 17) / 500.0, -1.0, 1.0),
+			"dly": _tcg(g, 33), "atk": _tcg(g, 34), "hold": _tcg(g, 35, _gv(g, 39) * (60 - key)),
+			"dcy": maxf(pow(2.0, (_gv(g, 36) + _gv(g, 40) * (60 - key)) / 1200.0), 0.001),
+			"sus_db": -clampf(_gv(g, 37), 0, 1440) / 10.0, "rel_t": maxf(_tcg(g, 38), 0.02),
+			"lfo_hz": 8.176 * pow(2.0, _gv(g, 24) / 1200.0), "lfo_delay": _tcg(g, 23), "vib": float(_gv(g, 6)),
+			"vib_mod": 50.0, "mlfo_hz": 8.176 * pow(2.0, _gv(g, 22) / 1200.0), "mlfo_delay": _tcg(g, 21),
+			"mvib": float(_gv(g, 5)), "trem": -_gv(g, 13) / 10.0,
+			"eg2": float(_gv(g, 7)), "eg2_atk": _tcg(g, 26), "eg2_dcy": _tcg(g, 28),
+			"eg2_sus": 1.0 - clampf(_gv(g, 29), 0, 1000) / 1000.0}, true)
+	return sp
 
 
 # a note's level: velocity, the channel's volume x the sequence's x the game's (as Miles sends it), expression, the
-# sample's own attenuation, its envelope (DLS: 40 log10 of each 0-127 value)
+# sample's own attenuation, its envelope (40 log10 of each 0-127 value), tremolo
 func _gain(v: Dictionary, s: Dictionary) -> float:
 	var cs: Dictionary = s["chans"][v["ch"]]
 	var vol := float(cs["vol"]) * float(s["vol_now"]) * float(master) / (127.0 * 127.0)
 	var g := _cb(v["vel"]) + _cb(vol) + _cb(cs["expr"]) + float(v["atten"]) + float(v["env"])
-	if float(v["trem"]) != 0.0 and float(v["t"]) > float(v["lfo_delay"]):
-		g += float(v["trem"]) * sin(TAU * float(v["lfo_hz"]) * (float(v["t"]) - float(v["lfo_delay"])))
+	var t: float = v["t"]
+	if float(v["trem"]) != 0.0 and t > float(v["mlfo_delay"]):
+		g += float(v["trem"]) * sin(TAU * float(v["mlfo_hz"]) * (t - float(v["mlfo_delay"])))
 	return g
 
 
@@ -794,6 +1016,8 @@ func _pitch(v: Dictionary, cs: Dictionary) -> float:
 	var vib := float(v["vib"]) + float(v["vib_mod"]) * int(cs["mod"]) / 127.0
 	if vib != 0.0 and t > float(v["lfo_delay"]):
 		cents += vib * sin(TAU * float(v["lfo_hz"]) * (t - float(v["lfo_delay"])))
+	if float(v["mvib"]) != 0.0 and t > float(v["mlfo_delay"]):
+		cents += float(v["mvib"]) * sin(TAU * float(v["mlfo_hz"]) * (t - float(v["mlfo_delay"])))
 	if float(v["eg2"]) != 0.0:
 		var e := 1.0
 		if t < float(v["eg2_atk"]):
@@ -815,7 +1039,6 @@ func _note_off(slot: int, ch: int, key: int) -> void:
 				v["held"] = true
 			else:
 				_release(v, float(v["rel_t"]))
-			return
 
 
 func _release_held(slot: int, ch: int) -> void:
@@ -865,12 +1088,17 @@ func _voices(delta: float) -> void:
 		var v: Dictionary = voices[k]
 		v["t"] = float(v["t"]) + delta
 		var t: float = v["t"]
+		var te: float = t - float(v["dly"])
 		if v["rel"]:
 			v["env"] = float(v["env"]) - float(v["rel_rate"]) * delta
-		elif t < float(v["atk"]):
-			v["env"] = maxf(-96.0, 20.0 * log(maxf(t / float(v["atk"]), 0.0001)) / log(10.0))
+		elif te < 0.0:
+			v["env"] = -96.0
+		elif te < float(v["atk"]):
+			v["env"] = maxf(-96.0, 20.0 * log(maxf(te / float(v["atk"]), 0.0001)) / log(10.0))
+		elif te < float(v["atk"]) + float(v["hold"]):
+			v["env"] = 0.0
 		else:
-			v["env"] = maxf(float(v["sus_db"]), -96.0 * (t - float(v["atk"])) / float(v["dcy"]))
+			v["env"] = maxf(float(v["sus_db"]), -96.0 * (te - float(v["atk"]) - float(v["hold"])) / float(v["dcy"]))
 		var s: Dictionary = slots.get(v["slot"], {})
 		if s.is_empty() and not v["rel"]:
 			_release(v, 0.3)                                       # (its sequence ended: faded out)
@@ -882,6 +1110,7 @@ func _voices(delta: float) -> void:
 		if not s.is_empty():                                       # (the level but its envelope, kept for after)
 			v["g0"] = _gain(v, s) - float(v["env"])
 		pb.set_stream_volume(v["id"], maxf(float(v.get("g0", -20.0)) + float(v["env"]), -96.0))
-		if not s.is_empty() and (float(v["vib"]) != 0.0 or float(v["vib_mod"]) != 0.0 or float(v["eg2"]) != 0.0):
+		if not s.is_empty() and (float(v["vib"]) != 0.0 or float(v["vib_mod"]) != 0.0 or float(v["eg2"]) != 0.0
+				or float(v["mvib"]) != 0.0):
 			pb.set_stream_pitch_scale(v["id"], _pitch(v, s["chans"][v["ch"]]))
 		k += 1

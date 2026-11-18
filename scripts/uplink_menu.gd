@@ -6,7 +6,8 @@
 # mission's 3D view the game itself does nothing with Esc alone: its own menu is its Options screen, on O.)
 # Resume; Game menu (solo / host: the game's own menu, its Options screen: sound, detail, abort, exit...); Controls (every
 # key: controls.gd, the same list as the launcher's Controls page); Graphics (the launcher's display settings, at once
-# where Uplink can, else at the next start); Options (the guest's sound, the mouse, Esc); Quit (solo / host: the game,
+# where Uplink can, else at the next start); Options (the music device or the guest's sound, the subtitles, the mouse,
+# the gamepad, Esc...: the launcher's other settings, as Graphics); Quit (solo / host: the game,
 # the bridge and Uplink closed, the launcher then as after STOP; a guest of the host is told the host left) or, for the
 # guest, Leave the game (his teammate back to the game's AI on the host, his window closed: his launcher is then as
 # after STOP). Closing the guest's window leaves the same way.
@@ -324,31 +325,116 @@ func _show(p: String) -> void:
 
 
 # ---------------------------------------------------------------- options
+# The launcher's player settings that are not Graphics (its In game > Controls and Squad, its Settings > Music, its
+# Co-op > Gamepad), on two columns: SOUND and SQUAD, CONTROLS and START. Each saved where the launcher reads it
+# (viewer.cfg [launcher], with the stamp it takes over; a guest's sound in [sound]); applied at once where Uplink can,
+# else marked for the next start. What the launcher said at this start is in the environment (TN_...), which follows
+# each change here, so the page shows the same when it is opened again.
+const MUSIC := [["ROLAND", "Roland / GS"], ["FM", "FM"], ["GAME'S OWN", "Game's own"], ["AWE32", "AWE32"]]
+
 func _options(col: VBoxContainer) -> void:
-	_place(600, 480 if guest else 280)
+	_place(1120, 640 if guest else 680)
 	_title(col, "OPTIONS", ORANGE)
+	var cols := HBoxContainer.new()
+	cols.add_theme_constant_override("separation", _px(36))
+	cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(cols)
+	var left := VBoxContainer.new()
+	left.custom_minimum_size.x = 520 * k
+	cols.add_child(left)
+	var right := VBoxContainer.new()
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cols.add_child(right)
+	_head(left, "SOUND")
 	if guest:
 		var db := AudioServer.get_bus_volume_db(0)
-		_slider(col, "Game sound", 0.0, 100.0, roundf(db_to_linear(db) * 100.0), func(x: float):
+		_slider(left, "Game sound", 0.0, 100.0, roundf(db_to_linear(db) * 100.0), func(x: float):
 			AudioServer.set_bus_volume_db(0, linear_to_db(maxf(x, 0.1) / 100.0) if x > 0.5 else -80.0)
 			_keep("sound", "guest_volume_db", AudioServer.get_bus_volume_db(0)), "%d %%")
 		var mus := preload("res://scripts/coop_music.gd")    # the game's music (g5: coop_music.gd; 100 by default, 0 = off)
-		_slider(col, "Music", 0.0, 100.0, mus.user_volume(), func(x: float): mus.set_user_volume(get_tree(), x), "%d %%")
-		_movie_switch(col)
-	_slider(col, "Mouse speed", 0.2, 3.0, float(v.mouse_sens), func(x: float):
+		_slider(left, "Music", 0.0, 100.0, mus.user_volume(), func(x: float): mus.set_user_volume(get_tree(), x), "%d %%")
+		_head(left, "CO-OP")
+		_movie_switch(left)
+	else:
+		_music(left)
+		_head(left, "SQUAD")
+		_switch(left, "Squadmates' subtitles", bool(v.get("subs_on")), func(on: bool):
+			_set_subs(on)
+			_keep("launcher", "subtitles", "1" if on else "0"))
+		_switch(left, "Order wheel  (next start)", OS.get_environment("TN_ORDER_WHEEL") == "1", func(on: bool):
+			_later("TN_ORDER_WHEEL", "order_wheel", on))
+	_head(right, "CONTROLS")
+	_slider(right, "Mouse speed", 0.2, 3.0, float(v.mouse_sens), func(x: float):
 		v.mouse_sens = x
 		_keep("launcher", "mouse", "%.1f" % x), "x %.1f", 0.1)
+	_switch(right, "Invert mouse", bool(v.get("invert_y")), func(on: bool):
+		v.invert_y = on
+		_keep("launcher", "invert_y", "1" if on else "0"))
+	_switch(right, "Gamepad", OS.get_environment("TN_NO_PAD") != "1", func(on: bool):
+		OS.set_environment("TN_NO_PAD", "0" if on else "1")  # (pad_map.gd, coop_net.gd: read at each input)
+		_keep("launcher", "gamepad", "1" if on else "0"))
 	if not guest:
-		_switch(col, "Esc opens this menu", esc_menu, func(on: bool):
+		_switch(right, "Run instead of Bound  (next start)", OS.get_environment("TN_RUN") == "1", func(on: bool):
+			_later("TN_RUN", "shift_run", on))
+		_switch(right, "Esc opens this menu", esc_menu, func(on: bool):
 			esc_menu = on
 			_keep("launcher", "esc_menu", "1" if on else "0"))
-		_note(col, "In a mission. Off: Esc goes to the game as before; %s opens this menu. The game's own menu: O (or Game menu here)." % _menu_key_name())
-	var g := Label.new()
-	g.text = "The old school look and Uplink's extras: Graphics."
-	g.add_theme_color_override("font_color", DIM)
-	g.add_theme_font_size_override("font_size", _px(15))
-	col.add_child(g)
-	_button(col, "Back", func(): _show("main"))
+		_note(right, "In a mission. Off: Esc goes to the game as before; %s opens this menu. The game's own menu: O (or Game menu here)." % _menu_key_name())
+		_head(right, "START")
+		_switch(right, "Skip the intro videos  (next start)", OS.get_environment("TN_SKIP_INTRO") == "1", func(on: bool):
+			_later("TN_SKIP_INTRO", "skip_intro", on))
+	_note(right, "Each setting is kept for the next games, and the launcher shows it the same. The old school look and Uplink's extras: Graphics.")
+	var back := _button(col, "Back", func(): _show("main"))
+	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+
+
+# the game's music device: Terra Nova Plus's, set in DOSBox when the game starts (the launcher writes it to the
+# TNPlus.ini files when it takes this over: Uplink never writes into TN+'s files), so for the next start; the AWE32
+# ROM as the launcher found it (its Settings page picks it: no Browse here)
+func _music(col: Control) -> void:
+	var now := OS.get_environment("TN_MUSIC").to_upper()
+	var at := -1
+	for i in MUSIC.size():
+		if MUSIC[i][0] == now:
+			at = i
+	var line := Label.new()
+	_seg(col, "Music", MUSIC.map(func(m): return m[1]), at, func(i: int):
+		OS.set_environment("TN_MUSIC", MUSIC[i][0])
+		_keep("launcher", "music", MUSIC[i][0])
+		_rom_line(line, i))
+	line.autowrap_mode = TextServer.AUTOWRAP_WORD
+	line.add_theme_font_size_override("font_size", _px(15))
+	col.add_child(line)
+	_rom_line(line, at)
+
+
+func _rom_line(l: Label, i: int) -> void:
+	var rom := OS.get_environment("TN_AWE32")
+	var t := "At the game's next start."
+	if rom == "1":
+		t += "  AWE32 ROM: found."
+	elif rom == "0":
+		t += "  AWE32 ROM: not found" + (" - Roland / GS plays instead (the launcher's Settings page picks your own dump)." if i == 3 else ".")
+	l.text = t
+	l.add_theme_color_override("font_color", Color8(240, 180, 60) if rom == "0" and i == 3 else DIM)
+
+
+# a setting the launcher gives at the start only (the bridge's): kept, and shown so when the page opens again
+func _later(env: String, key: String, on: bool) -> void:
+	OS.set_environment(env, "1" if on else "0")
+	_keep("launcher", key, "1" if on else "0")
+
+
+# the squadmates' subtitles at once: the viewer shows them or not, the bridge reads them or stops (its 'SUBS')
+func _set_subs(on: bool) -> void:
+	v.subs_on = on
+	OS.set_environment("TN_SUBTITLES", "1" if on else "0")
+	if not on:
+		v.subs.clear()
+		if v.subs_view != null:
+			v.subs_view.visible = false
+	if v.get("play_udp") != null:
+		v._play_send(("SUBS" + ("1" if on else "0")).to_ascii_buffer())
 
 
 func _note(col: Control, text: String) -> Label:

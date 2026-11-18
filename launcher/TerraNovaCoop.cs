@@ -749,12 +749,7 @@ static class Uplink
     {
         if (loading) return;
         int m = musicBox.Selected;
-        Set("music", MUSIC[m]); SaveCfg();
-        try
-        {
-            foreach (string dir in new[] { TnpDir, TnpCoopDir })
-                if (File.Exists(Path.Combine(dir, "TNPlus.ini"))) IniSet(Path.Combine(dir, "TNPlus.ini"), "music", MUSIC[m]);
-        }
+        try { WriteMusic(m); }
         catch (Exception e) { Status("The music setting could not be written: " + e.Message, CRed); MusicUi(); return; }
         MusicUi();
         string next = busy ? " From the game's next start." : "";
@@ -762,6 +757,14 @@ static class Uplink
             Status("AWE32 needs your own dump of the AWE32 sound ROM (awe32.raw, 1 MB, not included): " +
                    (aweSeen != null ? "one was found in " + aweWhere + ", click Use it." : "pick it with Browse.") + " Until then the game plays Roland / GS.", CAmber);
         else Status("Music: " + MUSIC_NAMES[m] + (m == 3 ? ", the game's own AWE32 bank with your ROM." : m == 2 ? ", as the game's own setup says." : ".") + next, CGreen);
+    }
+
+    // the device kept here and written to the TNPlus.ini of each TN+ there is (PLAY's and HOST's)
+    static void WriteMusic(int m)
+    {
+        Set("music", MUSIC[m]); SaveCfg();
+        foreach (string dir in new[] { TnpDir, TnpCoopDir })
+            if (File.Exists(Path.Combine(dir, "TNPlus.ini"))) IniSet(Path.Combine(dir, "TNPlus.ini"), "music", MUSIC[m]);
     }
 
     static void AweBrowse()
@@ -2751,6 +2754,10 @@ static class Uplink
         env["TN_NO_PAD"] = Cfg("gamepad") == "1" ? "0" : "1";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
         env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";
+        // the music device and whether the AWE32 ROM is there: shown by Uplink's menu (Options), changed there for the
+        // game's next start (taken over in AdoptGameSettings, which writes it to the TNPlus.ini files)
+        env["TN_MUSIC"] = MUSIC[Music()];
+        env["TN_AWE32"] = AweOk(Path.Combine(TnpDir, AWE_FILE)) || AweOk(Path.Combine(TnpCoopDir, AWE_FILE)) ? "1" : "0";
         env["TN_ORDER_KEY"] = OrderKey();
         env["TN_ORDER_PANES"] = string.Join(",", Array.ConvertAll(Panes(), x => x.ToString()));
         env["TN_ORDER_TAP_GROUND"] = Num("tap_ground", 1, -1, ORDERS.Length - 1).ToString();
@@ -3982,7 +3989,7 @@ static class Uplink
     static void AdoptNow()
     {
         if (!AdoptGameSettings() || sizeBox == null) return;
-        bool was = loading; loading = true; LoadOptions(); loading = was; KeyLabels();
+        bool was = loading; loading = true; LoadOptions(); loading = was; KeyLabels(); MusicUi();
     }
 
     static bool AdoptGameSettings()
@@ -4007,13 +4014,22 @@ static class Uplink
         if (!s.TryGetValue("stamp", out st) || !long.TryParse(st, out stamp) || (long.TryParse(Cfg("game_stamp"), out had) && had >= stamp)) return false;
         string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks",
             "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps",
-            "hud_colours", "crosshair", "fps_cap", "fps_counter", "window" };       // (its Graphics page)
+            "hud_colours", "crosshair", "fps_cap", "fps_counter", "window",          // (its Graphics page)
+            "subtitles", "invert_y", "gamepad", "shift_run", "order_wheel", "skip_intro" };   // (its Options page)
         foreach (string k in allowed)
         {
             string v;
             if (!s.TryGetValue(k, out v)) continue;
             if (k.StartsWith("key_") && v != "" && !KeyOk(v.ToUpperInvariant()) && v != "MID" && v != "M4" && v != "M5") continue;
             Set(k, v);
+        }
+        // the music device (its Options page, for the game's next start): written to the TNPlus.ini files as the
+        // Settings page does (only here: Uplink never writes into Terra Nova Plus's own files)
+        string mu;
+        if (s.TryGetValue("music", out mu) && Array.IndexOf(MUSIC, mu.ToUpperInvariant()) >= 0 && Array.IndexOf(MUSIC, mu.ToUpperInvariant()) != Music())
+        {
+            try { WriteMusic(Array.IndexOf(MUSIC, mu.ToUpperInvariant())); }
+            catch (Exception e) { Log("the music device from Uplink's menu could not be written: " + e.Message); }
         }
         Set("game_stamp", stamp.ToString());
         SaveCfg();

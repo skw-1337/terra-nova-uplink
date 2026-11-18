@@ -1257,6 +1257,8 @@ class Guest:
                 pk += self.iff_block()                         # (at the very end: read from the end)
             except (OSError, struct.error, IndexError):
                 pass
+            if self.oeil:                                      # the height the game's target camera adds (0x275260)
+                pk += struct.pack('<f', self.i32(self.oeil) / 65536 + 0.1875) + b'TCM'
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         eq = self.equip.packet() if self.gid and self.state == OK else None
         if eq:                                                 # his drone and A.S.F. (guest_equipment.gd)

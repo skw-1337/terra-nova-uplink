@@ -4926,6 +4926,15 @@ func _play_send(bytes: PackedByteArray) -> void:
 
 # coop guest: his right button pressed, with the units he sees under his crosshair (coop_hud.gd pick_units, the
 # game's click rule on what this window draws), nearest first: the host's bridge locks the first it allows
+# coop guest: his click on the lock light (beside his COMM panel): the target camera on or off (coop_hud.gd)
+func _guest_light_click(event: InputEventMouseButton) -> bool:
+	for n in get_children():
+		if n.has_method("lock_light_rect") and n.lock_light_rect().has_point(Vector2(_play_game_pos(event.position))):
+			n.toggle_target_camera()
+			return true
+	return false
+
+
 func _guest_lock_packet() -> PackedByteArray:
 	var b := PackedByteArray([0x42, 2, 1])
 	for n in get_children():
@@ -5370,6 +5379,8 @@ func _input(event: InputEvent) -> void:
 					_play_send(_guest_lock_packet())                # coop guest: a right click is his lock, not lost
 		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
 			free_look = event.pressed
+		elif guest_win and not captured and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and _guest_light_click(event):
+			pass                                          # coop guest: the lock light, his target camera
 		elif guest_win and event.pressed and _guest_cockpit(event, captured):
 			pass                                          # coop guest: his cockpit's buttons, map zoom (coop_panels.gd)
 		elif guest_win and not captured and event.pressed and _guest_map_click(event):

@@ -35,10 +35,10 @@ uniform float shadow_dark = 0.6;               // an object's shadow takes this 
 // the ground along the sun's direction, where it stands over the map (its texels are a world unit, shifted by the
 // same wind offset as the sky's: cloud_off), takes up to cloud_rows rows of the planet's light table away
 uniform bool cloud_shadows = false;
-uniform sampler2D cloud_cover : filter_linear, repeat_enable;   // 256 x 256: how thick the cloud is (0: clear sky)
+uniform sampler2D cloud_cover : filter_linear, repeat_enable;   // 256 x 256: the cloud's rank (1: the sky's thickest)
 uniform vec2 cloud_off = vec2(0.0);            // texels (column, row), as the sky's
 uniform vec4 cloud_sun = vec4(0.0, 1.0, 0.0, 50.0);   // xyz towards the sun, w the ceiling's height
-uniform float cloud_rows = 2.2;
+uniform float cloud_rows = 2.0;                // at most
 // burnt ground (live: a tree destroyed, a blast): the game stamps one of its 4 burn pictures over the whole square of a
 // burnt point, as part of the ground (lit and hazed with it). burn_map: one texel per point, 0 or 1 + its picture;
 // burn_idx: the pictures' palette indices (0 = the ground shows through); burn_pal: the planet's palette (viewer.gd
@@ -329,7 +329,11 @@ void fragment() {
 	float vl = vlight;
 	if (cloud_shadows) {
 		vec3 up = wpos + cloud_sun.xyz * max(cloud_sun.w - wpos.y, 0.0) / cloud_sun.y;   // where the sun's ray meets the ceiling
-		vl -= cloud_rows * smoothstep(0.4, 0.9, texture(cloud_cover, (up.zx + cloud_off) / 256.0).r);
+		// whole rows, under the thickest 45 % of the sky one, under its thickest 20 % two: the steps of the ground's own
+		// light stay where they are. (A share of a row, taken smoothly, moved every one of those steps as the clouds
+		// drifted: waves running over the ground and the cliffs while the player stood still.)
+		float cover = texture(cloud_cover, (up.zx + cloud_off) / 256.0).r;
+		vl -= min(cloud_rows, step(0.55, cover) + step(0.8, cover));
 	}
 	int frow = 15 - clamp(int(floor(vl)), 0, 15);           // the row's file row (0 = full light)
 	float row_light = per_index ? 1.0 : light_rows[frow];
@@ -472,8 +476,15 @@ void fragment() {
 			float lc = dot(col, vec3(0.3, 0.59, 0.11));
 			col = mix(col, vec3(lc) * vec3(0.95, 0.93, 0.9) * 0.78, steep * slope_rock * float(modern));
 			if (sparkle > 0.0 && near > 0.0) {
-				float h = detail_hash(floor(wpos.xz * 40.0) + 0.37);
-				EMISSION += vec3(1.0, 0.98, 0.95) * step(0.996, h) * sparkle * near * near;
+				// only the crystals the picture resolves (more than 1.5 to 3 pixels each): smaller, at a grazing angle or far
+				// off, they came and went with the least move of the view, rows of white dashes flickering over the ground
+				vec2 cell = wpos.xz * 40.0;
+				float seen = 1.0 - smoothstep(0.35, 0.7, max(length(dFdx(cell)), length(dFdy(cell))));
+				// on the snow and the ice only (pale ground): on the planet's bare rock they were white dashes with no cause.
+				// (The cells counted from 0 every 1024: far from the map's origin the hash of three cells in a row came out
+				// the same, dashes by threes.)
+				float h = detail_hash(mod(floor(cell), 1024.0) + 0.37);
+				EMISSION += vec3(1.0, 0.98, 0.95) * step(0.996, h) * sparkle * near * near * seen * smoothstep(0.5, 0.7, lc);
 			}
 		}
 		ALBEDO = col;

@@ -1488,7 +1488,8 @@ def send_hud():
         if hud_rect != (fx0, fy0, fw, fh):
             hud_rect, hud_rate = (fx0, fy0, fw, fh), np.full((fh, fw), 0.6, np.float32)
             hud_mobile = np.zeros((fh, fw), bool)
-            hud_fixe.update(val=win.copy(), n=np.zeros((fh, fw), np.int32), diff=np.zeros((fh, fw), bool))
+            hud_fixe.update(val=win.copy(), n=np.zeros((fh, fw), np.int32), diff=np.zeros((fh, fw), bool),
+                            seul=np.zeros((fh, fw), np.int32), dn=np.zeros((fh, fw), np.int32))
         bouge = win != hud_fixe['val']
         hud_fixe['val'] = win.copy()
         hud_fixe['n'][bouge] = 0; hud_fixe['diff'][bouge] = False
@@ -1521,6 +1522,32 @@ def send_hud():
         # frame (whose pixels do not change) left a block of the game's own picture trailing behind each letter (#11)
         hud_rate[same & bouge] = np.maximum(hud_rate[same & bouge], 0.9)
         clair = ((same & (hud_rate > 0.6)) | eclair) & ~cadre
+        # the 3D read an instant apart twice within a few pictures: the first time is cleared above, the second was not
+        # (its rate still low), and the game's own pixels flashed over Uplink's view for a picture, 2 to 30 at a time:
+        # dashes of one game pixel anywhere over the ground (measured standing still: 9 times in 35 s; lighter and more
+        # of them in the game's smoke). Two kinds, both cleared until they have differed 4 pictures running (a HUD
+        # element stays):
+        # - a pixel that was clear, has no moving HUD element near (as above) and whose colour the 3D shows within 3
+        #   pixels: the 3D itself, a moment apart
+        hud_fixe['dn'] = np.where(same, 0, hud_fixe['dn'] + 1)
+        ys, xs = np.nonzero(~clair & ~cadre & (hud_fixe['dn'] < 4))
+        if 0 < len(ys) <= 4000:
+            sat = np.zeros((fh + 1, fw + 1), np.int32); sat[1:, 1:] = hud_mobile.cumsum(0).cumsum(1)
+            y0, y1, x0, x1 = np.clip(ys - 1, 0, fh), np.clip(ys + 2, 0, fh), np.clip(xs - 12, 0, fw), np.clip(xs + 13, 0, fw)
+            loin = (sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]) == 0
+            v = win[ys, xs]; ic = np.clip(idx, 0, fww - 1); vue = np.zeros(len(ys), bool)
+            for dy in range(-3, 4):
+                yy = np.clip(ys + dy, 0, fh - 1)
+                for dx in range(-3, 4):
+                    xx = np.clip(xs + dx, 0, fw - 1)
+                    vue |= ok[xx] & (hd[yy, ic[xx]] == v)
+            clair[ys[loin & vue], xs[loin & vue]] = True
+        # - a pixel that differs all alone (at most one other within 5 of it, not the frame's), whatever its colour
+        op = ~clair
+        sat = np.zeros((fh + 11, fw + 11), np.int32); sat[6:-5, 6:-5] = op; sat = sat.cumsum(0).cumsum(1)
+        seul = op & ~cadre & ((sat[11:, 11:] - sat[:-11, 11:] - sat[11:, :-11] + sat[:-11, :-11]) <= 2)
+        hud_fixe['seul'] = np.where(seul, hud_fixe['seul'] + 1, 0)
+        clair |= seul & (hud_fixe['seul'] < 4)
         alpha[fy0:fy0 + fh, fx0:fx0 + fw][clair] = 0
         hud_mobile = ~clair & ~cadre
         if (hud_fixe['n'] > 30).mean() > 0.01:

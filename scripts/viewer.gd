@@ -675,7 +675,7 @@ func _load(index: int) -> void:
 		if not m["outer"].is_empty():
 			out_mat = _ground_mat(pl, m["outer"], Vector2(-256, -256), 4.0)
 			snow_mats.append(out_mat)
-	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat)
+	Terrain.build(world, m["detail"], 1.0, Vector2(0, 0), Rect2i(), det_mat, PackedByteArray(), 0.0 if m["outer"].is_empty() else 3.0)
 	if not m["outer"].is_empty():
 		Terrain.build(world, m["outer"], 4.0, Vector2(-256, -256), Rect2i(64, 64, 128, 128), out_mat)
 	# the hills cast no shadow: the map's light levels already hold them (the ground is drawn with them, see
@@ -1253,6 +1253,31 @@ func _relief_image(h: PackedFloat32Array, n: int, step: float) -> Image:
 
 
 # Box blur of an n x n grid, radius r (edges clamped), in two passes of running sums.
+# a box blur over a texture that tiles (its edges wrap round)
+func _wrap_blur(src: PackedFloat32Array, n: int, r: int) -> PackedFloat32Array:
+	var tmp := PackedFloat32Array()
+	tmp.resize(n * n)
+	var out := PackedFloat32Array()
+	out.resize(n * n)
+	var w := float(2 * r + 1)
+	for y in n:
+		var row := y * n
+		var acc := 0.0
+		for k in range(-r, r + 1):
+			acc += src[row + posmod(k, n)]
+		for x in n:
+			tmp[row + x] = acc / w
+			acc += src[row + posmod(x + r + 1, n)] - src[row + posmod(x - r, n)]
+	for x in n:
+		var acc := 0.0
+		for k in range(-r, r + 1):
+			acc += tmp[posmod(k, n) * n + x]
+		for y in n:
+			out[y * n + x] = acc / w
+			acc += tmp[posmod(y + r + 1, n) * n + x] - tmp[posmod(y - r, n) * n + x]
+	return out
+
+
 func _box_blur(src: PackedFloat32Array, n: int, r: int) -> PackedFloat32Array:
 	var tmp := PackedFloat32Array()
 	tmp.resize(n * n)
@@ -1420,6 +1445,7 @@ func _haze_globals() -> void:
 # wind moves it (live: the game's own offset, SKYO; the viewer: from the mission's wind); the desert missions' clouds
 # also ripple and sway in a circle of 30 texels (0x2A6F38). At most 10 times a second (a sky's change redraws its light).
 var mis_params := {}
+var cloud_sh := Vector2.ZERO           # the cloud shadows' offset (texels): cloud_base, eased
 var cloud_base := Vector2.ZERO         # texels (column, row)
 var cloud_set := Vector2(-1.0, -1.0)   # (cloud_px, time) last set
 var cloud_sway := 0                    # live: the game's sway phase
@@ -1480,6 +1506,19 @@ func _clouds_update() -> void:
 		if desert:
 			sm.set_shader_parameter("ripple", ripple_tex)
 	cloud_set = Vector2(px, now)
+
+
+# The cloud shadows' place (terrain.gdshader): the clouds' steady drift only, eased, every frame. The desert skies'
+# sway (+/- 30 texels round and round) and ripple are the clouds' own shimmer: carried onto the ground they made its
+# shadows swing to and fro, a wave over the ground and the cliffs that moved by itself; and moved 10 times a second
+# with the sky (_clouds_update) the shadows' edges went by jerks.
+func _cloud_shadows_drift(delta: float) -> void:
+	if cloud_cover == null:
+		return
+	var ds := Vector2(wrapf(cloud_base.x - cloud_sh.x, -128.0, 128.0), wrapf(cloud_base.y - cloud_sh.y, -128.0, 128.0))
+	cloud_sh = cloud_base if ds.length() > 20.0 else cloud_sh + ds * (1.0 - exp(-delta * 2.0))
+	for sm in ground_mats:
+		sm.set_shader_parameter("cloud_off", cloud_sh)
 
 
 # The two 256-entry tables of the desert clouds (0x2A6F38): two waves each (1 and 3 periods over the table, 6144 and
@@ -3023,7 +3062,9 @@ func _set_sky(path: String, light: Vector2) -> void:
 		# the water mirrored a white horizon under a black night sky)
 	sky_clouds = sk["clouds"]
 	sky_haze = haze
-	cloud_cover = _cloud_cover(sk["clouds"]) if fx_cloud_shadows else null
+	# (no cloud shadows where it rains or snows: the sky is overcast, and its storm wind sent the shadows racing over
+	# the ground)
+	cloud_cover = _cloud_cover(sk["clouds"]) if fx_cloud_shadows and int(mis_params.get("weather_kind", 0)) == 0 else null
 	mat.set_shader_parameter("has_ir", false)
 	if live and cur_ir.has(60) and sk.get("cloud_idx") != null:   # infrared: the cloud layer through table 60 (0x2A7654)
 		var c60: PackedColorArray = cur_ir[60]
@@ -8291,6 +8332,7 @@ func _process(delta: float) -> void:
 		(weather_node.material_override as ShaderMaterial).set_shader_parameter("now", weather_t)
 	_sync_sun_half()
 	_clouds_update()
+	_cloud_shadows_drift(delta)
 	_sky_items_place()
 	sky_root.position = camera.position
 	if live:
@@ -8406,13 +8448,19 @@ func _cloud_cover(clouds: Texture2D) -> ImageTexture:
 	sorted.sort()
 	var lo: float = sorted[6553]
 	var hi: float = sorted[58982]
-	if hi - lo < 0.02:
-		return null                                     # (a plain sky: nothing to cast)
-	var grey := sat / 65536.0 < 0.04                    # a storm's ceiling
-	lum = _box_blur(lum, 256, 2)
+	# a plain or grey overcast sky (a storm's ceiling, the pale skies of the grey planets) lights the ground evenly: no
+	# patches (its texture's faint grain cast as shadows read as dirt sliding over the ground); nor at night
+	if hi - lo < 0.08 or sat / 65536.0 < 0.04 or sun_to.y < 0.08:
+		return null
+	# big soft patches: the cloud texture blurred wide, wrapping round as it tiles (no seam), three passes
+	for _round in 3:
+		lum = _wrap_blur(lum, 256, 10)
+	# each texel's rank among the sky's (0 the thinnest, 1 the thickest): the shader shades the thickest shares of the
+	# sky, whatever the texture's contrast once blurred
+	var ranked := lum.duplicate()
+	ranked.sort()
 	var out := PackedByteArray()
 	out.resize(65536)
 	for i in 65536:
-		var c := clampf((lum[i] - lo) / (hi - lo), 0.0, 1.0)
-		out[i] = int((0.4 + 0.25 * (1.0 - c) if grey else c) * 255.0)   # (a storm: 0.4 to 0.65, a row at most)
+		out[i] = int(255.0 * ranked.bsearch(lum[i]) / 65535.0)
 	return ImageTexture.create_from_image(Image.create_from_data(256, 256, false, Image.FORMAT_R8, out))

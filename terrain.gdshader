@@ -207,15 +207,49 @@ vec2 cliff_fold(vec2 q) {
 	return 1.0 - abs(1.0 - mod(q, 2.0));
 }
 
+// The side view of a cell's tile, laid as it is, repeated the same way all up a face (folded at each tile's edge): a
+// tall face showed its tile as a grid of mirrored patterns, the same down the whole height and from cell to cell
+// (players: "too predictable", the stretched tiles looked better). So the face is cut into bands up it, CLIFF_BAND
+// tiles high, each cell with its own start (the bands of two cells side by side don't line up) and a wavy edge; each
+// band of a cell takes the tile from its own place (a shift within the folded pair of tiles, across and up) and some
+// of them turned a quarter (across and up swapped). Two bands meet in a blend over CLIFF_BLEND of a band, half and half
+// on their edge: no seam. Only the game's own tile, as big as on the flat; the cells around blend as before.
+uniform float cliff_band = 1.0;       // the bands' height (tiles)
+const float CLIFF_BLEND = 0.18;       // the blend where two bands meet (share of a band, each side of its edge)
+
+vec4 cliff_hash(vec2 c) {
+	vec4 p = fract(c.xyxy * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+	p += dot(p, p.wzxy + 33.33);
+	return fract((p.xxyz + p.yzzw) * p.zywx);
+}
+
+vec3 cliff_band_tile(float tile, vec2 q, vec2 dqx, vec2 dqy, vec4 h, float loff) {
+	bool turn = h.z > 0.6;
+	vec2 qq = (turn ? q.yx : q) + floor(h.xy * 8.0) * 0.25;
+	vec2 gx = turn ? dqx.yx : dqx;
+	vec2 gy = turn ? dqy.yx : dqy;
+	vec2 uv = cliff_fold(qq) * (63.0 / 64.0) + 0.5 / 64.0;
+	if (per_index) {
+		return textureGrad(tiles_lit_soft, vec3(uv, tile + loff), gx, gy).rgb;
+	}
+	return textureGrad(tiles_soft, vec3(uv, tile), gx, gy).rgb;
+}
+
 // the tile of a cell seen from the side: q = (along the face, up it) in cells, dq its derivatives
 vec3 cliff_tile(vec2 cell, vec2 q, vec2 dqx, vec2 dqy, float loff) {
 	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
 	float tile = floor(texture(tilemap, (cell + 0.5) / grid_n).r * 255.0 + 0.5);
-	vec2 uv = cliff_fold(q) * (63.0 / 64.0) + 0.5 / 64.0;
-	if (per_index) {
-		return textureGrad(tiles_lit_soft, vec3(uv, tile + loff), dqx, dqy).rgb;
+	vec2 key = vec2(cell.x + cell.y * 131.0, 7.0);
+	float s = q.y / cliff_band + cliff_hash(key).w + (detail_noised(q * vec2(0.9, 0.35)).x - 0.5) * 0.5;
+	float b = floor(s);
+	float f = s - b;
+	vec3 c = cliff_band_tile(tile, q, dqx, dqy, cliff_hash(key + vec2(0.0, b * 1.37 + 1.0)), loff);
+	float w = 0.5 - 0.5 * smoothstep(0.0, CLIFF_BLEND, min(f, 1.0 - f));
+	if (w > 0.004) {
+		float b2 = f < 0.5 ? b - 1.0 : b + 1.0;
+		c = mix(c, cliff_band_tile(tile, q, dqx, dqy, cliff_hash(key + vec2(0.0, b2 * 1.37 + 1.0)), loff), w);
 	}
-	return textureGrad(tiles_soft, vec3(uv, tile), dqx, dqy).rgb;
+	return c;
 }
 
 uniform float blend_width = 0.3;      // blend between two cells (share of a cell each side)

@@ -280,7 +280,8 @@ VUE_ENT = 0x38FC90 if FR else 0x38FBE0
 # tour ; son entite (mot a +0x5A : equipier ou sonde ; le joueur = la vue principale) dit laquelle. Cadres dans l'ecran 320 x 400 : VUE (17, 276)-(99, 380), sonde
 # (217, 264)-(299, 368) (regions 1 et 3 de la table 0x389DF8).
 #   'SUBV' + n (u8) + n x [panneau (u8 : 1 VUE, 2 cible, 3 sonde, 4 the player's own view in the drone's panel,
-#   5 to 7 the 360 view's left, back and right cameras, 8 the player's own view in the map's panel),
+#   5 to 7 the 360 view's left, back and right cameras, 8 the player's own view in the map's panel; + 0x80: the
+#   drone is coming back, its panel shows "DRONE / RECALLED" and no buttons, see RAPPEL),
 #   entite (i32), x, y, z, cap, tangage, zoom (f32),
 #   cadre x0, y0, x1, y1 (i16)]
 VUEPT = 0x41EC18 if FR else 0x41EB68
@@ -292,6 +293,12 @@ REGIONS = 0x389EA8 if FR else 0x389DF8   # table des cadres des panneaux du cock
 # view (+0x28, a word). A panel in mode 8 while the main view is still the player's: the map is in the HUD (the
 # game's own picture: the HUD thread then sends the 3D window as it is, carte_hud)
 PANNEAUX = MODES - 0x12
+# the player's drone recalled (byte, English 0x3968B4, set by RECALL / Ctrl+Home 0x283AFC until it is put away): its
+# panel (modes 0x11 and 0x13, 0x274F30) then draws its camera on the whole panel, "DRONE / RECALLED" in red (0x44)
+# at 24, 24 over it and no button bar (the game's text was hidden under Uplink's camera, its buttons' place showed
+# the game's own picture). The other red line there, the Explod-O-Drone's target lock (0x3968B5 and a target, 40, 15),
+# comes with its buttons: the viewer lets the game's red letters through anywhere on that panel
+RAPPEL = 0x3968B4 + (0xB0 if FR else 0)
 carte_hud = False
 echange_hud = False          # a panel shows the HUD's own view (mode 8): something is swapped with the HUD
 hud_carte_n = 0              # pictures running whose 3D window is not the game's 3D (send_hud)
@@ -2627,6 +2634,8 @@ while True:
     # each view in its panel's frame (the player's own view is sent as 8 when its panel is not the drone's, which has
     # its own buttons); none: said too, the viewer takes them off
     sv = [(8 if k == 4 and ou[4] != 2 else k, v, cadre(ou[k])) for k, v in sv]
+    rappel = any(k == 3 for k, v, c in sv) and g.read(RAPPEL, 1)[0] != 0
+    sv = [(k | 0x80 if k == 3 and rappel else k, v, c) for k, v, c in sv]
     sv = [(k, v, c) for k, v, c in sv if c is not None]
     s.sendto(b'SUBV' + bytes([len(sv)]) + b''.join(struct.pack('<Bi6f4h', k, v[1], *v[2:], *c) for k, v, c in sv),
              ('127.0.0.1', 47821))

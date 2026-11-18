@@ -70,6 +70,7 @@ const SUB_RECTS := {1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: tru
 const SUB_FOV_PROBE := 78.0      # the probe's: its compass labels (45 deg apart) seen at 340 of its 670 pixels (the
                                   # game's code says 84.55 at zoom 1, as SUB_FOV: kept until a live check settles it)
 const PROBE_TILT := 0.3
+const SUB_BAR := 16                # the drone's panel: its button bar, the bottom rows of its frame (not under the view)
 const SUB_FOV := 84.55            # horizontal, degrees: the game's panel cameras at zoom 1, 2 atan(1 / 1.1) (its
                                   # projection multiplies the zoom by 1.1, 0x29e7b3), over their whole canvas
 const SUB_FOV_SELF := 84.55       # the player's own view in a panel (4, 8): the game's own field (its compass
@@ -6405,7 +6406,10 @@ func _sub_views(q: PackedByteArray) -> void:
 		var o := 5 + 37 * j
 		if o + 37 > q.size():
 			break
-		var panel := q[o]
+		var panel := q[o] & 0x7F
+		# the drone recalled (the bridge's + 0x80): its panel has no button bar then, the game's red "DRONE / RECALLED"
+		# over its camera
+		var recalled := panel == 3 and q[o] >= 0x80
 		if panel in [5, 6, 7] and play and not guest_win:
 			_mode_toast("360 view", "360", true, true)  # (the game's 360 view: its mirrors; stale: off)
 		if not SUB_RECTS.has(panel):
@@ -6443,7 +6447,11 @@ func _sub_views(q: PackedByteArray) -> void:
 		var x1 := q.decode_s16(o + 33)
 		var y1 := q.decode_s16(o + 35)
 		# (the 360 view's and the map panel's, 5 to 8: the whole frame, as the target camera's)
-		var r := Rect2(x0, y0, x1 - x0, y1 - y0 - 16) if panel in [3, 4] else (Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 1)
+		# the drone's panel (3, and 4: the player's own view in it): the whole frame. The game draws its camera on all
+		# of it and its button bar over the bottom rows (0x275654: 16 rows, 8 in the small layout, filled with colour
+		# 0x26, the labels in 0x1D), and no bar at all while the drone flies back or in a training mission: the frame
+		# less 16 rows left the game's own low-res picture showing under Uplink's view there (owner, MISS47)
+		var r := Rect2(x0, y0, x1 - x0, y1 - y0) if panel in [3, 4] else (Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 1)
 				if panel != 1 else Rect2(x0, y0 + 1, x1 - x0, y1 - y0 - 17))
 		var tr: TextureRect = sv["rect"]
 		tr.position = r.position * k
@@ -6463,6 +6471,11 @@ func _sub_views(q: PackedByteArray) -> void:
 		(tr.material as ShaderMaterial).set_shader_parameter("label_rows", 16.0 if panel in [3, 4] else (r.size.y if panel == 2 else 0.0))
 		(tr.material as ShaderMaterial).set_shader_parameter("label_a", 47.0 if panel in [3, 4] else 68.0)
 		(tr.material as ShaderMaterial).set_shader_parameter("label_b", 59.0 if panel in [3, 4] else 69.0)
+		# the drone's panel: the game's red messages over its camera, anywhere ("DRONE / RECALLED" at 24, 24 while it
+		# flies back, the Explod-O-Drone's target lock at 40, 15: colour 0x44, index 68, as the target camera's name)
+		(tr.material as ShaderMaterial).set_shader_parameter("alert", 68.0 if panel in [3, 4] else -1.0)
+		# and its buttons, where the game has drawn them (the bar's colour down to the frame's last row)
+		(tr.material as ShaderMaterial).set_shader_parameter("bar_rows", float(SUB_BAR) if panel in [3, 4] and not recalled else 0.0)
 		# the 360 view's panels are mirrors: what is on the player's left is on the left of the one behind him, and the
 		# three read as one strip from his left shoulder round his back to his right one (the game turns each row of
 		# their picture over once drawn: its panels' flag 0x40, set with these three views only)
@@ -6481,6 +6494,15 @@ func _sub_views(q: PackedByteArray) -> void:
 		var zoom: float = maxf(0.2, q.decode_float(o + 25))
 		var field := SUB_FOV_PROBE if panel == 3 else (SUB_FOV_SELF if panel in [4, 8] else (SUB_FOV_AROUND if panel >= 5 else SUB_FOV))
 		cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(field) / 2.0) / zoom))
+		if panel in [3, 4]:
+			# the picture as it was over the frame less its bar (where its horizon was set against the game's), the
+			# bar's rows more of it below: the frustum's window kept where it was at the top, its centre SUB_BAR / 2
+			# rows lower (one row of the 400 = 1.2 x k.y pixels of the viewport; near-plane units: its width / its pixels)
+			cam.projection = Camera3D.PROJECTION_FRUSTUM
+			cam.size = 2.0 * cam.near * tan(deg_to_rad(cam.fov) / 2.0)
+			cam.frustum_offset = Vector2(0.0, -0.5 * SUB_BAR * cam.size * 1.2 * k.y / maxf(1.0, float(px.x)))
+		elif cam.projection != Camera3D.PROJECTION_PERSPECTIVE:
+			cam.projection = Camera3D.PROJECTION_PERSPECTIVE
 		var h := q.decode_float(o + 17)
 		var want_pos := Vector3(q.decode_float(o + 5), q.decode_float(o + 13), q.decode_float(o + 9))
 		# the probe's pitch in the viewpoint (~11 deg down) is drawn much flatter by the game: a third of it puts the

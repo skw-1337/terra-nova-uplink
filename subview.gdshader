@@ -12,6 +12,11 @@ uniform vec4 frame = vec4(0.0, 0.0, 320.0, 400.0);
 uniform float label_rows = 0.0;
 uniform float label_a = 47.0;
 uniform float label_b = 59.0;
+// and anywhere in the frame, the game's index alert (the drone's red messages; -1: none)
+uniform float alert = -1.0;
+// the drone panel's button bar: in the frame's bottom bar_rows rows, the game's bar (its fill 0x26, its labels 0x1D)
+// let through in the columns where the fill reaches the frame's last row (none: the game drew no bar there)
+uniform float bar_rows = 0.0;
 // old school (F12): the game's pixel grid of this small view (one cell per pixel of its 320 x 400 screen, or the
 // finer grid the player picked, viewer.gd old_sharp: cells across and down the view) and the planet's palette
 uniform bool old = false;
@@ -73,6 +78,15 @@ void fragment() {
 	}
 	if (cursor(p)) {
 		discard;
+	}
+	if (alert >= 0.0 && idx(p) == alert) {
+		discard;
+	}
+	if (p.y >= frame.y + frame.w - bar_rows) {
+		float k = idx(p);
+		if ((k == 38.0 || k == 29.0) && idx(vec2(p.x, frame.y + frame.w - 0.5)) == 38.0) {
+			discard;
+		}
 	}
 	if (p.y < frame.y + label_rows) {
 		float k = idx(p);

@@ -7054,14 +7054,14 @@ func _own_body_capture() -> void:
 	if not _own_body_mode(n):
 		return
 	var to := [n.get_meta("pkt", Vector2(n.position.x, n.position.z)), float(n.get_meta("ez", n.position.y)), n.rotation.y]
-	var last = n.get_meta("own_drawn", null)
+	var last = n.get_meta("own_drawn") if n.has_meta("own_drawn") else null     # (get_meta with a null default says an error)
 	# from where it is drawn (unless the camera jumped with this view, or the suit did), over the camera's easing; a
 	# view that changed nothing of the camera (the game turns the suit a picture after its view) eased as long from now
 	var cam_new := cam_t != own_cam_t
 	var jumped: bool = cam_new and cam_from[0] == cam_to[0] and cam_from[1] == cam_to[1] and cam_from[2] == cam_to[2]
 	var eased: bool = last != null and not jumped \
 			and (to[0] as Vector2).distance_to(last[0]) < SMOOTH_JUMP and absf(float(to[1]) - float(last[1])) < SMOOTH_JUMP
-	if last != null and not cam_new and to == n.get_meta("own_to", null):
+	if last != null and not cam_new and to == (n.get_meta("own_to") if n.has_meta("own_to") else null):
 		return                                       # (the same again: its easing goes on)
 	n.set_meta("own_from", last if eased else to)
 	n.set_meta("own_to", to)

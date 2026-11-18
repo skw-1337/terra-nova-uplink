@@ -1,0 +1,47 @@
+{
+ "channels": {
+  "stable": {
+   "version": "2.7.1",
+   "uplink": "release-2.7.1",
+   "tnplus": "origin/stable", "tnplus_version": "1.2.6",
+   "tnplus_coop": "origin/coop-stable", "tnplus_coop_version": "1.2.3-coop3",
+   "min_launcher": "2.7.1",
+   "changelog": [
+    {"section": "Launcher", "items": [
+     "Updates are checked before they replace anything, and nothing is replaced while the game runs.",
+     "Beta updates in Settings (off unless you switch it on).",
+     "Tools > Roll back to previous version."]}
+   ]
+  },
+  "beta": {
+   "version": "2.8.0-beta.1",
+   "uplink": "audit-launcher-beta",
+   "tnplus": "origin/main", "tnplus_version": "1.2.7",
+   "tnplus_coop": "origin/coop", "tnplus_coop_version": "1.2.3-coop3",
+   "min_launcher": "2.8.0-beta.1",
+   "changelog": [
+    {"section": "Co-op", "items": [
+     "The guest sees the host's briefing and launch videos, in step.",
+     "The guest hears the game's music and the squad's radio.",
+     "Your own drone, A.S.F., infrared, full view and 360 view as the guest.",
+     "Two players on different versions are told who runs what."]},
+    {"section": "Game", "items": [
+     "Esc opens Uplink's menu in solo and host: game menu, graphics, options, quit.",
+     "Footprints and vehicle tracks from each model.",
+     "Ground tiles blend only with their own kind: no sand over concrete.",
+     "Smoke grenades drawn from the game's own particles."]},
+    {"section": "Launcher", "items": [
+     "Music device and AWE32 ROM on the Settings page.",
+     "Beta updates, roll back to the previous version."]}
+   ],
+   "invitation": {
+    "title": "Uplink 2.8 is in beta",
+    "subtitle": "Try the next version before everyone else. You can go back to stable at any time.",
+    "images": [
+     {"url": "https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/release/beta/1.jpg", "file": "green_valley.jpg", "caption": "Ground that blends as the game's"},
+     {"url": "https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/release/beta/2.jpg", "file": "power_suit.jpg", "caption": "Footprints of every suit"}
+    ]
+   }
+  }
+ }
+}

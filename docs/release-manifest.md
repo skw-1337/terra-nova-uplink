@@ -80,3 +80,6 @@ than `stable` (testers would be sent back): promote it (`stable` = the final ver
 `TN_UPLINK_TEST_SERVER=http://127.0.0.1:PORT` (loopback only, ignored otherwise) sends every GitHub request of a
 launcher to `tools/release/fake_github.py`, which can also break chosen requests (404, 403, 429, slow, cut,
 corrupt). `TN_UPLINK_TEST_FREE=<bytes>` (only together with it) pretends the disk has that much room.
+Without a window: `--install play` (exit 0; 3 = the launcher replaced itself, run again), `--rollback`,
+`--selftest` (prints the version), `--cooptext "<Uplink co-op line>"...` (the session line it gives).
+`docs/release.src.example.json` / `docs/release.example.json`: the spec and the file it gives for 2.7.1 + 2.8.0-beta.1.

@@ -382,6 +382,10 @@ func _options(col: VBoxContainer) -> void:
 			_keep("sound", "guest_volume_db", AudioServer.get_bus_volume_db(0)), "%d %%")
 		var mus := preload("res://scripts/coop_music.gd")    # the game's music (g5: coop_music.gd; 100 by default, 0 = off)
 		_slider(left, "Music", 0.0, 100.0, mus.user_volume(), func(x: float): mus.set_user_volume(get_tree(), x), "%d %%")
+		var awe_now := 1 if OS.get_environment("TN_MUSIC").to_upper() == "AWE32" else 0   # (his own synthesizer, at once:
+		_seg(left, "Sound set", ["Roland / GS", "AWE32"], awe_now, func(i: int):   # coop_music.gd reads it each packet)
+			OS.set_environment("TN_MUSIC", "AWE32" if i == 1 else "ROLAND")
+			_keep("launcher", "music", "AWE32" if i == 1 else "ROLAND"))
 		_head(left, "CO-OP")
 		_movie_switch(left)
 	else:

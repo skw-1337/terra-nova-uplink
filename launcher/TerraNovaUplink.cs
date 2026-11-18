@@ -98,9 +98,9 @@ static partial class Uplink
         LogPath = Path.Combine(Comp, "logs", "launcher.log");
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;   // TLS 1.2 (GitHub, python.org, PyPI)
         Migrate();
-        UpdStartup();                                          // (release channels: the launcher this one replaced)
         bool had = File.Exists(Ini);
         LoadCfg();
+        UpdStartup();                                          // (release channels: the launcher this one replaced; --rollback)
         AdoptGameSettings();                                   // (what Uplink's own menu changed since: its viewer.cfg)
         // The keys a new installation comes with (2: freelook on F), as against one that was already there (1: on
         // Y): said once, when the settings do not say yet, so that nobody's key changes with an update
@@ -5239,7 +5239,18 @@ static partial class Uplink
             UpdNoticeOnce("Uplink " + t.V.Short + " is skipped (you rolled back): Tools > Check for updates installs it.", CDim);
             t = RelInstalled();
         }
-        if (!UpdTakeLock(resume ? 20000 : 0))
+        bool locked;
+        try { locked = UpdTakeLock(resume ? 20000 : 0); }
+        catch (Exception e)
+        {                                                     // (components\updates can't even be made: a read-only folder)
+            if (!have) throw;
+            UpdLast("failed readonly");
+            Log("update lock: " + e.Message);
+            Status(e is UnauthorizedAccessException ? ReadOnlyText() : "The update couldn't start (" + e.Message + "): the installed version still plays.", CRed);
+            UpdLabel("Update not installed: read-only folder", CRed);
+            return 1;
+        }
+        if (!locked)
         {
             UpdLast("locked");
             UpdNoticeOnce("Another Uplink launcher is updating this folder: playing the installed version.", CAmber);
@@ -5261,13 +5272,33 @@ static partial class Uplink
             if (!have) throw new Exception("the download failed (" + e.Message + ")");
         }
         catch (UnauthorizedAccessException) { UpdLast("failed readonly"); Status(ReadOnlyText(), CRed); if (!have) throw; }
+        catch (Exception e)
+        {                                                     // (anything else: never in the way of PLAY when something is installed)
+            if (!have) throw;
+            UpdLast("failed other");
+            Log(e.ToString());
+            Status("The update couldn't be installed (" + (DiskFull(e) ? "disk full" : e.Message) + "): the installed version still plays.", CRed);
+        }
         finally
         {
+            if (Cfg("upd_last").StartsWith("failed") || Cfg("upd_last").StartsWith("netfail")) UpdCleanStage();
             UpdReleaseLock();
             if (Cfg("upd_resume") != "") { Set("upd_resume", ""); SaveCfg(); }
             Progress(0);
         }
         return 1;
+    }
+
+    // after a failed update: nothing of it left in components\updates (a staged tree is kept only for a launcher restart)
+    static void UpdCleanStage()
+    {
+        if (!Directory.Exists(UpdDir)) return;
+        foreach (string d in Directory.GetDirectories(UpdDir))
+            if (Path.GetFileName(d).StartsWith("s-") || Path.GetFileName(d) == "launcher")
+                try { UDel(d); } catch (Exception e) { Log("clean-up of " + d + ": " + e.Message); }
+        foreach (string f in Directory.GetFiles(UpdDir))
+            if (f.EndsWith(".exe") || f.EndsWith(".zip") || f.EndsWith(".part"))
+                try { UDelFile(f); } catch (Exception e) { Log("clean-up of " + f + ": " + e.Message); }
     }
 
     // offline: the TN+ this mode needs must at least be there
@@ -5372,11 +5403,11 @@ static partial class Uplink
             throw new UpdFail("swap", "Uplink " + VerShort(t.Version) + " couldn't be put in place (" + e.Message + "): the installed version is unchanged and still plays.");
         }
         // done: what is installed now
-        if (game) UpdRecord(t);
+        if (game || (Cfg("upd_version") != t.Version && t.Uplink.Tree != null)) UpdRecord(t);
         foreach (string k in built.Keys) { Set(k + "_sha", (k == "tnplus" ? t.Tnp : t.TnpCoop).Ref); UDelFile(Path.Combine(k == "tnplus" ? TnpDir : TnpCoopDir, "TNPlus.exe.old")); }
         SaveCfg();
         UpdLast("ok " + t.Version);
-        try { foreach (string d in Directory.GetDirectories(UpdDir, "stage-*")) UDel(d); } catch (Exception e) { Log("clean-up: " + e.Message); }
+        try { foreach (string d in Directory.GetDirectories(UpdDir, "s-*")) UDel(d); } catch (Exception e) { Log("clean-up: " + e.Message); }
         if (kept.Count > 0)
             Status(kept.Count + " file" + (kept.Count > 1 ? "s" : "") + " you had changed in components\\uplink " + (kept.Count > 1 ? "were" : "was") +
                 " kept beside the new one" + (kept.Count > 1 ? "s" : "") + " as .user-modified (" + kept[0] + (kept.Count > 1 ? ", ..." : "") + ").", CAmber);
@@ -5440,24 +5471,51 @@ static partial class Uplink
     // whole and matching release.json (one checked before a launcher restart is taken again, checked again)
     static string StageTree(RelPart p, string what)
     {
-        string dir = Path.Combine(UpdDir, "stage-" + p.Ref.Substring(0, 16)), zip = dir + ".zip", tmp = dir + ".unzip";
+        string dir = Path.Combine(UpdDir, "s-" + p.Ref.Substring(0, 12)), zip = dir + ".zip", tmp = dir + ".x";   // (short: deep paths stay under 260)
         if (Directory.Exists(dir)) { if (TreeOk(dir, p)) return dir; UDel(dir); }
         Status("Downloading " + what + "...", CAmber);
         UFetch(p.Url, zip, 30000, true, 2L << 30);
         UDel(tmp);
-        try { Unzip(zip, tmp); }
+        try { UUnzip(zip, tmp); }
         catch (InvalidDataException) { UDel(tmp); throw new UpdFail("damaged", what + ": the download is damaged. Nothing was changed; it will be tried again next time."); }
+        catch (PathTooLongException) { UDel(tmp); throw new UpdFail("path", what + " can't be unpacked here: the folder's path is too long (" + Root + "). Move the Terra Nova Uplink folder higher up (C:\\Games, for example). Nothing was changed."); }
         catch (IOException e) { UDel(tmp); if (DiskFull(e)) throw new UpdFail("disk", DiskText()); throw; }
         finally { try { File.Delete(zip); } catch { } }
-        string[] tops = Directory.GetDirectories(tmp);
-        Directory.Move(tops.Length == 1 && Directory.GetFiles(tmp).Length == 0 ? tops[0] : tmp, dir);
-        UDel(tmp);
+        Directory.Move(tmp, dir);
         if (!TreeOk(dir, p))
         {
             UDel(dir);
             throw new UpdFail("hash", what + " as downloaded doesn't match the release (SHA-256): nothing was changed. It will be tried again next time.");
         }
         return dir;
+    }
+    // an archive as GitHub makes it, unpacked without its top folder ("terra-nova-uplink-<commit>/": 58 letters less)
+    static void UUnzip(string zip, string dest)
+    {
+        Directory.CreateDirectory(dest);
+        string full = Path.GetFullPath(dest).TrimEnd('\\') + "\\";
+        using (ZipArchive a = ZipFile.OpenRead(zip))
+        {
+            string top = null;
+            bool one = true;
+            foreach (ZipArchiveEntry e in a.Entries)
+            {
+                int s = e.FullName.IndexOf('/');
+                string t = s > 0 ? e.FullName.Substring(0, s + 1) : null;
+                if (t == null || (top != null && t != top)) one = false;
+                if (top == null) top = t;
+            }
+            foreach (ZipArchiveEntry e in a.Entries)
+            {
+                string n = one && top != null ? e.FullName.Substring(top.Length) : e.FullName;
+                if (n == "") continue;
+                string to = Path.GetFullPath(Path.Combine(dest, n.Replace('/', '\\')));
+                if (!to.StartsWith(full, StringComparison.OrdinalIgnoreCase)) continue;            // (no way out of dest)
+                if (n.EndsWith("/")) { Directory.CreateDirectory(to); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(to));
+                e.ExtractToFile(to, true);
+            }
+        }
     }
     static bool TreeOk(string dir, RelPart p)
     {
@@ -5592,6 +5650,26 @@ static partial class Uplink
     // at each start: the launcher this one replaced goes to components\previous; what the last one had to say is said
     static void UpdStartup()
     {
+        string[] args = Environment.GetCommandLineArgs();
+        if (args.Length > 1 && args[1] == "--rollback")      // checks: Tools > Roll back, without the window
+        {
+            try { UpdRollbackCore(); Console.WriteLine("rolled back"); Environment.Exit(0); }
+            catch (Exception e) { Log(e.Message); Console.WriteLine(e.Message); Environment.Exit(1); }
+        }
+        // a 2.7 launcher in a folder whose path has accents builds this one as "Terra Nova Uplink.new.exe" but its
+        // update.bat can't move it (cmd reads the path in another code page): opened by hand, it takes its place
+        string self = Application.ExecutablePath;
+        if (args.Length == 1 && self.EndsWith(".new.exe", StringComparison.OrdinalIgnoreCase))
+            try
+            {
+                string target = self.Substring(0, self.Length - 8) + ".exe";
+                if (File.Exists(target)) { UDelFile(target + ".old"); File.Move(target, target + ".old"); }
+                File.Move(self, target);
+                try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
+                Process.Start(new ProcessStartInfo(target) { UseShellExecute = false, WorkingDirectory = Root });
+                Environment.Exit(0);
+            }
+            catch (Exception e) { Log("taking the place of the launcher before: " + e.Message); }
         string old = Application.ExecutablePath + ".old";
         if (File.Exists(old))
             for (int i = 0; i < 20; i++)
@@ -5615,62 +5693,65 @@ static partial class Uplink
         string back = PrevVersion();
         if (back == null || !Directory.Exists(Path.Combine(PrevDir, "uplink"))) { Status("No previous version is kept in this folder.", CText); return; }
         if (busy) return;
-        string now = Installed;
-        if (!Ask("Go back to Uplink " + VerFull(back) + "? (installed now: " + VerFull(now) + ")\n\nThe launcher restarts.")) return;
-        Background(delegate {
-            if (!UpdTakeLock(3000)) throw new Exception("another Uplink launcher is updating this folder");
-            List<string[]> done = new List<string[]>();
-            try
+        if (!Ask("Go back to Uplink " + VerFull(back) + "? (installed now: " + VerFull(Installed) + ")\n\nThe launcher restarts.")) return;
+        Background(UpdRollbackCore);
+    }
+    static void UpdRollbackCore()
+    {
+        string back = PrevVersion(), now = Installed;
+        if (back == null || !Directory.Exists(Path.Combine(PrevDir, "uplink"))) throw new Exception("no previous version is kept in this folder");
+        if (!UpdTakeLock(3000)) throw new Exception("another Uplink launcher is updating this folder");
+        List<string[]> done = new List<string[]>();
+        try
+        {
+            string by = UpdInUse();
+            if (by != null) throw new Exception("close Uplink and the game first (" + by + " is running)");
+            UpdCanWrite(0);
+            Dictionary<string, string> st = UReadIni(Path.Combine(PrevDir, "state.ini"));
+            SettingsSave(now);
+            StringBuilder sb = new StringBuilder();          // components\previous will hold what is installed now
+            foreach (string k in STATE_KEYS) sb.Append(k + " = " + (k == "upd_version" ? now : Cfg(k)) + "\r\n");
+            string me = Application.ExecutablePath, pl = Path.Combine(PrevDir, "launcher", Path.GetFileName(me)), tmp = Path.Combine(Comp, "swap.tmp");
+            bool swapLauncher = File.Exists(pl);
+            sb.Append("launcher = " + VERSION + "\r\n");
+            UDel(tmp); UDelFile(tmp);
+            URen(done, UplinkDir, tmp);
+            URen(done, Path.Combine(PrevDir, "uplink"), UplinkDir);
+            URen(done, tmp, Path.Combine(PrevDir, "uplink"));
+            foreach (string k in new[] { "tnplus", "tnplus_coop" })
             {
-                string by = UpdInUse();
-                if (by != null) throw new Exception("close Uplink and the game first (" + by + " is running)");
-                UpdCanWrite(0);
-                Dictionary<string, string> st = UReadIni(Path.Combine(PrevDir, "state.ini"));
-                SettingsSave(now);
-                StringBuilder sb = new StringBuilder();          // components\previous will hold what is installed now
-                foreach (string k in STATE_KEYS) sb.Append(k + " = " + (k == "upd_version" ? now : Cfg(k)) + "\r\n");
-                string me = Application.ExecutablePath, pl = Path.Combine(PrevDir, "launcher", Path.GetFileName(me)), tmp = Path.Combine(Comp, "swap.tmp");
-                bool swapLauncher = File.Exists(pl);
-                sb.Append("launcher = " + VERSION + "\r\n");
-                UDel(tmp); UDelFile(tmp);
-                URen(done, UplinkDir, tmp);
-                URen(done, Path.Combine(PrevDir, "uplink"), UplinkDir);
-                URen(done, tmp, Path.Combine(PrevDir, "uplink"));
-                foreach (string k in new[] { "tnplus", "tnplus_coop" })
+                string cur = Path.Combine(k == "tnplus" ? TnpDir : TnpCoopDir, "TNPlus.exe"), prev = Path.Combine(PrevDir, k, "TNPlus.exe");
+                string want; st.TryGetValue(k + "_sha", out want);
+                if (File.Exists(prev))
                 {
-                    string cur = Path.Combine(k == "tnplus" ? TnpDir : TnpCoopDir, "TNPlus.exe"), prev = Path.Combine(PrevDir, k, "TNPlus.exe");
-                    string want; st.TryGetValue(k + "_sha", out want);
-                    if (File.Exists(prev))
-                    {
-                        if (File.Exists(cur)) { URen(done, cur, tmp); URen(done, prev, cur); URen(done, tmp, prev); }
-                        else { Directory.CreateDirectory(Path.GetDirectoryName(cur)); URen(done, prev, cur); }
-                    }
-                    else if (File.Exists(cur) && Cfg(k + "_sha") != (want ?? ""))
-                    {                                         // (built after the change: built again, at its own commit, when needed)
-                        Directory.CreateDirectory(Path.Combine(PrevDir, k));
-                        URen(done, cur, prev);
-                    }
+                    if (File.Exists(cur)) { URen(done, cur, tmp); URen(done, prev, cur); URen(done, tmp, prev); }
+                    else { Directory.CreateDirectory(Path.GetDirectoryName(cur)); URen(done, prev, cur); }
                 }
-                if (swapLauncher) { URen(done, me, tmp); URen(done, pl, me); URen(done, tmp, pl); }
-                foreach (KeyValuePair<string, string> kv in st) if (Array.IndexOf(STATE_KEYS, kv.Key) >= 0) Set(kv.Key, kv.Value);
-                Set("upd_skip", now);
-                SaveCfg();
-                File.WriteAllText(Path.Combine(PrevDir, "state.ini"), sb.ToString());
-                File.WriteAllText(Path.Combine(PrevDir, "for.txt"), now);
-                done.Clear();
-                UpdLast("rolledback " + back);
-                bool restored = VerCmp(back, now) < 0 && SettingsRestore(back);
-                UpdReleaseLock();
-                UpdRestartWith("Back to Uplink " + VerFull(back) + "." + (restored ? " Your settings of that version are back." : "") +
-                    " Tools > Check for updates installs " + VerShort(now) + " again.");
+                else if (File.Exists(cur) && Cfg(k + "_sha") != (want ?? ""))
+                {                                         // (built after the change: built again, at its own commit, when needed)
+                    Directory.CreateDirectory(Path.Combine(PrevDir, k));
+                    URen(done, cur, prev);
+                }
             }
-            catch (Exception e)
-            {
-                UUndo(done);
-                UpdReleaseLock();
-                throw new Exception("roll back not done, nothing was changed: " + e.Message);
-            }
-        });
+            if (swapLauncher) { URen(done, me, tmp); URen(done, pl, me); URen(done, tmp, pl); }
+            foreach (KeyValuePair<string, string> kv in st) if (Array.IndexOf(STATE_KEYS, kv.Key) >= 0) Set(kv.Key, kv.Value);
+            Set("upd_skip", now);
+            SaveCfg();
+            File.WriteAllText(Path.Combine(PrevDir, "state.ini"), sb.ToString());
+            File.WriteAllText(Path.Combine(PrevDir, "for.txt"), now);
+            done.Clear();
+            UpdLast("rolledback " + back);
+            bool restored = VerCmp(back, now) < 0 && SettingsRestore(back);
+            UpdReleaseLock();
+            UpdRestartWith("Back to Uplink " + VerFull(back) + "." + (restored ? " Your settings of that version are back." : "") +
+                " Tools > Check for updates installs " + VerShort(now) + " again.");
+        }
+        catch (Exception e)
+        {
+            UUndo(done);
+            UpdReleaseLock();
+            throw new Exception("roll back not done, nothing was changed: " + e.Message);
+        }
     }
 
     // ---- the settings of each version: kept when the version changes (components\settings\<version>), put back when
@@ -5759,7 +5840,7 @@ static partial class Uplink
         RelChan t = relTarget;
         string inst = Installed, chan = Cfg("upd_channel") == "beta" || (SemVer.Parse(inst) != null && SemVer.Parse(inst).IsPre) ? " (beta)" : "";
         if (t == null) UpdLabel("Uplink " + VerFull(inst) + chan, CDim);
-        else if (Cfg("uplink_sha") == t.Uplink.Ref && Cfg("upd_version") == t.Version) UpdLabel("Uplink " + VerFull(inst) + chan + ", up to date", CGreen);
+        else if (Cfg("uplink_sha") == t.Uplink.Ref && (Cfg("upd_version") == t.Version || Cfg("upd_version") == "")) UpdLabel("Uplink " + VerFull(inst) + chan + ", up to date", CGreen);
         else if (Cfg("upd_skip") == t.Version) UpdLabel("Uplink " + VerFull(inst) + chan + " (" + t.V.Short + " skipped)", CDim);
         else UpdLabel("Uplink " + t.V.Full + " ready: installed when you press PLAY", CAmber);
         UpdInviteCheck(true);
@@ -6074,7 +6155,7 @@ static partial class Uplink
             int W = ClientSize.Width, H = ClientSize.Height;
             using (Brush top = new SolidBrush(UOrange)) g.FillRectangle(top, 0, 0, W, Z(3));
             // BETA tag, the title, the subtitle
-            string tag = "BETA  " + b.V.Full.ToUpperInvariant();
+            string tag = b.V.Full.ToUpperInvariant();       // "2.8 BETA 1"
             Size ts = TextRenderer.MeasureText(g, tag, fTag, new Size(1000, 100), TextFormatFlags.NoPadding);
             RectangleF tr = new RectangleF(Z(28), Z(24), ts.Width + Z(18), Z(20));
             using (GraphicsPath p = URound(tr, Z(10))) using (Pen l = new Pen(UOrange, Math.Max(1f, z))) g.DrawPath(l, p);
@@ -6119,7 +6200,7 @@ static partial class Uplink
             }
             // the foot: how to go back, the two buttons (controls)
             using (Pen l = new Pen(CLine)) g.DrawLine(l, 0, H - Z(76), W, H - Z(76));
-            TextRenderer.DrawText(g, "Back to stable at any time:\nSettings > Updates > Beta updates.", fNote, new Rectangle(Z(28), H - Z(58), Z(250), Z(40)), CDim,
+            TextRenderer.DrawText(g, "Back to stable at any time:\nBeta updates, in Settings.", fNote, new Rectangle(Z(28), H - Z(58), Z(250), Z(40)), CDim,
                 TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
         }
     }

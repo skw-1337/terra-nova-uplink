@@ -4386,7 +4386,7 @@ var subs_view: Subtitles
 
 # the bridge's 'SUBT': number, squadmate, pilot, event, flags (bit 0: playing), clip, length (ms), text
 func _subs_packet(q: PackedByteArray) -> void:
-	if not subs_on or q.size() < 13 or guest_win:
+	if not (subs_on or guest_win) or q.size() < 13:     # (a coop guest: the host's, when he has them on)
 		return
 	var mate := int(q[5])
 	var now := Time.get_ticks_msec()
@@ -4402,7 +4402,7 @@ func _subs_packet(q: PackedByteArray) -> void:
 
 
 func _subs_update() -> void:
-	if not subs_on:
+	if not (subs_on or guest_win):
 		return
 	var now := Time.get_ticks_msec()
 	var shown := []

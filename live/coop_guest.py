@@ -49,8 +49,9 @@ CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of 
 # view, 84.5 degrees across, and 120 units), not one of the squad, the one nearest the middle; the game then plays its
 # lock sound (2021, his window plays it) and keeps the target while it is on his screen or within his suit's sensor
 # range (suit +0xB6, 16.16 metres: / 6 for units, 0x262B00), else drops it. While it stays within 30 degrees of his view
-# his shots aim at its middle. Right button again: off. (It was the unit within 12 degrees of the middle only: a click
-# a little off a target locked nothing.)
+# his shots aim at its middle. Right button again: as the game's click (0x262D4C), the unit under it instead, or no
+# target when nothing is under it. (It was the unit within 12 degrees of the middle only: a click a little off a
+# target locked nothing.)
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
 SENSOR = 0xB6
@@ -1556,8 +1557,13 @@ class Guest:
         eye = (gx, gy, self.game_eye(self.gid)[2])         # (the game's eye is up to 0.04 ahead: left out)
         view = (math.cos(gh) * math.cos(self.pitch), math.sin(gh) * math.cos(self.pitch), math.sin(self.pitch))
         if self.lock_req:
+            # (the game's click, 0x269F28 -> 0x262D4C: the unit under it becomes the target, locked or not; nothing
+            # under it: the target is dropped)
             self.lock_req = False
-            self.lock = 0 if self.lock else self.pick_target(me, eye, view, self.lock_seen)
+            was = self.lock
+            self.lock = self.pick_target(me, eye, view, self.lock_seen)
+            if was and not self.lock:
+                print('guest: lock cleared (%d: nothing under his crosshair)' % was, flush=True)
             self.lock_seen = []
         if self.lock_step:                                     # the game's next / previous target keys (T, Y): the
             seen = [i for _, i in self.in_view(me, eye, view)]   # units in his view by distance, round from his target

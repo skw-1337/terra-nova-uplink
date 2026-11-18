@@ -8250,12 +8250,12 @@ const FX_NOT_FOLLOWED := [28, 29, 31, 32, 33]   # class 6: beams, particles, lig
 
 
 func _extras() -> void:
-	if live and not guest_win and OS.get_environment("TN_FX_MARKS") != "0":
+	if live and OS.get_environment("TN_FX_MARKS") != "0":         # (the co-op guest too: the shots are in his views)
 		var mk: Node = load("res://scripts/fx_marks.gd").new()
 		mk.v = self
 		mk.shots = _fx_shots()
 		add_child(mk)
-	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") != "0":
+	if live and OS.get_environment("TN_FX_LIGHTS") != "0":
 		var lt: Node = load("res://scripts/fx_lights.gd").new()
 		lt.v = self
 		lt.shots = _fx_shots()

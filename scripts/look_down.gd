@@ -22,10 +22,12 @@ const EYE_CLEAR := 0.07                      # a leg piece whose bone passes thi
 # down (the legs fill the picture, as in other games' first person views); "old" the round pieces dressed in the
 # legs' front pictures (legs.gdshader), the eye brought over the hips
 var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else "model"
-const EYE_BACK := 0.15                        # (model) at the lowest: the eye this far behind its place
-const EYE_BACK_STAND := 0.07                  # ... and this much more while he stands (his feet in view)
+const EYE_BACK := 0.08                        # (model) at the lowest: the eye this far behind its place
+const EYE_BACK_STAND := 0.04                  # ... and this much more while he stands (his feet in view)
 const EYE_DOWN := 0.12                        # ... and this much lower
-const FOV_LOW := 60.0                         # ... the view this wide (degrees across)
+const DOWN_MAX := 76.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
+                                             # looked past them
+const FOV_LOW := 74.0                         # ... the view this wide (degrees across)
 const THIGH_SLIM := 0.75                      # (model) the thighs this slim, their hip pads held to their middle
 const THIGH_TOP := 0.6
 const THIGH_DARK := 0.7                       # ... their back and side pictures this much towards the armour's grey
@@ -64,10 +66,12 @@ func setup_guest() -> void:
 	rad = 0.003
 	lim = int(round(0.9 / rad))
 	max_extra = minf(MAX, PI / 2.0 - 0.04 - 0.9)       # (down to nearly straight under him, as the host)
+	_cap()
 	known = true
 
 
 func _ready() -> void:
+	_cap()
 	var cl := CanvasLayer.new()
 	cl.layer = 19                            # over the game's HUD, under Uplink's own lines
 	add_child(cl)
@@ -143,6 +147,11 @@ func _process(dt: float) -> void:
 	mark.visible = on
 	if on:
 		mark.queue_redraw()
+
+
+func _cap() -> void:
+	if body_mode == "model":
+		max_extra = clampf(deg_to_rad(DOWN_MAX) - float(lim) / float(unit) * rad, 0.05, max_extra)
 
 
 # (model) the eye as a head bent over the legs: back and down, the view narrowed, eased in from the game's limit

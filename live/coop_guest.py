@@ -200,6 +200,8 @@ LOOP_MARGIN = 4096                # bytes before its end (0.18 s of the 22 kHz s
 # another sound) is a new sound. 'SND' + master volume + count, then 'S' starts (voice, sound, kind, once, volume,
 # entity, x, y, z) and 'E' ends (voice); sent when something happened, reliable online.
 VOICE_MAX, SFX_VOLUME = 0x35982D, 0x35982F
+STEP0 = 1941                                          # the player's footsteps: 1941 + 5 x ground + 0..3 (0x248EBC)
+SPEECH0, SPEECH_END = 3050, 3050 + 275 * 18          # the squad's radio (SPEECH\RESBRKnn.RES, coop_sound.gd): heard by both
 # A map marker for each player. The host's is the game's own nav marker. The guest's is Uplink's: his window asks for
 # it ('W' + world x, y, floats; x = 0: none), the bridge keeps it (the game is not told: it has one marker only) and
 # says it back to both windows: to his in the marks of his map (M_MATE), to the host's as 'GNAV' + x, y (floats; x = 0:
@@ -210,6 +212,28 @@ VOICE_MAX, SFX_VOLUME = 0x35982D, 0x35982F
 # or as its small cross (0x277424): the host's window draws it again there in his co-op colour. 'GNAV' goes on as
 # long as a guest plays (10 a second): it also tells the host's window that this is co-op.
 PANELS, PANEL_N, PANEL_MODE, PANEL_VIEW, FULL_MAP, MAP_ROWS = 0x38FC00, 32, 0x12, 0x20, 0x38FB20, 0x35A544
+
+
+_HOST = [0]                                           # the host's entity last read outside the guest's pass
+
+
+def host_entity(g, pid_addr):
+    """the host's entity (the game's player word, 0x441350). While TN+ coop's cave runs the player control pass for
+    the guest's suit, that word holds the GUEST's entity (the cave swaps it in and back each game picture): a read
+    falling in that pass took the guest's suit for the host's (his window hid the host's suit as its own body, keyed
+    the host's sounds, map and walk on the wrong suit). Read again until the word is not the guest's; else the last
+    good one"""
+    v = 0
+    for _ in range(8):
+        r = g.read(pid_addr + 2, 2)
+        v = r[0] | r[1] << 8
+        on = g.read(G_ON, 4)
+        if on[0] != 1 or v != (on[2] | on[3] << 8):
+            if v != _HOST[0]:                          # (each change, with the guest's: never the same)
+                builtins.print('coop: host entity %d (guest %d)' % (v, on[2] | on[3] << 8 if on[0] == 1 else 0), flush=True)
+            _HOST[0] = v
+            return v
+    return _HOST[0] or v
 
 
 _LOG = None
@@ -288,6 +312,10 @@ class Guest:
         self.snd_piece = None                                  # (the TN+ build's sound piece: None not looked yet)
         self.looped = None                                     # (voice, driver sample) of his laser held looping (laser_off)
         self.voices, self.voices_t = {}, 0.0                   # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
+        self.step_ground, self.step_speed = 4, 0.0
+        self.steps_heard, self.step_due, self.step_n, self.step_at = 0, 0, 0, None   # (own_steps)
+        self.ghd_max = 0                                       # the biggest 'GHD' sent (logged)
+        self.private_said = set()                              # the host's own cockpit sounds seen (sounds: logged once)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
         self.held, self.steps, self.feet, self.pad_t = {}, 0, None, [0.0, 0.0]   # held move keys (code -> [pressed,
@@ -312,17 +340,25 @@ class Guest:
         self.comm, self.ind, self.ind_at = [], None, None      # his COMM rows' entities; the armour indicator's picture
         # (False: none) and where the host's game draws it (his window draws his own there)
         self.equip = GuestEquipment(self)                     # his drone and A.S.F. (guest_equipment.py, TN_COOP_EQUIP=1)
+        # The host's suit in his window walks with the game's own walk ported to Uplink (suit_gait.gd, as every suit
+        # the game does not pose), from its real motion. host_anim.py's learned cycle (TN_HOST_ANIM=1, the old way)
+        # sent a pose every view: with no cycle learned yet (a new install) it was a standing pose for good, the
+        # host's suit slid along unanimated in the guest's window
         self.anim = None
-        try:
-            from host_anim import HostAnim
-            self.anim = HostAnim()
-        except Exception:
-            pass
+        if os.environ.get('TN_HOST_ANIM') == '1':
+            try:
+                from host_anim import HostAnim
+                self.anim = HostAnim()
+            except Exception:
+                pass
         # TN+ Coop writes its code into the game at the main menu, a few seconds after the bridge starts: said when it
         # is seen (step), "NOT in place" only once the game has been up a while without it
         self.ready = g.read(CAVE, 4) != bytes(4)
         self.ready_t, self.ready_said = time.time(), self.ready
         print('coop :', 'code in place' if self.ready else 'waiting for the co-op code (TN+ Coop puts it in at the main menu)', flush=True)
+
+    def host_id(self):
+        return host_entity(self.g, self.pid_addr)
 
     def u16(self, a):
         return struct.unpack('<H', self.g.read(a, 2))[0]
@@ -702,6 +738,9 @@ class Guest:
                         self.steps += 1
                         self.stance = c + STANCE
         self.stance = None if drawn else (self.stance or 0)
+        if self.steps > self.steps_heard:                      # his own footsteps, for his window (own_steps)
+            self.step_due += 1
+        self.steps_heard = self.steps
         self.feet, self.at = feet, (here, c)
         now = time.time()
         for sc, t in self.held.items():
@@ -1283,8 +1322,15 @@ class Guest:
                     at = tuple(v / 65536 for v in struct.unpack('<3i', g.read(self.master + 0x25 * ent + 0x0F, 12)))   # guest's units)
             elif kind == 1:
                 at = tuple(v / 65536 for v in struct.unpack_from('<3i', r, 0x1A))
-            elif kind == 0:                                    # the game's player's own sounds (his shots, his
-                ent = owners.get(k, me)                        # cockpit's): at the suit that fired, else at the host's
+            elif kind == 0:                                    # the game's player's own sounds: a suit's shot (its
+                ent = owners.get(k, 0)                         # voice, +0x82), placed at that suit; the radio (speech)
+                if not ent and STEP0 <= sound < STEP0 + 30:   # (the host's footstep: the ground's kind, own_steps)
+                    self.step_ground = (sound - STEP0) // 5
+                if not ent and not SPEECH0 <= sound < SPEECH_END and os.environ.get('TN_COOP_HOST_COCKPIT') != '1':
+                    if sound not in self.private_said:         # for both; anything else is the host's cockpit (its
+                        self.private_said.add(sound)           # servos, alarms, beeps, and what the cave's pass for
+                        print("coop: sound %d is the host's own, not sent to the guest" % sound, flush=True)
+                    continue                                   # the guest's suit plays as the player's): not his
             p = self.i32(SAMPLES + 4 * drv) if 0 <= drv < 16 else 0
             pos = self.i32(p + 0x18) if 0x100000 <= p < 0x2000000 else 0
             once = 0 if self.looped == (k, drv) else r[0x17]   # (his laser held looping: laser_off)
@@ -1299,6 +1345,7 @@ class Guest:
         for k in self.voices:
             if k not in now:
                 out.append(b'E' + bytes([k]))
+        out += self.own_steps(me)
         self.voices = now
         if time.time() - self.voices_t > 0.5:                 # twice a second, the voices playing: online the sounds
             self.voices_t = time.time()                        # go unreliable, an end lost is caught up this way
@@ -1306,6 +1353,29 @@ class Guest:
         if out:
             pk = b'SND' + bytes([g.read(SFX_VOLUME, 1)[0], min(len(out), 255)]) + b''.join(out[:255])
             self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
+
+    def own_steps(self, me):
+        """his own footsteps in his window. The game plays footsteps for its player only (0x27E5B8 -> 0x248EBC, the
+        suit's entity tested against the player word): the host's, unplaced, never the guest's suit's. His window
+        gets them as the game makes the player's: the sound 1941 + 5 x the ground's kind + one of 4 at random, its
+        volume 16 x the speed (units a second) + 0..9, not placed. The ground's kind: the one of the host's last
+        footstep (same map), else 4. On voices 16-19 (the game has 16): an older window ignores them"""
+        here = self.target_pos(self.gid) if self.gid else None
+        t = time.time()
+        if here and self.step_at and 0.25 <= t - self.step_at[1] < 1.0:   # (his speed over a quarter second)
+            self.step_speed = math.dist(here[:2], self.step_at[0][:2]) / (t - self.step_at[1])
+        if not here or not self.step_at or t - self.step_at[1] >= 0.25:
+            self.step_at = (here, t) if here else None
+        speed = self.step_speed
+        out = []
+        while self.step_due > 0:
+            self.step_due -= 1
+            r = int.from_bytes(os.urandom(2), 'little')
+            sound = STEP0 + 5 * self.step_ground + r % 4
+            vol = max(1, min(127, int(16 * speed) + r // 4 % 10))
+            out.append(b'S' + struct.pack('<BHBBBH3f', 16 + self.step_n % 4, sound, 0, 1, vol, 0, 0.0, 0.0, 0.0))
+            self.step_n += 1
+        return out
 
     def take(self, gid):
         g = self.g
@@ -1358,15 +1428,18 @@ class Guest:
         # then: his lock (entity, middle; 0 = none), his suit's and the host's positions (the name markers)
         lt = self.target_pos(self.lock) if self.lock else None
         mine = self.target_pos(self.gid) if self.gid else None
-        me = self.u16(self.pid_addr + 2)
+        me = host_entity(self.g, self.pid_addr)
         host = tuple(self.i32(self.master + 0x25 * me + o) / 65536 for o in (0x0F, 0x13, 0x17))
         pk = b'GHD' + struct.pack('<BhhHBBH', self.state, max(0, a), self.amax, self.gid, sel, wtype, head) + \
             struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
             struct.pack('<3f', *host) + self.squad_info(me) + struct.pack('<H', me) + self.hud_more()   # (me: the host's
         # entity, his name follows his drawn suit)
+        mb = 0
         if self.gid and self.state == OK:
             try:
+                n0 = len(pk)
                 pk += self.map_block(me)                       # (an older guest window stops reading before it)
+                mb = len(pk) - n0
             except (OSError, struct.error, IndexError) as ex:
                 if not self.map_said:
                     self.map_said = True
@@ -1382,6 +1455,9 @@ class Guest:
                 pass
             if self.oeil:                                      # the height the game's target camera adds (0x275260)
                 pk += struct.pack('<f', self.i32(self.oeil) / 65536 + 0.1875) + b'TCM'
+        if len(pk) > self.ghd_max:                             # (online, over 1200 bytes it goes reliable: late)
+            self.ghd_max = len(pk)
+            print('coop: HUD packet %d bytes (map block %d)' % (len(pk), mb), flush=True)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         eq = self.equip.packet() if self.gid and self.state == OK else None
         if eq:                                                 # his drone and A.S.F. (guest_equipment.gd)
@@ -1454,7 +1530,7 @@ class Guest:
         # ... but not the cracks the game draws across the host's visor once he is hurt (they join the frame): the
         # frame as it was last seen while he was whole, when there is one
         pix = scr[fy0:fy0 + fh, fx0:fx0 + fw]
-        me = self.u16(self.pid_addr + 2)
+        me = host_entity(self.g, self.pid_addr)
         cur, mx = self.health(me)
         if cur >= mx and self.armour(me) >= self.armour_max(me):
             self.frames[(fx0, fy0, fw, fh)] = (edge.copy(), pix.copy())
@@ -1506,7 +1582,7 @@ class Guest:
                 print('coop : NOT in place after %d s (start the game with TN+ Coop, English game)' % CAVE_WAIT, flush=True)
             if not self.ready:
                 return
-        me = self.u16(self.pid_addr + 2)
+        me = host_entity(self.g, self.pid_addr)
         self.host_marker(g.read(M + me * 0x25, 2) == b'\x01\x01')
         if g.read(M + me * 0x25, 2) != b'\x01\x01':          # not in a mission
             if self.gid:

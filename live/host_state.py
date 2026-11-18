@@ -93,7 +93,7 @@ class HostState:
 
     def read(self, menu_flag=False, movie=''):
         g = self.g
-        me = self._u16(self.pid_addr + 2)
+        me = __import__('coop_guest').host_entity(g, self.pid_addr)   # (never the guest's suit: coop_guest)
         in_mission = me < 0x1000 and g.read(self.master + me * 0x25, 2) == b'\x01\x01'
         t = self._u32(TASK)
         pos = self._u16(t + 0x10) if t else 0

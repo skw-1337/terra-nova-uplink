@@ -44,7 +44,8 @@ var player: AudioStreamPlayer
 var pb: AudioStreamPlaybackPolyphonic
 var slots := {}                      # host slot -> playing sequence (see _start)
 var voices := []                     # notes sounding: {id, slot, ch, key, ...}
-var master := 100                    # the game's music volume (0-127)
+var master := 127                    # the game's music volume (0-127): full scale, his own (Options, Music) on top
+var host_master := 127               # the host's ('MUS'): not applied, the host's settings are not the guest's
 var music_on := true
 var gm := true                       # the host plays the General MIDI arrangement
 var last_pk := PackedByteArray()
@@ -230,8 +231,8 @@ func feed(pk: PackedByteArray) -> void:
 	if pk.size() < 7 or pk[3] != 1:
 		return
 	last_pk = pk
-	master = pk[4]
-	music_on = (pk[5] & 1) != 0
+	host_master = pk[4]
+	music_on = true                                # (the host's music off: the guest's is his own Music slider)
 	gm = (pk[5] & 2) != 0
 	if user_pct <= 0.5 or not _setup():
 		return

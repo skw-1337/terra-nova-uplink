@@ -1360,7 +1360,7 @@ def handle_input():
                 post_key(sc, bool(down))
         elif pk[:1] == b'M' and len(pk) >= 5:
             dx, dy = struct.unpack('<hh', pk[1:5])
-            e = A_MASTER + u16(A_PID + 2) * 0x25
+            e = A_MASTER + (guest.host_id() if guest else u16(A_PID + 2)) * 0x25
             if dx:
                 g.write(e + 0x1B, struct.pack('<H', (u16(e + 0x1B) + dx * SENS_X) & 0xffff))
             if dy:
@@ -2370,7 +2370,7 @@ while True:
             if fin_t - fin_texte > 1.2:
                 print('the game has ended (back to DOS): closing', flush=True)
                 sys.exit(0)
-    pid = u16(A_PID + 2)
+    pid = guest.host_id() if guest else u16(A_PID + 2)   # (never the guest's suit: coop_guest.host_entity)
     e = A_MASTER + pid * 0x25
     x, y, z = i32(e + 0x0F) / 65536, i32(e + 0x13) / 65536, i32(e + 0x17) / 65536
     eye = oeil(e, z)

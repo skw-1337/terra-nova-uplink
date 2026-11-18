@@ -51,9 +51,33 @@ UNDO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'coop_lo
 # Picks of the guest meanwhile are already in his column's data; they show at that redraw or at the host's own next
 # click (the game redraws every column after each of its own picks).
 IDLE, REDRAW_GAP = 0.8, 1.0
+# the outfitting script's position (task +0x10) while one of its pick lists waits, and what it picks
+ACT_POS = {}
 # the game's mouse library (as mission_play.py / live_bridge.py find it): movzx esi, word [read index] / shl esi, 4 /
 # lea esi, [esi + queue]; the write index is the word before the read index
 MOUSE_SIG = rb'\x0f\xbf\x35(....)\xc1\xe6\x04\x8d\xb6(....)'
+
+
+# campaign order (mission 1..37) -> MISSn.RES (as host_state.gd CAMPAIGN): the mission's number as the player knows it
+CAMPAIGN = [37, 38, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 10, 11, 12, 13, 34, 29, 15, 17, 16, 36,
+            14, 20, 39, 21, 35, 22, 23, 19, 24, 27, 25, 26, 30, 31]
+_version = None
+
+
+def uplink_version():
+    """this Uplink's version (project.godot config/version): ('2.8.0', '2.8.0-beta.1')"""
+    global _version
+    if _version is None:
+        _version = ('', '')
+        try:
+            import re
+            t = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'project.godot'), encoding='utf-8').read()
+            m = re.search(r'(?m)^config/version="([^"]+)"', t)
+            if m:
+                _version = (m.group(1).split('-')[0], m.group(1))
+        except OSError:
+            pass
+    return _version
 
 
 class Lobby:
@@ -82,6 +106,8 @@ class Lobby:
         self.redraws = 0                 # (tests: how many were posted)
         self.mine = None                 # the guest's column as he left it (pilot .. ASF): the host may not change it
         self.kept = 0                    # (tests: how many host changes to it were put back)
+        self.refused, self.refused_n = None, 0   # the last choice of the guest's refused, with its reason (sent at once:
+        # coop_guest.py lobby_step sends the state after any request that says something)
         self._load(data_dir)
         self._undo_old_run()
         atexit.register(self.untag)
@@ -195,6 +221,15 @@ class Lobby:
             k = RSB_FIRST + self.u8(RSB_INDEX)
             f = self.rsb_files[k].strip().upper() if k < len(self.rsb_files) else ''
             op, msnfile = '', f if f.startswith('MISS') and f.endswith('.RES') else ''
+        for c, col in enumerate(cols):                 # (who_name: the guest's Steam name; the host's is put in by his
+            if c == self.col and self.col:             # window's coop_net.gd, which knows it)
+                col['who_name'] = self.guest_name
+        extra['ver'], extra['ver_full'] = uplink_version()
+        extra['mission_no'] = CAMPAIGN.index(no) + 1 if no in CAMPAIGN and not struct.unpack('<I', self.g.read(RSB_FLAG, 4))[0] else 0
+        extra['act'] = self.host_act() if outfit else {}
+        extra['host_ready'] = False                    # (the host has no "ready" of his own yet: his Outfit Complete
+        if self.refused:                               # starts the mission)
+            extra['refused'] = self.refused
         return {**extra, 'outfit': outfit, 'mission': in_mission, 'col': self.col,
                 'locked': self.locked, 'ready': self.ready, 'host_col': self.u8(HOST_COL) & 3,
                 'op': op, 'note': self.note,
@@ -444,38 +479,45 @@ class Lobby:
             if c not in (1, 2, 3) or not self.column(c)['on']:
                 return None
             if self.locked and self.col:
-                return 'join refused: locked'
+                return self.refuse(msg, 'The host has locked your column')
             self.col, self.ready, self.mine = c, False, None
             return 'joined column %d' % (c + 1)
         if act == 'leave':
             if self.locked:
-                return 'leave refused: locked'
+                return self.refuse(msg, 'The host has locked your column')
             self.col, self.ready, self.mine = 0, False, None
             return 'left the squad'
-        if not self.col or self.locked:
+        if act not in ('pilot', 'suit', 'weapon', 'asf'):
             return None
+        if not self.col:
+            return self.refuse(msg, 'Take a column first')
+        if self.locked:
+            return self.refuse(msg, 'The host has locked your column')
         base = SQUAD + SQUAD_N * self.col
         col = self.column(self.col)
         suits, weapons, asf = self.items()
         if act == 'pilot':
             row = int(msg.get('row', -1))
-            if row not in [p['row'] for p in self.pilots() if p['status'] == 0]:
-                return 'pilot refused'
+            why = self.pilot_refusal(row)
+            if why:
+                return self.refuse(msg, why)
             pid = self.u8(ROWS + ROW_N * row)
             self.g.write(base + 6, bytes([pid]))
             self._asf_for_pilot(row)
         elif act == 'suit':
             s = int(msg.get('id', -1))
             if s not in suits:
-                return 'suit refused'
+                return self.refuse(msg, 'This suit is not available for this mission')
             self.g.write(base + 8, bytes([s]))
             self._fit_suit(s)
         elif act == 'weapon':
             slot, w = int(msg.get('slot', -1)), int(msg.get('id', -1))
-            if slot not in range(4) or w not in weapons or not self.allowed(self.wmask, w, col['suit']):
-                return 'weapon refused'
+            if slot not in range(4) or w not in weapons:
+                return self.refuse(msg, 'This weapon is not available for this mission')
+            if not self.allowed(self.wmask, w, col['suit']):
+                return self.refuse(msg, 'Fits only the %s; you wear the %s' % (self.fits(self.wmask, w), self.snames.get(col['suit'], 'suit %d' % col['suit'])))
             if self.two_slot(w) and col['suit'] == 0:
-                return 'weapon refused'
+                return self.refuse(msg, 'Too heavy for the %s' % self.snames.get(0, 'Scout Suit'))
             arm = slot // 2 * 2
             ws = col['w']
             if self.two_slot(w):
@@ -487,14 +529,60 @@ class Lobby:
             self.g.write(base + 9, bytes(ws))
         elif act == 'asf':
             a = int(msg.get('id', -1))
-            if col['asf'] < 2 or a not in asf or not self.allowed(self.amask, a, col['suit']):
-                return 'ASF refused'
+            if col['asf'] < 2:
+                return self.refuse(msg, "Your pilot's specialty comes with its own pack")
+            if a not in asf:
+                return self.refuse(msg, 'This ASF is not available for this mission')
+            if not self.allowed(self.amask, a, col['suit']):
+                return self.refuse(msg, 'Fits only the %s; you wear the %s' % (self.fits(self.amask, a), self.snames.get(col['suit'], 'suit %d' % col['suit'])))
             self.g.write(base + 0xD, bytes([a]))
         else:
             return None
         self.mine = self._mine_now()                   # (his own change: not one to put back)
         self.dirty = True                              # (shown at the next redraw the host's idleness allows)
         return '%s %s' % (act, msg.get('id', msg.get('row', '')))
+
+    def host_act(self):
+        """what the host has open on his outfitting screen right now: {} or {'col': c, 'what': 'pilot' | 'suit' |
+        'weapon' | 'asf', 'slot': k} (see ACT_POS)"""
+        t = self.task()
+        if not t:
+            return {}
+        pos = self.g.read(t + 0x10, 3)
+        what = ACT_POS.get(pos)
+        if not what:
+            return {}
+        a = {'col': self.u8(HOST_COL) & 3, 'what': what[0]}
+        if what[0] == 'weapon':
+            a['slot'] = what[1]
+        return a
+
+    def refuse(self, msg, why):
+        """a choice of the guest's that the game's rules refuse: said back to his window (state 'refused': n, what,
+        id / row / slot, why) and in the log"""
+        self.refused_n += 1
+        self.refused = {'n': self.refused_n, 'what': msg.get('act'), 'id': msg.get('id', msg.get('row', msg.get('col'))),
+                        'slot': msg.get('slot'), 'why': why}
+        return '%s refused: %s' % (msg.get('act'), why)
+
+    def pilot_refusal(self, row):
+        ps = {p['row']: p for p in self.pilots()}
+        if row not in ps:
+            return 'Not on the list'
+        pid = ps[row]['id']
+        for c in range(4):
+            if c != self.col and self.column(c)['on'] and self.column(c)['pilot'] == pid:
+                return 'Taken by the host' if c == 0 else 'Already in the squad (column %d)' % (c + 1)
+        st = ps[row]['status']
+        if st == 1:
+            return 'Injured: in the infirmary'
+        if st == 2:
+            return 'Away on another mission'
+        return ''
+
+    def fits(self, mask, item):
+        ok = [self.snames.get(s, 'suit %d' % s) for s in range(3) if (mask.get(item, 0xFF) >> s) & 1]
+        return ' or the '.join(ok) or 'no suit'
 
     def _asf_for_pilot(self, row):
         """the game's rule (0x2B9AC4): Demolitions -> Demolition Pack, Repair -> Repair Pack, else the column's

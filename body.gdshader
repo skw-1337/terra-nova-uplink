@@ -10,7 +10,7 @@ uniform float a1 = 0.0;                      // joint a's row in it
 instance uniform float mirror = 0.0;         // a left limb: the right one's pictures, its sides the other way
 instance uniform vec2 fade_rows = vec2(0.0); // y > x: dissolved upwards from row y to row x of the canvas (the torso's top edge)
 instance uniform float gain = 1.0;
-instance uniform vec2 near_fade = vec2(0.0); // y > x: what is nearer the eye than y dissolves, gone at x (a piece swinging up under it)
+instance uniform float piece_keep = 1.0;    // < 1: the whole piece dissolving (near the eye), front and back alike
 instance uniform float back_dark = 0.0;     // > 0: the back picture darkened that much towards the armour's grey (the thighs')
 
 varying vec3 lp;
@@ -64,8 +64,8 @@ void fragment() {
 			discard;
 		}
 	}
-	if (near_fade.y > near_fade.x) {
-		float keep2 = smoothstep(near_fade.x, near_fade.y, length(VERTEX));
+	if (piece_keep < 0.999) {
+		float keep2 = piece_keep;
 		vec2 q2 = floor(FRAGCOORD.xy);
 		float d2 = fract(52.9829189 * fract(0.06711056 * q2.x + 0.00583715 * q2.y));
 		if (d2 > keep2) {

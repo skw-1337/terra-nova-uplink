@@ -22,16 +22,18 @@ const EYE_CLEAR := 0.07                      # a leg piece whose bone passes thi
 # down (the legs fill the picture, as in other games' first person views); "old" the round pieces dressed in the
 # legs' front pictures (legs.gdshader), the eye brought over the hips
 var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else "model"
-const EYE_BACK := 0.08                        # (model) at the lowest: the eye this far behind its place
-const EYE_BACK_STAND := 0.04                  # ... and this much more while he stands (his feet in view)
-const EYE_DOWN := 0.12                        # ... and this much lower
-const DOWN_MAX := 76.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
+const EYE_BACK := 0.0                        # (model) at the lowest: the eye this far behind its place
+const EYE_BACK_STAND := 0.0                  # ... and this much more while he stands (his feet in view)
+const EYE_DOWN := 0.0                       # ... and this much lower (< 0: higher: the knees and feet in view)
+const DOWN_MAX := 82.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
                                              # looked past them
-const FOV_LOW := 74.0                         # ... the view this wide (degrees across)
-const BELLY_FROM := 0.7                      # (model) the torso's lowest 30 %: the belly joining the thighs
-const BELLY_W := 15.0                        # ... held to this half width (its pictures hold the arms too)
+const FOV_LOW := 0.0                         # ... the view this wide (degrees across)
+const BELLY_FROM := 0.25                      # (model) the torso's lowest 30 %: the belly joining the thighs
+const BELLY_W := 20.0                        # ... held to this half width (its pictures hold the arms too)
 const BELLY_DOME := 6.0                      # ... its top rounded back over this many rows (no flat lid)
-const NEAR_FADE := Vector2(0.07, 0.13)       # (model) a piece nearer the eye than this dissolves (a thigh swinging up)
+const BODY_GAIN := 1.35                      # (model) brighter than the pictures: lit from above, the suit's dark armour went black
+const PIECE_FADE := Vector2(0.05, 0.13)      # (model) a piece whose surface comes this near the eye dissolves, whole (a thigh
+                                             # swinging up; cut by the camera's near plane its inside showed)
 const THIGH_TAPER := 0.75                    # (model) the thighs' tops held to this much of their middle
 const THIGH_SLIM := 0.72                      # (model) the thighs this slim, their hip pads held to their middle
 const THIGH_TOP := 0.6
@@ -171,7 +173,7 @@ func _model_eye(dt: float) -> void:
 		stand_k = lerpf(stand_k, 1.0 if sp < 0.08 else 0.0, 1.0 - exp(-dt * 4.0))
 	var fwd := Vector3(-sin(v.yaw), 0.0, -cos(v.yaw))
 	v.camera.position += fwd * (-(EYE_BACK + EYE_BACK_STAND * stand_k) * ks) + Vector3(0.0, -EYE_DOWN * ks, 0.0)
-	if v.camera.projection == Camera3D.PROJECTION_FRUSTUM and v.camera.near > 0.0:
+	if FOV_LOW > 0.0 and v.camera.projection == Camera3D.PROJECTION_FRUSTUM and v.camera.near > 0.0:
 		if size_set < 0.0 or not is_equal_approx(v.camera.size, size_set):
 			size_base = v.camera.size                  # (the viewer's own width, set again by it)
 		var fov := 2.0 * atan(size_base / (2.0 * v.camera.near))
@@ -211,8 +213,17 @@ func _legs(on: bool) -> void:
 				var a: Vector3 = seg.global_position
 				var b: Vector3 = a + seg.global_transform.basis.y * float(l.get_meta("bone_px", 0.0))
 				var ab := b - a
-				var s := clampf((eye - a).dot(ab) / maxf(ab.length_squared(), 1e-8), 0.0, 1.0)
-				near = eye.distance_to(a + ab * s) < EYE_CLEAR and not bool(l.get_meta("belly", false))   # (the belly: around the eye's bone, its near part dissolves instead)
+				var s0 := float(l.get_meta("from", 0.0))
+				var s := clampf((eye - a).dot(ab) / maxf(ab.length_squared(), 1e-8), s0, 1.0)
+				var d := eye.distance_to(a + ab * s)
+				if body_mode == "model":
+					# the whole piece dissolves alike (a fade by the pixel's own distance showed the piece's inside through
+					# its front's holes)
+					var keep := smoothstep(PIECE_FADE.x, PIECE_FADE.y, d - float(l.get_meta("radius", 0.04)))
+					l.set_instance_shader_parameter("piece_keep", keep)
+					near = keep < 0.03
+				else:
+					near = d < EYE_CLEAR
 			l.visible = on and not near
 
 
@@ -223,14 +234,17 @@ func _build(node: Node3D) -> void:
 	for k in mini(segs.size(), parts.size()):
 		var part: Array = parts[k]
 		var belly: bool = body_mode == "model" and mini(part[1], part[2]) == 8 and maxi(part[1], part[2]) == 9
-		if maxi(part[1], part[2]) > 7 and not belly:
+		# (model) the whole suit as the others see it, from his eye at its head (as other games' full body views): legs,
+		# torso below the neck, upper arms; not the forearms and the weapon pods (his weapon is the game's)
+		var upper_arm: bool = body_mode == "model" and mini(part[1], part[2]) in [10, 11] and maxi(part[1], part[2]) in [12, 13]
+		if maxi(part[1], part[2]) > 7 and not belly and not upper_arm:
 			continue
 		var seg: MeshInstance3D = part[0]
 		var ld: Dictionary = v.objects.limb(suit, segs[k][2], v.pal, v.pal_key)
 		if ld.is_empty() or not is_instance_valid(seg):
 			continue
 		var foot: bool = maxi(part[1], part[2]) <= 3
-		var thigh: bool = maxi(part[1], part[2]) >= 6
+		var thigh: bool = maxi(part[1], part[2]) in [6, 7]
 		var mi := MeshInstance3D.new()
 		mi.set_meta("shadow_twin", true)             # (the viewer's passes over a unit's pieces leave it alone)
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # (his body's own twins cast its shadow)
@@ -247,9 +261,12 @@ func _build(node: Node3D) -> void:
 			mi.mesh = m
 			mi.material_override = BodyModel.material(ld)
 			mi.set_instance_shader_parameter("back_dark", THIGH_DARK if thigh or belly else 0.0)
-			mi.set_instance_shader_parameter("near_fade", NEAR_FADE)
+			var bb := m.get_aabb()
+			mi.set_meta("radius", maxf(bb.size.x, bb.size.z) * 0.5 / 256.0)
+			mi.set_meta("from", BELLY_FROM if belly else 0.0)
 			mi.set_instance_shader_parameter("mirror", 0.0 if belly else seg.get_instance_shader_parameter("mirror"))
 			mi.set_meta("belly", belly)
+			mi.set_instance_shader_parameter("gain", BODY_GAIN)
 		else:
 			if not ld.has("solid"):
 				ld["solid"] = _solid(ld, foot)

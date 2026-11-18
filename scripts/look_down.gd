@@ -326,7 +326,7 @@ func _draw_mark() -> void:
 
 
 func _test(dt: float) -> void:
-	var a := OS.get_environment(TEST).split_floats(",")
+	var a := OS.get_environment(TEST + "_GUEST" if guest and OS.has_environment(TEST + "_GUEST") else TEST).split_floats(",")
 	if a.size() < 2:
 		return
 	test_t += dt if test_t >= 0.0 else dt + 1.0

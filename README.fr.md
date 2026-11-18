@@ -1,18 +1,72 @@
 # Terra Nova Uplink
 
-*Terra Nova: Strike Force Centauri* (1996) redessiné en 3D moderne, à partir de ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n'est fourni.
-
-**La 2.8 est en bêta** : préréglages graphiques, roue d'ordres pour l'escouade, menu en jeu, options d'accessibilité et beaucoup de travail sur la coop. Le lanceur la propose (« Try the beta ») et on peut revenir en arrière à tout moment. [Le détail et la feuille de route (en anglais)](https://www.ttlg.com/forums/showthread.php?t=153557&p=2545417#post2545417).
+*Terra Nova: Strike Force Centauri* (Looking Glass, 1996) redessiné en 3D moderne pendant que le vrai jeu continue de tourner dessous. Il utilise ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n'est fourni.
 
 ![La planète rouge](docs/red_planet.jpg)
 
-- **Visualiseur de cartes** : survoler toutes les cartes du jeu.
-- **Mode Live** (prototype) : jouer au vrai jeu pendant qu'Uplink le redessine en direct, cockpit compris.
-- **Coop en ligne** (prototype) : deux joueurs dans la même mission via Steam, voir [COOP.md](COOP.md) (en anglais).
-
-*Fait avec l'aide de Claude Code (un outil de programmation par IA), surtout pour la rétro-ingénierie du jeu et l'écriture du code. Chaque changement est testé dans le vrai jeu avant publication.*
+*Réalisé avec l'aide de Claude Code (un outil de programmation par IA), surtout pour la rétro-ingénierie du jeu et l'écriture du code. Chaque changement est testé dans le vrai jeu avant d'être publié.*
 
 *English version: [README.md](README.md)*
+
+> **La 2.8 est en bêta.** Préréglages graphiques, roue d'ordres pour l'escouade, menu en jeu, options d'accessibilité et beaucoup de travail sur la coop. Le lanceur la propose (« Try the beta ») et on peut revenir en arrière à tout moment.
+> [Liste complète des changements](https://github.com/skw-1337/terra-nova-uplink/releases/tag/v2.8.0-beta.1) · [Images et feuille de route](https://www.ttlg.com/forums/showthread.php?t=153557&p=2545417#post2545417) (en anglais)
+
+## Ce que ça fait
+
+Trois choses, depuis un seul lanceur :
+
+- **Jouer** la campagne : le jeu tourne dans DOSBox et Uplink le redessine en direct, cockpit compris.
+- **Coop** (expérimentale) : un ami prend une place dans ton escouade, par Steam.
+- **Visualiseur de cartes** : survoler toutes les cartes du jeu sans le lancer.
+
+## Fonctionnalités
+
+Ce qui est nouveau dans la bêta 2.8 est marqué `2.8`.
+
+**En jeu**
+
+- Le vrai cockpit, le HUD et la carte du jeu sur une vue 3D moderne, à la résolution de ton écran
+- Visée à la souris, touches modifiables, seconds raccourcis sur la molette et les boutons de souris
+- Roue d'ordres pour l'escouade : maintenir un bouton, choisir un ordre, choisir qui le reçoit `2.8`
+- Menu en jeu sur Échap : commandes, graphismes, options, accessibilité `2.8`
+- Manette, avec touches modifiables `2.8`
+- Mode photo `2.8`, captures d'écran, limite d'images par seconde
+- Démarrer à n'importe quelle mission de la campagne
+
+**Rendu**
+
+- Préréglages graphiques : Original, Classic+, Modern, Light, avec un aperçu de chaque option `2.8`
+- Look old school : les pixels et la palette du jeu, sur une touche
+- Armes redessinées d'après les vrais effets du jeu : rayons, traînées, impacts, explosions
+- Lumière des tirs, et marques de brûlure là où ils touchent `2.8`
+- Traces de pas, traces de véhicules, ombres des nuages `2.8`
+- Regarder vers le bas et voir ses propres jambes `2.8`
+- Neige, pluie, missions de nuit, et une lumière propre à chaque planète
+
+**Accessibilité** `2.8`
+
+- Modes daltoniens : protanopie, deutéranopie, tritanopie
+- Sous-titres des échanges radio de l'escouade, en trois tailles
+
+**Coop** (expérimentale)
+
+- Deux joueurs dans la même mission par Steam : l'un héberge sa campagne, l'autre le rejoint
+- Vidéos de briefing et cinématiques de départ sur les deux écrans
+- L'invité a le vrai cockpit du jeu, avec son propre son, ses réglages et sa visée `2.8`
+- Pas encore là pour l'invité : drone, A.S.F., missiles guidés
+- Fonctionnement et dépannage : [COOP.md](COOP.md) (en anglais)
+
+**Lanceur**
+
+- Un seul exe : il trouve ton jeu, installe tout le reste et le garde à jour
+- Téléchargements vérifiés, retour à la version précédente, canal bêta
+- Musique au choix : Roland / GS, FM, celle du jeu, ou AWE32 avec ta propre image de ROM `2.8`
+
+| | |
+|---|---|
+| ![La roue d'ordres](https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/50f474896101ede963dc8504391b153c3b66d44a/2.8/12_order_wheel.gif) | ![Tirs, explosions et les marques qu'ils laissent](https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/50f474896101ede963dc8504391b153c3b66d44a/2.8/13_shots.gif) |
+| ![La page Graphics du lanceur](https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/50f474896101ede963dc8504391b153c3b66d44a/2.8/02_graphics_page.jpg) | ![Le menu en jeu sur Échap](https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/50f474896101ede963dc8504391b153c3b66d44a/2.8/07_esc_menu.jpg) |
+| ![Coop : l'écran de l'hôte et celui de son ami](https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/50f474896101ede963dc8504391b153c3b66d44a/2.8/09_coop.jpg) | ![L'invitation à la bêta dans le lanceur](https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/50f474896101ede963dc8504391b153c3b66d44a/2.8/01_invitation.jpg) |
 
 ## Démarrage rapide
 
@@ -60,7 +114,7 @@ Petite trouvaille : des têtes de l'île de Pâques sont cachées sur la planèt
 
 ## Bon à savoir
 
-- C'est un prototype : Windows seulement, quelques effets d'armes ne sont pas encore dessinés, et le pont écrit dans la mémoire du jeu pour tes commandes, comme [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus).
+- Windows seulement. La coop est expérimentale. Le pont écrit dans la mémoire du jeu pour tes commandes, comme [Terra Nova Plus](https://github.com/skw-1337/terra-nova-plus).
 - Cinématiques HD : `tools/upscale_movies.py` agrandit une fois les vidéos du jeu sur ton PC (il faut ffmpeg, Real-ESRGAN et RIFE).
 - Pour les moddeurs : [notes techniques](docs/formats.md) (en anglais).
 

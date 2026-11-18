@@ -452,7 +452,7 @@ func _later(env: String, key: String, on: bool) -> void:
 
 
 # ---------------------------------------------------------------- accessibility
-# The launcher's Settings > Accessibility: the squadmates' subtitles (solo / host: the guest's window shows the host's),
+# The launcher's Settings > Accessibility: the squadmates' subtitles (each player his own: a co-op guest too),
 # their size, the colour-blind mode (colour_vision.gd). All at once; kept in viewer.cfg [launcher] as the others.
 const SUB_SIZES := ["Normal", "Large", "Larger"]
 const CV_NOTES := ["The game's colours.",
@@ -465,12 +465,9 @@ func _access(col: VBoxContainer) -> void:
 	_place(860, 470)
 	_title(col, "ACCESSIBILITY", ORANGE)
 	_head(col, "SUBTITLES")
-	if guest:
-		_note(col, "Your squadmates' radio lines show when the host has them on.")
-	else:
-		_switch(col, "Squadmates' subtitles  (their radio lines)", bool(v.get("subs_on")), func(on: bool):
-			_set_subs(on)
-			_keep("launcher", "subtitles", "1" if on else "0"))
+	_switch(col, "Squadmates' subtitles  (their radio lines)", bool(v.get("subs_on")), func(on: bool):
+		_set_subs(on)
+		_keep("launcher", "subtitles", "1" if on else "0"))
 	_seg(col, "Size", SUB_SIZES, clampi(int(v.get("subs_size")), 0, 2), func(i: int):
 		v.subs_size = i
 		OS.set_environment("TN_SUBTITLE_SIZE", str(i))
@@ -508,8 +505,8 @@ func _set_subs(on: bool) -> void:
 		v.subs.clear()
 		if v.subs_view != null:
 			v.subs_view.visible = false
-	if v.get("play_udp") != null:
-		v._play_send(("SUBS" + ("1" if on else "0")).to_ascii_buffer())
+	if v.get("play_udp") != null and not guest:          # (a co-op guest's: his window only, the host's bridge
+		v._play_send(("SUBS" + ("1" if on else "0")).to_ascii_buffer())   # always sends them)
 
 
 func _note(col: Control, text: String) -> Label:

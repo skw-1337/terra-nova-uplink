@@ -1174,6 +1174,7 @@ def carte_ordres():
 # clip he plays means, told to the viewer ('SUBT') when it starts and while it plays
 sous_titres = None
 sous_titres_faits = None                                # (made once: turned off and on again from Uplink's menu)
+subs_guest_made = False                                 # (made for a co-op guest's window once)
 
 
 def subs_switch(on):
@@ -2745,10 +2746,16 @@ while True:
         menu_beat = time.time()
         print('menus : fil relance', file=sys.stderr, flush=True)
         threading.Thread(target=menu_loop, daemon=True).start()
-    if sous_titres is not None:
+    if guest and sous_titres_faits is None and not subs_guest_made:   # a co-op guest has his own switch: the lines
+        subs_guest_made = True                    # are always made for his window (the host's own shows them only
+        host_on = sous_titres is not None         # if he wants them)
+        subs_switch(True)
+        subs_switch(host_on)
+    if sous_titres_faits is not None and (sous_titres is not None or guest):
         try:
-            for pk in sous_titres.poll(time.time(), x + y > 0):
-                s.sendto(pk, ('127.0.0.1', 47821))
+            for pk in sous_titres_faits.poll(time.time(), x + y > 0):
+                if sous_titres is not None:
+                    s.sendto(pk, ('127.0.0.1', 47821))
                 if guest:                             # the coop guest's window too (online: 'LIV', see coop_net.gd)
                     guest.s.sendto(b'LIV' + pk if guest.remote else pk,
                                    ('127.0.0.1', coop_guest.REMOTE_VIEW if guest.remote else coop_guest.LIVE_PORT))

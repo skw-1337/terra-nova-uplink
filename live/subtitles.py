@@ -218,7 +218,9 @@ class Subtitles:
             self.n = self.n % 255 + 1
             text = ev[3] if self.french else ev[2]
             ms = min(65535, int(self.lengths.get(sound, 0) * 1000))
-            body = bytes([k, pilot, ev[0], 1 | (0 if ev[1] else 2)]) + struct.pack('<HH', clip, ms) + text.encode('utf-8')
+            # then (flag 4) both languages, English and French, each after a 0: a co-op guest's window shows his own
+            body = bytes([k, pilot, ev[0], 1 | (0 if ev[1] else 2) | 4]) + struct.pack('<HH', clip, ms) + text.encode('utf-8') + \
+                b'\0' + ev[2].encode('utf-8') + b'\0' + ev[3].encode('utf-8')
             self.said[k] = [(handle, start), self.n, body, now]
             out.append(b'SUBT' + bytes([self.n]) + body)
             self.log('subtitle %d: squadmate %d (pilot %d) sound %d clip %d event %#x "%s" %d ms' % (

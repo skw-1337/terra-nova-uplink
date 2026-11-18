@@ -138,6 +138,12 @@ static class Uplink
             Console.WriteLine("clashes " + cl.Count);
             Environment.Exit(0);
         }
+        if (args.Length > 1 && args[1] == "--awe")         // checks: the music device, the AWE32 ROM, a dump found elsewhere
+        {
+            string where, seen = AweLook(out where);
+            Console.WriteLine("music=" + MUSIC[Music()] + "\nrom=" + (AweHave() ? "yes" : "no") + "\nseen=" + (seen ?? "") + "\nwhere=" + (where ?? ""));
+            Environment.Exit(0);
+        }
         if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
         { foreach (string d in Installs()) Console.WriteLine(Edition(d) + (IsEnglish(d) ? " EN  " : "     ") + d); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
@@ -261,6 +267,7 @@ static class Uplink
         for (int i = 0; i < navs.Length; i++) { navs[i].On = i == nav; navs[i].Invalidate(); }
         Set("page", nav.ToString());
         if (k == 3) ReadSharp();
+        if (k == P_SETTINGS) MusicUi();
         if (k == P_WHEEL) WheelUi();
         if (k == P_CONTROLS) { ControlsLoad(); keyList.Top0 = 0; keyList.Invalidate(); }
         if (toast != null) toast.Place();
@@ -578,29 +585,227 @@ static class Uplink
             c.Controls.Add(leds[i]);
         }
 
-        c = Card(pg, "GAME FOLDER", COrange, null, 18, 246, MW - 36, 73);
+        // the game: its folder; its music device (TN+'s "music": see Music) and whether the AWE32 ROM that AWE32
+        // needs is where TN+ looks for it
+        c = Card(pg, "GAME", COrange, null, 18, 246, MW - 36, 102);
         gameLine2 = new GameLine { Location = new Point(X, 32), Size = new Size(MW - 36 - 26 - 78, RH) };
         gameLine2.Click += delegate { GamesMenu(gameLine2); };
         c.Controls.Add(gameLine2);
         gameBtn2 = Key(c, MW - 36 - 13 - 70, 32, 70, 23, "Change");
         gameBtn2.Click += delegate { GamesMenu(gameLine2); };
+        c.Controls.Add(new Txt { Text = "Music", Location = new Point(X, 61), Size = new Size(46, RH) });
+        musicBox = new Drop { Text = "Music", Items = new List<string>(MUSIC_NAMES), Location = new Point(X + 50, 64), Size = new Size(104, 23) };
+        musicBox.Changed += delegate { PickMusic(); };
+        c.Controls.Add(musicBox);
+        aweLed = new LedLine { Text = "AWE32 ROM not found", F = F12, Location = new Point(X + 50 + 104 + 14, 61), Size = new Size(MW - 36 - 13 - 78 - (X + 50 + 104 + 14), RH) };
+        c.Controls.Add(aweLed);
+        aweUse = Key(c, MW - 36 - 13 - 70 - 8 - 54, 64, 54, 23, "Use it");
+        aweUse.Click += delegate { if (aweSeen != null) AweTake(aweSeen); };
+        aweUse.Visible = false;
+        aweBtn = Key(c, MW - 36 - 13 - 70, 64, 70, 23, "Browse…");
+        aweBtn.Click += delegate { AweBrowse(); };
+        ToolTip tip = new ToolTip { AutoPopDelay = 12000 };
+        foreach (Control t in new Control[] { aweLed, aweBtn, aweUse }) tip.SetToolTip(t, AWE_TIP);
 
-        c = Card(pg, "UPDATES", COrange, null, 18, 331, CW, 153);
-        verLabel = new LedLine { Text = "Uplink " + VERSION, Location = new Point(X, 32), Size = new Size(IW, 27) };
+        c = Card(pg, "UPDATES", COrange, null, 18, 360, CW, 124);
+        verLabel = new LedLine { Text = "Uplink " + VERSION, Location = new Point(X, 30), Size = new Size(IW, 27) };
         c.Controls.Add(verLabel);
-        c.Controls.Add(new Txt { Text = "Looked for at each start and each game.", F = F115, Ink = CDim, Location = new Point(X, 61), Size = new Size(IW, RH) });
-        checkBtn = Key(c, X, 112, 123, 28, "Check now");
+        c.Controls.Add(new Txt { Text = "Looked for at each start and each game.", F = F115, Ink = CDim, Location = new Point(X, 54), Size = new Size(IW, 24) });
+        checkBtn = Key(c, X, 84, 123, 28, "Check now");
         checkBtn.Click += delegate { Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); };
-        Key(c, X + 123 + 9, 112, 123, 28, "What's new").Click += delegate { WhatsNew(); };
+        Key(c, X + 123 + 9, 84, 123, 28, "What's new").Click += delegate { WhatsNew(); };
 
-        c = Card(pg, "COMMUNITY", CBlue, null, 18 + CW + 12, 331, CW, 153);
+        c = Card(pg, "COMMUNITY", CBlue, null, 18 + CW + 12, 360, CW, 124);
         c.Controls.Add(new Txt { Text = "Questions, co-op partners, bug reports.", F = F115, Ink = CDim, Location = new Point(X, 32), Size = new Size(IW, RH) });
-        Key(c, X, 112, 79, 28, "Discord").Click += delegate { Open(DISCORD); };
-        Key(c, X + 88, 112, 79, 28, "GitHub").Click += delegate { Open("https://github.com/" + UPLINK_REPO); };
-        Key(c, X + 176, 112, 79, 28, "Report a bug").Click += delegate { Report(); };
+        Key(c, X, 84, 79, 28, "Discord").Click += delegate { Open(DISCORD); };
+        Key(c, X + 88, 84, 79, 28, "GitHub").Click += delegate { Open("https://github.com/" + UPLINK_REPO); };
+        Key(c, X + 176, 84, 79, 28, "Report a bug").Click += delegate { Report(); };
     }
 
     static void Open(string url) { try { Process.Start(url); } catch { } }
+
+    // ---- the game's music device. It is Terra Nova Plus's setting ("music = ROLAND | FM | GAME'S OWN | AWE32" in the
+    // TNPlus.ini next to its exe; no line: ROLAND), read from and written to the TN+ of PLAY (components\tnplus) and
+    // the one of HOST (components\tnplus_coop): shown from the first of the two that says, written to both. A TN+
+    // that is not installed yet gets the choice when its settings are first written (WriteTnpIni; "music" in our ini).
+    // AWE32 plays the game's own AWE32 bank (SOUND\FF.SBK) with the samples of the card's ROM: TN+ wants the player's
+    // own dump of that ROM as "awe32.raw" next to its TNPlus.exe, exactly 1 048 576 bytes (it checks nothing else),
+    // and plays ROLAND when it is not there. That file is Creative's: never downloaded, never part of anything
+    // of ours; the launcher only copies the player's own next to each TN+ it uses.
+    static readonly string[] MUSIC = { "ROLAND", "FM", "GAME'S OWN", "AWE32" };
+    static readonly string[] MUSIC_NAMES = { "Roland / GS", "FM", "Game's own", "AWE32" };
+    const string AWE_FILE = "awe32.raw";
+    const int AWE_SIZE = 1048576;
+    const string AWE_TIP = "Your own dump of the AWE32 sound ROM (awe32.raw, 1 MB). Not included.";
+    static Drop musicBox;
+    static LedLine aweLed;
+    static Btn aweBtn, aweUse;
+    static string aweSeen, aweWhere;                          // a dump found elsewhere on the PC, and where in a word
+
+    // a setting of a TNPlus.ini as TN+ reads it (the last line that says wins); null: no such line
+    static string IniGet(string ini, string key)
+    {
+        string v = null;
+        try
+        {
+            if (!File.Exists(ini)) return null;
+            foreach (string l in File.ReadAllLines(ini))
+            {
+                Match m = Regex.Match(l, "^\\s*" + Regex.Escape(key) + "\\s*=(.*)$", RegexOptions.IgnoreCase);
+                if (m.Success) v = m.Groups[1].Value.Trim();
+            }
+        }
+        catch { }
+        return v;
+    }
+
+    // ... and written: its line changed where it is, added when there is none (the rest of the file kept)
+    static void IniSet(string ini, string key, string value)
+    {
+        List<string> lines = new List<string>(File.ReadAllLines(ini));
+        string line = key + " = " + value;
+        bool had = false;
+        for (int i = 0; i < lines.Count; i++)
+            if (Regex.IsMatch(lines[i], "^\\s*" + Regex.Escape(key) + "\\s*=", RegexOptions.IgnoreCase)) { lines[i] = line; had = true; }
+        if (!had) lines.Add(line);
+        File.WriteAllLines(ini, lines);
+    }
+
+    static int Music()
+    {
+        string v = IniGet(Path.Combine(TnpDir, "TNPlus.ini"), "music") ?? IniGet(Path.Combine(TnpCoopDir, "TNPlus.ini"), "music") ?? Cfg("music");
+        return Math.Max(0, Array.IndexOf(MUSIC, v.ToUpperInvariant()));        // (anything else: ROLAND, as TN+ takes it)
+    }
+
+    static bool AweOk(string file)
+    {
+        try { return File.Exists(file) && new FileInfo(file).Length == AWE_SIZE; }
+        catch { return false; }
+    }
+
+    // The ROM where TN+ will look: next to the TNPlus.exe of PLAY (and of HOST, once that build is there). One of
+    // the two has it and not the other: copied across (both folders are the launcher's own)
+    static bool AweHave()
+    {
+        string a = Path.Combine(TnpDir, AWE_FILE), b = Path.Combine(TnpCoopDir, AWE_FILE);
+        try
+        {
+            if (AweOk(a) && !AweOk(b) && Directory.Exists(TnpCoopDir)) File.Copy(a, b, true);
+            else if (AweOk(b) && !AweOk(a)) { Directory.CreateDirectory(TnpDir); File.Copy(b, a, true); }
+        }
+        catch (Exception e) { Log("AWE32 ROM, from one Terra Nova Plus to the other: " + e.GetType().Name); }
+        return AweOk(a) && (AweOk(b) || !Directory.Exists(TnpCoopDir));
+    }
+
+    // A dump the player already has, in the likely places: the launcher's folder, the game's (a TN+ of his own kept
+    // there, in it or in a folder of it), the folder of the TN+ whose keys were imported, his desktop, downloads and
+    // documents (and their folders, one level). Only the name and the size are looked at.
+    static string AweLook(out string where)
+    {
+        List<string[]> at = new List<string[]> { new[] { Root, "the launcher's folder", "0" } };
+        string g = Cfg("game_dir"), own = Cfg("tnplus_own"), home = Environment.GetEnvironmentVariable("USERPROFILE");
+        if (IsGame(g)) { at.Add(new[] { g, "the game folder", "1" }); at.Add(new[] { Path.Combine(g, "TNOVA"), "the game folder", "0" }); }
+        if (own != "") at.Add(new[] { own, "your Terra Nova Plus", "0" });
+        if (!string.IsNullOrEmpty(home))
+            foreach (string sub in new[] { "", "OneDrive\\" })
+                foreach (string d in new[] { "Downloads", "Desktop", "Documents" })
+                    at.Add(new[] { Path.Combine(home, sub + d), d == "Desktop" ? "your desktop" : d, "1" });
+        foreach (string[] a in at)
+        {
+            try
+            {
+                if (!Directory.Exists(a[0])) continue;
+                List<string> dirs = new List<string> { a[0] };
+                if (a[2] == "1") dirs.AddRange(Directory.GetDirectories(a[0]));
+                foreach (string d in dirs)
+                    if (AweOk(Path.Combine(d, AWE_FILE))) { where = a[1]; return Path.Combine(d, AWE_FILE); }
+            }
+            catch { }
+        }
+        where = null;
+        return null;
+    }
+
+    // the Music line of the Settings page: the device, the light of the ROM, what Browse and "Use it" offer
+    static void MusicUi()
+    {
+        if (musicBox == null) return;
+        bool was = loading;
+        loading = true;
+        int m = Music();
+        musicBox.Selected = m;
+        loading = was;
+        bool have = AweHave();
+        aweSeen = have ? null : AweLook(out aweWhere);
+        aweLed.On = have ? CGreen : aweSeen != null || m == 3 ? CAmber : CLedOff;
+        aweLed.Text = have ? "AWE32 ROM found" : aweSeen != null ? "AWE32 ROM found in " + aweWhere : "AWE32 ROM not found";
+        aweLed.Em = have || aweSeen != null ? null : m == 3 ? "Roland / GS plays instead" : "your own dump, not included";
+        aweUse.Visible = aweSeen != null;
+        aweLed.Width = (aweSeen != null ? aweUse.Left : aweBtn.Left) - S(8) - aweLed.Left;
+        aweLed.Invalidate();
+    }
+
+    static void PickMusic()
+    {
+        if (loading) return;
+        int m = musicBox.Selected;
+        Set("music", MUSIC[m]); SaveCfg();
+        try
+        {
+            foreach (string dir in new[] { TnpDir, TnpCoopDir })
+                if (File.Exists(Path.Combine(dir, "TNPlus.ini"))) IniSet(Path.Combine(dir, "TNPlus.ini"), "music", MUSIC[m]);
+        }
+        catch (Exception e) { Status("The music setting could not be written: " + e.Message, CRed); MusicUi(); return; }
+        MusicUi();
+        string next = busy ? " From the game's next start." : "";
+        if (m == 3 && !AweHave())
+            Status("AWE32 needs your own dump of the AWE32 sound ROM (awe32.raw, 1 MB, not included): " +
+                   (aweSeen != null ? "one was found in " + aweWhere + ", click Use it." : "pick it with Browse.") + " Until then the game plays Roland / GS.", CAmber);
+        else Status("Music: " + MUSIC_NAMES[m] + (m == 3 ? ", the game's own AWE32 bank with your ROM." : m == 2 ? ", as the game's own setup says." : ".") + next, CGreen);
+    }
+
+    static void AweBrowse()
+    {
+        using (OpenFileDialog d = new OpenFileDialog())
+        {
+            d.Title = "Pick your own dump of the AWE32 sound ROM (awe32.raw, 1 MB, not included)";
+            d.Filter = "AWE32 ROM dump (awe32.raw, *.raw, *.bin, *.rom)|*.raw;*.bin;*.rom|All files|*.*";
+            d.FileName = AWE_FILE;
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            AweTake(d.FileName);
+        }
+    }
+
+    // the player's own dump copied next to each TN+ the launcher uses, under the name TN+ looks for. Nothing but its
+    // size says what it is to TN+; the ROM's name in it ("1MGM", in its third or fourth word) is looked at for a warning
+    static void AweTake(string file)
+    {
+        try
+        {
+            long n = File.Exists(file) ? new FileInfo(file).Length : -1;
+            if (n != AWE_SIZE)
+            {
+                Status(n < 0 ? "That file could not be read." : "That file is " + n.ToString("N0", CultureInfo.InvariantCulture).Replace(",", " ") +
+                       " bytes: a dump of the AWE32 ROM is exactly 1 048 576 bytes (1 MB). Nothing was copied.", CRed);
+                return;
+            }
+            byte[] head = new byte[16];
+            using (FileStream f = File.OpenRead(file)) f.Read(head, 0, 16);
+            string h = Encoding.ASCII.GetString(head, 4, 8);
+            bool named = h.StartsWith("M1MG") || h.Substring(2).StartsWith("M1MG");
+            Directory.CreateDirectory(TnpDir);
+            foreach (string dir in new[] { TnpDir, TnpCoopDir })
+            {
+                string to = Path.Combine(dir, AWE_FILE);
+                if (Directory.Exists(dir) && !string.Equals(Path.GetFullPath(file), Path.GetFullPath(to), StringComparison.OrdinalIgnoreCase)) File.Copy(file, to, true);
+            }
+            Log("AWE32 ROM: the player's own dump copied next to Terra Nova Plus");
+            MusicUi();
+            Status("AWE32 ROM copied next to Terra Nova Plus." + (Music() == 3 ? " AWE32 music from the game's next start." : " Pick AWE32 in Music to hear it.") +
+                   (named ? "" : " (It does not carry the ROM's name, 1MGM: if the music sounds wrong, it is another dump.)"), named ? CGreen : CAmber);
+        }
+        catch (Exception e) { Status("The AWE32 ROM could not be copied: " + e.Message, CRed); MusicUi(); }
+    }
 
     static void SensLabel()
     {
@@ -1512,6 +1717,7 @@ static class Uplink
     class LedLine : Drawn
     {
         public Color On = CLedOff;
+        public string Em;                                     // a few words after it, dimmed
         public LedLine() : base(false) { }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1521,6 +1727,8 @@ static class Uplink
             if (lit) using (Brush h = new SolidBrush(Color.FromArgb(46, On))) g.FillEllipse(h, -2, cy - 7, 14, 14);
             using (Brush b = new SolidBrush(On)) g.FillEllipse(b, 1, cy - 4, 8, 8);
             StrIn(g, Text, F, lit ? CText : CDim, new RectangleF(17, 0, W - 17, H - 1), TFLeft);
+            float ex = 17 + StrW(g, Text, F) + 8;
+            if (Em != null && ex < W - 20) StrIn(g, Em, F11, CDim, new RectangleF(ex, 1, W - ex, H - 1), TFLeft);
         }
     }
 
@@ -2146,6 +2354,7 @@ static class Uplink
     {
         gameLine.Dir = gameLine2.Dir = Game();
         gameLine.Invalidate(); gameLine2.Invalidate();
+        if (!loading) MusicUi();                              // (a ROM dump kept in that game's folder)
     }
 
     // Change (and a click on the folder's line): every Terra Nova found on the PC, looked for again each time, the
@@ -3063,6 +3272,7 @@ static class Uplink
             info.AppendLine("uplink " + Cfg("uplink_sha") + ", tnplus " + Cfg("tnplus_sha") + ", tnplus coop " + Cfg("tnplus_coop_sha"));
             info.AppendLine("options: mode " + Cfg("mode") + ", window " + Cfg("window") + ", mouse " + Cfg("mouse") +
                             ", invert " + Cfg("invert_y") + ", gamepad " + Cfg("gamepad") + ", start at " + Cfg("start_at"));
+            info.AppendLine("music: " + MUSIC[Music()] + ", AWE32 ROM found: " + (AweHave() ? "yes" : "no"));
             string session = sessionLabel != null ? sessionLabel.Text : "-";
             info.AppendLine("session: " + (sessionName != "" ? session.Replace(sessionName, "friend") : session));
             foreach (Proc p in Procs()) info.AppendLine("running: " + p.Name + " " + p.Id);
@@ -3194,6 +3404,11 @@ static class Uplink
         // TN+ settings with no key in them yet: the freelook key said here, so that the game and Uplink agree whatever
         // the TN+ build. A new installation: F, and the keys' version 4 (TN+ then leaves the game's Centre view, on F,
         // without a key); an installation made before: Y, as it always was
+        // the music device picked on the Settings page, for a TN+ whose settings do not say yet (a TN+ just installed:
+        // what the launcher's other TN+ plays, or what was picked before there was any)
+        string music = IniGet(other, "music") ?? Cfg("music");
+        if (music != "" && !lines.Exists(l => Regex.IsMatch(l, @"^\s*music\s*=", RegexOptions.IgnoreCase))) lines.Add("music = " + music);
+        AweHave();                                            // (and the player's ROM dump next to this TN+ too)
         if (!lines.Exists(l => Regex.IsMatch(l, @"^\s*keys?_")))
         {
             lines.Add("key_freelook = " + (Cfg("keys_gen") == "2" ? "21" : "15"));
@@ -3842,6 +4057,7 @@ static class Uplink
             d.Filter = "TNPlus.ini|TNPlus.ini|ini files|*.ini";
             if (d.ShowDialog(form) != DialogResult.OK) return;
             int n = CopyKeys(d.FileName, Path.Combine(TnpDir, "TNPlus.ini"));
+            Set("tnplus_own", Path.GetDirectoryName(d.FileName)); SaveCfg();    // (his own TN+: where his AWE32 ROM dump may be)
             SyncKeys();
             Status(n + " key and mouse settings imported: " + KeysSummary(), CGreen);
         }

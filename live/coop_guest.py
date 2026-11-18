@@ -13,10 +13,12 @@ import coop_lobby, coop_view
 from coop_name import NameTag
 from guest_equipment import GuestEquipment
 from coop_aim import GuestAim
+from coop_unit_hits import UnitHits, ON as UNIT_HITS_ON
 # his shots at what his crosshair is on (coop_aim.py; TN_COOP_AIM=0: 30 units along his view, as before), and each
 # shot's aim in the bridge's output (TN_COOP_AIMLOG=1)
 AIM_ON = os.environ.get('TN_COOP_AIM') != '0'
 AIM_LOG = os.environ.get('TN_COOP_AIMLOG') == '1'
+PICK_FRESH = 0.3                     # his window's pick used this long after it came (s)
 
 CAVE = 0x46B040
 CAVE_WAIT = 60                    # seconds the bridge waits for it before saying it is missing
@@ -350,6 +352,10 @@ class Guest:
         # (False: none) and where the host's game draws it (his window draws his own there)
         self.equip = GuestEquipment(self)                     # his drone and A.S.F. (guest_equipment.py, TN_COOP_EQUIP=1)
         self.aimer = GuestAim(self)                           # what his crosshair is on (coop_aim.py)
+        self.unit_hits = UnitHits(self)                       # his shots' hits on that unit (coop_unit_hits.py)
+        self.gpick = None                                     # (time, 15 bytes): what it is on in his window (coop_fire_pick.gd)
+        self.aim_on, self.pick_on = AIM_ON, os.environ.get('TN_COOP_PICK') != '0'
+        self.view_delay, self.held_views, self.ctl_t = 0.0, [], 0.0   # (tests: test_ctl)
         # The host's suit in his window walks with the game's own walk ported to Uplink (suit_gait.gd, as every suit
         # the game does not pose), from its real motion. host_anim.py's learned cycle (TN_HOST_ANIM=1, the old way)
         # sent a pose every view: with no cycle learned yet (a new install) it was a standing pose for good, the
@@ -1637,6 +1643,8 @@ class Guest:
         self.lobby_step(True)
         if self.versus and self.state == OK:
             self.versus_hits(me)
+        elif self.state == OK:
+            self.unit_hits.tick()                              # his shots on the unit he aims at (coop_unit_hits.py)
         turn = self.read_input(self.state == OK)
         self.equip.tick(self.state == OK)
         if self.state != OK:                                   # the guest watches through the host's eyes
@@ -1705,16 +1713,23 @@ class Guest:
                 elif (side > LOCK_PICK or up > LOCK_PICK_V) and math.dist(t[:2], eye[:2]) > self.sensor():
                     print('guest: lock lost (%d: off his view, out of his sensor range)' % self.lock, flush=True)
                     self.lock = 0                              # (the game's rule: off its screen and out of range)
-        if aim is None and fire and AIM_ON:                    # (coop_aim.py: what his crosshair is on, at any distance)
-            s = self.suit(self.gid)
+        self.test_ctl()
+        if aim is None and fire and self.aim_on:               # what his crosshair is on: in his own picture (his window's
+            s = self.suit(self.gid)                            # pick, coop_aim.from_pick), else cast here (coop_aim.py)
             wt = g.read(s + SLOTS + SLOT_N * (g.read(s + SEL, 1)[0] & 3), 1)[0]
-            aim, what = self.aimer.point(eye, view, self.u16(W_RANGE + W_N * wt), (self.gid,), time.time())
+            reach = self.u16(W_RANGE + W_N * wt)
+            got = None
+            if self.pick_on and self.gpick and time.time() - self.gpick[0] < PICK_FRESH:
+                got = self.aimer.from_pick(self.gpick[1], eye, view, reach, (self.gid,), time.time())
+            aim, what = got or self.aimer.point(eye, view, reach, (self.gid,), time.time())
         elif aim is not None:
             what = 'lock %d' % self.lock
         else:
             what = 'view 30'
         if aim is None:
             aim = tuple(e + v * 30 for e, v in zip(eye, view))
+        if fire:
+            self.unit_hits.aimed(what)
         if fire and AIM_LOG:
             print('aim: %.3f eye %.3f %.3f %.3f view %.4f %.4f %.4f aim %.3f %.3f %.3f -> %s at %.2f' % (
                 time.time(), *eye, *view, *aim, what, math.dist(eye, aim)), flush=True)
@@ -1803,6 +1818,9 @@ class Guest:
                     self.lock_seen = list(struct.unpack('<%dH' % ((len(pk) - 3) // 2), pk[3:3 + (len(pk) - 3) // 2 * 2]))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
+                self.gpick = (time.time(), pk[3:18]) if pk[2] and len(pk) >= 18 else None   # (newer windows: his pick)
+            elif pk[:1] == b'F' and len(pk) == 16:               # what his crosshair is on while he fires (coop_fire_pick.gd)
+                self.gpick = (time.time(), pk[1:16])
             elif pk[:1] == b'C' and len(pk) >= 3 and pk[1] == 1 and not pk[2]:
                 self.fire = False                              # (the left button let go with his mouse freed)
             elif pk[:1] == b'E' and len(pk) >= 2:                # his drone / A.S.F. (guest_equipment.py)
@@ -1937,8 +1955,33 @@ class Guest:
             n = min(300, struct.unpack_from('<H', pk, 4)[0])
             self.s.sendto(b'PTS' + zlib.compress(struct.pack('<H', n) + pk[6:6 + 14 * n], 1), ('127.0.0.1', REMOTE_VIEW))
 
+    def test_ctl(self):
+        """tests (TN_COOP_TEST_CTL = a file, read again when it changes): 'aim=0|1 pick=0|1 hits=0|1 delay=MS', the last his
+        views held back that long (the local guest window standing for one over Steam)"""
+        f = os.environ.get('TN_COOP_TEST_CTL')
+        if not f:
+            return
+        try:
+            mt = os.stat(f).st_mtime_ns
+            if mt == self.ctl_t:
+                return
+            kv = dict(w.split('=', 1) for w in open(f).read().split() if '=' in w)
+        except OSError:
+            return
+        self.ctl_t = mt
+        self.aim_on = kv.get('aim', '1') != '0'
+        self.pick_on = kv.get('pick', '1') != '0'
+        self.view_delay = float(kv.get('delay', '0')) / 1000
+        self.unit_hits.on = kv.get('hits', '1' if UNIT_HITS_ON else '0') != '0'
+
     def send(self, view):
         if not self.remote:
+            if self.view_delay > 0 or self.held_views:         # (tests: TN_COOP_TEST_CTL delay)
+                now = time.time()
+                self.held_views.append((now + self.view_delay, view))
+                while self.held_views and self.held_views[0][0] <= now:
+                    self.s.sendto(self.held_views.pop(0)[1], ('127.0.0.1', LIVE_PORT))
+                return
             self.s.sendto(view, ('127.0.0.1', LIVE_PORT))
             return
         now = time.time()

@@ -111,6 +111,7 @@ var levels := PackedByteArray()        # his armour indicator: front, left, righ
 var indicator_at := Vector2i(-1, -1)   # where the host's game draws it (-1: not seen)
 var indicator_tex := {}                # levels -> texture
 var indicator_idx := PackedByteArray() # its picture's palette indices (21 x 42)
+var fire_pick: Node                     # his crosshair's target, sent with his fire (coop_fire_pick.gd)
 var cross_tex: Texture2D               # the game's crosshair (false: its files have none)
 var cross_tried := false
 var game_res = null                    # RESGAME.RES (pilot names, resource 364)
@@ -193,6 +194,9 @@ func _ready() -> void:
 	add_child(lobby)
 	views = preload("res://scripts/coop_views.gd").new()
 	add_child(views)
+	fire_pick = preload("res://scripts/coop_fire_pick.gd").new()   # what his shots are on (coop_fire_pick.gd)
+	fire_pick.hud = self
+	add_child(fire_pick)
 	equip = preload("res://scripts/guest_equipment.gd").new()
 	equip.hud = self
 	add_child(equip)

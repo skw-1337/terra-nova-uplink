@@ -756,6 +756,8 @@ func _load(index: int) -> void:
 	for z in mis["zones"]:
 		zone_nodes[int(z.get("index", zone_nodes.size()))] = _add_zone(m, z)
 	current = {"map": m, "mission": mis, "entry": entry, "map_path": map_path}   # (map_path: the coop guest's map panel)
+	if not live:                              # the map's own burnt points, drawn as the live ones (the bridge sends
+		_live_scorch(_map_burns(m))             # them again in play, read from the game's memory)
 	_sync_sun_half()
 	_place_camera(m, mis)
 	info.text = "%s\nmap %s (%s), %d objects, %d named zones, %d plants%s\nloaded in %.1f s" % [
@@ -1580,22 +1582,31 @@ func _apply_look() -> void:
 		sm.set_shader_parameter("modern", m)
 
 
-const PITCH_SIGN := 1.0   # a mission record's pitch: nose up for > 0 (not compared with the game yet, MISS16 #20)
+# A mission record's pitch (+22, MISS16's crashed ship #20 and MISS3D #18 only): nose up for > 0. The game draws the
+# model turned by its entity's pitch word (+0x1D, 0x29B3AC), which the record sets (MISS16's wreck: 3072 in memory,
+# 16.9 deg, as in the file); same tilt as the game seen from the south, north and east (audit 65). Kept in live mode
+# too (_live_place): the bridge sends no pitch, the wreck was drawn flat there.
+const PITCH_SIGN := 1.0
+# How high the probes (class 3 types 0-6) fly above the ground: the mission files leave their z at 0 and the map
+# viewer has no game to ask (live mode takes the game's own z), and no file of the game gives it (RESSIM 903 / 912 /
+# 921 hold the same values for the five types). Measured in the game, entity z minus the ground under it, every 0.5 s
+# for a minute (audits 64 and 65): hornet 2 0.1-1.3 (median 0.57), spy 3 2.5-3.9 (3.2), hunter 4 2.5-3.9 (3.2),
+# bomber 5 4.9-6.7 (5.8) in MISS16, diver 6 2.5-7.4 (5.9) in MISS13. Their middle:
+const PROBE_HOVER := {2: 0.6, 3: 3.2, 4: 3.3, 5: 6.0, 6: 5.9}
+const PROBE_HOVER_DEFAULT := 3.0       # types 0 and 1 (camera and explosive probes): in no mission file
 
 
-# team: the mission's side of its group (1 = the player's; 0: unknown, told from the type's name); pitch: the mission
+# team: the mission's side of its group (1 = the player's, anything else the enemy's); pitch: the mission
 # record's (classes 0, 3 and 4; vehicles and building type 0x2F lie on the slope instead, 0x29DD64); state: a decor
 # object's picture (1: hit once, its burnt stump; the mission file or the live game say so).
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
 		label: bool, z: float = 0.0, team: int = 0, pitch: float = 0.0, state: int = 0) -> MeshInstance3D:
 	var name: String = data.type_name(cls, sub)
-	var low := name.to_lower()
 	var ground := TNData.height_at(m, x, y)
 	# z = height above the ground; the mission files leave it at 0 except for the Nid d'aigle bridge
-	# (spanning a ravine): ships then sit on the ground / dock, probes are shown hovering a little
+	# (spanning a ravine): ships then sit on the ground / dock, probes hover as high as their type flies (PROBE_HOVER)
 	var lift := z
-	if z == 0.0 and cls == 3 and (low.contains("sonde") or low.contains("probe")):
-		lift = 3.0
+	var probe := z == 0.0 and cls == 3 and sub <= 6
 	var mi := MeshInstance3D.new()
 	var top := 0.0
 	var ref: Vector2i = objects.ref_for(cls, sub, state) if objects_ok else Vector2i.ZERO
@@ -1656,6 +1667,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 			mi.material_override = _sprite_lit_row(ref, sp, m, _foot_row(m, x, y)) if _sprites_per_index(m) 					else _sprite_lit(ref, sp, _foot_light(m, x, y))   # lit like the vegetation
 			_sprite_shadow(mi, ref, sp)
 			top = q.size.y
+	if probe:                                   # the entity's z, drawn as live draws it: a model at z less its class
+		lift = PROBE_HOVER.get(sub, PROBE_HOVER_DEFAULT)   # and type's draw offset, a picture at z (_live_place)
+		if objects_ok and TNObjects.is_model(ref):
+			lift -= objects.draw_offset(cls, sub)
 	# nothing usable in the data (e.g. the biped mech): a box; not for the Fumee the game deletes at load, nor a hit
 	# decor whose second picture is none
 	if mi.mesh == null and not soldier and not fumee and not no_picture:
@@ -1666,10 +1681,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.material_override = mats["decor"]
 			1:
 				box.size = Vector3(0.5, 1.4, 0.5)
-				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
+				mi.material_override = mats["friend"] if team == 1 else mats["enemy"]
 			2, 3:
 				box.size = Vector3(1.4, 0.8, 1.4)
-				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
+				mi.material_override = mats["friend"] if team == 1 else mats["enemy"]
 			_:
 				box.size = Vector3(4, 3, 4)
 				mi.material_override = mats["building"]
@@ -1684,6 +1699,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		mi.basis = Basis(Vector3.UP, -heading) * Basis(Vector3(0, 0, 1), _ground_pitch(m, x, y, heading, mi.get_meta("half")))
 	elif pitch != 0.0 and TNObjects.is_model(ref) and (cls == 0 or cls == 3 or (cls == 4 and sub != MINE_TYPE)):
 		mi.rotate_object_local(Vector3(0, 0, 1), PITCH_SIGN * pitch)   # (models face +X: their side axis is Z)
+		mi.set_meta("pitch", PITCH_SIGN * pitch)
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
 	if soldier or TNObjects.is_model(ref):         # (sprites take the light at their foot: _foot_light)
@@ -7227,6 +7243,17 @@ func _burn_pictures() -> Texture2DArray:
 	return burn_pics
 
 
+# The burnt points stored in the map (TNData._grid), as the bridge's packet: count, then y * 513 + x.
+func _map_burns(m: Dictionary) -> PackedByteArray:
+	var b: PackedInt32Array = m["detail"].get("burned", PackedInt32Array())
+	var pk := PackedByteArray()
+	pk.resize(4 + 4 * b.size())
+	pk.encode_u32(0, b.size())
+	for k in b.size():
+		pk.encode_u32(4 + 4 * k, b[k])
+	return pk
+
+
 func _live_scorch(pk: PackedByteArray) -> void:
 	if current.is_empty() or pk == scorch_prev:
 		return
@@ -8655,6 +8682,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		node.position = Vector3(e[3], TNData.height_at(m, e[3], e[4]) + float(node.get_meta("lift", 0.0)), e[4])
 	if e[0] != 2 and not (e[0] == 4 and e[1] == MINE_TYPE):
 		node.basis = Basis(Vector3.UP, -e[6])           # (a body tipped over is set back up)
+		if node.has_meta("pitch"):                      # a mission record's pitch (MISS16's wreck): the game keeps it
+			node.basis = node.basis * Basis(Vector3(0, 0, 1), float(node.get_meta("pitch")))
 		return
 	# vehicles and mines pitch with the ground along their heading as the game draws them (its entity has only a
 	# heading): no roll, no easing, worked out again on every draw

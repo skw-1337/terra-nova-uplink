@@ -79,6 +79,7 @@ var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
 var lock_info := PackedByteArray()     # what the host's bridge says of his target: armour %, beyond range, metres
+var host_gone_t := -100.0              # (the last log line saying the host's suit is not drawn)
 var iff := []                          # the units the game marks with coloured brackets: [entity, palette colour]
 var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
@@ -1082,6 +1083,14 @@ func _draw_mate() -> void:
 	if host_pos == Vector3.ZERO or cam == null:
 		return
 	var n := _drawn(host_ent)                  # the suit as drawn (20 views a second); these packets come ~twice a second
+	if (n == null or n.has_meta("player_body")) and host_ent > 0 and clock - host_gone_t > 10.0:
+		host_gone_t = clock                    # (why the host's suit is not drawn, for the logs: once in 10 s)
+		var vp := get_parent()
+		var raw: Node3D = vp._live_node(host_ent) if vp and vp.has_method("_live_node") else null
+		print("coop: the host's suit (entity %d) is not drawn: %s, in the view %s, own body %s" % [host_ent,
+				"no node" if raw == null else "node visible %s, corpse %s, hidden as his own body %s" % [raw.visible, raw.has_meta("corpse"), raw.has_meta("player_body")],
+				vp.live_ents.has(host_ent) if vp and "live_ents" in vp else "?", vp.get("live_player") if vp else "?"])
+	var top := (n.global_position if n else host_pos) + Vector3(0, 0.72, 0)   # just over his head (a suit stands ~0.6)
 	if cam.is_position_behind(top):
 		return
 	var c := _pixel(cam, top)

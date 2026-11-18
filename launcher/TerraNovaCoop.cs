@@ -650,6 +650,10 @@ static partial class Uplink
         pvCard = new Surface { Location = new Point(18, 300), Size = new Size(MW - 36, 184) };
         pvCard.Look = PreviewLook;
         pg.Controls.Add(pvCard);
+        pvCard.VisibleChanged += delegate { PvAnimSync(); };
+        form.Resize += delegate { PvAnimSync(); };
+        form.Activated += delegate { pvAway = false; PvAnimSync(); };
+        form.Deactivate += delegate { pvAway = !form.Bounds.Contains(Cursor.Position); PvAnimSync(); };
         pvTimer = new System.Windows.Forms.Timer { Interval = 220 };
         pvTimer.Tick += delegate {                            // (the pointer left: what has the keyboard, else the preset)
             pvTimer.Stop();
@@ -671,9 +675,16 @@ static partial class Uplink
     static void PreviewShow(string key)
     {
         if (pvTimer != null) pvTimer.Stop();
-        if (pvCard == null || pvKey == key) return;
-        pvKey = key;
-        pvCard.Dirty();
+        if (pvCard == null) return;
+        pvAway = false;                                       // (pointed at again)
+        if (pvKey != key)
+        {
+            pvKey = key;
+            pvAnimKey = null;                                 // (a new one starts from its first frame)
+            pvCard.Live = null;
+            pvCard.Dirty();
+        }
+        PvAnimSync();
     }
 
     static void PreviewLook(Graphics g)
@@ -697,16 +708,190 @@ static partial class Uplink
         string[] t = PV_TEXT[key];
         float tw2 = Spaced(g, t[0].ToUpperInvariant(), F10b, COrange, 13, 11, 1.2f);
         Str(g, t[1], F11, CDim, 13 + tw2 + 10, 10);
-        float iw = (all.Width - 10) / 2f;
         for (int k = 0; k < 2; k++)
         {
-            RectangleF r = new RectangleF(all.X + k * (iw + 10), all.Y, iw, all.Height);
+            RectangleF r = PvHalf(k);
             DrawCover(g, PvImage(key + (k == 0 ? "_off.jpg" : "_on.jpg")), r, false);
-            string chip = k == 0 ? "OFF" : "ON";
-            float cw = Spaced(g, chip, F95b, Color.Empty, 0, 0, 1.2f) + 14;
-            using (GraphicsPath p = Round(new RectangleF(r.X + 8, r.Y + 8, cw, 18), 3))
-            using (Brush b = new SolidBrush(Color.FromArgb(214, 8, 17, 15))) g.FillPath(b, p);
-            Spaced(g, chip, F95b, k == 0 ? CSoft : COrange, r.X + 15, r.Y + 11, 1.2f);
+            PvChip(g, r, k, k == 0 ? "OFF" : "ON", false);
+        }
+    }
+
+    // the preview's two pictures (OFF left, ON right), in the card's units
+    static RectangleF PvHalf(int k)
+    {
+        float w = MW - 36, h = 184, aw = w - 26, iw = (aw - 10) / 2f;
+        return new RectangleF(13 + k * (iw + 10), 32, iw, h - 32 - 13);
+    }
+
+    static void PvChip(Graphics g, RectangleF r, int k, string chip, bool stop)
+    {
+        float cw = Spaced(g, chip, F95b, Color.Empty, 0, 0, 1.2f) + 14;
+        using (GraphicsPath p = Round(new RectangleF(r.X + 8, r.Y + 8, cw, 18), 3))
+        using (Brush b = new SolidBrush(stop ? Color.FromArgb(230, 120, 40, 20) : Color.FromArgb(214, 8, 17, 15))) g.FillPath(b, p);
+        Spaced(g, chip, F95b, stop ? Color.White : k == 0 ? CSoft : COrange, r.X + 15, r.Y + 11, 1.2f);
+    }
+
+    // Animated previews, for what a still can't show: <key>_anim.jpg in previews\, its frames stacked top to bottom (each
+    // as wide as the strip), shown from the start while the switch is pointed at or has the keyboard, nothing played
+    // otherwise. Each table gives, frame by frame of the loop, the strip's frame for OFF and for ON; a strip that doesn't
+    // fit its table (or can't be read) leaves the two stills.
+    class PvAnim
+    {
+        public int Frames, Fps;
+        public int[] Off, On;
+        public int Limit = -1;                                // look down: the strip's frame where the game stops the view
+    }
+    // (look down: 29 frames 2.8 degrees apart from level, the game's stop at the 18th, 48 degrees down as the camera
+    // measured it; cloud shadows: the view without them, then 48 frames of one whole turn of the cloud cover)
+    static readonly Dictionary<string, PvAnim> PV_ANIM = new Dictionary<string, PvAnim> {
+        { "cloud_shadows", PvCloud(48, 12) },
+        { "look_down", PvTilt(29, 17, 15, 6, 18) } };
+
+    // the cloud shadows: frame 0 the view without them, then a loop of them drifting over it (one whole turn of the sky)
+    static PvAnim PvCloud(int n, int fps)
+    {
+        PvAnim a = new PvAnim { Frames = n + 1, Fps = fps, Off = new int[n], On = new int[n] };
+        for (int i = 0; i < n; i++) a.On[i] = i + 1;
+        return a;
+    }
+
+    // the view tilted down from level, frame by frame: OFF stays at the game's limit, ON goes on; a rest at both ends
+    static PvAnim PvTilt(int n, int limit, int fps, int restStart, int restEnd)
+    {
+        int len = restStart + n + restEnd;
+        PvAnim a = new PvAnim { Frames = n, Fps = fps, Off = new int[len], On = new int[len], Limit = limit };
+        for (int i = 0; i < len; i++)
+        {
+            int f = Math.Max(0, Math.Min(n - 1, i - restStart));
+            a.On[i] = f;
+            a.Off[i] = Math.Min(f, limit);
+        }
+        return a;
+    }
+
+    static Dictionary<string, Bitmap[]> pvFrames = new Dictionary<string, Bitmap[]>();
+    static System.Windows.Forms.Timer pvAnimTimer;
+    static string pvAnimKey;                                  // the animation playing (null: none)
+    static int pvAnimT0, pvAnimAt = -1;
+
+    // its frames, cut from the strip once (null: no strip, or one that doesn't fit: the stills stay)
+    static Bitmap[] PvFrames(string key)
+    {
+        Bitmap[] fr;
+        if (pvFrames.TryGetValue(key, out fr)) return fr;
+        pvFrames[key] = null;
+        PvAnim a = PV_ANIM[key];
+        Image strip = null;
+        try
+        {
+            string f = Path.Combine(Path.Combine(UplinkDir, "launcher"), Path.Combine("previews", key + "_anim.jpg"));
+            if (File.Exists(f)) strip = Image.FromStream(new MemoryStream(File.ReadAllBytes(f)));
+        }
+        catch { }
+        try
+        {
+            if (strip == null)
+            {
+                Stream s = typeof(Uplink).Assembly.GetManifestResourceStream("previews." + key + "_anim.jpg");
+                if (s != null) strip = Image.FromStream(s);
+            }
+            if (strip == null || a.Frames < 1 || strip.Height % a.Frames != 0) return null;
+            foreach (int i in a.Off) if (i < 0 || i >= a.Frames) return null;
+            foreach (int i in a.On) if (i < 0 || i >= a.Frames) return null;
+            int w = strip.Width, h = strip.Height / a.Frames;
+            fr = new Bitmap[a.Frames];
+            for (int i = 0; i < a.Frames; i++)
+            {
+                fr[i] = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                using (Graphics g = Graphics.FromImage(fr[i]))
+                {
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    g.DrawImage(strip, new Rectangle(0, 0, w, h), new Rectangle(0, i * h, w, h), GraphicsUnit.Pixel);
+                }
+            }
+            pvFrames[key] = fr;
+            return fr;
+        }
+        catch (Exception e)
+        {
+            Log("preview " + key + ": " + e.Message);
+            if (fr != null) foreach (Bitmap b in fr) if (b != null) b.Dispose();
+            return null;
+        }
+        finally { if (strip != null) strip.Dispose(); }
+    }
+
+    // plays the animation of what the preview shows, only while it can be seen (its page up, the window not minimized)
+    // and the pointer or the keyboard is on it (the launcher left for another window with the pointer elsewhere: paused
+    // until it comes back); else no timer runs
+    static bool pvAway;
+    static void PvAnimSync()
+    {
+        string key = null;
+        if (pvCard != null && pvKey != null && PV_ANIM.ContainsKey(pvKey) && pvCard.Visible && form != null &&
+            form.WindowState != FormWindowState.Minimized && !pvAway && PvFrames(pvKey) != null)
+            key = pvKey;
+        if (key == pvAnimKey) return;
+        pvAnimKey = key;
+        pvAnimAt = -1;
+        if (pvAnimTimer == null)
+        {
+            pvAnimTimer = new System.Windows.Forms.Timer();
+            pvAnimTimer.Tick += delegate { PvAnimTick(); };
+        }
+        pvAnimTimer.Stop();
+        if (key != null)
+        {
+            pvAnimT0 = Environment.TickCount;
+            pvAnimTimer.Interval = Math.Max(15, 1000 / PV_ANIM[key].Fps / 2);    // (twice a frame: steady steps)
+            pvAnimTimer.Start();
+        }
+        pvCard.Live = key == null ? null : (Action<Graphics>)PreviewLive;
+        PvAnimDirty();
+    }
+
+    static void PvAnimTick()
+    {
+        if (pvAnimKey == null) { pvAnimTimer.Stop(); return; }
+        if (!pvCard.Visible || form.WindowState == FormWindowState.Minimized || pvAway) { PvAnimSync(); return; }
+        int at = PvAnimFrame();
+        if (at == pvAnimAt) return;
+        pvAnimAt = at;
+        PvAnimDirty();
+    }
+
+    static int PvAnimFrame()
+    {
+        PvAnim a = PV_ANIM[pvAnimKey];
+        long ms = unchecked((uint)(Environment.TickCount - pvAnimT0));
+        return (int)(ms * a.Fps / 1000 % a.On.Length);
+    }
+
+    static void PvAnimDirty()
+    {
+        if (pvCard == null) return;
+        RectangleF r = RectangleF.Union(PvHalf(0), PvHalf(1));
+        pvCard.Invalidate(Rectangle.Round(new RectangleF(r.X * K - 2, r.Y * K - 2, r.Width * K + 4, r.Height * K + 4)), false);
+    }
+
+    static void PreviewLive(Graphics g)
+    {
+        if (pvAnimKey == null || pvAnimKey != pvKey) return;
+        Bitmap[] fr = PvFrames(pvAnimKey);
+        if (fr == null) return;
+        PvAnim a = PV_ANIM[pvAnimKey];
+        int t = pvAnimAt < 0 ? PvAnimFrame() : pvAnimAt;
+        for (int k = 0; k < 2; k++)
+        {
+            RectangleF r = PvHalf(k);
+            int f = k == 0 ? a.Off[t] : a.On[t];
+            DrawCover(g, fr[f], r, false);
+            bool stop = k == 0 && a.Limit >= 0 && a.On[t] >= a.Limit;      // (OFF held at the game's stop: said so)
+            if (stop)
+                using (GraphicsPath p = Round(new RectangleF(r.X + 1, r.Y + 1, r.Width - 2, r.Height - 2), 5))
+                using (Pen l = new Pen(Color.FromArgb(230, 120, 40, 20), 2f)) g.DrawPath(l, p);
+            PvChip(g, r, k, k == 0 ? (stop ? "OFF  ·  STOPS HERE" : "OFF") : "ON", stop);
         }
     }
 
@@ -1623,7 +1808,17 @@ static partial class Uplink
     class Surface : Panel
     {
         public Action<Graphics> Look;
+        public Action<Graphics> Live;                         // drawn over the picture at each paint (the animated previews)
         Bitmap bmp;
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (Live == null) return;
+            Graphics g = e.Graphics;
+            g.ScaleTransform(K, K);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            Live(g);
+        }
         public Surface() { BackColor = CBack; DoubleBuffered = true; ResizeRedraw = true; }
         public Bitmap Bmp
         {

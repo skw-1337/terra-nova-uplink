@@ -736,6 +736,7 @@ func _load(index: int) -> void:
 	live_drawn = PackedByteArray()            # (the last mission's DRAW bits)
 	mission_tag = String(entry["file"]).get_file().to_upper()
 	live_extra.clear()
+	order_tris.clear()                        # (the move-there aim's models: _order_wall)
 	live_fx.clear()
 	live_piles.clear()
 	scorch_prev = PackedByteArray()           # (the burns: on the new map's ground, _live_scorch)
@@ -4017,6 +4018,65 @@ func _order_sight(m: Dictionary, from: Vector3, to: Vector3) -> bool:
 	return true
 
 
+# "Move there" stops at the first building, wall or model the aim meets (TN_ORDER_WALLS=0: through them, as before):
+# the place is the ground just in front of it, on the player's side (ORDER_WALL_BACK units back along the aim)
+const ORDER_WALL_BACK := 1.5
+const ORDER_WALL_MIN_H := 0.6                          # (lower models: the aim goes over them)
+var order_walls := OS.get_environment("TN_ORDER_WALLS") != "0"
+var order_tris := {}                                   # a model's mesh -> its triangles (TriangleMesh), made once
+
+
+# how far along the ray (from, dir: normalised) the first building / wall / model is met (reach: none before it): the
+# mission's units and buildings (live_ents) and the map's own models (its walls and buildings, laid out with the
+# plants: veg_cells; a model the game removed is scaled to nothing there)
+func _order_wall(from: Vector3, dir: Vector3, reach: float) -> float:
+	var best := reach
+	for cell in veg_cells:
+		for it in veg_cells[cell]:
+			var mm: MultiMesh = it[0]
+			if not (mm.mesh is ArrayMesh):
+				continue                                   # (sprites and stand-ins: plants, rocks)
+			var xf: Transform3D = mm.get_instance_transform(int(it[1]))
+			if absf(xf.basis.determinant()) < 1e-6:
+				continue
+			best = _order_mesh_hit(mm.mesh, xf, from, dir, best)
+	for id in live_ents:
+		var e = live_ents[id]
+		var cls := int(e[0])
+		if not (cls == 0 or cls == 3 or cls == 4) or int(e[2]) & 1 == 0:
+			continue
+		if cls == 4 and (int(e[1]) == MINE_TYPE or int(e[1]) == TNObjects.SMOKE_TYPE):
+			continue
+		var n := _live_node(int(id)) as MeshInstance3D
+		if n == null or n == live_player_node or not n.visible or not n.is_inside_tree() or n.mesh == null or n.mesh is QuadMesh:
+			continue
+		best = _order_mesh_hit(n.mesh, n.global_transform, from, dir, best)
+	return best
+
+
+# a model (its mesh placed by xf) on the ray: the nearer of its hit and best
+func _order_mesh_hit(mesh: Mesh, xf: Transform3D, from: Vector3, dir: Vector3, best: float) -> float:
+	var bb: AABB = mesh.get_aabb()
+	if bb.size.y * xf.basis.get_scale().y < ORDER_WALL_MIN_H:
+		return best
+	var inv := xf.affine_inverse()
+	var lf := inv * from
+	var ld := inv.basis * dir
+	var at = bb.intersects_ray(lf, ld)                     # (its box first: most are missed there)
+	if at == null or from.distance_to(xf * (at as Vector3)) >= best:
+		return best
+	if not order_tris.has(mesh):
+		order_tris[mesh] = mesh.generate_triangle_mesh()
+	var tm: TriangleMesh = order_tris[mesh]
+	var d := from.distance_to(xf * (at as Vector3))
+	if tm != null:
+		var r: Dictionary = tm.intersect_ray(lf, ld)
+		if r.is_empty():
+			return best
+		d = from.distance_to(xf * (r["position"] as Vector3))
+	return minf(best, d)
+
+
 # what the player aims at: the crosshair (the look mode; the game's cursor on the 3D view in the cursor mode); with
 # the game's map in the HUD, what its cursor is on there (_map_pick)
 func _order_pick() -> Dictionary:
@@ -4050,6 +4110,23 @@ func _order_pick() -> Dictionary:
 			ent = id
 	var point = null                                       # the ground under the ray, inside the map
 	var t := 0.0
+	var wall := _order_wall(from, dir, 300.0) if order_walls else 1e9
+	if wall < 300.0:                                       # a building, wall or model first: the ground in front of it
+		var h := Vector2(dir.x, dir.z)
+		var q := from + dir * wall
+		var p := Vector2(q.x, q.z)
+		if h.length() > 0.001:
+			p -= h.normalized() * minf(ORDER_WALL_BACK, Vector2(q.x - from.x, q.z - from.z).length())
+		var ground_t := 0.0                                # (unless the ground is met before it)
+		while ground_t < wall and dir.y < 0.3:
+			var c := from + dir * ground_t
+			if c.y <= TNData.height_at(m, c.x, c.z):
+				break
+			ground_t += maxf(0.25, ground_t * 0.02)
+		if ground_t >= wall or dir.y >= 0.3:
+			if p.x >= 10.0 and p.y >= 10.0 and p.x <= 502.0 and p.y <= 502.0:
+				point = p
+			return {"ent": ent, "point": point}
 	while t < 300.0 and dir.y < 0.3:
 		var step := maxf(0.25, t * 0.02)
 		var q := from + dir * (t + step)

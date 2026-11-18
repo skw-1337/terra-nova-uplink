@@ -263,19 +263,32 @@ func _button(parent: Control, text: String, fn: Callable, accent := Color(0, 0, 
 	return b
 
 
+# the page's own size, centred: held by the anchors (the middle of the window) and offsets, not by a position, so the
+# panel stays centred if the window changes, and grows on both sides alike if a page's content ever needs more (it
+# then comes back to the page's size by itself once that content is gone: a Control's size follows its offsets and
+# its minimum, a position set once would not shrink back nor stay centred)
 func _place(w: float, h: float) -> void:
 	var vs: Vector2 = get_viewport().get_visible_rect().size
-	var sz := Vector2(minf(w * k, vs.x - 40), minf(h * k, vs.y - 40))
-	box.custom_minimum_size = sz
-	box.size = sz
-	box.position = ((vs - sz) * 0.5).round()
+	var sz := Vector2(minf(w * k, vs.x - 40), minf(h * k, vs.y - 40)).round()
+	box.custom_minimum_size = Vector2.ZERO
+	box.anchor_left = 0.5
+	box.anchor_right = 0.5
+	box.anchor_top = 0.5
+	box.anchor_bottom = 0.5
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.offset_left = -floorf(sz.x * 0.5)
+	box.offset_right = sz.x - floorf(sz.x * 0.5)
+	box.offset_top = -floorf(sz.y * 0.5)
+	box.offset_bottom = sz.y - floorf(sz.y * 0.5)
 
 
 func _show(p: String) -> void:
 	page = p
 	capture = {}
 	for c in box.get_children():
-		c.queue_free()
+		box.remove_child(c)                              # (out at once: a page queued for freeing still counts in the
+		c.queue_free()                                   # panel's minimum size until the frame ends: the next page grew to it)
 	var col := VBoxContainer.new()
 	box.add_child(col)
 	match p:
@@ -689,8 +702,14 @@ func _preset_row(col: Control) -> void:
 				_pick_preset(PRESET_IDS[i]))
 		row.add_child(b)
 		preset_btns.append(b)
+	var gap := Control.new()
+	gap.custom_minimum_size.x = 12 * k
+	row.add_child(gap)
 	preset_line = Label.new()
-	preset_line.text = "   " + PRESET_LINES[at]
+	preset_line.text = PRESET_LINES[at]
+	preset_line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # (in its own cell: a long line wraps, never widens the panel)
+	preset_line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preset_line.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	preset_line.add_theme_color_override("font_color", DIM)
 	preset_line.add_theme_font_size_override("font_size", _px(15))
 	row.add_child(preset_line)
@@ -738,7 +757,7 @@ func _gfx_touched() -> void:
 		(preset_btns[4] as Button).button_pressed = true
 	preset_quiet = false
 	if preset_line != null and is_instance_valid(preset_line):
-		preset_line.text = "   " + PRESET_LINES[4]
+		preset_line.text = PRESET_LINES[4]
 
 
 func _set_old(on: bool) -> void:

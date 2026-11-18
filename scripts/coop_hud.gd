@@ -79,6 +79,8 @@ var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
 var lock_info := PackedByteArray()     # what the host's bridge says of his target: armour %, beyond range, metres
+var host_gone_t := -100.0              # (the last log line saying the host's suit is not drawn)
+var iff := []                          # the units the game marks with coloured brackets: [entity, palette colour]
 var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
@@ -348,8 +350,15 @@ func _process(delta: float) -> void:
 					sound.play_own(LOCK_SEEN, 64)                     # set, 0x262BBF; first drawn, 0x26A309)
 				lock_heard = lock
 				lock_info = PackedByteArray()
-				if lock != 0 and pk.size() >= 7 and pk.slice(pk.size() - 7, pk.size() - 4).get_string_from_ascii() == "LCK":
-					lock_info = pk.slice(pk.size() - 4)                   # (armour %, beyond range, metres: lock_info)
+				var end := pk.size()                                  # (the bridge's trailers, read from the end)
+				iff = []
+				if end >= 4 and pk.slice(end - 4, end - 1).get_string_from_ascii() == "IFF" and end - 4 - 3 * pk[end - 1] >= 52:
+					var n: int = pk[end - 1]
+					end -= 4 + 3 * n
+					for i in n:
+						iff.append([pk.decode_u16(end + 3 * i), pk[end + 3 * i + 2]])
+				if lock != 0 and end >= 7 and pk.slice(end - 7, end - 4).get_string_from_ascii() == "LCK":
+					lock_info = pk.slice(end - 4, end)                    # (armour %, beyond range, metres: lock_info)
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true
@@ -875,6 +884,7 @@ func _draw_panel() -> void:
 		var wy := win.position.y + win.size.y * 0.8 if win.size.y > 0 else 200.0
 		_text(notice, 160.0, wy, 10.0, Color(1.0, 0.8, 0.25), true)
 	if not big_map:                                  # the big map covers the 3D view: no marks on it
+		_draw_iff()
 		_draw_lock()
 		_draw_mate()
 	if not cockpit.visible:
@@ -1073,6 +1083,13 @@ func _draw_mate() -> void:
 	if host_pos == Vector3.ZERO or cam == null:
 		return
 	var n := _drawn(host_ent)                  # the suit as drawn (20 views a second); these packets come ~twice a second
+	if (n == null or n.has_meta("player_body")) and host_ent > 0 and clock - host_gone_t > 10.0:
+		host_gone_t = clock                    # (why the host's suit is not drawn, for the logs: once in 10 s)
+		var vp := get_parent()
+		var raw: Node3D = vp._live_node(host_ent) if vp and vp.has_method("_live_node") else null
+		print("coop: the host's suit (entity %d) is not drawn: %s, in the view %s, own body %s" % [host_ent,
+				"no node" if raw == null else "node visible %s, corpse %s, hidden as his own body %s" % [raw.visible, raw.has_meta("corpse"), raw.has_meta("player_body")],
+				vp.live_ents.has(host_ent) if vp and "live_ents" in vp else "?", vp.get("live_player") if vp else "?"])
 	var top := (n.global_position if n else host_pos) + Vector3(0, 0.72, 0)   # just over his head (a suit stands ~0.6)
 	if cam.is_position_behind(top):
 		return
@@ -1125,18 +1142,7 @@ func _draw_lock() -> void:
 	var green: Color = hud_pal[0x84]
 	var red: Color = hud_pal[0x44]
 	var white: Color = hud_pal[0x1D]
-	# the brackets
-	var x0 := cx - 5.0
-	var x1 := cx + 5.0
-	var y0 := cy - 9.0
-	var y1 := cy + 8.0
-	var aw := maxf(2.0, floorf((x1 - x0) / 4.0))
-	var ah := maxf(2.0, floorf((y1 - y0) / 4.0))
-	for corner in [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]:
-		var px: float = corner[0]
-		var py: float = corner[1]
-		_gline(px, py, px + corner[2] * aw, py, green)
-		_gline(px, py, px, py + corner[3] * ah, green)
+	_brackets(cx, cy, green)
 	# the armour bar
 	var arm: int = lock_info[0] if lock_info.size() >= 4 else 100
 	var by := cy + 12.0
@@ -1159,6 +1165,44 @@ func _draw_lock() -> void:
 	for t in lines:
 		_glyphs(str(t), cx + 12.0, y, red)
 		y += 12.0
+
+
+# the game's brackets (0x26A380) around cx, cy of its screen: x - 5 to x + 5, y - 9 to y + 8 (the 400-row screen),
+# each corner a quarter of the box's width and of its height (2 at least)
+func _brackets(cx: float, cy: float, col: Color) -> void:
+	var x0 := cx - 5.0
+	var x1 := cx + 5.0
+	var y0 := cy - 9.0
+	var y1 := cy + 8.0
+	var aw := maxf(2.0, floorf((x1 - x0) / 4.0))
+	var ah := maxf(2.0, floorf((y1 - y0) / 4.0))
+	for corner in [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]:
+		var px: float = corner[0]
+		var py: float = corner[1]
+		_gline(px, py, px + corner[2] * aw, py, col)
+		_gline(px, py, px, py + corner[3] * ah, col)
+
+
+# The game's coloured brackets on the units it drew (0x26A188, after its 3D: each unit of its list of boxes but the
+# target, at the box's middle; the colours from the host's bridge, iff_block): his squadmates in their colours, the
+# others once his suit's sensors have them (an enemy in red). Only those in his 3D window
+func _draw_iff() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if iff.is_empty() or cam == null or hud_pal.size() < 256 or root.size.x < 1.0:
+		return
+	for r in iff:
+		var e: int = r[0]
+		if e == lock or e == entity:
+			continue
+		var box := _screen_box(cam, _drawn(e))
+		if box.size == Vector2.ZERO:
+			continue
+		var c := box.get_center()
+		var cx := floorf(c.x * 320.0 / root.size.x)
+		var cy := floorf(c.y * 400.0 / root.size.y)
+		if win.size != Vector2.ZERO and not win.has_point(Vector2(cx, cy)):
+			continue
+		_brackets(cx, cy, hud_pal[r[1]])
 
 
 # a unit's box on the window, as the game keeps each drawn unit's (its list 0x397CA0): its meshes' corners seen
@@ -1185,6 +1229,36 @@ func _screen_box(cam: Camera3D, n: Node3D) -> Rect2:
 				else:
 					r = r.expand(px)
 	return r
+
+
+# his right button: the units under his crosshair as the game's click picks its player's target (0x269F28) from the
+# boxes of the units it drew (0x397CA0): each drawn unit's box on this window (in the game's 320 x 400 units) grown
+# by 20 holding the crosshair's tip, the nearest box middle first (8 at most)
+func pick_units() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var cam := get_viewport().get_camera_3d()
+	var vp := get_parent()
+	if cam == null or vp == null or not ("live_ents" in vp) or root == null or root.size.x < 1.0 or root.size.y < 1.0:
+		return out
+	var at := Vector2(160.0, 200.0)
+	if win.size != Vector2.ZERO:
+		at = Vector2(win.position.x + win.size.x / 2.0, win.position.y + win.size.y / 2.0 + 3.0)
+	var kx := 320.0 / root.size.x
+	var ky := 400.0 / root.size.y
+	var found := []
+	for idx in vp.live_ents:
+		if idx == entity:
+			continue
+		var b := _screen_box(cam, _drawn(idx))
+		if b.size == Vector2.ZERO:
+			continue
+		var g := Rect2(b.position.x * kx, b.position.y * ky, b.size.x * kx, b.size.y * ky)
+		if g.grow(20.0).has_point(at):
+			found.append([g.get_center().distance_squared_to(at), idx])
+	found.sort()
+	for f in found.slice(0, 8):
+		out.append(f[1])
+	return out
 
 
 # a line of the game's screen, a game pixel thick, from (ax, ay) to (bx, by), ends included

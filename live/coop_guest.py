@@ -52,7 +52,7 @@ CONTACT = ((0xE2, (1, 2)), (0x353, (1,)), (0x397, (1,)))   # suit bytes: any of 
 LOCK_PICK, LOCK_KEEP, LOCK_RANGE = math.radians(42.25), math.radians(30), 120.0
 LOCK_PICK_V, LOCK_KEEP_V = math.radians(32), math.radians(60)   # (the view's height: 3/4 of its width)
 SENSOR = 0xB6
-PICK_HALF, PICK_GROW, PICK_SIZE = 149.0, 20.0, 0.4   # (the game's 3D window's half width, its click margin, a unit's half size)
+PICK_HALF, PICK_GROW, PICK_SIZE, PICK_NEAR = 149.0, 20.0, 0.8, math.radians(8)   # (the game's 3D window's half width, its click margin, a unit's half size, the nearest's cone)
 TARGET_KEYS = {0x14: 1, 0x15: -1}   # the game's next / previous target keys (T, Y; his own keys turned into them)
 LIVE_PORT, PLAY_PORT = 47831, 47834
 HOST_LIVE = 47821             # the host's own window (the guest's map marker for it: 'GNAV')
@@ -115,6 +115,13 @@ PILOTS, PILOT_N = 0x391E50, 0x32   # pilot records (English exe), 4: +0 in use, 
 # a unit's side: entity byte +0x21 = its AI record (0: none), 0x3832F0 + 0x14E * a (French exe: +0xB0, as the master
 # table), byte +5 = 1 the player's side, 2 the enemy (0x24a6c7, 0x24a90c). The in-use byte +0 is not a test: 0 for the player
 AI_SIDE, AI_N, AI_MAX = 0x3832F5, 0x14E, 0x3C
+# the coloured brackets the game draws on the units on its screen (0x26A188, after the 3D: every unit of its list of
+# drawn boxes but the target, 0x26A380 at the box's middle) in the colour 0x27D458 gives: none for decor (class 0 / 4);
+# a soldier with a pilot record (his squad) the squadmate's colour (0x2769E8: SQUAD_COL + the record's byte +7); any
+# other unit only once it is among his suit's contacts (suit +0xB2, its list at +0xC: 6 bytes each, 0 ends it), then
+# its colour: a soldier 0x44 (type 0xD: 0x6E), class 2 0x22 (type > 3: 0x44), class 3 0x63 (type 7: 0x50, more:
+# 0x6E; the mission's special one, word OBJ_SPECIAL, 0x4B). All 0x36 while byte IFF_ALL is set
+SQUAD_COL, IFF_ALL, OBJ_SPECIAL, CONTACTS, IFF_MAX = 0x35B3ED, 0x42015A, 0x396868, 0xB2, 48
 OK, DOWN, SPECTATE = 0, 1, 2
 # the eye, as the game's routine 0x27ec90 puts the main view: neck (joint 9, suit record +0x21B, 3 x 16.16 in the world)
 # + k x (neck - joint 8, +0x20F), k by the suit's kind (+0xDE, jump table 0x27ec64); then the camera's own height
@@ -274,6 +281,7 @@ class Guest:
         # walking time to the next footstep, the end of its stance (game clock), his last place and clock
         self.pending, self.clk, self.jet_n, self.jet_air = [0, 0, 0], None, None, None
         self.lock, self.lock_req, self.pad_lock, self.lock_step = 0, False, False, 0
+        self.lock_seen = []
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
@@ -468,45 +476,105 @@ class Guest:
         far = 1 if d >= self.u16(W_RANGE + W_N * wt) else 0
         return b'LCK' + struct.pack('<BBH', arm, far, min(65535, int(d * 6)))
 
+    def iff_colour(self, e, pilots, d):
+        """the game's colour of a unit (0x2769E8) for his screen: his target green (0x84)"""
+        if e == self.lock:
+            return 0x84
+        b = self.g.read(self.master + 0x25 * e + 1, 2)
+        if b[0] == 1:
+            if e in pilots:
+                return self.g.read(SQUAD_COL + d + pilots[e], 1)[0]
+            return 0x6E if b[1] == 0xD else 0x44
+        if b[0] == 2:
+            return 0x44 if b[1] > 3 else 0x22
+        if b[0] == 3:
+            if e == self.u16(OBJ_SPECIAL + d):
+                return 0x4B
+            return 0x63 if b[1] < 7 else 0x50 if b[1] == 7 else 0x6E
+        return 0
+
+    def iff_block(self):
+        """the end of 'GHD': the units his window marks with the game's coloured brackets (see SQUAD_COL), entity
+        (u16) and palette colour (u8) each, then 'IFF' and their count"""
+        g, d = self.g, self.master - 0x3C3240
+        out = {}
+        all_c = g.read(IFF_ALL + d, 1)[0]
+        pilots = {}
+        for k in range(4):
+            r = g.read(PILOTS + d + PILOT_N * k, 8)
+            e = struct.unpack_from('<H', r, 2)[0]
+            if (r[0] | r[1]) and e:
+                pilots[e] = r[7]
+        for e in pilots:
+            if e != self.gid and 0 < e < self.nent and g.read(self.master + 0x25 * e + 1, 1)[0] == 1:
+                out[e] = 0x36 if all_c else self.iff_colour(e, pilots, d)
+        n, lst = struct.unpack('<2I', g.read(self.suit(self.gid) + CONTACTS + 8, 8))
+        if 0x100000 < lst < 0x2000000 and 0 < n <= 300:
+            c = g.read(lst, 6 * n)
+            for k in range(n):
+                e = struct.unpack_from('<H', c, 6 * k)[0]
+                if not e:
+                    break
+                if e != self.gid and e not in out and 0 < e < self.nent and \
+                        g.read(self.master + 0x25 * e + 1, 1)[0] in (1, 2, 3):
+                    out[e] = 0x36 if all_c else self.iff_colour(e, pilots, d)
+        recs = [(e, c) for e, c in out.items() if c][:IFF_MAX]
+        return b''.join(struct.pack('<HB', e, c) for e, c in recs) + b'IFF' + bytes([len(recs)])
+
     def sensor(self):
         """his suit's sensor range (units), as the game keeps a lock (0x262B00)"""
         return self.i32(self.suit(self.gid) + SENSOR) / 65536 / 6
+
+    def lockable(self, i, me):
+        """a unit he may lock: not himself, not the host (co-op), not one of his squad, not a suit of his own side
+        without a pilot record; and where the game has it (types 1-3)"""
+        if not 0 < i < self.nent or i == self.gid or (i == me and not self.versus) or i in self.squad:
+            return False
+        if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
+            return False
+        return self.target_pos(i) is not None
 
     def in_view(self, me, eye, view):
         """the units he could lock now (the game's list of those on its screen): [(distance, entity)], nearest first"""
         out = []
         for i in range(1, self.nent):
-            if i == self.gid or (i == me and not self.versus) or i in self.squad:
-                continue
-            if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
+            if not self.lockable(i, me):
                 continue
             t = self.target_pos(i)
-            if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
+            if math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
             if side < LOCK_PICK and up < LOCK_PICK_V:
                 out.append((math.dist(t, eye), i))
         return sorted(out)
 
-    def pick_target(self, me, eye, view):
+    def pick_target(self, me, eye, view, seen=()):
         """his right button, as the game's click on its 3D view picks its player's target (0x269F28): of the units it
         drew (its list 0x397CA0 of their boxes on the screen), those whose box grown by 20 pixels holds the click (here
-        his crosshair), the one whose box's middle is nearest it (squared distance in the game's pixels); none: no
-        target. Each unit's box: its middle on his screen (the game's 3D window, 298 pixels for 84.5 degrees across,
-        rows half a pixel high) and about 0.4 units around it"""
-        best, pick = None, 0
+        his crosshair), the one whose box's middle is nearest it. His window does that on what it draws and sends the
+        units it found, nearest first (seen): the first he may lock. An older window sends none: the same rule here,
+        each unit's box about PICK_SIZE units around its middle on his screen (the game's 3D window, 298 pixels for
+        84.5 degrees across, rows half a pixel high); and none of those, the unit nearest his crosshair within
+        PICK_NEAR. None at all: no target, and why"""
+        for i in seen:
+            if self.lockable(i, me):
+                print('guest: lock', i, '(under his crosshair)', flush=True)
+                return i
+        best, pick, near, near_a, cands = None, 0, 0, None, 0
         f = PICK_HALF / math.tan(math.radians(84.5) / 2)       # (pixels a unit of tangent)
         for i in range(1, self.nent):
-            if i == self.gid or (i == me and not self.versus) or i in self.squad:
+            if not self.lockable(i, me):
                 continue
-            if not self.versus and self.g.read(self.master + 0x25 * i + 1, 1)[0] == 1 and self.side(i) == 1:
-                continue                                       # a suit of his own side without a pilot record
             t = self.target_pos(i)
-            if t is None or math.dist(t[:2], eye[:2]) > LOCK_RANGE:
+            if math.dist(t[:2], eye[:2]) > LOCK_RANGE:
                 continue
             side, up = self.off_aim(eye, view, t)
             if side > LOCK_PICK or up > LOCK_PICK_V:
                 continue
+            cands += 1
+            a = math.hypot(side, up)
+            if near_a is None or a < near_a:
+                near, near_a = i, a
             d = max(0.5, math.dist(t, eye))
             sx, sy = f * math.tan(side), 2 * f * math.tan(up)  # (rows: two a pixel)
             r = f * PICK_SIZE / d
@@ -515,7 +583,14 @@ class Guest:
             score = sx * sx + sy * sy
             if best is None or score < best:
                 best, pick = score, i
-        print('guest: lock', pick or 'nothing', flush=True)
+        if not pick and near_a is not None and near_a <= PICK_NEAR:
+            pick = near
+        if pick:
+            print('guest: lock', pick, flush=True)
+        else:
+            print('guest: lock nothing (%d lockable in his view%s; his window saw %s)' % (
+                cands, ', nearest %.1f deg off' % math.degrees(near_a) if near_a is not None else '',
+                list(seen) or 'none'), flush=True)
         return pick
 
     def clock(self):
@@ -1133,6 +1208,10 @@ class Guest:
                     pk += self.lock_info()
                 except (OSError, struct.error):
                     pass
+            try:
+                pk += self.iff_block()                         # (at the very end: read from the end)
+            except (OSError, struct.error, IndexError):
+                pass
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
@@ -1336,7 +1415,8 @@ class Guest:
         view = (math.cos(gh) * math.cos(self.pitch), math.sin(gh) * math.cos(self.pitch), math.sin(self.pitch))
         if self.lock_req:
             self.lock_req = False
-            self.lock = 0 if self.lock else self.pick_target(me, eye, view)
+            self.lock = 0 if self.lock else self.pick_target(me, eye, view, self.lock_seen)
+            self.lock_seen = []
         if self.lock_step:                                     # the game's next / previous target keys (T, Y): the
             seen = [i for _, i in self.in_view(me, eye, view)]   # units in his view by distance, round from his target
             if seen:
@@ -1437,8 +1517,9 @@ class Guest:
                     turn += dx * self.sens_x
                     self.pitch = max(-0.9, min(0.9, self.pitch - dy * 0.003))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 2:
-                if pk[2] and active:
+                if pk[2] and active:                           # (then the units his window drew under his crosshair)
                     self.lock_req = True
+                    self.lock_seen = list(struct.unpack('<%dH' % ((len(pk) - 3) // 2), pk[3:3 + (len(pk) - 3) // 2 * 2]))
             elif pk[:1] == b'B' and len(pk) >= 3 and pk[1] == 1:
                 self.fire = bool(pk[2])
             elif pk[:1] == b'C' and len(pk) >= 3 and pk[1] == 1 and not pk[2]:

@@ -1,6 +1,6 @@
 # Coop guest HUD (the second player's window, --coop-hud or --coop-guest). The host's live/coop_guest.py sends ~10
 # packets a second to 127.0.0.1:47832: 'GHD' + <BhhHBBH: state (0 playing, 1 suit destroyed: next teammate in 3 s,
-# 2 no teammate left: the host's view), armour, armour at pickup, entity, weapon slot (keys 1-4), weapon type, heading
+# 2 no teammate left: the host's view, 3 his suit in the game's EVAC MODE: flown out, next teammate in 5 s), armour, armour at pickup, entity, weapon slot (keys 1-4), weapon type, heading
 # (game units), ... and at the end his pilot's health, his armour indicator's levels and place, the squad's pilots'
 # health (coop_guest.py hud_more). And every 15 s 'GCK' + palette + zlib(index, alpha 320 x 400): the host's cockpit with his own panels
 # emptied. With it the guest gets the game's cockpit filled with his own armour, weapon, compass and map, and the
@@ -447,8 +447,10 @@ func _update() -> void:
 	bottom.visible = state == 0 and not ck
 	cockpit.visible = ck
 	panel.visible = ck
-	down_title.visible = state == 1
-	down_text.visible = state == 1
+	down_title.visible = state == 1 or (state == 3 and not ck)       # (with the cockpit: in the game's letters, _draw_evac)
+	down_text.visible = down_title.visible
+	down_title.text = "EVAC MODE" if state == 3 else "SUIT DESTROYED"
+	down_text.text = "your suit is being flown out..." if state == 3 else "switching to the next teammate..."
 	spec_label.visible = state == 2
 	if state != 0:
 		return
@@ -981,6 +983,8 @@ func _input_notice() -> String:
 
 
 func _draw_panel() -> void:
+	if state == 3 and cockpit.visible:
+		_draw_evac()
 	if state != 0:
 		return
 	var notice := _input_notice()
@@ -1577,6 +1581,27 @@ func _glyphs(text: String, x: float, y: float, col: Color) -> void:
 	var t: Texture2D = _game_letters().pic(text, col)
 	if t:
 		panel.draw_texture_rect(t, _grect(x, y, x + t.get_width(), y + t.get_height()), false)
+
+
+# EVAC MODE (state 3): his suit is flown out by the game (coop_guest.py EVAC). Two lines in the middle of the game's 3D
+# window, in the game's HUD letters at twice their size: the COMM panel's own words for it (RESGAME 366 string 193) in
+# its yellow (0x4E), then what happens in its white (0x1D)
+func _draw_evac() -> void:
+	if hud_pal.size() < 256:
+		return
+	var w := win if win.size.x > 0 else Rect2(0, 0, 320, 200)
+	var mid := w.position + w.size * 0.5
+	var t1: String = panels.text(366, 193) if panels != null else ""
+	if t1.strip_edges() == "":
+		t1 = "EVAC MODE"
+	var lines := [[t1.to_upper(), 0x4E, -24.0], ["YOUR SUIT IS BEING FLOWN OUT", 0x1D, 2.0]]
+	for l in lines:
+		var t: Texture2D = _game_letters().pic(l[0], hud_pal[l[1]])
+		if t:
+			var x0: float = mid.x - t.get_width()
+			var y0: float = mid.y + l[2]
+			panel.draw_rect(_grect(x0 - 3.0, y0 - 2.0, x0 + 2.0 * t.get_width() + 3.0, y0 + 2.0 * t.get_height() + 2.0), Color(0, 0, 0, 0.6))
+			panel.draw_texture_rect(t, _grect(x0, y0, x0 + 2.0 * t.get_width(), y0 + 2.0 * t.get_height()), false)
 
 
 # how wide a text is in those letters (game pixels)

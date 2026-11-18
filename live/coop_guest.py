@@ -132,7 +132,13 @@ AI_SIDE, AI_N, AI_MAX = 0x3832F5, 0x14E, 0x3C
 # its colour: a soldier 0x44 (type 0xD: 0x6E), class 2 0x22 (type > 3: 0x44), class 3 0x63 (type 7: 0x50, more:
 # 0x6E; the mission's special one, word OBJ_SPECIAL, 0x4B). All 0x36 while byte IFF_ALL is set
 SQUAD_COL, IFF_ALL, OBJ_SPECIAL, CONTACTS, IFF_MAX = 0x35B3ED, 0x42015A, 0x396868, 0xB2, 48
-OK, DOWN, SPECTATE = 0, 1, 2
+OK, DOWN, SPECTATE, EVAC = 0, 1, 2, 3
+# EVAC: his suit's pilot record went to state 2 (the COMM panel's "EVAC MODE"): the game's unit-destroyed routine
+# (0x28A2E8 -> 0x26645C, English exe) flies a destroyed squadmate's suit out instead of leaving a wreck; its entity
+# lives on in the air, its armour may not be 0, so the test of a destroyed suit alone missed it (18/11/2026: the guest
+# floated in the sky with his weapon still "charging"). Handled as his death: released, his window says so (coop_hud.gd
+# state 3; an older window shows its plain no-suit view), then the next teammate or the host's view
+EVAC_WAIT = 5.0                   # seconds his window shows it before the next teammate
 # the eye, as the game's routine 0x27ec90 puts the main view: neck (joint 9, suit record +0x21B, 3 x 16.16 in the world)
 # + k x (neck - joint 8, +0x20F), k by the suit's kind (+0xDE, jump table 0x27ec64); then the camera's own height
 # (the bridge's OEIL, 0x38FB1C). Measured in mission 30: 0.35-0.40 above the entity for suits 2 and 7, 0.47 suit 8, 0.8 mechs
@@ -338,6 +344,7 @@ class Guest:
         self.lock_seen = []
         self.shots, self.hits, self.retire = {}, [], []      # versus: the guest's projectiles (last spot), hits to send
         self.squad, self.state, self.down_t, self.hud_t, self.amax, self.next = [], OK, 0.0, 0.0, 1, False
+        self.down_gid = 0                                      # the suit he lost (EVAC: the game may fly it out after)
         self.tag, self.name = NameTag(g), os.environ.get('TN_GUEST_NAME', 'Player 2')   # his name on the host's HUD
         self.face = None                                      # and his Steam avatar (21 x 27 RGB) as the portrait
         self.post_key, self.drop_t = None, 0.0                   # the bridge's key poster (DOSBox window)
@@ -1239,7 +1246,15 @@ class Guest:
         return (ex, ey, ez, eh, -t / 65536 * 2 * math.pi)
 
     def alive(self, e):
-        return e and self.g.read(self.master + 0x25 * e, 2) == b'\x01\x01' and self.armour(e) > 0
+        return e and self.g.read(self.master + 0x25 * e, 2) == b'\x01\x01' and self.armour(e) > 0 and not self.evac(e)
+
+    def evac(self, e):
+        """his pilot record (by its entity, word +2) is in state 2: the game flies the suit out (EVAC above)"""
+        rec = self.g.read(PILOTS, 4 * PILOT_N)
+        for k in range(4):
+            if struct.unpack_from('<H', rec, PILOT_N * k + 2)[0] == e:
+                return struct.unpack_from('<H', rec, PILOT_N * k)[0] == 2
+        return False
 
     def pick(self, me, after=0):
         """a living suit of the player's squad (the game's pilot records; versus: of the enemy side): the nearest, or
@@ -1615,13 +1630,21 @@ class Guest:
             return
         if self.state == OK and not self.alive(self.gid):
             if self.gid:                                       # his suit is destroyed: a few seconds, then the next one
+                ev, was = self.evac(self.gid), self.gid
                 self.take(0)
-                self.state, self.down_t = DOWN, time.time()
-                print('guest: suit destroyed', flush=True)
+                self.down_gid = was
+                self.state, self.down_t = (EVAC, time.time() + EVAC_WAIT - 3.0) if ev else (DOWN, time.time())
+                print('guest: %s %s (entity %d)' % (time.strftime('%H:%M:%S'), 'suit in EVAC MODE: the game flies it out'
+                                                     if ev else 'suit destroyed', was), flush=True)
             else:
                 self.take(self.pick(me))
                 if not self.gid:                               # no teammate yet: the host's view, try again
                     self.state, self.down_t = SPECTATE, time.time() - 3.0
+        if self.state == DOWN and self.down_gid and self.evac(self.down_gid):
+            self.state, self.down_t = EVAC, time.time() + EVAC_WAIT - 3.0   # (his armour gave out first: then the game
+            print('guest: %s suit in EVAC MODE: the game flies it out (entity %d)' % (   # flew it out)
+                time.strftime('%H:%M:%S'), self.down_gid), flush=True)
+            self.down_gid = 0
         if self.state != OK and time.time() - self.down_t > 3.0:
             gid = self.pick(me)
             if gid:

@@ -250,6 +250,8 @@ func _process(delta: float) -> void:
 				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS" or tag == "GHD" or tag == "SND" or tag == "MUS") and pk.size() <= UNRELIABLE_MAX
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
+					if pk[3] != 0:                         # (no suit of his: destroyed, flown out in EVAC MODE, the
+						guest_pos = Vector3.ZERO           # host's view: no name over a suit that is gone)
 					guest_ent = pk.decode_u16(8)
 					guest_seen = clock
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)

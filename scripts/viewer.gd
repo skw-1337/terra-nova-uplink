@@ -1741,6 +1741,38 @@ class SuitParts:
 
 const LIMB_PULL := 0.05          # a standing suit's limbs drawn this much nearer the camera (_add_soldier)
 
+# The standing suits seen from high above (jumping over them, looking down past the game's limit): limb.gdshader lays
+# them out as from a lower eye (its pivot, STEEP). Each frame the suits near the eye and under it more than STEEP_FROM
+# get their middle as the pivot of their limbs; the others none (most frames: no suit, nothing set).
+var steep_nodes := []                   # every suit made (_add_soldier); freed ones dropped here
+const STEEP_FROM := 0.75                # radians up from the suit to the eye (limb.gdshader STEEP.x 0.87, less a margin)
+const STEEP_NEAR := 12.0                # units
+const STEEP_MID := 0.2                  # the suit's middle over its node (a suit is 0.4 tall)
+
+
+func _steep_suits() -> void:
+	var eye := camera.global_position
+	for k in range(steep_nodes.size() - 1, -1, -1):
+		var n = steep_nodes[k]
+		if n == null or not is_instance_valid(n):
+			steep_nodes.remove_at(k)
+			continue
+		var on := false
+		var mid := Vector3.ZERO
+		if n.is_visible_in_tree() and not n.has_meta("corpse") and not n.has_meta("player_body"):
+			mid = n.global_position + Vector3(0.0, STEEP_MID, 0.0)
+			var e: Vector3 = eye - mid
+			on = e.length() < STEEP_NEAR and e.y > 0.0 and asin(clampf(e.y / maxf(e.length(), 1e-5), -1.0, 1.0)) > STEEP_FROM
+		var was: bool = n.get_meta("steep", false)
+		if not on and not was:
+			continue
+		n.set_meta("steep", on)
+		var sp: SuitParts = n.get_meta("sp")
+		var pv := Vector4(mid.x, mid.y, mid.z, 1.0) if on else Vector4.ZERO
+		for seg in sp.segs:
+			if is_instance_valid(seg):
+				seg.set_instance_shader_parameter("pivot", pv)
+
 # Power suit in its standing pose (see TEMPLATE_POSE); the limbs become children of holder.
 # Joints of skeletons 884 / 885: 0/1 toes, 2/3 ankles, 4/5 knees, 6/7 hips, 8 pelvis, 9 neck,
 # 10/11 shoulders, 12/13 elbows, 14/15 hands. Returns the suit height (0 when it has no sprites).
@@ -1794,6 +1826,7 @@ func _add_soldier(holder: Node3D, suit: int, arms := 0) -> float:
 		sp.gv.append(Vector2(-9.0, -9.0))       # (none given yet)
 		sp.margin.append(-1.0)
 	holder.set_meta("sp", sp)
+	steep_nodes.append(holder)
 	pose_pending.erase(holder)
 	holder.set_meta("soldier", parts)
 	holder.set_meta("suit", suit)
@@ -8455,6 +8488,7 @@ func _process(delta: float) -> void:
 	_clouds_update()
 	_cloud_shadows_drift(delta)
 	_sky_items_place()
+	_steep_suits()
 	sky_root.position = camera.position
 	if live:
 		_live_update()

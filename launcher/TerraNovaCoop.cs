@@ -513,7 +513,7 @@ static class Uplink
 
         // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY); what
         // a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
-        c = Card(pg, "SQUAD", CBlue, null, 18, 268, MW - 36, 74);
+        c = Card(pg, "SQUAD", CBlue, null, 18, 252, MW - 36, 74);
         wheelTick = Row(c, "Order wheel", X, 32, 296, CBlue, save);
         wheelKeyBtn = Key(c, X + 296 - 38 - 92, 32, 92); wheelKeyBtn.Click += delegate { AskOrderKey(); };
         Btn custom = Key(c, X + 296 - 38 - 92 - 8 - 74, 32, 74);
@@ -521,9 +521,11 @@ static class Uplink
         custom.Click += delegate { ShowPage(P_WHEEL); };
         subsTick = Row(c, "Squadmates' subtitles", X + 296 + 16, 32, MW - 36 - 26 - 296 - 16, CBlue, save);
 
-        c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 376, MW - 36, 104);
+        // three columns of three rows: every name in full, each switch inside the card
+        c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 342, MW - 36, 133);
+        const int FXW = (MW - 36 - 2 * X - 2 * 16) / 3;
         for (int i = 0; i < FX.Length; i++)
-            fxTicks[i] = Row(c, FX_NAMES[i], X + 142 * (i % 4), 32 + RH * (i / 4), 134, COrange, save);
+            fxTicks[i] = Row(c, FX_NAMES[i], X + (FXW + 16) * (i % 3), 32 + RH * (i / 3), FXW, COrange, save);
     }
 
     // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed; the folder; updates; links
@@ -2161,9 +2163,26 @@ static class Uplink
             x = S(GameLine.Badge(e.Graphics, d, x / K, (e.Bounds.Y + e.Bounds.Height / 2f) / K) + 8);
             e.Graphics.Restore(st);
         }
-        TextRenderer.DrawText(e.Graphics, d == "" ? "Another folder... (the one that contains TNOVA)" : d, FBody,
-            new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x - 4, e.Bounds.Height), d == "" ? CSoft : sel ? Color.White : CText,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis | TextFormatFlags.NoPrefix);
+        // (the folder shortened here, "...\" in its middle, its last name kept: Windows' own path ellipsis let a long
+        // one run past the list's edge at 150 %)
+        Rectangle r = new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x - S(8), e.Bounds.Height);
+        TextFormatFlags tf = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+        TextRenderer.DrawText(e.Graphics, d == "" ? "Another folder... (the one that contains TNOVA)" : FitPath(e.Graphics, d, FBody, r.Width, tf), FBody,
+            r, d == "" ? CSoft : sel ? Color.White : CText, tf | TextFormatFlags.EndEllipsis);
+    }
+
+    static string FitPath(IDeviceContext g, string path, Font f, int width, TextFormatFlags tf)
+    {
+        Func<string, bool> fits = t => TextRenderer.MeasureText(g, t, f, new Size(int.MaxValue, 100), tf).Width <= width;
+        if (fits(path)) return path;
+        int cut = path.LastIndexOf('\\');
+        string tail = cut > 0 ? path.Substring(cut) : "";
+        for (int a = (cut > 0 ? cut : path.Length) - 1; a >= 3; a--)
+        {
+            string t = path.Substring(0, a).TrimEnd('\\', ' ') + "..." + tail;
+            if (fits(t)) return t;
+        }
+        return path;                                              // (then cut at its end: EndEllipsis)
     }
 
     static void PickGame()
@@ -3656,7 +3675,7 @@ static class Uplink
         {
             float x = e.X / K, y = e.Y / K;
             row = Top0 + (int)(y / RH);
-            col = x >= 254 && x < 356 ? 1 : x >= 362 && x < 450 ? 2 : x >= 456 && x < 572 ? 3 : 0;
+            col = x >= 254 && x < 356 ? 1 : x >= 362 && x < 450 ? 2 : x >= 456 && x < 562 ? 3 : 0;
         }
         protected override void OnMouseMove(MouseEventArgs e)
         {
@@ -3699,7 +3718,7 @@ static class Uplink
                 if (c.Kind == "game" || c.Kind == "tnplus")
                     DrawBox(g, new RectangleF(362, y + 2, 88, RH - 4), c.Mouse > 0 ? MOUSE_SHORT[c.Mouse] : "+", c.Mouse > 0 ? CText : CDim, hot && hotCol == 2, false);
                 if (PadOk(c))
-                    DrawBox(g, new RectangleF(456, y + 2, 116, RH - 4), c.Pad != "" ? PadName(c.Pad) : "+", pbad ? CRed : c.Pad != c.PadDef ? COrange : c.Pad != "" ? CText : CDim,
+                    DrawBox(g, new RectangleF(456, y + 2, 106, RH - 4), c.Pad != "" ? PadName(c.Pad) : "+", pbad ? CRed : c.Pad != c.PadDef ? COrange : c.Pad != "" ? CText : CDim,
                         hot && hotCol == 3, false);
             }
             if (rows.Count > Fits)                       // where in the list

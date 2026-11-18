@@ -372,7 +372,11 @@ func _process(delta: float) -> void:
 				if so + 6 <= pk.size():
 					energy = pk.decode_u8(so + 5)
 				if so + 8 <= pk.size():
-					host_ent = pk.decode_u16(so + 6)
+					var he := pk.decode_u16(so + 6)                     # (never his own suit: an older bridge read
+					if he != entity or state != 0:                      # the host's word during the guest's pass)
+						if he != host_ent:
+							print("coop: host's suit entity %d (mine %d)" % [he, entity])
+						host_ent = he
 				if so + 24 <= pk.size():
 					health = pk.decode_u16(so + 8)
 					health_max = maxi(1, pk.decode_u16(so + 10))

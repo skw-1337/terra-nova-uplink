@@ -2,6 +2,8 @@
 
 *Terra Nova: Strike Force Centauri* (1996) redessiné en 3D moderne, à partir de ta propre copie du jeu (GOG ou Steam). Aucun fichier du jeu n'est fourni.
 
+**La 2.8 est en bêta** : préréglages graphiques, roue d'ordres pour l'escouade, menu en jeu, options d'accessibilité et beaucoup de travail sur la coop. Le lanceur la propose (« Try the beta ») et on peut revenir en arrière à tout moment. [Le détail et la feuille de route (en anglais)](https://www.ttlg.com/forums/showthread.php?t=153557&p=2545417#post2545417).
+
 ![La planète rouge](docs/red_planet.jpg)
 
 - **Visualiseur de cartes** : survoler toutes les cartes du jeu.

@@ -2,6 +2,8 @@
 
 *Terra Nova: Strike Force Centauri* (1996) redrawn in modern 3D, from your own copy of the game (GOG or Steam). No game files are included.
 
+**2.8 is in beta**: graphics presets, an order wheel for the squad, an in-game menu, accessibility options and a lot of co-op work. The launcher offers it ("Try the beta") and you can go back at any time. [What's in it, and the roadmap](https://www.ttlg.com/forums/showthread.php?t=153557&p=2545417#post2545417).
+
 ![The red planet](docs/red_planet.jpg)
 
 - **Map viewer**: fly around every map of the game.

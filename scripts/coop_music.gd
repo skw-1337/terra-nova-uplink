@@ -17,7 +17,8 @@ extends Node
 
 const LGRes = preload("res://scripts/lgres.gd")
 const CFG := "user://viewer.cfg"
-const TICK := 120.0                  # Miles plays XMIDI at 120 intervals a second
+const TICK := 120.0                  # Miles plays XMIDI at 120 intervals a second (the game in DOSBox: about 122, the
+                                     # host's packets keep this one in step)
 const CUES := 2222                   # RESSOUND.RES: the music cues, 10 bytes each (res FM/GM arrangement, seq, volume...)
 const POLY := 64
 const PANS := 9                      # pan buses, left to right
@@ -26,9 +27,12 @@ const TRIM := 0.003                  # tempo nudge an interval off (at most 2 %:
 const TRIM_MAX := 0.02
 const FOR_NEST := 4
 const PLAYING := 4                   # Miles SEQ_PLAYING
+const SETUP := 2205                  # RESSOUND.RES: the drivers' setup sequences; 12 = General MIDI (pitch-bend range 12)
+const SETUP_GM := 12
 
 var res = null                       # RESSOUND.RES
 var cues := []                       # cue -> [res A, res B, seq]
+var ranges := []                     # each channel's pitch-bend range after the game's setup sequence (semitones)
 var parsed := {}                     # res * 256 + seq -> sequence (see _parse)
 var dls := {}                        # instruments, waves (see _dls_open)
 var dls_ok := false
@@ -191,6 +195,34 @@ func _open() -> void:
 		for f in LGRes.frames(res.data(CUES)):
 			var b := f as PackedByteArray
 			cues.append([b.decode_u16(0), b.decode_u16(2), b[4]] if b.size() >= 5 else [0, 0, 0])
+	_setup_ranges()
+
+
+# the game plays its MIDI driver's setup sequence once at start (RES 2205, sequence 12 for General MIDI): pitch-bend range
+# 12 on MIDI channels 2 to 10, kept for every piece after (the music is written for it); the rest keep the default 2
+func _setup_ranges() -> void:
+	ranges = []
+	for c in 16:
+		ranges.append(2.0)
+	var sq := _parse(SETUP, SETUP_GM) if res else {}
+	if sq.is_empty():
+		return
+	var rpn := []
+	for c in 16:
+		rpn.append(16383)
+	var st: PackedByteArray = sq["st"]
+	for i in st.size():
+		if st[i] & 0xF0 != 0xB0:
+			continue
+		var ch := st[i] & 15
+		var a: int = sq["d1"][i]
+		var v: int = sq["d2"][i]
+		if a == 101:
+			rpn[ch] = (rpn[ch] & 0x7F) | (v << 7)
+		elif a == 100:
+			rpn[ch] = (rpn[ch] & 0x3F80) | v
+		elif a == 6 and rpn[ch] == 0:
+			ranges[ch] = float(v)
 
 
 # ---------------------------------------------------------------- the host's state
@@ -255,6 +287,11 @@ func _follow(slot: int, cue: int, rid: int, seq: int, vol: int, off: int, wait: 
 				seq, at, rid, off, wait, vol])
 		return
 	s["vol"] = vol
+	if s.get("hold", false):                                   # (it stopped at a jump: the host's new place, its notes kept)
+		_log("jump slot %d res %d seq %d: to the host's %d" % [slot, mine, seq, at])
+		_seek(slot, s, at, 0, true)
+		s["trim"] = 0.0
+		return
 	var mine_at: int = int(s["sq"]["abs"][mini(s["idx"], s["sq"]["abs"].size() - 1)]) - int(s["wait"])
 	if log_to:
 		_log("at slot %d res %d seq %d: mine %d host %d (%+d intervals) volume %d/%d" % [slot, mine, seq, mine_at, at,
@@ -277,12 +314,16 @@ func _tick_at(sq: Dictionary, off: int, wait: int) -> int:
 
 # to interval 'at' of its sequence: the channels as the events before it leave them (programs, controllers), no notes;
 # 'late' intervals before it played at once (a sequence just started: its first notes, a little late, not lost)
-func _seek(slot: int, s: Dictionary, at: int, late := 0) -> void:
-	_notes_off(slot, true)
+func _seek(slot: int, s: Dictionary, at: int, late := 0, keep_notes := false) -> void:
+	if not keep_notes:
+		_notes_off(slot, true)
+	s["hold"] = false
+	s["jumped_to"] = at                                        # (a jump before the host's place is the one he took)
 	var sq: Dictionary = s["sq"]
 	var chans := []
 	for c in 16:
-		chans.append({"prog": 0, "bank": 0, "vol": 100, "expr": 127, "pan": 64, "bend": 0.0, "range": 2.0, "mod": 0,
+		chans.append({"prog": 0, "bank": 0, "vol": 100, "expr": 127, "pan": 64, "bend": 0.0,
+				"range": float(ranges[c]) if c < ranges.size() else 2.0, "mod": 0,
 				"rpn": 16383, "sus": false})
 	s["chans"] = chans
 	s["loops"] = []
@@ -455,6 +496,10 @@ func _process(delta: float) -> void:
 func _run(slot: int, s: Dictionary, ticks: float) -> void:
 	ticks *= 1.0 + float(s.get("trim", 0.0))
 	var sq: Dictionary = s["sq"]
+	if s.get("hold", false):                                    # (held at a jump: no new events, the notes end as they would)
+		s["pt"] = float(s["pt"]) + ticks
+		_offs_due(slot, s)
+		return
 	var st: PackedByteArray = sq["st"]
 	var dt: PackedInt32Array = sq["dt"]
 	s["pt"] = float(s["pt"]) + ticks
@@ -466,6 +511,9 @@ func _run(slot: int, s: Dictionary, ticks: float) -> void:
 	var n := 0
 	while w <= 0.0 and i < st.size() and n < 4000:
 		_event(slot, s, i, true)
+		if s.get("hold", false):                                # (a jump: wait for the host's new place)
+			s["idx"] = i
+			break
 		i = int(s["idx"])                                       # (a loop jumps back)
 		if st[i] == 0xFF:
 			break
@@ -475,6 +523,10 @@ func _run(slot: int, s: Dictionary, ticks: float) -> void:
 			w += float(dt[i])
 		n += 1
 	s["wait"] = w
+	_offs_due(slot, s)
+
+
+func _offs_due(slot: int, s: Dictionary) -> void:
 	var offs: Array = s["offs"]
 	var pt: float = s["pt"]
 	var k := 0
@@ -529,6 +581,10 @@ func _event(slot: int, s: Dictionary, i: int, live: bool) -> void:
 				cs["rpn"] = (int(cs["rpn"]) & 0x3F80) | v
 			101:
 				cs["rpn"] = (int(cs["rpn"]) & 0x7F) | (v << 7)
+			109:                                                  # the game's jump (108: how many sections, 109: go): at the
+				if live and int(sq["abs"][i]) >= int(s.get("jumped_to", 0)):   # start of a piece a random section, at its
+					s["hold"] = true                              # end back to one; the host's next packet says where
+					_log("hold slot %d at interval %d: the host jumps" % [slot, int(sq["abs"][i])])
 			116:                                                  # Miles FOR: loop from here, v times (0: always)
 				var lp: Array = s["loops"]
 				if lp.size() < FOR_NEST:
@@ -548,7 +604,7 @@ func _event(slot: int, s: Dictionary, i: int, live: bool) -> void:
 				cs["expr"] = 127
 				cs["bend"] = 0.0
 				cs["sus"] = false
-			120, 123:
+			123:                                                  # (120 is Miles' section marker in XMIDI, not all sound off)
 				if live:
 					_notes_off_ch(slot, ch)
 

@@ -16,6 +16,7 @@ from guest_equipment import GuestEquipment
 from coop_aim import GuestAim
 from coop_unit_hits import UnitHits, ON as UNIT_HITS_ON
 import coop_map_split
+from coop_own_sound import OwnSounds
 # his shots at what his crosshair is on (coop_aim.py; TN_COOP_AIM=0: 30 units along his view, as before), and each
 # shot's aim in the bridge's output (TN_COOP_AIMLOG=1)
 AIM_ON = os.environ.get('TN_COOP_AIM') != '0'
@@ -215,6 +216,7 @@ LOOP_MARGIN = 4096                # bytes before its end (0.18 s of the 22 kHz s
 # another sound) is a new sound. 'SND' + master volume + count, then 'S' starts (voice, sound, kind, once, volume,
 # entity, x, y, z) and 'E' ends (voice); sent when something happened, reliable online.
 VOICE_MAX, SFX_VOLUME = 0x35982D, 0x35982F
+STEP_SPEED = 0.5                                      # own_steps: none slower than this (units a second)
 STEP0 = 1941                                          # the player's footsteps: 1941 + 5 x ground + 0..3 (0x248EBC)
 SPEECH0, SPEECH_END = 3050, 3050 + 275 * 18          # the squad's radio (SPEECH\RESBRKnn.RES, coop_sound.gd): heard by both
 # A map marker for each player. The host's is the game's own nav marker. The guest's is Uplink's: his window asks for
@@ -332,8 +334,10 @@ class Guest:
         self.looped = None                                     # (voice, driver sample) of his laser held looping (laser_off)
         self.voices, self.voices_t = {}, 0.0                   # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
         self.step_ground, self.step_speed = 4, 0.0
+        self.jet_paid = False
         self.steps_heard, self.step_due, self.step_n, self.step_at = 0, 0, 0, None   # (own_steps)
         self.ghd_max = 0                                       # the biggest 'GHD' sent (logged)
+        self.own_snd = OwnSounds(self.g)                       # his own cockpit sounds (coop_own_sound.py)
         self.private_said = set()                              # the host's own cockpit sounds seen (sounds: logged once)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
@@ -831,11 +835,16 @@ class Guest:
             return
         if self.jet_air is None:
             self.jet_air = c                                   # took off
+            self.jet_paid = False
+            self.own_snd.jets()                                # (the game's 1940 as its thrust starts: coop_own_sound)
         r = self.g.read(s + J_RATING, 6)
         fuel = struct.unpack_from('<H', r, J_FUEL - J_RATING)[0]
         if fuel == 0:
             return
         if (c - self.jet_air) & 0xFFFFFFFF > JET_FREE:
+            if not self.jet_paid:
+                self.jet_paid = True
+                self.own_snd.jets()                            # (and again when they start to cost: the game's second)
             cost = (dt << 32) // ((self.i32(ENERGY_F) + 0x20000) // 3)
             pool = self.i32(s + EN_CUR)
             if pool < cost:
@@ -870,6 +879,7 @@ class Guest:
         if ready > struct.unpack('<I', g.read(a, 4))[0]:
             g.write(a, struct.pack('<I', ready))
         g.write(R + SEL, bytes([s]))
+        self.own_snd.selected(t)                               # (the game's selection sounds, for his window)
 
     def call_dropship(self):
         """the guest's "Call dropship": Enter in the host's game, as if the host pressed it; once in 5 s, said in the chat"""
@@ -1365,6 +1375,10 @@ class Guest:
                         self.private_said.add(sound)           # servos, alarms, beeps, and what the cave's pass for
                         print("coop: sound %d is the host's own, not sent to the guest" % sound, flush=True)
                     continue                                   # the guest's suit plays as the player's): not his
+            vol = r[0x15]
+            mine = self.own_snd.shot(sound, kind, ent, self.gid, kind == 0 and ent == self.gid)
+            if mine:                                           # his own shot: the player's sound, not placed, at its
+                sound, kind, ent, at, vol = mine, 0, 0, (0.0, 0.0, 0.0), 255   # own volume (coop_own_sound.py)
             p = self.i32(SAMPLES + 4 * drv) if 0 <= drv < 16 else 0
             pos = self.i32(p + 0x18) if 0x100000 <= p < 0x2000000 else 0
             once = 0 if self.looped == (k, drv) else r[0x17]   # (his laser held looping: laser_off)
@@ -1373,13 +1387,14 @@ class Guest:
             if was is None or was[:3] != (sound, kind, ent) or (once and pos + 4096 < was[3]):   # (a loop going round: the same)
                 if was is not None:
                     out.append(b'E' + bytes([k]))
-                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, once, r[0x15], ent, *at))
+                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, once, vol, ent, *at))
             elif was[4] and not once:                          # (held looping since: his window loops it too, from
-                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, once, r[0x15], ent, *at))   # the start)
+                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, once, vol, ent, *at))   # the start)
         for k in self.voices:
             if k not in now:
                 out.append(b'E' + bytes([k]))
         out += self.own_steps(me)
+        out += self.own_snd.packets()
         self.voices = now
         if time.time() - self.voices_t > 0.5:                 # twice a second, the voices playing: online the sounds
             self.voices_t = time.time()                        # go unreliable, an end lost is caught up this way
@@ -1404,6 +1419,8 @@ class Guest:
         out = []
         while self.step_due > 0:
             self.step_due -= 1
+            if speed < STEP_SPEED:                             # (his feet moved standing: turning, firing; the game's
+                continue                                       # footstep volume is 16 x speed: under 8, none heard)
             r = int.from_bytes(os.urandom(2), 'little')
             sound = STEP0 + 5 * self.step_ground + r % 4
             vol = max(1, min(127, int(16 * speed) + r // 4 % 10))

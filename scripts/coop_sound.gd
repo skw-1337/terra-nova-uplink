@@ -3,9 +3,9 @@
 # game's VOC samples), with the game's own law for a sound placed in the world (its 0x247A08 / 0x2471B0), computed from
 # his suit instead of the host's: the distance in units (none past 31 on any axis) gives a volume from the game's table,
 # the side a pan (64 + 63 x sine of the angle from where he faces), a sound to a side a little softer, one behind 3/4,
-# then the sound's own volume (RESSOUND.RES 2204, sounds 1900-2129) and the game's sound volume. A sound the game
-# plays as its player's own is placed at the suit that fired it (a shot), else at the host's suit (his cockpit's own
-# sounds: heard when near him, as another suit's). Nothing while his window is minimised. The game's music (MIDI through the
+# then the sound's own volume (RESSOUND.RES 2204, sounds 1900-2129) and the game's sound volume. Another suit's shot
+# is placed at that suit; his own suit's shots, jets and weapon keys come as the game plays its player's (not placed,
+# at the sound's own volume: live/coop_own_sound.py). Nothing while his window is minimised. The game's music (MIDI through the
 # card's driver) is not played: Godot has no MIDI synthesizer.
 extends Node
 
@@ -14,7 +14,8 @@ const DIST := [100, 80, 64, 54, 46, 40, 34, 30, 26, 23, 21, 18, 16, 14, 13, 12, 
 const SIDE := [128, 128, 128, 128, 128, 128, 127, 127, 127, 127, 126, 126, 126, 125, 125, 125, 124, 124, 123, 122, 122, 121,
 	121, 120, 120, 120, 119, 118, 117, 116, 116, 115, 115, 114, 113, 112, 111, 111, 110, 109, 109, 108, 107, 106, 106, 105,
 	104, 103, 102, 102, 101, 100, 99, 99, 98, 97, 96, 96, 95, 94, 94, 93, 92, 91]
-const VOICES := 20                       # the game's 16, then 4 of his own (his footsteps: coop_guest.py own_steps)
+const VOICES := 24                       # the game's 16, 4 of his footsteps (coop_guest.py own_steps), 4 of his cockpit
+                                         # (jets, weapon keys: live/coop_own_sound.py)
 const GAME_VOICES := 16
 const OWN_VOL := 2204                    # RESSOUND.RES: one byte a sound, for 1900 + n
 const OWN_FIRST := 1900
@@ -128,7 +129,7 @@ func _start(k: int, sound: int, kind: int, once: int, vol: int, ent: int, at: Ve
 	v["kind"] = kind
 	v["ent"] = ent
 	v["at"] = at
-	v["vol"] = vol
+	v["vol"] = _own_vol(sound) if vol == 255 else vol    # (255: the sound's own volume, as the game plays its player's)
 	v["once"] = once
 	(v["player"] as AudioStreamPlayer).stop()
 	if s == null:
@@ -158,7 +159,7 @@ func play_own(sound: int, vol: int) -> void:
 		return
 	var pl := v["player"] as AudioStreamPlayer
 	pl.stream = s
-	pl.volume_db = linear_to_db(clampi(vol * master >> 7, 1, 127) / 127.0)
+	pl.volume_db = linear_to_db(clampi(int(vol * master / 127.0), 1, 127) / 127.0)
 	pl.play()
 	if log_to:
 		log_to.store_line("%d own sound %d volume %d" % [_now(), sound, vol])
@@ -224,7 +225,7 @@ func _place(v: Dictionary) -> void:
 					if rel > PI / 2.0 and rel < PI * 1.5:
 						vol = vol * 3 / 4
 				vol = vol * _own_vol(v["sound"]) >> 6
-	vol = clampi(vol * master >> 7, 0, 127)
+	vol = clampi(int(vol * master / 127.0), 0, 127)
 	v["out_vol"] = vol
 	v["out_pan"] = pan
 	var pl := v["player"] as AudioStreamPlayer

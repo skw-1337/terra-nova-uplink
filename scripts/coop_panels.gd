@@ -315,9 +315,15 @@ func _draw_stat(e: int, _nm: String, x0: float, y0: float) -> void:
 		hud.panel.draw_texture_rect(bg, hud._grect(x0, y0, x0 + bg.get_width(), y0 + bg.get_height()), false)
 	for k in 2:
 		var v: int = hp if k == 0 else (r[0] if not r.is_empty() else 255)
+		var fy := y0 + 7.0 + 14.0 * k                 # (the bars' frames, blue 0x36, and their black shadow: the game's
+		hud._gline(x0 + 43.0, fy, x0 + 78.0, fy, pal[0x36])          # own, not in the picture)
+		hud._gline(x0 + 43.0, fy + 9.0, x0 + 78.0, fy + 9.0, pal[0x36])
+		hud._gline(x0 + 43.0, fy, x0 + 43.0, fy + 9.0, pal[0x36])
+		hud._gline(x0 + 78.0, fy, x0 + 78.0, fy + 9.0, pal[0x36])
+		hud._gline(x0 + 79.0, fy + 1.0, x0 + 79.0, fy + 8.0, pal[0])
 		var n := 35 * clampi(v, 0, 100) / 100 if v <= 100 else 35
 		if n < 35:
-			hud.panel.draw_rect(hud._grect(x0 + 44.0 + n, y0 + 8.0 + 14.0 * k, x0 + 79.0, y0 + 16.0 + 14.0 * k), pal[0])
+			hud.panel.draw_rect(hud._grect(x0 + 44.0 + n, y0 + 8.0 + 14.0 * k, x0 + 78.0, y0 + 16.0 + 14.0 * k), pal[0])
 	if r.size() >= 10 and (r[9] as PackedByteArray).size() == 5:
 		var ind: Texture2D = hud.indicator_texture(r[9], false)
 		if ind:

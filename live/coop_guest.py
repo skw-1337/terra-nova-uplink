@@ -1105,7 +1105,10 @@ class Guest:
                 cats.append(0)
             else:
                 cats.append(2)
-        return bytes([col, st] + cats) + self.levels(e)
+        lv = bytearray(self.levels(e))                     # (the pilot's level from his health as the bars read it:
+        c, m = self.health(e)                              # the host's suit has no squadmate's words at +0x32)
+        lv[4] = 0 if m <= 0 else max(0, min(6, (12 - (m - max(0, min(c, m))) * 11 // m) // 2))
+        return bytes([col, st] + cats) + bytes(lv)
 
     def activity(self, e):
         """what the squadmate is doing, as the game's STAT page writes it (0x270FB0): a RESGAME 367 string (0: none)

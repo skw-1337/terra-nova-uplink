@@ -29,6 +29,8 @@ const B_VIEW := Rect2(56, 384, 23, 12)
 const B_MAP := Rect2(82, 384, 20, 12)
 const B_WEAPON := Rect2(220, 246, 39, 12)
 const B_STATUS := Rect2(217, 372, 29, 12)
+const B_ASF := Rect2(250, 372, 23, 12)
+const B_DRONE := Rect2(238, 386, 25, 12)
 const B_RECENTRE := Rect2(137, 380, 21, 20)
 const B_FULLMAP := Rect2(161, 380, 21, 20)
 const B_ZOOM := Rect2(183, 376, 27, 20)
@@ -37,8 +39,8 @@ const LEFT_BOX := Rect2(17, 276, 82, 104)     # the left MFD (region 1: 17, 276 
 const RIGHT_BOX := Rect2(217, 264, 82, 104)
 enum { COMM, STAT, VIEW, MAP }
 # keys (the game's, as his window sends them: coop_hud.gd cockpit_key)
-const K_MAPIN := 0x33                         # , : one level in, . : out (the game's, read in a live test: the
-const K_MAPOUT := 0x34                        # launcher's "Map zoom out / in" names have them the other way)
+const K_MAPIN := 0x33                         # , : one level in, . : out (the game's, read in a live test; TN+ calls
+const K_MAPOUT := 0x34                        # them mapout / mapin, data/controls.txt shows what they do)
 const K_LEFT := [0x1A, 0x0A]                  # [ and 9
 const K_RIGHT := [0x1B, 0x0B]                 # ] and 0
 const K_HUDIN := 0x0D                         # helmet zoom: the map's while it is in the HUD (manual p. 21)
@@ -98,7 +100,7 @@ func click(p: Vector2, right: bool) -> bool:
 	if _in(B_ZOOM, p, mm):
 		zoom_by(-1 if right else 1)
 		return true
-	if right and not hud.status_page and _in(RIGHT_BOX, p, wm):
+	if right and not hud.status_page and _equip_page() == "" and _in(RIGHT_BOX, p, wm):
 		_next_weapon(-1)                              # (the right button: the other way round, manual p. 29)
 		return true
 	if right:
@@ -108,12 +110,13 @@ func click(p: Vector2, right: bool) -> bool:
 			_left(b[1])
 			return true
 	if _in(B_WEAPON, p, wm) or _in(B_STATUS, p, wm):
-		var want := _in(B_STATUS, p, wm)
-		if hud.status_page != want:
-			hud.status_page = want
-			status_n = 0
-			_sound(BUTTON_SOUND)
+		_right(1 if _in(B_STATUS, p, wm) else 0)
 		return true
+	if _in(B_ASF, p, wm) or _in(B_DRONE, p, wm):
+		_right(2 if _in(B_ASF, p, wm) else 3)   # (his drone / A.S.F.: guest_equipment.gd; nothing when it is off)
+		return true
+	if _equip_page() != "" and _in(RIGHT_BOX, p, wm):
+		return hud.equip.click(p) or true           # (their own buttons)
 	if _in(B_FULLMAP, p, mm):
 		hud.toggle_map()
 		_sound(ZOOM_SOUND)
@@ -160,9 +163,8 @@ func key(sc: int, down: bool) -> bool:
 			elif sc in K_LEFT:
 				_left((left_page + 1) % 4)
 			else:
-				hud.status_page = not hud.status_page
-				status_n = 0
-				_sound(BUTTON_SOUND)
+				var pages := 4 if _equip_on() else 2
+				_right((_right_page() + 1) % pages)
 		return true
 	return false
 
@@ -283,16 +285,22 @@ func draw_left() -> void:
 			_draw_stat(e, nm, x0, y0)
 
 
-# STAT, laid out as the game's (read live in mission 30): his line at the top, the H bar (the pilot's health, in the
-# game's red) and the E bar (the suit's energy, green) on the right; then his armour. (The game also writes his
-# specialty and the order he follows, which the host's bridge does not send.)
+# STAT, laid out as the game's (read live in mission 30): his specialty at the top (his name for an older host), the H
+# bar (the pilot's health, in the game's red) and the E bar (the suit's energy, green) on the right, then what he is
+# doing (the bridge's activity, coop_guest.py: "Following %s"...) and his armour.
 func _draw_stat(e: int, nm: String, x0: float, y0: float) -> void:
 	var white := Color(0.95, 0.95, 1.0)
 	var row := clampi(sel_row, 0, maxi(0, hud.squad.size() - 1))
 	var arm: int = hud.squad[row][1] if row < hud.squad.size() else 0
 	var r := row_of(e)
 	var hp: int = r[1] if not r.is_empty() else (hud.squad_health[row] if row < hud.squad_health.size() else 255)
-	hud._text(nm.to_upper(), x0 + 3.0, y0 + 3.0, 10.0, Color(1.0, 0.8, 0.2))
+	var spec: String = text(366, r[2]) if not r.is_empty() and r[2] > 0 else ""
+	hud._text((spec if spec != "" else nm).to_upper(), x0 + 3.0, y0 + 3.0, 10.0, Color(0.95, 0.95, 1.0) if spec != "" else Color(1.0, 0.8, 0.2))
+	if not r.is_empty() and r[3] > 0:
+		var act := text(367, r[3])
+		var who := _unit_name(r[4], r[5])
+		act = act.replace("%s", who).strip_edges()
+		hud._text(act.to_upper(), x0 + 3.0, y0 + 78.0, 10.0, Color(0.4, 1.0, 0.45))
 	for k in 2:
 		var v: int = hp if k == 0 else (r[0] if not r.is_empty() else 255)
 		var y := y0 + 18.0 + 13.0 * k
@@ -330,7 +338,47 @@ func row_of(e: int) -> Array:
 	for m in hud.map_marks:
 		var d: PackedByteArray = m[2]
 		if m[0] == hud.M_ROW and d.size() >= 4 and d.decode_u16(0) == e:
-			return [d[2], d[3]]
+			if d.size() >= 9:                         # (and its specialty, activity, the unit it names and that one's label)
+				return [d[2], d[3], d[4], d[5], d.decode_u16(6), d[8]]
+			return [d[2], d[3], 0, 0, 0, 0]
+	return []
+
+
+# the game's texts in his own game files: RESGAME table rid, string k ("": none)
+var texts := {}
+func text(rid: int, k: int) -> String:
+	if not texts.has(rid):
+		texts[rid] = PackedStringArray()
+		var vp := hud.get_parent()
+		if vp and "data" in vp:
+			var r = hud.LGRes.open(vp.data.data_dir().path_join("RESGAME.RES"))
+			if r and r.has(rid):
+				texts[rid] = r.strings(rid)
+	var s: PackedStringArray = texts[rid]
+	return s[k] if k >= 0 and k < s.size() else ""
+
+
+# a unit as the game names it in a text (0x26a6d4): the host's name, a squad pilot's, else its label (RESGAME 375)
+func _unit_name(e: int, label: int) -> String:
+	if e == 0:
+		return ""
+	for i in hud.squad.size():
+		if hud.squad[i][0] == e:
+			return hud.mate_name if i == 0 else hud._pilot_name(hud.squad[i][2], e)
+	if e == hud.entity:
+		return "PLAYER 2"                             # (his own suit: the host's game names it so, "Player 2")
+	return text(375, label) if label > 0 else ""
+
+
+# his weapon panel's two lines as the game's (0x271e14): the slot's health %, then its state (RESGAME 367 string 71 +
+# 0x28f024's result: fully operational, inoperable, out of ammo, not charged, overheated, loading); empty: older host
+func weapon_lines() -> Array:
+	for m in hud.map_marks:
+		if m[0] == hud.M_WPN and (m[2] as PackedByteArray).size() >= 1:
+			var st := text(367, 71 + clampi(hud.weapon_state, 0, 5))
+			if hud.weapon_state == 0 and hud.weapon_ammo != 0xFFFF:   # (a weapon that counts it: its ammunition instead,
+				st = text(369, 39).replace("%d", str(hud.weapon_ammo))   # "AMMO COUNT = %d", 0x271f4b)
+			return ["%d%%" % m[2][0], st.to_upper() if st != "" else ("FULLY OPERATIONAL" if hud.weapon_state == 0 else "LOADING")]
 	return []
 
 
@@ -346,6 +394,9 @@ func draw_status() -> bool:
 	var white := Color(0.95, 0.95, 1.0)
 	var col := func(v: int) -> Color: return white if v >= 100 else (Color(1.0, 0.85, 0.3) if v > 50 else Color(1.0, 0.35, 0.3))
 	if status_n == 2:
+		var bg := _armour_pic()                     # the game's green suit behind the levels (RESHLMHI 537, frame 1)
+		if bg:
+			hud.panel.draw_texture_rect(bg, hud._grect(x0, y0, x0 + bg.get_width(), y0 + bg.get_height()), false)
 		hud._text("ARMOR LEVELS", x0 + 41.0, y0 + 3.0, 10.0, Color(0.85, 1.0, 0.3), true)
 		var names := ["FRONT", "LEFT", "BACK", "RIGHT"]
 		for k in 4:
@@ -366,7 +417,7 @@ func draw_status() -> bool:
 # drawn on their regions. Which helmet file (RESHLMHH, N, P, S: one for each kind of cockpit): the one whose COMM
 # button matches the cockpit picture; none (another cockpit, a file missing): nothing drawn
 const BUTTON_RES := 752
-const BUTTON_RECTS := [B_COMM, B_STAT, B_VIEW, B_MAP, B_WEAPON, B_STATUS]
+const BUTTON_RECTS := [B_COMM, B_STAT, B_VIEW, B_MAP, B_WEAPON, B_STATUS, B_ASF, B_DRONE]
 var buttons := []                             # [normal, lit] textures of buttons 0-5 (empty: not looked yet)
 var buttons_of: Texture2D                     # (the cockpit picture they were matched on)
 
@@ -379,10 +430,10 @@ func _button_frames(file: String) -> Array:
 	if r == null or not r.has(BUTTON_RES):
 		return []
 	var fr: Array = hud.LGRes.frames(r.data(BUTTON_RES))
-	if fr.size() < 0x0B + 6:
+	if fr.size() < 0x0B + 8:
 		return []
 	var out := []
-	for k in 6:
+	for k in 8:
 		var pair := []
 		for f in [1 + k, 0x0B + k]:
 			var img: Image = hud.TNObjects._bitmap(fr[f], hud.hud_pal)
@@ -430,10 +481,11 @@ func draw_buttons() -> void:
 		return
 	if hud.cockpit.texture != buttons_of:
 		_match_buttons()
-	if buttons.size() < 6:
+	if buttons.size() < 8:
 		return
-	var on := [left_page == COMM, left_page == STAT, left_page == VIEW, left_page == MAP, not hud.status_page, hud.status_page]
-	for k in 6:
+	var rp := _right_page()
+	var on := [left_page == COMM, left_page == STAT, left_page == VIEW, left_page == MAP, rp == 0, rp == 1, rp == 2, rp == 3]
+	for k in 8:
 		var m: Vector2 = hud.reg_move[0] if k < 4 else hud.reg_move[2]
 		var r: Rect2 = BUTTON_RECTS[k]
 		var t: Texture2D = buttons[k][1 if on[k] else 0]
@@ -479,3 +531,47 @@ func draw_mid() -> void:
 	var mm: Vector2 = hud.reg_move[1]
 	var b: Rect2 = Rect2(Vector2(hud.MAP_BOX.position) + mm, hud.MAP_BOX.size)
 	hud.panel.draw_texture_rect(mid_port.get_texture(), hud._grect(b.position.x, b.position.y, b.end.x, b.end.y), false)
+
+
+var armour_pic: Texture2D
+var armour_tried := false
+func _armour_pic() -> Texture2D:
+	if not armour_tried and not hud.hud_pal.is_empty():
+		armour_tried = true
+		var fr: Array = hud._helmet_frames(537)
+		if fr.size() > 1:
+			var img: Image = hud.TNObjects._bitmap(fr[1], hud.hud_pal)
+			if img:
+				armour_pic = ImageTexture.create_from_image(img)
+	return armour_pic
+
+
+# the right MFD's pages: 0 WEAPON, 1 STATUS (coop_hud.gd status_page), 2 A.S.F., 3 DRONE (guest_equipment.gd, only
+# while the host's bridge sends them: its 'GEQ', TN_COOP_EQUIP=1)
+func _equip_on() -> bool:
+	return hud.equip != null and not (hud.equip.s as Dictionary).is_empty()
+
+
+func _equip_page() -> String:
+	return hud.equip.shown() if hud.equip != null else ""
+
+
+func _right_page() -> int:
+	match _equip_page():
+		"asf":
+			return 2
+		"drone":
+			return 3
+	return 1 if hud.status_page else 0
+
+
+func _right(page: int) -> void:
+	if page >= 2 and not _equip_on():
+		return                                        # (no drone / A.S.F. from this host: the button does nothing)
+	if page == _right_page():
+		return
+	if hud.equip != null:
+		hud.equip.show_page(["", "", "asf", "drone"][page])
+	hud.status_page = page == 1
+	status_n = 0
+	_sound(BUTTON_SOUND)

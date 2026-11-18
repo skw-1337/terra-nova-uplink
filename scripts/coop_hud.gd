@@ -56,7 +56,7 @@ const BOX := Rect2i(146, 226, 26, 26)
 const MAP_BOX := Rect2i(118, 264, 84, 108)
 const MAP_LIGHT := "02020202020202020202020202020202030303030303030304040404040404040405050505060606060606060707070707070606060606060505050505050404"
 const MAP_LIGHT_8 := "04040404040404040404040404040404040404040404040404040404040404040505050505050505050505050505050505050505050505050505050505050505"
-enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_NOTEZ, M_SYS, M_ROW }   # the marks' kinds (coop_guest.py)
+enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_NOTEZ, M_SYS, M_ROW, M_WPN }   # the marks' kinds (coop_guest.py)
 
 const LOCK_SOUND := 2021                     # the game's sound when its player locks a target (0x262BBF)
 const LOCK_SEEN := 2028                      # ... and when it first draws the new target's box (0x26A309)
@@ -987,9 +987,14 @@ func _draw_panel() -> void:
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
 	if not status_page:
 		_text(wn.to_upper(), 257.0 + wm.x, 267.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0), true)
-		_text("%d%%" % int(round(f * 100.0)), 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
-		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0 + wm.x, 353.0 + wm.y, 10.0,
-			Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
+		var wl: Array = panels.weapon_lines()            # (the game's: his weapon's health and state, coop_panels.gd)
+		if not wl.is_empty():
+			_text(wl[0], 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
+			_text(wl[1], 219.0 + wm.x, 353.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
+		else:
+			_text("%d%%" % int(round(f * 100.0)), 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
+			_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0 + wm.x, 353.0 + wm.y, 10.0,
+				Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
 	if map_tex:
 		panel.draw_texture_rect(map_tex, _map_box(), false)
 	if big_map:

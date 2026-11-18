@@ -14,7 +14,7 @@ extends Node
 
 const CFG := "user://viewer.cfg"
 const DIR := "user://smkplay"
-const KEEP := 3                                     # decoded videos kept (about 90 MB each for a briefing)
+const KEEP := 2                                     # decoded videos kept (about 90 MB for a briefing, 350 MB the longest)
 const SHADER := """
 shader_type canvas_item;
 uniform sampler2D pal : filter_nearest;
@@ -198,10 +198,10 @@ func _decode(name: String) -> bool:
 	var dir := ProjectSettings.globalize_path(DIR)
 	DirAccess.make_dir_recursive_absolute(dir)
 	var out := dir.path_join(name + ".tnv")
-	if FileAccess.file_exists(out) and FileAccess.get_file_as_bytes(out).size() > 0:
-		return true
-	if not _have_exe():
+	if not _have_exe():                              # (first: a decoder built anew clears the videos of the one before)
 		return false
+	if FileAccess.file_exists(out):
+		return true
 	var t := Time.get_ticks_msec()
 	var log := []
 	var code := OS.execute(exe, [ProjectSettings.globalize_path(src).replace("/", "\\"), out.replace("/", "\\")], log, true)
@@ -250,6 +250,11 @@ func _have_exe() -> bool:
 	if f:
 		f.store_string(str(src_t))
 	exe = own
+	var d := DirAccess.open(own.get_base_dir())
+	if d:
+		for old in d.get_files():                    # (videos decoded by the decoder before: decoded again)
+			if old.ends_with(".tnv"):
+				d.remove(old)
 	print("coop video: decoder built")
 	return true
 

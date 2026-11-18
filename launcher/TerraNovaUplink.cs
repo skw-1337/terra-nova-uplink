@@ -3943,11 +3943,12 @@ static class Uplink
         return k == "M4" || k == "M5" || (KeyOk(k) && k != "") ? k : "MID";
     }
 
-    // The photo mode's key (key_photo in the ini): O unless another is chosen, written as the other keys
+    // The photo mode's key (key_photo in the ini): L unless another is chosen, written as the other keys. O (18) was
+    // the first default, but O is the game's own Options key: a saved "18" is taken as L too
     static string PhotoKey()
     {
         string k = Cfg("key_photo").ToUpperInvariant();
-        return KeyOk(k) && k != "" ? k : "18";
+        return KeyOk(k) && k != "" && k != "18" ? k : "26";
     }
 
     // "SHIFT+58" -> "Shift+F12", the key named as this keyboard prints it
@@ -4068,7 +4069,7 @@ static class Uplink
         using (KeyAsk d = new KeyAsk("the photo mode", KeyName(PhotoKey())))
         {
             if (d.ShowDialog(form) != DialogResult.OK) return;
-            string spec = d.Spec;                             // ("": O, the key it came with)
+            string spec = d.Spec;                             // ("": L, the key it came with)
             string now = spec == "" ? "18" : spec;
             if (now == OldKey() || now == SharpKey() || now == ShotKey() || now == FpsKey() || now == OrderKey())
             { Status(KeyName(now) + " is already one of Uplink's keys.", CAmber); return; }

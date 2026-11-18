@@ -82,7 +82,7 @@ Gamepad|p_lock|Lock target|-|pad|B10
 Gamepad|p_jumpto|Jump towards the left stick|-|pad|B0
 Uplink|menu|Uplink menu (host; Esc for a guest)|3F|uplink|B6
 Uplink|order|Order wheel (hold)|MID|uplink
-Uplink|photo|Photo mode|18|uplink
+Uplink|photo|Photo mode|26|uplink
 Uplink|oldschool|Old school look|58|uplink
 Uplink|sharp|Old school pixel size|SHIFT+58|uplink
 Uplink|shot|Screenshot|CTRL+58|uplink

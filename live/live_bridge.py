@@ -620,7 +620,8 @@ def fumees(tab):
 # rouge que la premiere : 'FX29' + nombre (u16) + (entite i32, sorte u8) des autres, a chaque changement, avant les
 # entites. Lu une fois par entite (sa fiche ne change pas de sa vie)
 # A first entry (-1, 9) says that this bridge sends a jetpack's particles too ('PART', poussieres): the viewer then
-# draws them as the game does, not as smoke puffs of its own.
+# draws them as the game does, not as smoke puffs of its own; (-2, 8) the same for the smoke grenades' clouds (their
+# 'SMKC' then only says which 6/29 they are and where).
 FX_SORTES = {}                           # (entite, fiche) -> sorte
 FX_CHAUD = {}                            # (entity, record) -> (hot, times read): see the entities' state, bit 2
 
@@ -644,7 +645,7 @@ def sortes_29(tab):
             k = FX_SORTES[cle] = g.read(ds + 16 * si + 0xE, 1)[0]
         if k != 7: out.append((i, k))
     for cle in [c for c in FX_SORTES if c not in vus]: del FX_SORTES[cle]
-    return ((-1, 9),) + tuple(out)
+    return ((-1, 9), (-2, 8)) + tuple(out)
 
 
 # Beams (class 6 type 28: a laser's, an ion rifle's, each bar of a pulsar's bolt...). The game draws one as a line
@@ -738,7 +739,11 @@ def poussieres(tab):
         if not 0 <= si < 0x40 or sorte not in (7, 8, 9, 10, 11): continue
         a0, a1 = struct.unpack_from('<2I', t_rg, 4 * si)
         if not 0 <= a0 <= a1 <= 0x400: continue
-        if sorte == 8 and not petite(i, nf, a1 - a0): continue   # (a cloud: fumees)
+        if sorte == 8 and not petite(i, nf, a1 - a0):
+            # a cloud: a smoke grenade's is drawn as the game draws it, particle by particle (its discs, kind 8:
+            # 0x2A5A4E); a blown-up tree's is not (the viewer's own column: fumees tells them apart, SORTES)
+            so = SORTES.get(i)
+            if so is None or so[3] or time.time() - so[0] < 0.2: continue
         cx, cy, cz = (v / 65536 for v in struct.unpack_from('<3i', t_ds, 16 * si))
         lacet = struct.unpack_from('<H', t_an, 8 * si + 4)[0] / 65536 * 2 * math.pi
         c, sn = math.cos(lacet), math.sin(lacet)

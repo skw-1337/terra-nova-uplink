@@ -7418,8 +7418,9 @@ const PART_MAX := 1024                           # the game's engine holds no mo
 # a shell's smoke, 4 for a railgun's, and 413 pixels to the radian; 0: a dot whatever the distance)
 const PART_WIDTH := {7: 0.0, 8: 0.097, 9: 0.0388, 10: 0.0097}   # (9, a jetpack's trail: 16 pixels at one unit)
 # how far a kind is still a disc: beyond, the game plots the particle as ONE pixel through its veil (0x2A59DC: kind 9
-# past 4 units; a soldier's jetpack 5 units away drawn as discs was a grey cloud where the game shows a faint speckle)
-const PART_FAR := {9: 4.0}
+# past 4 units, kind 8 past 10; a soldier's jetpack 5 units away drawn as discs was a grey cloud where the game shows
+# a faint speckle)
+const PART_FAR := {8: 10.0, 9: 4.0}          # (8: past 10 units, 0x2A5A4E)
 const HAZE_WIDTH := 0.24                         # a thermal disruptor's haze (100 pixels at one unit)
 # how much of its veil a kind lays: a railgun's 64 particles a system pile up into a white bar at the veil's own
 # strength, where the game shows a faint pale streak (seen side by side)
@@ -8044,10 +8045,13 @@ func _live_puff(idx: int, pos: Vector3, e) -> bool:
 
 # Smoke grenades (the game's 6/29 at the impact, alive ~17 s): their cloud is a particle system of the game's engine,
 # sent by the bridge 20 times a second ('SMKC': per cloud its entity, centre and up to 160 particles, world position,
-# size 24-127 growing as they rise, life left). The game draws each particle as a small faint grey puff (~190 at
-# first, fewer and fewer, up to ~3.5 units high and 1-2 units around): here each update starts a few of the
-# jetpack's puffs at some of its particles, bigger and denser, and a low wall around its foot while it is thick, so
-# the cloud screens like a smoke grenade should.
+# size 24-127 growing as they rise, life left). The game draws each particle as one of its smoke discs (kind 8, as a
+# shell's smoke: 0x2A5A4E, 40 pixels wide at one unit, one pixel past 10 units) through its dark translucency table:
+# a column of dark puffs (~190 at first, fewer and fewer, up to ~3.5 units high and 1-2 units around). A bridge that
+# says so (FX29 entry -2 = 8) sends those particles with the others ('PART', _live_parts): drawn as the game draws
+# them, nothing of Uplink's own. Before (and with an older bridge): each update started a few of the jetpack's puffs
+# at some of its particles, bigger and denser, a low wall around its foot and puffs kept 25 + 15 s after the game's
+# cloud was gone: a flat grey sheet over most of the view where the game shows a dark column further off.
 const SMOKE_PUFFS := 8                         # puffs started at the cloud's particles per update (20 a second)
 const SMOKE_BASE := 3                          # and around its foot, while the cloud is at its thickest
 const SMOKE_FULL := 190.0                      # particles of a fresh cloud
@@ -8076,6 +8080,13 @@ func _smoke_packet_ok(q: PackedByteArray) -> bool:
 func _live_smoke(q: PackedByteArray) -> void:
 	smoke_clouds.clear()
 	smoke_counts.clear()
+	if fx29.get(-2, 0) == 8:                         # the game's own particles ('PART'): only which 6/29 they are
+		smoke_screens.clear()
+		var at := 5
+		for _c in q[4]:
+			smoke_clouds[q.decode_s32(at)] = true
+			at += 18 + 14 * q.decode_u16(at + 16)
+		return
 	var o := 5
 	for _c in q[4]:
 		var idx := q.decode_s32(o)

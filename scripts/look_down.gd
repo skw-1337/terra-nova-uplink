@@ -25,14 +25,15 @@ var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else 
 const EYE_BACK := 0.0                        # (model) at the lowest: the eye this far behind its place
 const EYE_BACK_STAND := 0.0                  # ... and this much more while he stands (his feet in view)
 const EYE_DOWN := 0.0                       # ... and this much lower (< 0: higher: the knees and feet in view)
-const DOWN_MAX := 82.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
+var down_max := float(OS.get_environment("TN_LOOK_DOWN_CAP")) if OS.get_environment("TN_LOOK_DOWN_CAP") != "" else DOWN_MAX   # (tests: another cap)
+const DOWN_MAX := 76.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
                                              # looked past them
 const FOV_LOW := 0.0                         # ... the view this wide (degrees across)
 const BELLY_FROM := 0.25                      # (model) the torso's lowest 30 %: the belly joining the thighs
 const BELLY_W := 20.0                        # ... held to this half width (its pictures hold the arms too)
 const BELLY_DOME := 6.0                      # ... its top rounded back over this many rows (no flat lid)
 const BODY_GAIN := 1.35                      # (model) brighter than the pictures: lit from above, the suit's dark armour went black
-const PIECE_FADE := Vector2(0.05, 0.065)      # (model) a piece whose surface comes this near the eye dissolves, whole (a thigh
+const PIECE_FADE := Vector2(0.065, 0.08)       # (model) a piece whose surface comes this near the eye dissolves, whole (a thigh
                                              # swinging up; cut by the camera's near plane its inside showed)
 const THIGH_TAPER := 0.75                    # (model) the thighs' tops held to this much of their middle
 const THIGH_SLIM := 0.72                      # (model) the thighs this slim, their hip pads held to their middle
@@ -130,6 +131,8 @@ func _process(dt: float) -> void:
 		head = clampi(int(round(-float(v.cam_to[2]) / rad)), -lim, lim)
 	if OS.has_environment(TEST) and known:
 		_test(dt)
+	if OS.has_environment(SWEEP) and known:
+		_sweep()
 	if extra < 0.0 and (v.menu_mode or v.current.is_empty()):
 		extra = 0.0                              # one of the game's screens: the view as the game's
 	var on := extra < -0.001
@@ -158,7 +161,7 @@ func _process(dt: float) -> void:
 
 func _cap() -> void:
 	if body_mode == "model":
-		max_extra = clampf(deg_to_rad(DOWN_MAX) - float(lim) / float(unit) * rad, 0.05, max_extra)
+		max_extra = clampf(deg_to_rad(down_max) - float(lim) / float(unit) * rad, 0.05, max_extra)
 
 
 # (model) the eye as a head bent over the legs: back and down, the view narrowed, eased in from the game's limit
@@ -362,6 +365,22 @@ func _draw_mark() -> void:
 	var tri := PackedVector2Array([c + Vector2(0.0, -8.0 * s), c + Vector2(8.0 * s, 4.0 * s), c + Vector2(-8.0 * s, 4.0 * s)])
 	mark.draw_colored_polygon(tri, col)
 	mark.draw_polyline(tri + PackedVector2Array([tri[0]]), rim, 1.5 * s, true)
+
+
+# tests: TN_LOOK_DOWN_SWEEP = "start (Unix time), first angle, step, seconds a step, steps, rounds": the view held at
+# that angle down in all (degrees), then the next, round after round (the head first pulled to its limit by TEST)
+const SWEEP := "TN_LOOK_DOWN_SWEEP"
+
+
+func _sweep() -> void:
+	var a := OS.get_environment(SWEEP).split_floats(",")
+	if a.size() < 6:
+		return
+	var k := int(floor((Time.get_unix_time_from_system() - a[0]) / a[3]))
+	if k < 0 or k >= int(a[4]) * int(a[5]):
+		return
+	var want := deg_to_rad(a[1] + a[2] * float(k % int(a[4])))
+	extra = clampf(-(want - float(head) / float(unit) * rad), -max_extra, 0.0)
 
 
 func _test(dt: float) -> void:

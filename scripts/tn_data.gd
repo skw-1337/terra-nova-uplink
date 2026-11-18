@@ -3,6 +3,7 @@
 extends RefCounted
 
 const LGRes = preload("res://scripts/lgres.gd")
+const AtomicFile = preload("res://scripts/atomic_file.gd")
 
 const CANDIDATES := [
 	"C:/Program Files (x86)/GOG Galaxy/Games/Terra Nova Strike Force Centauri",
@@ -120,9 +121,8 @@ func extract_iso_maps() -> int:
 		if e[2] or not name.ends_with(".RES") or (FileAccess.file_exists(dst) and FileAccess.open(dst, FileAccess.READ).get_length() == e[1]):
 			continue
 		f.seek(int(e[0]) * 2048)
-		var w := FileAccess.open(dst, FileAccess.WRITE)
-		if w:
-			w.store_buffer(f.get_buffer(e[1]))
+		# (another Uplink window may share this folder: a file of our own, renamed when whole)
+		if AtomicFile.write_bytes(dst, f.get_buffer(e[1])):
 			n += 1
 	return n
 
@@ -188,8 +188,12 @@ func resolve(mission_file: String, name: String) -> String:
 			return p
 	if not iso_tried:                                       # once per run: the maps from the game's CD image
 		iso_tried = true
-		if extract_iso_maps() > 0:
-			return resolve(mission_file, name)
+		# looked for again whatever this run wrote: another Uplink window sharing the user folder (co-op host and
+		# guest on one PC) may have extracted them meanwhile, and then this one writes none
+		extract_iso_maps()
+		var p: String = iso_maps_dir().path_join(name.to_upper())
+		if FileAccess.file_exists(p):
+			return p
 	return ""
 
 
@@ -506,9 +510,7 @@ func _tilemap(tiles: PackedByteArray, n: int, pl: Dictionary, key: String) -> Im
 		out[2 * i + 1] = rot[i]
 	if cache_path != "":
 		DirAccess.make_dir_recursive_absolute(_tilemap_dir())
-		var fa := FileAccess.open(cache_path, FileAccess.WRITE)
-		if fa != null:
-			fa.store_buffer(out)
+		AtomicFile.write_bytes(cache_path, out)
 	return Image.create_from_data(n, n, false, Image.FORMAT_RG8, out)
 
 

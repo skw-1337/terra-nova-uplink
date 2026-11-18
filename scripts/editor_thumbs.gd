@@ -9,6 +9,7 @@ signal made(key: int, tex: Texture2D)
 
 const SIZE := 128
 const DIR := "user://editor_thumbs"
+const AtomicFile = preload("res://scripts/atomic_file.gd")
 const LOADS_PER_FRAME := 8
 
 var viewer: Node
@@ -122,7 +123,9 @@ func _run() -> void:
 			continue
 		tex = ImageTexture.create_from_image(img)
 		cache[k] = tex
-		img.save_png(_file(it[0], it[1]))
+		var png := _file(it[0], it[1])                 # (written whole, then renamed: see atomic_file.gd)
+		if img.save_png(AtomicFile.tmp_name(png)) == OK:
+			AtomicFile.commit(AtomicFile.tmp_name(png), png)
 		made.emit(k, tex)
 	running = false
 

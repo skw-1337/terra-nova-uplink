@@ -14,6 +14,7 @@ extends Node
 
 const CFG := "user://viewer.cfg"
 const DIR := "user://smkplay"
+const AtomicFile = preload("res://scripts/atomic_file.gd")
 const KEEP := 2                                     # decoded videos kept (about 90 MB for a briefing, 350 MB the longest)
 const SHADER := """
 shader_type canvas_item;
@@ -204,8 +205,11 @@ func _decode(name: String) -> bool:
 		return true
 	var t := Time.get_ticks_msec()
 	var log := []
-	var code := OS.execute(exe, [ProjectSettings.globalize_path(src).replace("/", "\\"), out.replace("/", "\\")], log, true)
-	if code != 0 or not FileAccess.file_exists(out):
+	# (decoded under a name of its own, renamed when whole: another Uplink window may share this folder)
+	var part := AtomicFile.tmp_name(out)
+	var code := OS.execute(exe, [ProjectSettings.globalize_path(src).replace("/", "\\"), part.replace("/", "\\")], log, true)
+	if code != 0 or not FileAccess.file_exists(part) or not AtomicFile.commit(part, out):
+		DirAccess.remove_absolute(part)
 		print("coop video: decoding %s failed (%d) %s" % [name, code, str(log)])
 		return false
 	print("coop video: %s decoded in %d ms" % [name, Time.get_ticks_msec() - t])
@@ -242,13 +246,13 @@ func _have_exe() -> bool:
 	DirAccess.make_dir_recursive_absolute(own.get_base_dir())
 	var log := []
 	# (Windows' paths: the compiler reads a forward slash as an option's)
-	var code := OS.execute(csc, ["/nologo", "/optimize", "/target:exe", "/out:" + own.replace("/", "\\"), src.replace("/", "\\")], log, true)
-	if code != 0 or not FileAccess.file_exists(own):
+	var own_tmp := own.get_basename() + "_%d.exe" % OS.get_process_id()   # (built aside, then renamed: as above)
+	var code := OS.execute(csc, ["/nologo", "/optimize", "/target:exe", "/out:" + own_tmp.replace("/", "\\"), src.replace("/", "\\")], log, true)
+	if code != 0 or not FileAccess.file_exists(own_tmp) or not AtomicFile.commit(own_tmp, own):
+		DirAccess.remove_absolute(own_tmp)
 		print("coop video: building the decoder failed (%d) %s" % [code, str(log)])
 		return false
-	var f := FileAccess.open(stamp, FileAccess.WRITE)
-	if f:
-		f.store_string(str(src_t))
+	AtomicFile.write_bytes(stamp, str(src_t).to_utf8_buffer())
 	exe = own
 	var d := DirAccess.open(own.get_base_dir())
 	if d:

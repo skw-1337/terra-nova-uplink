@@ -1,5 +1,14 @@
 TERRA NOVA UPLINK - WHAT'S NEW
 
+2.7.1
+- Updates are checked before they replace anything, and nothing is replaced
+  while the game runs. Offline, Uplink simply plays the version you have.
+- Beta versions, if you want them: Settings > Beta updates (off unless you
+  switch it on). When a beta is out the launcher tells you once, then a small
+  badge stays at the bottom of the side bar.
+- Tools > Roll back to previous version.
+- Co-op: when your friend runs another version, the launcher says which.
+
 2.7
 - New launcher: Play, Co-op, Maps, In game and Settings each have their page.
 - In game: the frame counter is now off unless you switch it on, and you can

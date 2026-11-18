@@ -102,6 +102,15 @@ static class Uplink
         // The keys a new installation comes with (2: freelook on F), as against one that was already there (1: on
         // Y): said once, when the settings do not say yet, so that nobody's key changes with an update
         if (Cfg("keys_gen") != "1" && Cfg("keys_gen") != "2") Set("keys_gen", had && cfg.Count > 0 ? "1" : "2");
+        // 2.7 saved gamepad = 1 for everybody (its switch showed on unless "0"): an installation made before this
+        // version gets it off once, as a new one has it (pad_gen = 2: done; switched on afterwards, it stays on)
+        if (Cfg("pad_gen") != "2")
+        {
+            bool upgrade = had && cfg.Count > 0;
+            if (upgrade) Set("gamepad", "0");
+            Set("pad_gen", "2");
+            if (upgrade) SaveCfg();
+        }
         string[] args = Environment.GetCommandLineArgs();
         if (args.Length > 2 && args[1] == "--install")    // checks: install / update only, no window (exit code 0 = ok)
         {

@@ -933,10 +933,11 @@ var map_amb := DEFAULT_AMB
 
 
 # An object on the map's darkest stored light level (all its triangle's corners at it: 0x294B18 gives twice the map's
-# highest level, 0x294900) is lit with half the sun and no shine (0x29B645 -> 0x29E544); a suit there also loses the
-# ambient lift the game gives them (0x29C9B3: (amb + 1) / 2 -> amb). On the 10 maps stored at level 0 everywhere,
-# every model. Off unless TN_DEEP_SHADE=1 (not yet compared with the running game).
-var deep_shade := OS.get_environment("TN_DEEP_SHADE") == "1"
+# highest level, 0x294900) is lit with half the diffuse and no shine (0x29B645 -> 0x29E544); a suit there also loses the
+# ambient lift the game gives them (0x29C9B3: (amb + 1) / 2 -> amb). On the 10 maps stored at level 0 everywhere (the
+# generator's), every model and suit. Checked in the game (FARM, 18/11/2026): the suits measure 0.57 x and a crate
+# 0.61 x their light without it. On by default; TN_DEEP_SHADE=0 turns it off.
+var deep_shade := OS.get_environment("TN_DEEP_SHADE") != "0"
 var sun_half: DirectionalLight3D
 
 
@@ -947,19 +948,28 @@ func _apply_deep(node: Node3D, m: Dictionary, x: float, y: float) -> void:
 	if node.get_meta("deep", false) == deep and node.has_meta("deep"):
 		return
 	node.set_meta("deep", deep)
-	var dif := map_dif
-	var amb := map_amb
-	var r := (amb + dif / 4.0) / ((amb + 1.0) / 2.0 + dif / 2.0)   # a suit: deep against normal, at N.L = 0.5
 	var stack: Array = [node]
 	while not stack.is_empty():
 		var nd = stack.pop_back()
 		stack.append_array(nd.get_children())
 		if nd.has_meta("shadow_twin") or nd is Label3D or not (nd is GeometryInstance3D):
 			continue
-		if node.has_meta("soldier") or node.has_meta("suit"):
-			(nd as GeometryInstance3D).set_instance_shader_parameter("deep", r if deep else 1.0)
-		elif (nd as VisualInstance3D).layers == 1 or (nd as VisualInstance3D).layers == DEEP_LAYER:
-			(nd as VisualInstance3D).layers = DEEP_LAYER if deep else 1
+		var gi := nd as GeometryInstance3D
+		if _has_deep(gi):                       # the game's own light in the shader (limb, model): the exact rule
+			gi.set_instance_shader_parameter("deep", 1.0 if deep else 0.0)
+		elif gi.layers == 1 or gi.layers == DEEP_LAYER:      # Godot's lights: half the sun (sun_half)
+			gi.layers = DEEP_LAYER if deep else 1
+
+
+func _has_deep(gi: GeometryInstance3D) -> bool:
+	var mat: Material = gi.material_override
+	var mesh_i := gi as MeshInstance3D
+	if mat == null and mesh_i != null and mesh_i.mesh != null and mesh_i.mesh.get_surface_count() > 0:
+		mat = mesh_i.get_active_material(0)
+	if not (mat is ShaderMaterial) or (mat as ShaderMaterial).shader == null:
+		return false
+	var sh: Shader = (mat as ShaderMaterial).shader
+	return sh == LIMB or sh == TNObjects.MODEL_SHADER
 
 
 func _sync_sun_half() -> void:

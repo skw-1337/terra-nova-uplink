@@ -31,7 +31,8 @@ uniform float pull = 0.25;        // drawn this much nearer the camera: the game
                                   // a foot reaching just under it is not cut off (a standing suit: its feet and
                                   // shins only, viewer.gd LIMB_PULL; the pieces of a burst suit lying around: all)
 
-instance uniform float deep = 1.0;   // < 1: on the map's darkest light level, half the sun (viewer.gd _apply_deep)
+instance uniform float deep = 0.0;   // 1: on the map's darkest light level (viewer.gd _apply_deep): the game lights the suit
+                                     // with the map's own ambient, not (amb + 1) / 2, and half the diffuse (0x29C9B3 -> 0x29E544)
 instance uniform float spin = -1.0;  // >= 0: a fixed angle on the screen (radians; a piece of a burst suit lying
                                      // on the ground, drawn turned like the game's) instead of following the bone
 // live: the view the game picks for this limb (viewer.gd _game_views: x the view, y -1 when drawn mirrored), x < 0: none
@@ -177,7 +178,9 @@ void vertex() {
 	factor = vec3(shade);
 	if (lit) {
 		vec3 n = length(c) < 1e-5 ? vec3(0.0, 0.0, 1.0) : normalize(c);
-		float li = min(light_amb + light_dif * max(0.0, dot(n, light_dir)), 1.5);
+		float amb = deep > 0.5 ? 2.0 * light_amb - 1.0 : light_amb;
+		float dif = deep > 0.5 ? 0.5 * light_dif : light_dif;
+		float li = min(amb + dif * max(0.0, dot(n, light_dir)), 1.5);
 		int row = clamp(int(floor(16.0 * li)), 0, 15);
 		factor = row >= 15 ? vec3(1.0) : light_rows[row];
 	}
@@ -242,6 +245,6 @@ void fragment() {
 		ALBEDO = tn_game_colour(tn_haze_srgb(texture(views_ir, vec3(uv, float(layer))).rgb));
 	} else {
 		vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-		ALBEDO = tn_haze(col.rgb * factor * deep * (1.0 + tn_shot_light(wp)), wp, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
+		ALBEDO = tn_haze(col.rgb * factor * (1.0 + tn_shot_light(wp)), wp, CAMERA_POSITION_WORLD, CAMERA_VISIBLE_LAYERS);
 	}
 }

@@ -18,6 +18,8 @@ uniform sampler2D shade_idx : filter_nearest, repeat_disable;  // RESPLNT 53: 25
 uniform sampler2D pal_tex : filter_nearest, repeat_disable;    // the planet's palette, 256 x 1
 uniform sampler2D ir_lut : filter_nearest, repeat_disable;     // 256 x 4: the colours of IR tables 59-62
 uniform bool has_ir = false;
+instance uniform float deep = 0.0;   // 1: on the map's darkest light level (viewer.gd _apply_deep): half the diffuse and
+                                     // no shine (0x29B645 -> 0x29E544)
 uniform int ir_table = 2;                                      // its row: 61 (the models), 62 the walker's parts (drawn
                                                                // by the soldier draw, 0x29C96E: viewer.gd _add_mech)
 
@@ -47,7 +49,7 @@ void fragment() {
 	float nl = dot(n, l);
 	float i = amb;
 	if (nl >= 0.0) {
-		i += dif * nl + dif * dif * max(0.0, 2.0 * nl * dot(n, v) - dot(l, v));
+		i += deep > 0.5 ? 0.5 * dif * nl : dif * nl + dif * dif * max(0.0, 2.0 * nl * dot(n, v) - dot(l, v));
 	}
 	i = min(i, float(0x17FFF) / 65536.0);
 	int row = clamp(int(floor(i * 16.0)), 0, 23);

@@ -10,6 +10,7 @@ import builtins, ctypes, json, math, os, socket, struct, time, zlib
 import host_state
 import coop_music
 import coop_lobby, coop_view
+import coop_shot_log, coop_gun_flash
 from coop_name import NameTag
 from guest_equipment import GuestEquipment
 from coop_aim import GuestAim
@@ -1707,6 +1708,9 @@ class Guest:
         # reload sets the pace)
         eye = (gx, gy, self.game_eye(self.gid)[2])         # (the game's eye is up to 0.04 ahead: left out)
         view = (math.cos(gh) * math.cos(self.pitch), math.sin(gh) * math.cos(self.pitch), math.sin(self.pitch))
+        if coop_shot_log.PATH:                                 # (tests: TN_COOP_SHOTLOG, coop_shot_log.py)
+            coop_shot_log.views(cam or self.host_cam(me), (*eye, gh, self.pitch))
+            coop_shot_log.tick(self, me)
         if self.lock_req:
             # (the game's click, 0x269F28 -> 0x262D4C: the unit under it becomes the target, locked or not; nothing
             # under it: the target is dropped)
@@ -1952,6 +1956,14 @@ class Guest:
         """The game's beams ('BEAM', live_bridge.py rayons: the two ends and the colour of each 6/28) for the guest's
         window: local as they are; online 'BMS' with his next view (extras): a beam lives one to three pictures of
         the game, he gets those of the moment his view is made."""
+        coop_shot_log.beams(pk)
+        if self.gid and self.state == OK and coop_gun_flash.ON:   # his own beam from his gun (coop_gun_flash.py)
+            try:
+                e = self.master + 0x25 * self.gid
+                eye = (self.i32(e + 0x0F) / 65536, self.i32(e + 0x13) / 65536, self.game_eye(self.gid)[2])
+                pk = coop_gun_flash.add(pk, eye, self.u16(e + 0x1B) / 65536 * 2 * math.pi, self.pitch)
+            except (OSError, struct.error):
+                pass
         if self.remote:
             self.beam_pk = pk
         else:

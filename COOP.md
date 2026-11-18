@@ -2,7 +2,7 @@
 
 Two players, one mission, over Steam. The host plays the real game, the guest drives one of his squadmates from his own PC.
 
-It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: [Discord](https://discord.gg/AHpqNeT7s).
+It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: [Discord](https://discord.gg/UqtEpuUZh3).
 
 ## What you need
 
@@ -50,7 +50,7 @@ Keys changed in the launcher's **Game keys** follow for the guest too: forward, 
 - **Your friend isn't in the list**: you must be Steam friends, and he must have clicked HOST A GAME.
 - **"Different versions"**: both close Uplink and click again, it updates.
 - **The guest keeps firing**: a gamepad trigger that doesn't go back to zero. Switch **Gamepad for the guest** off.
-- **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/AHpqNeT7s), with a few words on what happened. The zip holds the logs and settings of Uplink and Terra Nova Plus; your Windows user name, your folders and Steam names are taken out of it (it says so inside).
+- **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/UqtEpuUZh3), with a few words on what happened. The zip holds the logs and settings of Uplink and Terra Nova Plus; your Windows user name, your folders and Steam names are taken out of it (it says so inside).
 
 <details>
 <summary>Without the launcher (developers)</summary>

@@ -18,6 +18,8 @@ const CUES := 2222                   # RESSOUND.RES: the music cues, 10 bytes ea
 const POLY := 64
 const PANS := 9                      # pan buses, left to right
 const RESYNC := 30                   # intervals off the host before jumping to his place (1/4 s)
+const TRIM := 0.003                  # tempo nudge an interval off (at most 2 %: not heard)
+const TRIM_MAX := 0.02
 const FOR_NEST := 4
 const PLAYING := 4                   # Miles SEQ_PLAYING
 
@@ -236,7 +238,7 @@ func _follow(slot: int, cue: int, rid: int, seq: int, vol: int, off: int, wait: 
 		s = {"rid": mine, "seq": seq, "sq": sq, "idx": 0, "wait": 0.0, "pt": 0.0, "vol": vol, "vol_now": float(vol),
 				"chans": [], "loops": [], "offs": [], "cue": cue}
 		slots[slot] = s
-		_seek(slot, s, at)
+		_seek(slot, s, at, mini(at, 60))
 		_log("start slot %d cue %d res %d seq %d at %d (host res %d offset %d wait %d) volume %d" % [slot, cue, mine,
 				seq, at, rid, off, wait, vol])
 		return
@@ -245,9 +247,11 @@ func _follow(slot: int, cue: int, rid: int, seq: int, vol: int, off: int, wait: 
 	if log_to:
 		_log("at slot %d res %d seq %d: mine %d host %d (%+d intervals) volume %d/%d" % [slot, mine, seq, mine_at, at,
 				mine_at - at, vol, master])
-	if absi(mine_at - at) > RESYNC:
+	s["trim"] = clampf(-(mine_at - at) * TRIM, -TRIM_MAX, TRIM_MAX)    # (a clock a little faster or slower than the
+	if absi(mine_at - at) > RESYNC:                                    # game's: its tempo nudged, no jump)
 		_log("resync slot %d res %d seq %d: mine %d host %d" % [slot, mine, seq, mine_at, at])
-		_seek(slot, s, at)
+		_seek(slot, s, at, mini(at, 60) if at < 120 else 0)            # (his sequence started again: from its start)
+		s["trim"] = 0.0
 
 
 # the host's position: the interval of the event at that offset less the intervals still to wait before it
@@ -259,8 +263,9 @@ func _tick_at(sq: Dictionary, off: int, wait: int) -> int:
 	return maxi(0, int(sq["abs"][i]) - wait)
 
 
-# to interval 'at' of its sequence: the channels as the events before it leave them (programs, controllers), no notes
-func _seek(slot: int, s: Dictionary, at: int) -> void:
+# to interval 'at' of its sequence: the channels as the events before it leave them (programs, controllers), no notes;
+# 'late' intervals before it played at once (a sequence just started: its first notes, a little late, not lost)
+func _seek(slot: int, s: Dictionary, at: int, late := 0) -> void:
 	_notes_off(slot, true)
 	var sq: Dictionary = s["sq"]
 	var chans := []
@@ -272,7 +277,7 @@ func _seek(slot: int, s: Dictionary, at: int) -> void:
 	var st: PackedByteArray = sq["st"]
 	var abs_t: PackedInt32Array = sq["abs"]
 	var i := 0
-	while i < st.size() and abs_t[i] < at:
+	while i < st.size() and abs_t[i] < at - late:
 		var hi := st[i] & 0xF0
 		if hi == 0xB0 or hi == 0xC0 or hi == 0xE0:
 			_event(slot, s, i, false)
@@ -436,6 +441,7 @@ func _process(delta: float) -> void:
 
 # its events up to now; the note offs at their intervals
 func _run(slot: int, s: Dictionary, ticks: float) -> void:
+	ticks *= 1.0 + float(s.get("trim", 0.0))
 	var sq: Dictionary = s["sq"]
 	var st: PackedByteArray = sq["st"]
 	var dt: PackedInt32Array = sq["dt"]

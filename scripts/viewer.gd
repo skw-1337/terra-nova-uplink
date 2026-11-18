@@ -4102,8 +4102,13 @@ static func _binds() -> Dictionary:
 # is on screen by then: a game screen that came while it was down left its key down in the game (repeated into the
 # menus and the next mission, an Alt bind turning every later key into an Alt chord).
 func _bind(name: String, down: bool) -> bool:
-	if not binds.has(name) or guest_win:
+	if not binds.has(name):
 		return false
+	if guest_win:                                     # a co-op guest's own binds: his command, as his own key does
+		if (binds[name] as Array).is_empty() or name.begins_with("WHEEL") or not play_started:
+			return false                              # (his wheel zooms his map, his middle button is his free look)
+		_guest_bind(name, down)
+		return true
 	if not down and bind_down.has(name):
 		_bind_set(name, false)
 		return true
@@ -4118,6 +4123,27 @@ func _bind(name: String, down: bool) -> bool:
 	else:
 		_bind_set(name, down)
 	return true
+
+
+# a co-op guest's bind: the key it stands for is his own key for a command (TN_BINDS), turned as his keys are (his
+# cockpit's keys, the turns, the bridge's few moving keys: see _play_scancode)
+func _guest_bind(name: String, down: bool) -> void:
+	var b: Array = binds[name]
+	var cmd: int = key_map.get(int(b[0]), int(b[0]))
+	for n in get_children():
+		if n.has_method("cockpit_key") and n.cockpit_key(cmd, down):
+			return
+	if GUEST_TURN.has(cmd):
+		if down:
+			guest_turn[int(b[0])] = GUEST_TURN[cmd]
+		else:
+			guest_turn.erase(int(b[0]))
+		return
+	var sc: int = GUEST_KEYS.get(cmd, cmd)
+	if int(b[1]) != 0:
+		_key_hold(int(b[1]), name, down)
+	if sc != 0:
+		_key_hold(sc, name, down)
 
 
 func _bind_set(name: String, down: bool) -> void:

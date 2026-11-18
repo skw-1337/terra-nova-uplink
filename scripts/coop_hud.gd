@@ -498,15 +498,16 @@ func _cockpit(pk: PackedByteArray) -> void:
 		rgba[4 * i + 1] = pal[c + 1]
 		rgba[4 * i + 2] = pal[c + 2]
 		rgba[4 * i + 3] = raw[2 * i + 1]
-	for y in range(ENERGY_E.position.y, ENERGY_E.end.y):     # the energy's "E": its greens in the leds' orange
-		for x in range(ENERGY_E.position.x, ENERGY_E.end.x):
-			var i := 4 * (320 * y + x)
-			var gr := rgba[i + 1]
-			if gr >= 96 and rgba[i] * 2 < gr and rgba[i + 2] * 2 < gr:
-				var c := ENERGY_DIM.lerp(ENERGY_LIT, clampf((gr - 131.0) / 41.0, 0.0, 1.0))   # (its two greens: 131, 172)
-				rgba[i] = c.r8
-				rgba[i + 1] = c.g8
-				rgba[i + 2] = c.b8
+	if _ucol():                                              # the energy's "E": its greens in the leds' orange (his
+		for y in range(ENERGY_E.position.y, ENERGY_E.end.y):     # own HUD colours: _ucol)
+			for x in range(ENERGY_E.position.x, ENERGY_E.end.x):
+				var i := 4 * (320 * y + x)
+				var gr := rgba[i + 1]
+				if gr >= 96 and rgba[i] * 2 < gr and rgba[i + 2] * 2 < gr:
+					var c := ENERGY_DIM.lerp(ENERGY_LIT, clampf((gr - 131.0) / 41.0, 0.0, 1.0))   # (its two greens: 131, 172)
+					rgba[i] = c.r8
+					rgba[i + 1] = c.g8
+					rgba[i + 2] = c.b8
 	cockpit.texture = ImageTexture.create_from_image(Image.create_from_data(320, 400, false, Image.FORMAT_RGBA8, rgba))
 	if views:
 		views.cockpit(raw, rgba, cockpit.texture, win)       # (his own view's picture and window: coop_views.gd)
@@ -934,6 +935,13 @@ func set_self(me: String, face: Image) -> void:
 	lobby.set_self(me, face)
 
 
+# his own "Uplink HUD colours" (TN_HUD_COLOURS, his Esc menu; on unless turned off): the energy in orange, his armour
+# in light blue; off, the game's own greens
+func _ucol() -> bool:
+	var vp := get_parent()
+	return vp == null or not ("hud_colours" in vp) or bool(vp.hud_colours)
+
+
 # the game's screen units (320 x 400) to the window
 func _g(x: float, y: float) -> Vector2:
 	var s := root.size
@@ -1135,9 +1143,9 @@ func _draw_leds(cells: Array, a: int, b: int, kind: int, dest := Rect2()) -> voi
 		var x1: int = mini(c[1], lo + b)
 		if x1 > x0:
 			var col: Color = hud_pal[c[2]]
-			if kind == 1:
+			if kind == 1 and _ucol():
 				col = ENERGY_LIT.lerp(ENERGY_DIM, clampf((c[2] - 0x83) / 8.0, 0.0, 1.0))
-			elif kind == 2:
+			elif kind == 2 and _ucol():
 				col = ARMOUR_LIT
 			panel.draw_rect(_grect(o.x + x0 * k.x, o.y + 30.0 * k.y, o.x + x1 * k.x, o.y + 34.0 * k.y), col)
 
@@ -1210,6 +1218,15 @@ func _helmet_frames(rid: int) -> Array:
 # the game's crosshair (its cursor in the 3D view, from his game files, in the game's palette) where the game keeps it
 # in the look mode: its tip on the middle of the 3D window, 3 rows down (the bridge's centre()); that is where he aims
 func _draw_cross() -> void:
+	var kind := str(get_parent().get("crosshair")) if get_parent() != null else ""   # his own choice (TN_CROSSHAIR,
+	if kind == "none":                                                             # his Esc menu): the game's, a dot,
+		return                                                                     # nothing
+	if kind == "dot":
+		var c := _g(win.position.x + win.size.x / 2.0, win.position.y + win.size.y * 0.5 + CROSS_ROW)
+		var d := maxf(4.0, roundf(get_viewport().get_visible_rect().size.y / 180.0))   # (as the host's dot)
+		panel.draw_rect(Rect2(c - Vector2(d, d) / 2.0 - Vector2.ONE, Vector2(d, d) + Vector2(2, 2)), Color(0, 0, 0, 0.6))
+		panel.draw_rect(Rect2(c - Vector2(d, d) / 2.0, Vector2(d, d)), Color(0.25, 1.0, 0.35))
+		return
 	if not cross_tried and not hud_pal.is_empty():
 		cross_tried = true
 		var fr := _helmet_frames(CROSS)
@@ -1246,7 +1263,7 @@ func _draw_indicator(place := Vector2i(-1, -1)) -> void:
 func indicator_texture(lv5: PackedByteArray, own: bool) -> Texture2D:
 	if lv5.size() < 5 or hud_pal.is_empty():
 		return null
-	var key := lv5.hex_encode() + ("o" if own else "g")
+	var key := lv5.hex_encode() + ("o" if own else "g") + ("u" if _ucol() else "")
 	if not indicator_tex.has(key):
 		if indicator_idx.is_empty():
 			var fr := _helmet_frames(INDICATOR)
@@ -1266,7 +1283,7 @@ func indicator_texture(lv5: PackedByteArray, own: bool) -> Texture2D:
 					var part := mini((c - 0xB0) >> 4, 4)
 					var lv := mini(lv5[part], 6)
 					on = lv > 0 and (part == 4 or (c & 15) >= 6 - lv)
-					col = (ARMOUR_LIT if own else ColourVision.idx(hud_pal, 0x84)) if lv >= 5 else ColourVision.idx(hud_pal, ARMOUR_WARN[lv])
+					col = (ARMOUR_LIT if own and _ucol() else ColourVision.idx(hud_pal, 0x84)) if lv >= 5 else ColourVision.idx(hud_pal, ARMOUR_WARN[lv])
 				rgba[4 * p] = col.r8
 				rgba[4 * p + 1] = col.g8
 				rgba[4 * p + 2] = col.b8

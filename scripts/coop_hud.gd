@@ -590,7 +590,9 @@ func _ground() -> Image:
 	var by_height: PackedByteArray = pl.data(71)
 	var lit: PackedByteArray = pl.data(54)
 	const N := 513 * 513
-	if d.size() < N * 3 or material.size() < 64 or by_height.size() < 4096 or lit.size() < 2048:
+	# (43: a material per ground tile, as many as the planet has: 64, but 53 on planet 2 and 59 on planet 3, whose
+	# maps were left black when 64 were asked for: Aegis' guest map)
+	if d.size() < N * 3 or material.is_empty() or by_height.size() < 4096 or lit.size() < 2048:
 		return null
 	var light := (MAP_LIGHT_8 if mission == 8 else MAP_LIGHT).hex_decode()
 	var rgba := PackedByteArray()
@@ -606,7 +608,7 @@ func _ground() -> Image:
 		var c := 0
 		if mission != 29:                                    # (mission 29: the game leaves its map black)
 			var lv := light[clampi(((h - east + 8192) >> 1) - 4096 + 32, 0, 63)]
-			c = lit[lv * 256 + by_height[(material[d[3 * i] & 0x3F] & 15) * 256 + ((h + 0x800) >> 4)]]
+			c = lit[lv * 256 + by_height[(material[mini(d[3 * i] & 0x3F, material.size() - 1)] & 15) * 256 + ((h + 0x800) >> 4)]]
 		var col := hud_pal[c]
 		rgba[4 * i] = col.r8
 		rgba[4 * i + 1] = col.g8

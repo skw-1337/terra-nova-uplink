@@ -329,7 +329,7 @@ func _read(ch: int) -> void:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
 			elif tag == "PNO" and data.size() >= 11:
 				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
-			elif tag == "GHD" or tag == "GCK" or tag == "GLB" or tag == "SND":   # HUD, cockpit, lobby, the game's sounds: to coop_hud.gd
+			elif tag == "GHD" or tag == "GCK" or tag == "GLB" or tag == "SND" or tag == "GEQ":   # HUD, cockpit, lobby, the game's sounds, his drone / A.S.F.: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
 			elif tag == "HST":                            # where the host's game is: to host_state.gd (host_state.py)
 				if hst_out == null:

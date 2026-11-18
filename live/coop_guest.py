@@ -10,6 +10,7 @@ import builtins, ctypes, json, math, os, socket, struct, time, zlib
 import host_state
 import coop_lobby, coop_view
 from coop_name import NameTag
+from guest_equipment import GuestEquipment
 
 CAVE = 0x46B040
 CAVE_WAIT = 60                    # seconds the bridge waits for it before saying it is missing
@@ -295,6 +296,7 @@ class Guest:
         self.tint_t, self.map_said = 0.0, False                 # his weapon box's colour tables: when last sent
         self.comm, self.ind, self.ind_at = [], None, None      # his COMM rows' entities; the armour indicator's picture
         # (False: none) and where the host's game draws it (his window draws his own there)
+        self.equip = GuestEquipment(self)                     # his drone and A.S.F. (guest_equipment.py, TN_COOP_EQUIP=1)
         self.anim = None
         try:
             from host_anim import HostAnim
@@ -1213,6 +1215,9 @@ class Guest:
             except (OSError, struct.error, IndexError):
                 pass
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
+        eq = self.equip.packet() if self.gid and self.state == OK else None
+        if eq:                                                 # his drone and A.S.F. (guest_equipment.gd)
+            self.s.sendto(eq, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):
             self.cockpit()
@@ -1376,6 +1381,7 @@ class Guest:
         if self.versus and self.state == OK:
             self.versus_hits(me)
         turn = self.read_input(self.state == OK)
+        self.equip.tick(self.state == OK)
         if self.state != OK:                                   # the guest watches through the host's eyes
             self.send(struct.pack('<6f2i', *(cam or self.host_cam(me)), self.fov_now(), len(body), me) +
                       b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
@@ -1458,9 +1464,10 @@ class Guest:
             if pose:
                 # after the index: the height of the feet in the world (the game's entity height minus its 0.12)
                 joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
-        view = (struct.pack('<6f2i', *eye, gh, self.pitch, self.fov_now(), len(body), self.gid) +
+        dv = self.equip.camera((*eye, gh, self.pitch))         # his view through his drone: from it, the drone hidden
+        view = (struct.pack('<6f2i', *(dv[:5] if dv else (*eye, gh, self.pitch)), self.fov_now(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
-                struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', self.gid, 1 if alarm else 0))
+                struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', dv[5] if dv else self.gid, 1 if alarm else 0))
         self.send(view)
 
     def resync(self, pk):
@@ -1501,6 +1508,7 @@ class Guest:
                     self.lock_step = TARGET_KEYS[sc]
                 if sc == DROPSHIP and down and active:
                     self.call_dropship()
+                self.equip.key(sc, down, active)               # 5 his A.S.F., Ctrl+Home his drone back
                 if sc in SHIFT:
                     self.shift = bool(down)
                 elif sc in JUMP_DIR and not down:
@@ -1524,6 +1532,8 @@ class Guest:
                 self.fire = bool(pk[2])
             elif pk[:1] == b'C' and len(pk) >= 3 and pk[1] == 1 and not pk[2]:
                 self.fire = False                              # (the left button let go with his mouse freed)
+            elif pk[:1] == b'E' and len(pk) >= 2:                # his drone / A.S.F. (guest_equipment.py)
+                self.equip.message(pk, active)
             elif pk[:1] == b'W' and len(pk) == 9:                # his map marker: put there, or (x = 0) taken away
                 x, y = struct.unpack('<2f', pk[1:])
                 self.gnav = (x, y) if active and 1.0 <= x <= 511.0 and 1.0 <= y <= 511.0 else None

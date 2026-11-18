@@ -7,6 +7,8 @@
 # E0xx for Uplink's), after SHIFT+, CTRL+ or ALT+; - : none; MID, M4, M5: a mouse button (Uplink's order wheel).
 # "fixed": the game's own, which cannot be changed. (mapout / mapin: TN+'s names for the game's 33 and 34, which zoom
 # the map in and out: the names shown are what the keys do in the game.) Centre view comes without a key (F is the freelook's).
+# The old school look on \ (2B: free in the game; it was on F12, the game's Mission info): an installation made before
+# keeps F12 (the launcher's keys_gen 1), shown as a clash.
 # A sixth column: the co-op guest's gamepad (scripts/pad_map.gd; his window only: the host's and a solo game's
 # pad is the game's own DOS joystick through DOSBox): B<n> a button, A<n>+ / A<n>- an axis past its threshold
 # (Godot's numbers: B0 A, B1 B, B2 X, B3 Y, B4 Back, B6 Start, B7 / B8 the sticks pressed, B9 LB, B10 RB, B11-B14 the
@@ -83,7 +85,7 @@ Gamepad|p_jumpto|Jump towards the left stick|-|pad|B0
 Uplink|menu|Uplink menu (host; Esc for a guest)|3F|uplink|B6
 Uplink|order|Order wheel (hold)|MID|uplink
 Uplink|photo|Photo mode|26|uplink
-Uplink|oldschool|Old school look|58|uplink
-Uplink|sharp|Old school pixel size|SHIFT+58|uplink
-Uplink|shot|Screenshot|CTRL+58|uplink
-Uplink|fps|Frame counter|CTRL+SHIFT+58|uplink
+Uplink|oldschool|Old school look|2B|uplink
+Uplink|sharp|Old school pixel size|SHIFT+2B|uplink
+Uplink|shot|Screenshot|CTRL+2B|uplink
+Uplink|fps|Frame counter|CTRL+SHIFT+2B|uplink

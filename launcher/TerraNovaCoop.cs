@@ -121,6 +121,14 @@ static class Uplink
         { Console.WriteLine(Binds()); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--env")         // checks: what Uplink is told when it starts (the options)
         { foreach (KeyValuePair<string, string> kv in Env()) Console.WriteLine(kv.Key + "=" + kv.Value); Environment.Exit(0); }
+        if (args.Length > 1 && args[1] == "--conflicts")   // checks: the Controls page's keys and the clashes it shows
+        {
+            ControlsLoad();
+            Dictionary<string, string> cl = Conflicts();
+            foreach (Cmd c in cmds) Console.WriteLine(c.Id + "=" + KeySpec(c.Sc, c.Mods) + (cl.ContainsKey(c.Id) ? "  CLASH " + cl[c.Id] : ""));
+            Console.WriteLine("clashes " + cl.Count);
+            Environment.Exit(0);
+        }
         if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
         { foreach (string d in Installs()) Console.WriteLine(Edition(d) + (IsEnglish(d) ? " EN  " : "     ") + d); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
@@ -2447,7 +2455,7 @@ static class Uplink
         string req = Path.Combine(Comp, "play_request.txt");
         try { File.Delete(req); } catch { }
         env["TN_PLAY_REQUEST"] = req;
-        env["TN_OLDSCHOOL"] = "0";                             // ("Old school look" is the live game's: here F12 turns it on)
+        env["TN_OLDSCHOOL"] = "0";                             // ("Old school look" is the live game's: here its key turns it on)
         Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + (size == "native" ? "-- --native" : ""), UplinkDir, env, true);
         string open = "Map viewer open: right mouse button to look, WASD to move, Tab for the mission list." + (editor ? " F6: the mission editor." : "");
         Status(open, CGreen);
@@ -3276,6 +3284,7 @@ static class Uplink
             }
             else if (c.Kind == "uplink")
             {
+                if (c.Id == "oldschool" && Cfg("keys_gen") == "1") { c.DefSc = 0x58; c.DefMods = 0; }   // (see OldKey)
                 int[] k = KeyParse(c.Id == "menu" ? MenuKey() : c.Id == "order" ? OrderKey() : c.Id == "photo" ? PhotoKey() :
                     c.Id == "oldschool" ? OldKey() : c.Id == "sharp" ? SharpKey() : c.Id == "shot" ? ShotKey() : c.Id == "fps" ? FpsKey() : "");
                 c.Sc = k[0]; c.Mods = k[1];
@@ -3303,8 +3312,8 @@ static class Uplink
     // The Uplink menu's key (key_menu): F5 unless another is chosen (F10 is the game's Sensor range)
     static string MenuKey() { string k = Cfg("key_menu").ToUpperInvariant(); return KeyOk(k) && k != "" ? k : "3F"; }
 
-    // commands sharing a key (not the game's fixed keys, nor two both as they come: Uplink's F12 is the game's Mission
-    // info on purpose)
+    // commands sharing a key (not the game's fixed keys), keys as they come included: none of those share one (the old
+    // school look left F12, the game's Mission info, for \; Centre view has no key, F being the freelook's)
     static Dictionary<string, string> Conflicts()
     {
         Dictionary<string, string> o = new Dictionary<string, string>();
@@ -3312,7 +3321,7 @@ static class Uplink
         {
             if (a.Kind == "fixed" || a.Sc == 0) continue;
             foreach (Cmd b in cmds)
-                if (b != a && b.Kind != "fixed" && b.Sc == a.Sc && b.Mods == a.Mods && !(a.Sc == a.DefSc && a.Mods == a.DefMods && b.Sc == b.DefSc && b.Mods == b.DefMods))
+                if (b != a && b.Kind != "fixed" && b.Sc == a.Sc && b.Mods == a.Mods)
                     o[a.Id] = b.Name;
         }
         return o;
@@ -3373,10 +3382,14 @@ static class Uplink
             F = F11, Ink = CDim, Location = new Point(18, 440), Size = new Size(MW - 36, 16) });
         Btn reset = Key(pg, 18, 460, 170, 28, "Reset to defaults");
         reset.Click += delegate {
-            if (!Ask("Put every key back as it comes (freelook on F, Centre view without a key)?")) return;
-            foreach (Cmd c in cmds) { c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.DefSc; c.Mods = c.Id == "centre" || c.Id == "freelook" ? 0 : c.DefMods; c.Mouse = 0; c.Pad = c.PadDef; }
+            if (!Ask("Put every key back as it comes (freelook on F, the old school look on \\, Centre view without a key)?")) return;
+            foreach (Cmd c in cmds)
+            {
+                bool now = c.Id == "centre" || c.Id == "freelook" || c.Id == "oldschool";    // (as a new installation has them)
+                c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.Id == "oldschool" ? 0x2B : c.DefSc; c.Mods = now ? 0 : c.DefMods; c.Mouse = 0; c.Pad = c.PadDef;
+            }
             padSticks = new Dictionary<string, string>();
-            ControlsSave(); PadSave(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);
+            ControlsSave(); PadSave(); ControlsLoad(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);   // (read again: the old school look's three companions follow its key)
         };
         Btn sticks = Key(pg, 18 + 178, 460, 150, 28, "Gamepad sticks...");
         sticks.Click += delegate { using (PadSticks d = new PadSticks()) d.ShowDialog(form); };
@@ -3945,13 +3958,20 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ Uplink's own keys
-    // The old school look on / off (F12) and its pixel size (Shift+F12) are keys of Uplink's window, not of the game:
-    // TN+'s KEYBOARD page does not have them. A small keyboard has no F12: each can be put on another key, alone or
+    // The old school look on / off (\, see OldKey) and its pixel size (Shift with it) are keys of Uplink's window, not of
+    // the game: TN+'s KEYBOARD page does not have them. Each can be put on another key, alone or
     // with Shift, Ctrl or Alt (TerraNovaUplink.ini: key_oldschool, key_sharp = [SHIFT+][CTRL+][ALT+]scancode, as TN+
     // writes its keys; E0xx: a key of the grey block). Uplink is told when it starts (TN_KEY_OLDSCHOOL, TN_KEY_SHARP).
     static bool KeyOk(string k) { return Regex.IsMatch(k ?? "", @"^((SHIFT|CTRL|ALT)\+)*[0-9A-F]{1,4}$"); }
 
-    static string OldKey() { string k = Cfg("key_oldschool").ToUpperInvariant(); return KeyOk(k) ? k : "58"; }
+    // Its key as it comes: \ (2B, the key above Enter, or next to it on an ISO keyboard), which neither the game, nor
+    // TN+, nor Uplink's other keys use (F12 was the game's Mission info). An installation made before this version
+    // keeps F12 (keys_gen 1: nobody's key changes with an update; the Controls page shows that clash)
+    static string OldKey()
+    {
+        string k = Cfg("key_oldschool").ToUpperInvariant();
+        return KeyOk(k) && k != "" ? k : Cfg("keys_gen") == "1" ? "58" : "2B";
+    }
 
     static string SharpKey()
     {

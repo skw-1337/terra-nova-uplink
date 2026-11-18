@@ -228,6 +228,8 @@ func _read_uplink() -> void:
 			continue
 		var e := OS.get_environment(UPLINK_ENV.get(c["id"], ""))
 		var s := str(cfg.get_value("launcher", "key_" + str(c["id"]), e if e != "" else "__default__"))
+		if s == "" and c["id"] == "oldschool" and e != "":
+			s = e                                         # (an older Uplink's "": F12 then; the launcher says which)
 		c["key"] = c["def"].duplicate() if s == "__default__" or s == "" else parse(s)
 	# the old school look's three companions follow its key unless set (as the launcher's SharpKey, ShotKey, FpsKey)
 	var old := find("oldschool")
@@ -243,8 +245,8 @@ func _read_uplink() -> void:
 
 
 # ---------------------------------------------------------------- what is wrong
-# commands that share a key with another (not counting the game's fixed keys, nor two keys both as they come: Uplink's
-# F12 is the game's Mission info by design)
+# commands that share a key with another (not counting the game's fixed keys), keys as they come included: none of those
+# share one (the old school look left F12, the game's Mission info, for \), so a clash shown is a real one
 func conflicts() -> Dictionary:
 	var out := {}
 	for i in cmds.size():
@@ -254,8 +256,6 @@ func conflicts() -> Dictionary:
 		for j in cmds.size():
 			var b: Dictionary = cmds[j]
 			if i == j or b["kind"] == "fixed" or int(b["key"][0]) != int(a["key"][0]) or int(b["key"][1]) != int(a["key"][1]):
-				continue
-			if a["key"] == a["def"] and b["key"] == b["def"]:
 				continue
 			out[a["id"]] = b["name"]
 	return out
@@ -333,7 +333,9 @@ func save_uplink() -> void:
 	cfg.load(CFG)
 	for c in cmds:
 		if c["kind"] == "uplink":
-			cfg.set_value("launcher", "key_" + str(c["id"]), spec(c["key"]) if c["key"] != c["def"] else "")
+			# (the old school look's key always written: "" stood for F12 before it came on \, and still does for an
+			# installation made before, see the launcher's OldKey)
+			cfg.set_value("launcher", "key_" + str(c["id"]), spec(c["key"]) if c["key"] != c["def"] or c["id"] == "oldschool" else "")
 	cfg.set_value("launcher", "stamp", int(Time.get_unix_time_from_system()))
 	cfg.save(CFG)
 

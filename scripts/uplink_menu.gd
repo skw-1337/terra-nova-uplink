@@ -29,7 +29,19 @@ const RED := Color8(236, 72, 60)
 const GROUPS := ["Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Gamepad", "Uplink"]
 const FX := [["cloud_shadows", "Cloud shadows", true], ["cliffs", "Unstretched cliffs", true], ["stars", "Sharp stars", true],
 		["marks", "Impact marks", true], ["lights", "Light from shots", true], ["look_down", "Look further down", false],
-		["tracks", "Footprints and tracks", true]]
+		["tracks", "Footprints and tracks", true], ["own_body", "Own body (legs, feet)", true]]
+# The graphics presets, as the launcher has them (TerraNovaUplink.cs PRESETS, same order and values): each sets the old
+# school look, Uplink's HUD colours and every extra; any switch changed afterwards makes it "custom". Kept in
+# viewer.cfg [launcher] gfx_preset (the launcher takes it over), told by the launcher at the start (TN_GFX_PRESET).
+const PRESET_IDS := ["original", "classic", "modern", "light", "custom"]
+const PRESET_NAMES := ["Original", "Classic+", "Modern", "Light", "Custom"]
+const PRESET_KEYS := ["old_school", "hud_colours", "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks", "own_body"]
+const PRESETS := {
+	"original": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+	"classic": [1, 0, 1, 1, 0, 1, 0, 0, 1, 1],
+	"modern": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+	"light": [0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+}
 const FX_NODES := {"marks": "fx_marks.gd", "lights": "fx_lights.gd", "tracks": "fx_tracks.gd"}
 # the launcher's lists (TerraNovaUplink.cs SIZES, CROSSHAIRS, FillCap), kept with the same values
 const SHARP := [[1, "1×"], [2, "2×"], [3, "3×"], [0, "Max"]]
@@ -475,10 +487,11 @@ func _hosting() -> bool:
 # it (viewer.cfg [launcher], with the stamp it takes over; the pixel size in [look] as it already was), so the
 # launcher shows the same. Applied at once where Uplink can; the rest is marked for the next start.
 func _graphics(col: VBoxContainer) -> void:
-	_place(1120, 700)
+	_place(1120, 800)
 	_title(col, "GRAPHICS", ORANGE)
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
+	_preset_row(col)
 	var cols := HBoxContainer.new()
 	cols.add_theme_constant_override("separation", _px(36))
 	cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -491,9 +504,9 @@ func _graphics(col: VBoxContainer) -> void:
 	cols.add_child(right)
 	_head(left, "DISPLAY")
 	_switch(left, "Old school look", bool(v.oldschool_rect != null and v.oldschool_rect.visible), func(on: bool):
-		if v.oldschool_rect != null and v.oldschool_rect.visible != on:
-			v._oldschool_toggle()
-		_keep("launcher", "old_school", "1" if on else "0"))
+		_set_old(on)
+		_keep("launcher", "old_school", "1" if on else "0")
+		_gfx_touched())
 	var sharp_at := 0
 	for i in SHARP.size():
 		if int(SHARP[i][0]) == int(v.get("old_sharp")):
@@ -502,7 +515,8 @@ func _graphics(col: VBoxContainer) -> void:
 	if not guest:
 		_switch(left, "Uplink HUD colours", bool(v.get("hud_colours")), func(on: bool):
 			_set_hud_colours(on)
-			_keep("launcher", "hud_colours", "1" if on else "0"))
+			_keep("launcher", "hud_colours", "1" if on else "0")
+			_gfx_touched())
 		var ci := 0
 		for i in CROSS.size():
 			if CROSS[i][0] == str(v.get("crosshair")):
@@ -540,7 +554,8 @@ func _graphics(col: VBoxContainer) -> void:
 		var later: bool = id == "look_down"
 		_switch(right, str(fx[1]) + ("  (next start)" if later else ""), _fx_on(id), func(x: bool):
 			_set_fx(id, x)
-			_keep("launcher", "fx_" + id, "1" if x else "0"))
+			_keep("launcher", "fx_" + id, "1" if x else "0")
+			_gfx_touched())
 	_note(right, "Each setting is kept for the next games, and the launcher shows it the same.")
 	var back := _button(col, "Back", func(): _show("main"))
 	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -588,6 +603,101 @@ func _set_hud_colours(on: bool) -> void:
 		(v.hud_rect.material as ShaderMaterial).set_shader_parameter("armour", Vector4.ZERO)
 
 
+const PRESET_LINES := ["As in 1996: old school look, no extras", "Old look, small extras", "Everything on",
+	"For older PCs: the costliest extras off", "Your own mix"]
+var preset_btns: Array = []
+var preset_line: Label
+var preset_quiet := false            # (the buttons set from here: not a choice of the player's)
+
+
+func _preset_now() -> String:
+	var p := OS.get_environment("TN_GFX_PRESET")
+	return p if PRESET_IDS.has(p) else "custom"
+
+
+# the preset's row over the page's two columns: picked, it sets every switch below (at once where Uplink can) and the
+# page is drawn again with them
+func _preset_row(col: Control) -> void:
+	_head(col, "PRESET")
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", _px(4))
+	col.add_child(row)
+	var grp := ButtonGroup.new()
+	preset_btns = []
+	var at := PRESET_IDS.find(_preset_now())
+	for i in PRESET_IDS.size():
+		var b := Button.new()
+		b.text = PRESET_NAMES[i]
+		b.toggle_mode = true
+		b.button_group = grp
+		b.button_pressed = i == at
+		b.custom_minimum_size = Vector2(118 * k, 34 * k)
+		b.add_theme_font_size_override("font_size", _px(16))
+		b.add_theme_stylebox_override("pressed", _sb(Color8(30, 62, 56), ORANGE, 2))
+		b.toggled.connect(func(on: bool):
+			if on and not preset_quiet:
+				_pick_preset(PRESET_IDS[i]))
+		row.add_child(b)
+		preset_btns.append(b)
+	preset_line = Label.new()
+	preset_line.text = "   " + PRESET_LINES[at]
+	preset_line.add_theme_color_override("font_color", DIM)
+	preset_line.add_theme_font_size_override("font_size", _px(15))
+	row.add_child(preset_line)
+
+
+func _pick_preset(id: String) -> void:
+	OS.set_environment("TN_GFX_PRESET", id)
+	_keep("launcher", "gfx_preset", id)
+	if PRESETS.has(id):
+		apply_preset(id)
+	_show("graphics")                                    # (every switch drawn again as the preset left it)
+
+
+# a preset's values applied (live where Uplink can, the rest at the next start) and kept for the launcher
+func apply_preset(id: String) -> void:
+	var vals: Array = PRESETS[id]
+	var cfg := ConfigFile.new()
+	cfg.load(CFG)
+	for i in PRESET_KEYS.size():
+		var key: String = PRESET_KEYS[i]
+		var on: bool = int(vals[i]) == 1
+		if key == "old_school":
+			_set_old(on)
+			cfg.set_value("launcher", "old_school", "1" if on else "0")
+		elif key == "hud_colours":
+			if not guest:
+				_set_hud_colours(on)
+			cfg.set_value("launcher", "hud_colours", "1" if on else "0")
+		else:
+			_set_fx(key, on)
+			cfg.set_value("launcher", "fx_" + key, "1" if on else "0")
+	cfg.set_value("launcher", "gfx_preset", id)
+	cfg.set_value("launcher", "stamp", int(Time.get_unix_time_from_system()))
+	cfg.save(CFG)
+
+
+# a switch of the page changed by hand: the preset becomes "custom" (the values stay as they are)
+func _gfx_touched() -> void:
+	if _preset_now() == "custom":
+		return
+	OS.set_environment("TN_GFX_PRESET", "custom")
+	_keep("launcher", "gfx_preset", "custom")
+	preset_quiet = true
+	if preset_btns.size() == PRESET_IDS.size() and is_instance_valid(preset_btns[4]):
+		(preset_btns[4] as Button).button_pressed = true
+	preset_quiet = false
+	if preset_line != null and is_instance_valid(preset_line):
+		preset_line.text = "   " + PRESET_LINES[4]
+
+
+func _set_old(on: bool) -> void:
+	if v.oldschool_rect != null and v.oldschool_rect.visible != on:
+		v._oldschool_toggle()
+	elif v.oldschool_rect == null:
+		OS.set_environment("TN_OLDSCHOOL", "1" if on else "0")
+
+
 func _fx_on(id: String) -> bool:
 	return OS.get_environment("TN_FX_" + id.to_upper()) != "0"
 
@@ -624,6 +734,9 @@ func _set_fx(id: String, on: bool) -> void:
 	elif id == "cliffs":
 		for sm in v.ground_mats:
 			sm.set_shader_parameter("cliffs", on)
+	elif id == "own_body":
+		if v.get("look_dn") != null:
+			v.look_dn.body_on = on                       # (the legs hidden at the next frame; the look down stays)
 
 
 # the host's briefings and other videos played in the guest's window (coop_movie.gd), or the text briefing only

@@ -2528,6 +2528,8 @@ func _gait_game(node: Node3D, m: Dictionary, dt: float) -> void:
 	sg.pose()
 	# the suit on its lowest toe (as with the game's poses), the joints from there (right, up, forward)
 	var jj: Array[Vector3] = sg.D                    # (its joints with their jumps spread out, suit_gait.gd D)
+	if node.has_meta("player_body"):
+		jj = _feet_on_slope(jj, m, float(sg.footh))
 	var base := minf(jj[0].z, jj[1].z)
 	if fresh and absf(node.position.y - base) < 1.0:
 		node.set_meta("y_off", [node.position.y - base, now])   # (from the game's pose: its height eased, _y_ease)
@@ -2547,6 +2549,43 @@ func _gait_game(node: Node3D, m: Dictionary, dt: float) -> void:
 		rf.append(Vector3(lv.z, lv.y, lv.x))
 	node.set_meta("refs", rf)
 	_pose_suit(node, q, true)
+
+
+# The player's own feet on a slope (his body is a solid when he looks down past the game's limit, look_down.gd). The
+# game's walk stands a foot at the height of the ground under the body (_stand_feet: 0x27ffdc) and lays it flat from
+# its ankle (_toe): on a slope of 24 degrees its sole went 0.02 into the ground on the uphill side and its toe cap
+# under it (the solid boot cut by the ground: a ragged open shell), and floated over it downhill. The game paints its
+# suits over the ground and shows none of it. Here a foot set down (not in a step) stands on the ground at its own
+# place: its ankle no lower than the sole's height over the ground under the ankle and the heel, its toe on the ground
+# under the toe (the foot turned about its ankle, its length kept). Game axes (z up).
+const FOOT_SET := 0.03                  # a foot whose sole is within this of the ground: set down
+const HEEL := 0.4                       # the heel this share of the foot behind the ankle
+
+
+func _feet_on_slope(jj: Array[Vector3], m: Dictionary, footh: float) -> Array[Vector3]:
+	var out: Array[Vector3] = jj.duplicate()
+	for s in 2:
+		var a: Vector3 = out[2 + s]
+		var t: Vector3 = out[s]
+		var ga := TNData.height_at(m, a.x, a.y)
+		if a.z - footh - ga > FOOT_SET:
+			continue                                     # (lifted: a step, a jump)
+		var d := t - a
+		var flat := Vector2(d.x, d.y)
+		var heel := Vector2(a.x, a.y) - flat * HEEL
+		var lift := maxf(maxf(ga, TNData.height_at(m, heel.x, heel.y)) + footh - a.z, 0.0)
+		a.z += lift
+		var length := d.length()
+		var dz := TNData.height_at(m, t.x, t.y) - a.z
+		if absf(d.z + footh) < 0.01 and flat.length() > 1e-4 and absf(dz) < length:
+			var hz := sqrt(length * length - dz * dz)    # (the toe on the ground under it, the foot as long)
+			var fl := flat.normalized() * hz
+			t = Vector3(a.x + fl.x, a.y + fl.y, a.z + dz)
+		else:
+			t.z += lift
+		out[2 + s] = a
+		out[s] = t
+	return out
 
 
 # (right, up, forward) -> node axes (forward = +X, up = +Y, right = +Z)

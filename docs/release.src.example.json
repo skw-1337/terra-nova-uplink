@@ -15,31 +15,59 @@
   },
   "beta": {
    "version": "2.8.0-beta.1",
-   "uplink": "audit-launcher-beta",
+   "uplink": "audit-invite-polish",
    "tnplus": "origin/main", "tnplus_version": "1.2.7",
    "tnplus_coop": "origin/coop", "tnplus_coop_version": "1.2.3-coop3",
    "min_launcher": "2.8.0-beta.1",
    "changelog": [
     {"section": "Co-op", "items": [
-     "The guest sees the host's briefing and launch videos, in step.",
-     "The guest hears the game's music and the squad's radio.",
-     "Your own drone, A.S.F., infrared, full view and 360 view as the guest.",
-     "Two players on different versions are told who runs what."]},
+     "Your friend's cockpit now matches the game: HUD, map with zoom, cockpit buttons and pages, weapon box, compass, STAT and STATUS pages, squad list with specialties, all in the game's own font",
+     "Lock works like the game's: units under the crosshair, coloured IFF brackets, lock light, target camera",
+     "Sound on the guest's side: game sounds from his point of view, radio voices, subtitles and music",
+     "Briefing videos and launch cinematics on both screens",
+     "His own infrared, full view (G) and 360 view",
+     "One map marker per player, the host's in orange",
+     "Smoother guest view and lower delay",
+     "Squad orders no longer stall when a friend plays one of your squadmates",
+     "Clear message when Steam is missing (Retry / Exit), and when a friend runs another version"]},
+    {"section": "Look", "items": [
+     "Graphics presets: Original, Classic+, Modern, Light, with a preview of every setting",
+     "New installs start in the modern look (old school is one click away)",
+     "See your own legs and feet when you look down, including on slopes",
+     "Footprints for every suit and continuous tracks behind vehicles",
+     "Cloud shadows that follow the clouds, soft edges",
+     "Sky without lines, smoke drawn from the game's own particles",
+     "Impact marks, light from shots, cliffs, sharp stars (each can be turned off)",
+     "Ground tiles keep their own edges, no more stray pixels over the view",
+     "Squadmates look right from any angle",
+     "Drone screen fills its panel, \"DRONE RECALLED\" shown like in the game"]},
     {"section": "Game", "items": [
-     "Esc opens Uplink's menu in solo and host: game menu, graphics, options, quit.",
-     "Footprints and vehicle tracks from each model.",
-     "Ground tiles blend only with their own kind: no sand over concrete.",
-     "Smoke grenades drawn from the game's own particles."]},
+     "Esc opens Uplink's menu: game menu, controls, graphics, options, accessibility, quit",
+     "Order wheel: hold a button, pick an order, choose who gets it with the mouse wheel; \"move there\" stops in front of walls",
+     "Click on the HUD map to place your marker",
+     "Gamepad support for solo, host and guest, with remapping",
+     "Photo mode on L",
+     "Squadmates' subtitles"]},
+    {"section": "Accessibility", "items": [
+     "Colour-blind modes: protanopia, deuteranopia, tritanopia",
+     "Subtitle size: normal, large, larger"]},
     {"section": "Launcher", "items": [
-     "Music device and AWE32 ROM on the Settings page.",
-     "Beta updates, roll back to the previous version."]}
+     "New design, graphics page with previews, controls page with keyboard, mouse and gamepad",
+     "Music choice: Roland / GS, FM, game's own or AWE32 (with your own ROM dump)",
+     "Safer updates: checked downloads, roll back, beta channel"]},
+    {"section": "", "items": [
+     "Needs Terra Nova Plus 1.2.7"]}
    ],
    "invitation": {
     "title": "Uplink 2.8 is in beta",
-    "subtitle": "Try the next version before everyone else. You can go back to stable at any time.",
+    "subtitle": "Try the next version before everyone else.",
     "images": [
-     {"url": "https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/release/beta/1.jpg", "file": "green_valley.jpg", "caption": "Ground that blends as the game's"},
-     {"url": "https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/release/beta/2.jpg", "file": "power_suit.jpg", "caption": "Footprints of every suit"}
+     {"file": "beta/1.jpg", "caption": "Co-op face to face: the host's screen (left) and his friend's (right), now with the game's own cockpit"},
+     {"file": "beta/2.jpg", "caption": "Footprints for every suit (top) and continuous tracks behind vehicles (bottom), on snow"},
+     {"file": "beta/3.jpg", "caption": "Graphics presets: Original, Classic+, Modern, Light, with a preview of every setting"},
+     {"file": "beta/4.jpg", "caption": "See your own legs and feet when you look down"},
+     {"file": "beta/5.jpg", "caption": "Colour-blind modes: the same lock without (left) and with the deuteranopia mode (right)"},
+     {"file": "beta/6.jpg", "caption": "Esc opens Uplink's menu: game menu, controls, graphics, options, accessibility, quit"}
     ]
    }
   }

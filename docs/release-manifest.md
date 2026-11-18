@@ -48,7 +48,13 @@ until they have updated themselves to 2.7.1).
 - Follows `stable`; with Settings > Updates > Beta updates on, the newer of `beta` and `stable` (no beta, or a
   beta older than stable: stable). A beta tester whose beta became final is asked once "keep getting betas?".
 - Not opted in and a beta newer than stable and than what is installed: the invitation is shown once per line
-  (2.8, 2.9...), then a badge at the foot of the side bar opens it again.
+  (2.8, 2.9...), then a badge at the foot of the side bar opens it again (with its pictures).
+- The invitation (2.8 on): the title and subtitle, the pictures one at a time (arrows, dots, the Left / Right keys,
+  a click on the picture) with each one's caption under it, the beta channel's `changelog` by sections in a
+  scrolling card beside them, Try the beta / Not now and "Back to stable at any time". A section named `""` is
+  drawn as a plain note line after the others (e.g. "Needs Terra Nova Plus 1.2.7"). It never grows past the
+  screen's working area. The 2.7.1 launcher shows the same fields in its older layout: the changelog, then only the
+  first two pictures side by side (so the first two should be the strongest).
 - The launcher of the channel is built from that commit's sources (its own `build.bat` line), started once with
   `--selftest`, then swapped in (the old exe is kept in `components\previous\launcher`) and restarted; then Uplink's
   files and the TN+ builds are staged, checked, and swapped in together (the replaced ones go to
@@ -71,6 +77,21 @@ python tools/release/make_manifest.py release.src.json -o release.json --previou
 commits, reads the launcher's version, hashes the trees and refuses an inconsistent file (version not the
 launcher's or project.godot's, min_launcher above the launcher). `--verify-remote` compares with GitHub's own
 archives: run it once the commits are pushed, before release.json is.
+
+The changelog is the single text the invitation shows: write it there once, by sections, in the order players
+should read it. Pictures: `"file"` is the path on the `release` branch (`beta/1.jpg`...); the script sets the
+`url` (`https://raw.githubusercontent.com/skw-1337/terra-nova-uplink/release/<file>`) and the `sha256` from the
+file and refuses a picture that would look bad or slow: not a JPEG, not 16:9, under 960 pixels wide, over 400 KB,
+more than six, or a caption missing or longer than 110 characters (two lines under the picture). Each caption
+says exactly what its picture shows.
+
+```
+python tools/release/make_manifest.py docs/release.src.example.json -o release.json --stage ../release-branch
+```
+
+`--stage DIR` lays the `release` branch out in DIR: `release.json` and every picture at its path, ready to be
+committed there (pictures first or in the same push: a picture the manifest names must already be on GitHub).
+The example's pictures are `docs/beta/1.jpg`..`6.jpg`.
 
 Rules: a new version number for any change of a channel (TN+ included); never remove `beta` while it is newer
 than `stable` (testers would be sent back): promote it (`stable` = the final version) instead.

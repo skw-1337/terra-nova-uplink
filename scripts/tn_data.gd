@@ -742,6 +742,7 @@ func _read_planet(path: String) -> Dictionary:
 			prof[t] = _profiles(rgb_tiles[t], c_own, _far_color(rgb_tiles[t], c_own))
 			own[t] = m
 	out["ok"] = true
+	out["built"] = _built_tiles(rgb_tiles, mat)
 	out["palette"] = full_palette(pal)
 	# resource 53: the planet's 16 shade rows (256 palette indices each; file row 0 ~ as they are, row 15 the darkest),
 	# the game's light table at 0x41C228 in reverse (its row k = file row 15 - k, from row 15 on file row 0)
@@ -959,7 +960,7 @@ static func _plain_tiles(r) -> PackedByteArray:
 		if 4 * t + 3 < t52.size():
 			var m := t52[4 * t]
 			if t52[4 * t + 1] == m and t52[4 * t + 2] == m and t52[4 * t + 3] == m and ((mask >> (m & 31)) & 1) != 0:
-				out[t] = 1
+				out[t] = 255
 	return out
 
 
@@ -1017,6 +1018,47 @@ static func _one_sided(rgb: PackedByteArray) -> bool:
 			if (bands[i] - bands[j]).length() / 256.0 > 30.0:
 				return true
 	return false
+
+
+# The built ground's tiles (concrete pads, base floors, their hazard stripes), 255 per tile (else 0): every tile of a material
+# that has at least one tile with a drawn frame. A frame: the mean colour of a whole row (or column) parallel to an
+# edge jumps from one row to the next within 14 texels of that edge (0.2 to 1.4 on the framed tiles; 0.13 at most on
+# natural ground, roads included, whose rows average out). Measured on the planets of missions 8, 20, 30, 36, 47.
+# The modern look lays these as the game does: each on its own square, no uneven edge, no rock grain (terrain.gdshader).
+static func _built_tiles(rgb_tiles: Array, mat: PackedByteArray) -> PackedByteArray:
+	var framed_mat := {}
+	for t in rgb_tiles.size():
+		if t < mat.size() and _frame_score(rgb_tiles[t]) >= 0.18:
+			framed_mat[mat[t]] = true
+	var out := PackedByteArray()
+	out.resize(64)
+	for t in rgb_tiles.size():
+		if t < mat.size() and framed_mat.has(mat[t]):
+			out[t] = 255
+	return out
+
+
+# the largest jump between the mean colours (0..1, RGB distance) of two neighbouring rows or columns near an edge
+static func _frame_score(rgb: PackedByteArray) -> float:
+	var rows: Array[Vector3] = []
+	var cols: Array[Vector3] = []
+	rows.resize(64)
+	cols.resize(64)
+	for i in 64:
+		rows[i] = Vector3.ZERO
+		cols[i] = Vector3.ZERO
+	for y in 64:
+		for x in 64:
+			var p := (y * 64 + x) * 3
+			var c := Vector3(rgb[p], rgb[p + 1], rgb[p + 2])
+			rows[y] += c
+			cols[x] += c
+	var best := 0.0
+	for prof in [rows, cols]:
+		for k in range(0, 63):
+			if k < 14 or k >= 49:
+				best = maxf(best, ((prof[k] - prof[k + 1]) as Vector3).length() / (64.0 * 255.0))
+	return best
 
 
 # Mean color of the 30 % of pixels (16x16 subsample) least like the given color.

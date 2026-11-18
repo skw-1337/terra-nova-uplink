@@ -5996,7 +5996,7 @@ static partial class Uplink
     static string UpdCoopText(string t)
     {
         Match f = Regex.Match(t, @"friend is on (Uplink [^:;,()]+)");
-        if (f.Success) return "Your friend is on " + f.Groups[1].Value.Trim() + ": both need the same version (Settings > Updates).";
+        if (f.Success) return "Your friend is on " + f.Groups[1].Value.Trim() + ": both need the same version (Beta updates, in Settings).";
         string theirs = coopTheirs, ours = coopOurs;          // (one line may say the friend's, another ours)
         Match h = Regex.Match(t, @"host (\S+), you (\d+)");
         if (h.Success) { theirs = h.Groups[1].Value; ours = h.Groups[2].Value; }
@@ -6011,12 +6011,12 @@ static partial class Uplink
         if (theirs != null && ours != null && int.TryParse(theirs, out a) && int.TryParse(ours, out b) && a != b)
         {
             if (a > b) return "Your friend is on a newer Uplink (" + (name ?? "protocol " + theirs) + "): both need the same version. Switch on Beta updates " +
-                "(Settings > Updates) if it is a beta, or your friend goes back to stable.";
+                "(in Settings) if it is a beta, or your friend goes back to stable.";
             return "Your friend is on an older Uplink (" + (name ?? "protocol " + theirs) + "): both need the same version. Your friend updates (PLAY " +
-                "updates it), or you go back to stable (Settings > Updates).";
+                "updates it), or you go back to stable (Beta updates, in Settings).";
         }
         if (theirs == "older") return "Your friend is on an older Uplink: both need the same version (your friend updates with PLAY).";
-        return "Different versions: both of you need the same Uplink (Settings > Updates).";
+        return "Different versions: both of you need the same Uplink (Beta updates, in Settings).";
     }
 
     // ---- the invitation and the final question: dark, orange, Bahnschrift, drawn at the window's scale

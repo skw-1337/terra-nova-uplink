@@ -7,6 +7,11 @@
 # E0xx for Uplink's), after SHIFT+, CTRL+ or ALT+; - : none; MID, M4, M5: a mouse button (Uplink's order wheel).
 # "fixed": the game's own, which cannot be changed. (mapout / mapin: TN+'s names for the game's 33 and 34, which zoom
 # the map in and out: the names shown are what the keys do in the game.) Centre view comes without a key (F is the freelook's).
+# A sixth column: the co-op guest's gamepad (scripts/pad_map.gd; his window only: the host's and a solo game's
+# pad is the game's own DOS joystick through DOSBox): B<n> a button, A<n>+ / A<n>- an axis past its threshold
+# (Godot's numbers: B0 A, B1 B, B2 X, B3 Y, B4 Back, B6 Start, B7 / B8 the sticks pressed, B9 LB, B10 RB, B11-B14 the
+# D-pad up, down, left, right; A0 / A1 left stick, A2 / A3 right stick, A4 LT, A5 RT). Kind "pad": a gamepad's
+# own command, no key (the sticks move and look; see the Sticks settings).
 Move|fwd|Forward|11|game
 Move|back|Back|2D|game
 Move|turnl|Turn left|1E|game
@@ -14,15 +19,15 @@ Move|turnr|Turn right|20|game
 Move|stop|Stop|1F|game
 Move|sidel|Sidestep left|2C|game
 Move|sider|Sidestep right|2E|game
-Move|jump|Jump jets|39|game
-Move|crouch|Crouch|29|game
+Move|jump|Jump jets|39|game|A4+
+Move|crouch|Crouch|29|game|B1
 Move|bound|Bound (hold)|2A|game
-Fight|w1|Weapon 1|02|game
-Fight|w2|Weapon 2|03|game
-Fight|w3|Weapon 3|04|game
-Fight|w4|Weapon 4|05|game
+Fight|w1|Weapon 1|02|game|B11
+Fight|w2|Weapon 2|03|game|B14
+Fight|w3|Weapon 3|04|game|B12
+Fight|w4|Weapon 4|05|game|B13
 Fight|asf|Use ASF|06|game
-Fight|tnext|Next target|14|game
+Fight|tnext|Next target|14|game|B3
 Fight|tprev|Previous target|15|game
 View|lookup|Look up|13|game
 View|lookdn|Look down|2F|game
@@ -52,7 +57,7 @@ Squad|o_retreat|Retreat|ALT+13|game
 Squad|o_status|Status check|ALT+1F|game
 Squad|o_target|Attack my target|ALT+14|game
 Map|recentre|Recentre map|31|game
-Map|maphud|Map to HUD|32|game
+Map|maphud|Map to HUD|32|game|B4
 Map|mapout|Map zoom in|33|game
 Map|mapin|Map zoom out|34|game
 Map|squadinfo|Squad info|43|game
@@ -68,11 +73,14 @@ System|help|Help|35|game
 System|exit|Exit game|ALT+2D|game
 System|options|Options|18|fixed
 System|abort|Abort mission|CTRL+01|fixed
-Tools|freelook|Free look / game cursor|21|tnplus
+Tools|freelook|Free look / game cursor|21|tnplus|B8
 Tools|noclip|Noclip (TN+)|16|tnplus
 Tools|distance|View distance (TN+)|24|tnplus
 Tools|stereo|Stereo swap (TN+)|41|tnplus
-Uplink|menu|Uplink menu (host; Esc for a guest)|3F|uplink
+Gamepad|p_fire|Fire|-|pad|A5+
+Gamepad|p_lock|Lock target|-|pad|B10
+Gamepad|p_jumpto|Jump towards the left stick|-|pad|B0
+Uplink|menu|Uplink menu (host; Esc for a guest)|3F|uplink|B6
 Uplink|order|Order wheel (hold)|MID|uplink
 Uplink|photo|Photo mode|18|uplink
 Uplink|oldschool|Old school look|58|uplink

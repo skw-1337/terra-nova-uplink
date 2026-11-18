@@ -12,12 +12,18 @@
 #               HUD packets ('GHD') from the host go as they are to 127.0.0.1:47832 (coop_hud.gd). F8: next teammate.
 # Both sides must run the same coop files: the lobby carries "coop_version" and the guest says "HELLO" + COOP_VERSION;
 # a guest with another version leaves, the host ignores the input of one that stays (an older guest).
+# Both must also run the same Uplink release (2.7 / 2.8: major and minor): the lobby carries "uplink_version" and the
+# HELLO adds it ("HELLO4 2.8.0-beta.1"); each side then says who runs what ("Your friend is on Uplink 2.8 beta"), the
+# launcher shows that line. An Uplink from before (no "uplink_version") is told by its coop protocol: COOP_RELEASES.
 # GodotSteam (addons/godotsteam) is loaded at run time and reached through Engine.get_singleton("Steam").
 # --fake-steam: scripts/fake_steam.gd instead (one process only: nobody else to meet). live/test_coop_net.gd runs a
 # host and a guest side by side over one fake Steam (fake_steam, role and the ports set before _ready).
 extends CanvasLayer
 
 const COOP_VERSION := "4"           # bump when the host / guest packets change
+const COOP_RELEASES := {"3": "2.7", "4": "2.8"}   # the Uplink release that spoke each coop protocol (before uplink_version)
+var uplink_version: String = str(ProjectSettings.get_setting("application/config/version", ""))   # as the launcher's VERSION
+var peer_release := ""               # host: the guest's Uplink as its HELLO says it ("2.8 beta"), "" when not said
 const APP_ID := 480
 const LOBBY_FRIENDS_ONLY := 1        # ELobbyType
 const RESULT_OK := 1                 # EResult
@@ -312,8 +318,13 @@ func _read(ch: int) -> void:
 					pong.append_array(data.slice(3, 11))
 					steam.sendP2PPacket(peer, pong, SEND_UNRELIABLE_NO_DELAY, CH_VIEW)
 				elif data.size() >= 5 and data.slice(0, 5).get_string_from_ascii() == "HELLO":
-					var ok := data.get_string_from_ascii() == "HELLO" + COOP_VERSION
-					if ok != peer_ok or not peer_hello:
+					var said := data.get_string_from_ascii().substr(5).split(" ", false)    # HELLO<coop> [<uplink version>]
+					var gc: String = said[0] if said.size() > 0 else ""
+					var gu: String = said[1] if said.size() > 1 else ""
+					var ok := gc == COOP_VERSION and same_release(gu, uplink_version)
+					var was := peer_release
+					peer_release = release_name(gu, gc)
+					if ok != peer_ok or not peer_hello or peer_release != was:
 						_log("guest %s said HELLO: %s" % [steam.getFriendPersonaName(peer), "same version" if ok else "ANOTHER VERSION: " + data.get_string_from_ascii()])
 						peer_hello = true
 						peer_ok = ok
@@ -662,6 +673,7 @@ func _on_lobby_created(result: int, id: int) -> void:
 	steam.setLobbyJoinable(id, true)
 	steam.setLobbyData(id, "game", "terra-nova-coop")
 	steam.setLobbyData(id, "coop_version", COOP_VERSION)
+	steam.setLobbyData(id, "uplink_version", uplink_version)
 	steam.setRichPresence("connect", "+connect_lobby %d" % id)
 	steam.setRichPresence("status", "Terra Nova coop: room for a second player")
 	_refresh()
@@ -687,13 +699,16 @@ func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -
 		_show("ONLINE", "could not join the lobby (%d)" % response, bad_col)
 		return
 	var hv := str(steam.getLobbyData(id, "coop_version"))
-	if hv != COOP_VERSION:
+	var hu := str(steam.getLobbyData(id, "uplink_version"))
+	if hv != COOP_VERSION or not same_release(hu, uplink_version):
 		steam.leaveLobby(id)
 		peer = 0
 		lobby_id = 0
 		var hs := hv if hv != "" else "older"
-		version_msg = "The host has another coop version (host %s, you %s): both need the same Uplink coop files." % [hs, COOP_VERSION]
-		_show("ONLINE · ANOTHER COOP VERSION", "host %s, you %s" % [hs, COOP_VERSION], bad_col)
+		var theirs := release_name(hu, hv)
+		version_msg = "Your friend is on %s, you on %s: both need the same version (the launcher's Settings > Updates). (host %s, you %s)" % [
+			theirs, release_name(uplink_version, COOP_VERSION), hs, COOP_VERSION]
+		_show("ONLINE · ANOTHER COOP VERSION", "friend is on %s (host %s, you %s)" % [theirs, hs, COOP_VERSION], bad_col)
 		return
 	version_msg = ""
 	lobby_id = id
@@ -711,7 +726,7 @@ func _on_lobby_joined(id: int, _permissions: int, _locked: int, response: int) -
 
 func _hello() -> void:
 	hello_t = clock
-	steam.sendP2PPacket(peer, ("HELLO" + COOP_VERSION).to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
+	steam.sendP2PPacket(peer, ("HELLO" + COOP_VERSION + (" " + uplink_version if uplink_version != "" else "")).to_ascii_buffer(), SEND_RELIABLE, CH_INPUT)
 
 
 # guest: gamepad 0 through Godot, XInput signs (stick up = positive), at most 60 packets a second while it is used:
@@ -886,8 +901,8 @@ func _refresh() -> void:
 		if peer and peer_ok:
 			_show("ONLINE · GUEST CONNECTED", "%s   %s%s" % [steam.getFriendPersonaName(peer), rate, _ping_text()], ok_col)
 		elif peer and peer_hello:
-			_show("ONLINE · GUEST HAS ANOTHER VERSION", "%s: both need the same Uplink coop files (yours: %s)" % [
-				steam.getFriendPersonaName(peer), COOP_VERSION], warn_col)
+			_show("ONLINE · GUEST HAS ANOTHER VERSION", "Your friend is on %s, you on %s: both need the same version (%s, yours: %s)" % [
+				peer_release, release_name(uplink_version, COOP_VERSION), steam.getFriendPersonaName(peer), COOP_VERSION], warn_col)
 		elif peer:
 			_show("ONLINE · GUEST JOINING", steam.getFriendPersonaName(peer), warn_col)
 		else:
@@ -956,6 +971,31 @@ func _log(msg: String) -> void:
 	if log_f:
 		log_f.store_line(line)
 		log_f.flush()
+
+
+# "2.8.0-beta.1" -> "Uplink 2.8 beta"; no version said: the release of that coop protocol ("Uplink 2.7"), or "another Uplink"
+static func release_name(v: String, coop: String) -> String:
+	var m := RegEx.create_from_string("^(\\d+)\\.(\\d+)(?:\\.(\\d+))?(?:-([0-9A-Za-z]+))?").search(v)
+	if m:
+		var patch := m.get_string(3)
+		return "Uplink %s.%s%s%s" % [m.get_string(1), m.get_string(2), ("." + patch) if patch != "" and patch != "0" else "",
+			(" " + m.get_string(4)) if m.get_string(4) != "" else ""]
+	if COOP_RELEASES.has(coop):
+		return "Uplink " + COOP_RELEASES[coop]
+	return "another Uplink (coop %s)" % coop if coop != "" else "an older Uplink"
+
+
+# the same release: same major and minor (2.8.0-beta.1 and 2.8.0 play together, 2.7 and 2.8 do not); a side that does
+# not say its version is judged by the coop protocol alone
+static func same_release(a: String, b: String) -> bool:
+	if a == "" or b == "":
+		return true
+	var ra := RegEx.create_from_string("^(\\d+)\\.(\\d+)")
+	var ma := ra.search(a)
+	var mb := ra.search(b)
+	if not ma or not mb:
+		return a == b
+	return ma.get_string(1) == mb.get_string(1) and ma.get_string(2) == mb.get_string(2)
 
 
 func _show(t: String, d: String, c: Color) -> void:

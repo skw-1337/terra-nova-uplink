@@ -1,5 +1,14 @@
 TERRA NOVA UPLINK - WHAT'S NEW
 
+2.8 beta 1
+- Beta updates: Settings > Updates (off unless you switch it on). Switch it
+  off to go back to stable, with your settings as you left them.
+- Updates are checked before they replace anything, the version before is
+  kept (Tools > Roll back to previous version), and nothing is replaced
+  while the game runs.
+- Co-op: two players on different versions are told who runs what ("Your
+  friend is on Uplink 2.8 beta") instead of a session that breaks.
+
 2.7
 - New launcher: Play, Co-op, Maps, In game and Settings each have their page.
 - In game: the frame counter is now off unless you switch it on, and you can

@@ -26,10 +26,10 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-static class Uplink
+static partial class Uplink
 {
     const string TITLE = "Terra Nova Uplink";
-    const string VERSION = "2.7";
+    const string VERSION = "2.8.0-beta.1";
     const string UPLINK_REPO = "skw-1337/terra-nova-uplink", TNPLUS_REPO = "skw-1337/terra-nova-plus";
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
@@ -89,6 +89,8 @@ static class Uplink
     [STAThread]
     static void Main()
     {
+        if (Environment.GetCommandLineArgs().Length > 1 && Environment.GetCommandLineArgs()[1] == "--selftest")
+        { Console.WriteLine(TITLE + " " + VERSION); return; }   // (a launcher just built by an update: it starts, says its version)
         Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         Comp = Path.Combine(Root, "components");
         Ini = Path.Combine(Root, "TerraNovaUplink.ini");
@@ -98,6 +100,7 @@ static class Uplink
         Migrate();
         bool had = File.Exists(Ini);
         LoadCfg();
+        UpdStartup();                                          // (release channels: the launcher this one replaced; --rollback)
         AdoptGameSettings();                                   // (what Uplink's own menu changed since: its viewer.cfg)
         // The keys a new installation comes with (2: freelook on F), as against one that was already there (1: on
         // Y): said once, when the settings do not say yet, so that nobody's key changes with an update
@@ -383,6 +386,7 @@ static class Uplink
         Link help = new Link { Text = "Help", Ink = CDim, Location = new Point(20, 461), Size = new Size(60, 18) };
         help.Click += delegate { HelpMenu().Show(help, new Point(0, 0), ToolStripDropDownDirection.AboveRight); };
         side.Controls.Add(help);
+        UpdBadgeAt(side, 18, 404);                           // the beta's badge (RELEASE CHANNELS)
 
         BuildPlay(pages[0]);
         BuildCoop(pages[1]);
@@ -860,9 +864,9 @@ static class Uplink
         c = Card(pg, "UPDATES", COrange, null, 18, ay, CW, 124);
         verLabel = new LedLine { Text = "Uplink " + VERSION, Location = new Point(X, 30), Size = new Size(IW, 27) };
         c.Controls.Add(verLabel);
-        c.Controls.Add(new Txt { Text = "Looked for at each start and each game.", F = F115, Ink = CDim, Location = new Point(X, 54), Size = new Size(IW, 24) });
+        UpdSettingsRow(c, X, 54, IW);                         // Beta updates (RELEASE CHANNELS)
         checkBtn = Key(c, X, 84, 123, 28, "Check now");
-        checkBtn.Click += delegate { Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); };
+        checkBtn.Click += delegate { UpdCheckNow(); };
         Key(c, X + 123 + 9, 84, 123, 28, "What's new").Click += delegate { WhatsNew(); };
 
         c = Card(pg, "COMMUNITY", CBlue, null, 18 + CW + 12, ay, CW, 124);
@@ -2448,11 +2452,10 @@ static class Uplink
     {
         ContextMenuStrip m = Menu();
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
-        m.Items.Add("Check for updates now", null, delegate {
-            if (NoUpdate) { Status("Updates are off in this folder (no_update.txt): nothing was checked.", CText); return; }
-            Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); });
+        m.Items.Add("Check for updates now", null, delegate { UpdCheckNow(); });
         m.Items.Add("Import keys from my Terra Nova Plus...", null, delegate { ImportKeys(); });
         m.Items.Add("Repair (download everything again)", null, delegate { Repair(); });
+        UpdToolsItems(m);
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Uninstall...", null, delegate { Uninstall(); });
         return m;
@@ -3353,7 +3356,7 @@ static class Uplink
         if (t.Contains("OFFLINE"))
             Session("Steam not available: " + t.Substring(t.IndexOf("OFFLINE") + 7).Trim(), CRed);
         else if (t.Contains("ANOTHER COOP VERSION") || t.Contains("ANOTHER VERSION") || t.Contains("another coop version"))
-            Session("Different versions: both of you click HOST / JOIN again (it updates).", CRed);
+            Session(UpdCoopText(t), CRed);
         else if (t.Contains("GUEST CONNECTED") || t.Contains("CONNECTED TO HOST"))
         {
             string rest = t.Substring(t.IndexOf("CONNECTED") + 9).Replace("TO HOST", "").Trim();
@@ -4872,9 +4875,10 @@ static class Uplink
     // PLAY: Uplink, Godot, TN+, Python. HOST: the same with TN+'s co-op build. JOIN and MAP VIEWER: Uplink and Godot
     static void Install(Mode mode)
     {
-        Dictionary<string, string> heads = Heads();
+        int upd = UpdInstall(mode);                        // release.json (RELEASE CHANNELS, at the end): 1 = Uplink, TN+, the launcher done there
+        Dictionary<string, string> heads = upd == 0 ? Heads() : new Dictionary<string, string>();
         string up = Get(heads, Head(UPLINK_REPO, UPLINK_BRANCH));
-        if (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha")))
+        if (upd == 0 && (!File.Exists(Path.Combine(UplinkDir, "project.godot")) || (up != null && up != Cfg("uplink_sha"))))
         {
             Missing("Uplink");
             Status("Downloading Uplink...", CAmber);
@@ -4882,12 +4886,13 @@ static class Uplink
             if (up != null) Set("uplink_sha", up);
             SaveCfg();
         }
-        SelfUpdate();
+        if (upd == 0) SelfUpdate();
         if (!File.Exists(GodotExe))
         {
             Missing("Godot " + GODOT_VER);
             Status("Downloading Godot " + GODOT_VER + " (about 90 MB, once)...", CAmber);
             string z = Download(GODOT_URL, "godot.zip");
+            UpdVerifyDep("godot", z);
             Unzip(z, Path.GetDirectoryName(GodotExe));
             File.Delete(z);
         }
@@ -4895,7 +4900,7 @@ static class Uplink
         {
             bool coop = mode == Mode.Host;
             string tp = Get(heads, Head(TNPLUS_REPO, coop ? TNPLUS_COOP_BRANCH : TNPLUS_BRANCH)), key = coop ? "tnplus_coop_sha" : "tnplus_sha";
-            if (!File.Exists(coop ? TnpCoopExe : TnpExe) || (tp != null && tp != Cfg(key)))
+            if (upd == 0 && (!File.Exists(coop ? TnpCoopExe : TnpExe) || (tp != null && tp != Cfg(key))))
             {
                 Missing(coop ? "Terra Nova Plus's co-op build (components\\tnplus_coop)" : "Terra Nova Plus");
                 Status("Downloading and building Terra Nova Plus" + (coop ? " (co-op build)" : "") + "...", CAmber);
@@ -4936,6 +4941,7 @@ static class Uplink
 
     static void CheckUpdates()
     {
+        if (UpdCheck()) return;                            // (release.json: RELEASE CHANNELS)
         Dictionary<string, string> h = Heads();
         string up = Get(h, Head(UPLINK_REPO, UPLINK_BRANCH));
         Ui(delegate {
@@ -5045,6 +5051,7 @@ static class Uplink
         string dir = Path.Combine(Comp, "python");
         if (Directory.Exists(dir)) Directory.Delete(dir, true);
         string z = Download(PY_URL, "python.zip");
+        UpdVerifyDep("python", z);
         Unzip(z, dir);
         File.Delete(z);
         string site = Path.Combine(dir, "Lib", "site-packages");
@@ -5056,6 +5063,7 @@ static class Uplink
             Match m = Regex.Match(j, "\"url\"\\s*:\\s*\"(https://[^\"]+" + Regex.Escape(w[2]) + ")\"");
             if (!m.Success) throw new Exception(w[0] + " " + w[1] + ": no wheel for this Python");
             string wf = Download(m.Groups[1].Value, w[0] + ".whl");
+            UpdVerifyDep(w[0], wf);
             Unzip(wf, site);                   // a wheel is a zip of the package
             File.Delete(wf);
         }
@@ -5085,7 +5093,7 @@ static class Uplink
         {
             c.Headers[HttpRequestHeader.UserAgent] = TITLE + "/" + VERSION;
             c.Encoding = Encoding.UTF8;
-            return c.DownloadString(url);
+            return c.DownloadString(Net(url));
         }
     }
 
@@ -5093,8 +5101,9 @@ static class Uplink
     {
         string dest = Path.Combine(Comp, name);
         Log("download " + url);
-        HttpWebRequest rq = (HttpWebRequest)WebRequest.Create(url);
+        HttpWebRequest rq = (HttpWebRequest)WebRequest.Create(Net(url));
         rq.UserAgent = TITLE + "/" + VERSION;
+        rq.Timeout = 30000; rq.ReadWriteTimeout = 60000;
         using (WebResponse rs = rq.GetResponse())
         using (Stream s = rs.GetResponseStream())
         using (FileStream f = File.Create(dest))
@@ -5126,5 +5135,1577 @@ static class Uplink
                 Directory.CreateDirectory(Path.GetDirectoryName(to));
                 e.ExtractToFile(to, true);
             }
+    }
+}
+
+// ====================================================================================================================
+// RELEASE CHANNELS (since 2.7.1). This region is the same text in every launcher from 2.7.1 on; only the "host glue"
+// region after it differs (where the window puts the switch, the badge, the label). The manifest and how to publish:
+// docs/release-manifest.md.
+//  - release.json (branch "release" of this repo) names, for each channel (stable, beta), the version, the exact
+//    commits of Uplink and of Terra Nova Plus (solo and co-op builds) with the SHA-256 of their files, the launcher's
+//    version and the oldest launcher that may install it, the changelog, the beta's invitation.
+//  - Beta updates (Settings > Updates, off unless switched on): the newer of beta and stable; no beta: stable.
+//  - Everything is downloaded into components\updates and checked against those hashes, and only then swapped in;
+//    what it replaced is kept in components\previous (Tools > Roll back), the settings of each version in
+//    components\settings. Nothing is replaced while anything runs from components\, nothing at all with
+//    no_update.txt beside the exe, and two launchers never update the same folder at once (components\updates\
+//    update.lock).
+//  - Offline, GitHub down or rate-limited, a bad download, a failed build: the installed version stays and plays.
+//  - Checks only: TN_UPLINK_TEST_SERVER=http://127.0.0.1:PORT sends every GitHub request to a local fake GitHub
+//    (tools/release/fake_github.py); any other value, or one that is not a loopback address, is ignored.
+// ====================================================================================================================
+static partial class Uplink
+{
+    const string REL_URL = "https://raw.githubusercontent.com/" + UPLINK_REPO + "/release/release.json";
+    const string REL_HOSTS = "https://codeload.github.com/skw-1337/ https://github.com/skw-1337/ https://raw.githubusercontent.com/skw-1337/";
+    static readonly Color UOrange = Color.FromArgb(232, 134, 42), UInk = Color.FromArgb(21, 20, 15), UEdge = Color.FromArgb(42, 74, 68);
+    static string UpdDir { get { return Path.Combine(Comp, "updates"); } }
+    static string PrevDir { get { return Path.Combine(Comp, "previous"); } }
+    static string SetDir { get { return Path.Combine(Comp, "settings"); } }
+    static Dictionary<string, object> rel;                    // this pass's release.json (null: not read)
+    static int relCode;                                       // 0: read, 404: not published yet, -1: not reachable / not valid
+    static string relError = "";
+    static RelChan relStable, relBeta, relTarget;
+    static volatile bool updAuto;                             // the player has just asked for it: no question
+    static bool updNoticed;
+
+    // ---- versions: 2.7.1, 2.8.0-beta.1 (semver: a pre-release comes before its release, beta.2 after beta.1)
+    class SemVer : IComparable<SemVer>
+    {
+        public int Major, Minor, Patch;
+        public string[] Pre;
+        public static SemVer Parse(string v)
+        {
+            if (v == null) return null;
+            Match m = Regex.Match(v.Trim(), @"^v?(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6}))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$");
+            if (!m.Success) return null;
+            return new SemVer { Major = int.Parse(m.Groups[1].Value), Minor = int.Parse(m.Groups[2].Value),
+                Patch = m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : 0, Pre = m.Groups[4].Success ? m.Groups[4].Value.Split('.') : new string[0] };
+        }
+        public bool IsPre { get { return Pre.Length > 0; } }
+        public string Line { get { return Major + "." + Minor; } }                                        // "2.8"
+        public string Short { get { return (Patch == 0 ? Line : Line + "." + Patch) + (IsPre ? " " + Pre[0] : ""); } }    // "2.8 beta", "2.7.1"
+        public string Full { get { return (Patch == 0 ? Line : Line + "." + Patch) + (IsPre ? " " + string.Join(" ", Pre) : ""); } }   // "2.8 beta 1"
+        public int CompareTo(SemVer o)
+        {
+            int c = Major.CompareTo(o.Major);
+            if (c == 0) c = Minor.CompareTo(o.Minor);
+            if (c == 0) c = Patch.CompareTo(o.Patch);
+            if (c != 0) return Math.Sign(c);
+            if (Pre.Length == 0 || o.Pre.Length == 0) return o.Pre.Length.CompareTo(Pre.Length) > 0 ? 1 : o.Pre.Length == Pre.Length ? 0 : -1;
+            for (int i = 0; i < Math.Min(Pre.Length, o.Pre.Length); i++)
+            {
+                long a, b;
+                bool na = Regex.IsMatch(Pre[i], "^[0-9]{1,15}$") && long.TryParse(Pre[i], out a), nb = Regex.IsMatch(o.Pre[i], "^[0-9]{1,15}$") && long.TryParse(o.Pre[i], out b);
+                if (na && nb) c = long.Parse(Pre[i]).CompareTo(long.Parse(o.Pre[i]));
+                else c = na ? -1 : nb ? 1 : string.CompareOrdinal(Pre[i], o.Pre[i]);
+                if (c != 0) return Math.Sign(c);
+            }
+            return Math.Sign(Pre.Length.CompareTo(o.Pre.Length));
+        }
+    }
+    static int VerCmp(string a, string b)
+    {
+        SemVer x = SemVer.Parse(a), y = SemVer.Parse(b);
+        if (x == null || y == null) return x == null ? (y == null ? 0 : -1) : 1;
+        return x.CompareTo(y);
+    }
+    static string VerShort(string v) { SemVer s = SemVer.Parse(v); return s == null ? v : s.Short; }
+    static string VerFull(string v) { SemVer s = SemVer.Parse(v); return s == null ? v : s.Full; }
+    // the version of Uplink's files here (what the last install from a release said; before any: this launcher's)
+    static string Installed { get { string v = Cfg("upd_version"); return SemVer.Parse(v) != null ? v : VERSION; } }
+
+    // ---- a small JSON reader (the launcher is built by Windows' own C# compiler with a fixed list of references, no
+    // JSON library): objects -> Dictionary, arrays -> List, strings, numbers (double), true / false, null
+    class UJson
+    {
+        string s; int i;
+        public static object Parse(string text)
+        {
+            UJson j = new UJson { s = text, i = 0 };
+            object v = j.Value();
+            j.Ws();
+            if (j.i != j.s.Length) throw new FormatException("JSON: text after the end, at " + j.i);
+            return v;
+        }
+        void Ws() { while (i < s.Length && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' || s[i] == '\uFEFF')) i++; }
+        char Peek() { Ws(); if (i >= s.Length) throw new FormatException("JSON: unexpected end"); return s[i]; }
+        void Expect(char c) { if (Peek() != c) throw new FormatException("JSON: '" + c + "' expected at " + i); i++; }
+        object Value()
+        {
+            char c = Peek();
+            if (c == '{')
+            {
+                i++;
+                Dictionary<string, object> d = new Dictionary<string, object>();
+                if (Peek() == '}') { i++; return d; }
+                while (true)
+                {
+                    string k = Str(); Expect(':'); d[k] = Value();
+                    if (Peek() == ',') { i++; continue; }
+                    Expect('}'); return d;
+                }
+            }
+            if (c == '[')
+            {
+                i++;
+                List<object> l = new List<object>();
+                if (Peek() == ']') { i++; return l; }
+                while (true)
+                {
+                    l.Add(Value());
+                    if (Peek() == ',') { i++; continue; }
+                    Expect(']'); return l;
+                }
+            }
+            if (c == '"') return Str();
+            foreach (string w in new[] { "true", "false", "null" })
+                if (string.CompareOrdinal(s, i, w, 0, w.Length) == 0) { i += w.Length; return w == "null" ? null : (object)(w == "true"); }
+            int st = i;
+            while (i < s.Length && "+-0123456789.eE".IndexOf(s[i]) >= 0) i++;
+            if (st == i) throw new FormatException("JSON: unexpected '" + c + "' at " + i);
+            return double.Parse(s.Substring(st, i - st), NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
+        string Str()
+        {
+            Expect('"');
+            StringBuilder b = new StringBuilder();
+            while (true)
+            {
+                if (i >= s.Length) throw new FormatException("JSON: unfinished string");
+                char c = s[i++];
+                if (c == '"') return b.ToString();
+                if (c != '\\') { b.Append(c); continue; }
+                char e = s[i++];
+                switch (e)
+                {
+                    case 'n': b.Append('\n'); break;
+                    case 't': b.Append('\t'); break;
+                    case 'r': b.Append('\r'); break;
+                    case 'b': b.Append('\b'); break;
+                    case 'f': b.Append('\f'); break;
+                    case 'u': b.Append((char)Convert.ToInt32(s.Substring(i, 4), 16)); i += 4; break;
+                    default: b.Append(e); break;
+                }
+            }
+        }
+    }
+    static object JGet(object o, string k) { Dictionary<string, object> d = o as Dictionary<string, object>; object v; return d != null && d.TryGetValue(k, out v) ? v : null; }
+    static string JStr(object o, string k) { return JGet(o, k) as string; }
+
+    // ---- what a channel of release.json says
+    class RelPart { public string Ref, Url, Tree, Version; public Dictionary<string, string> Files; }
+    class RelChan
+    {
+        public string Name, Version, Launcher, MinLauncher, Title, Subtitle;
+        public SemVer V;
+        public RelPart Uplink, Tnp, TnpCoop;
+        public List<KeyValuePair<string, List<string>>> Changes = new List<KeyValuePair<string, List<string>>>();
+        public List<string[]> Pictures = new List<string[]>();      // url, sha256, caption
+    }
+    static bool OurUrl(string u)
+    {
+        if (u == null) return false;
+        foreach (string h in REL_HOSTS.Split(' ')) if (u.StartsWith(h, StringComparison.Ordinal)) return true;
+        return false;
+    }
+    static RelPart RelPartOf(object o, string repo)
+    {
+        if (o == null) return null;
+        RelPart p = new RelPart { Ref = JStr(o, "ref"), Tree = JStr(o, "tree_sha256"), Version = JStr(o, "version"), Url = JStr(o, "url") };
+        if (p.Ref == null || !Regex.IsMatch(p.Ref, "^[0-9a-f]{40}$") || p.Tree == null || !Regex.IsMatch(p.Tree, "^[0-9a-f]{64}$")) return null;
+        if (p.Url == null) p.Url = "https://codeload.github.com/" + repo + "/zip/" + p.Ref;
+        if (!OurUrl(p.Url)) return null;                       // (only this project's GitHub, only https)
+        Dictionary<string, object> f = JGet(o, "files") as Dictionary<string, object>;
+        if (f != null)
+        {
+            p.Files = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, object> kv in f) { string h = kv.Value as string; if (h != null && Regex.IsMatch(h, "^[0-9a-f]{64}$")) p.Files[kv.Key] = h; }
+        }
+        return p;
+    }
+    static RelChan RelChannel(string name)
+    {
+        object c = JGet(JGet(rel, "channels"), name);
+        if (c == null) return null;
+        RelChan r = new RelChan { Name = name, Version = JStr(c, "version"), Launcher = JStr(c, "launcher"), MinLauncher = JStr(c, "min_launcher") };
+        r.V = SemVer.Parse(r.Version);
+        r.Uplink = RelPartOf(JGet(c, "uplink"), UPLINK_REPO);
+        r.Tnp = RelPartOf(JGet(c, "tnplus"), TNPLUS_REPO);
+        r.TnpCoop = RelPartOf(JGet(c, "tnplus_coop"), TNPLUS_REPO);
+        if (r.V == null || r.Uplink == null || r.Tnp == null || r.TnpCoop == null || SemVer.Parse(r.Launcher) == null || (r.MinLauncher != null && SemVer.Parse(r.MinLauncher) == null))
+        { Log("release.json: channel " + name + " left out (incomplete or not valid)"); return null; }
+        List<object> cl = JGet(c, "changelog") as List<object>;
+        if (cl != null)
+            foreach (object sec in cl)
+            {
+                List<string> items = new List<string>();
+                List<object> il = JGet(sec, "items") as List<object>;
+                if (il != null) foreach (object it in il) if (it is string) items.Add((string)it);
+                if (JStr(sec, "section") != null && items.Count > 0) r.Changes.Add(new KeyValuePair<string, List<string>>(JStr(sec, "section"), items));
+            }
+        object inv = JGet(c, "invitation");
+        r.Title = JStr(inv, "title");
+        r.Subtitle = JStr(inv, "subtitle");
+        List<object> pics = JGet(inv, "images") as List<object>;
+        if (pics != null)
+            foreach (object p in pics)
+            {
+                string u = JStr(p, "url"), h = JStr(p, "sha256");
+                if (OurUrl(u) && h != null && Regex.IsMatch(h, "^[0-9a-f]{64}$")) r.Pictures.Add(new[] { u, h, JStr(p, "caption") ?? "" });
+            }
+        return r;
+    }
+
+    // release.json read now (each check, each install pass); then the channel this folder follows
+    static bool RelLoad()
+    {
+        rel = null; relStable = relBeta = relTarget = null;
+        if (NoUpdate) { relCode = -1; relError = "updates are off here (no_update.txt)"; return false; }
+        try
+        {
+            byte[] b = UFetch(REL_URL, null, 15000, false, 1 << 20);
+            rel = UJson.Parse(Encoding.UTF8.GetString(b)) as Dictionary<string, object>;
+            if (rel == null || !(JGet(rel, "schema") is double)) throw new FormatException("not a release manifest");
+            relCode = 0;
+        }
+        catch (UpdNetError e) { relCode = e.Code == 404 ? 404 : -1; relError = e.Message; rel = null; Log("release.json: " + e.Message); return false; }
+        catch (Exception e) { relCode = -1; relError = "release.json not valid"; rel = null; Log("release.json: " + e.Message); return false; }
+        relStable = RelChannel("stable");
+        relBeta = RelChannel("beta");
+        bool beta = Cfg("beta_updates") == "1";
+        relTarget = relStable;
+        if (beta && relBeta != null && (relStable == null || relBeta.V.CompareTo(relStable.V) > 0)) relTarget = relBeta;
+        Log("release.json: stable " + (relStable != null ? relStable.Version : "-") + ", beta " + (relBeta != null ? relBeta.Version : "-") +
+            ", followed: " + (relTarget != null ? relTarget.Name + " " + relTarget.Version : "none") + ", installed " + Installed);
+        return true;
+    }
+
+    // what is installed, as a channel (a version rolled back from is not put back by itself: this one is kept)
+    static RelChan RelInstalled()
+    {
+        RelChan r = new RelChan { Name = Cfg("upd_channel"), Version = Installed, Launcher = VERSION };
+        r.V = SemVer.Parse(r.Version);
+        r.Uplink = new RelPart { Ref = Cfg("uplink_sha") };
+        if (Cfg("upd_tnplus_ref") != "") r.Tnp = new RelPart { Ref = Cfg("upd_tnplus_ref"), Tree = Cfg("upd_tnplus_tree"), Url = "https://codeload.github.com/" + TNPLUS_REPO + "/zip/" + Cfg("upd_tnplus_ref") };
+        if (Cfg("upd_tnplus_coop_ref") != "") r.TnpCoop = new RelPart { Ref = Cfg("upd_tnplus_coop_ref"), Tree = Cfg("upd_tnplus_coop_tree"), Url = "https://codeload.github.com/" + TNPLUS_REPO + "/zip/" + Cfg("upd_tnplus_coop_ref") };
+        return r;
+    }
+
+    // ---- the network: every GitHub address through Net (the checks' fake GitHub), timeouts on the tick counter
+    static string TestServer
+    {
+        get
+        {
+            string t = Environment.GetEnvironmentVariable("TN_UPLINK_TEST_SERVER");
+            return t != null && Regex.IsMatch(t, @"^http://(127\.0\.0\.1|localhost):\d{2,5}/?$") ? t.TrimEnd('/') : null;
+        }
+    }
+    static string Net(string url)
+    {
+        string t = TestServer;
+        if (t == null || url == null) return url;
+        foreach (string[] p in new[] { new[] { "https://raw.githubusercontent.com/", "/raw/" }, new[] { "https://codeload.github.com/", "/codeload/" },
+            new[] { "https://api.github.com/", "/api/" }, new[] { "https://github.com/", "/gh/" }, new[] { "https://www.python.org/", "/py/" },
+            new[] { "https://pypi.org/", "/pypi/" }, new[] { "https://files.pythonhosted.org/", "/pyfiles/" } })
+            if (url.StartsWith(p[0], StringComparison.Ordinal)) return t + p[1] + url.Substring(p[0].Length);
+        return url;
+    }
+    class UpdNetError : Exception { public int Code; public UpdNetError(string m, int code) : base(m) { Code = code; } }
+    class UpdFail : Exception { public string Why; public UpdFail(string why, string m) : base(m) { Why = why; } }
+    static bool DiskFull(Exception e) { int h = e.HResult & 0xFFFF; return e is IOException && (h == 0x70 || h == 0x27); }
+    static string DiskText() { return "Not enough free disk space to update Uplink (" + Root + "). Nothing was changed: the installed version still plays."; }
+    static string ReadOnlyText()
+    {
+        return "Uplink can't update itself in this folder: it is read-only for you (" + Root + "). Nothing was changed and the installed " +
+            "version still plays. To get updates, move the Terra Nova Uplink folder to one of yours (Documents, for example).";
+    }
+
+    // one GET: the body, or (to != null) a file, written as .part and renamed once whole. 403 / 429: GitHub's limit
+    static byte[] UFetch(string url, string to, int ms, bool progress, long max)
+    {
+        string u = Net(url);
+        Log("get " + u);
+        string part = to != null ? to + ".part" : null;
+        try
+        {
+            HttpWebRequest rq = (HttpWebRequest)WebRequest.Create(u);
+            rq.UserAgent = TITLE + "/" + VERSION;
+            rq.Timeout = ms; rq.ReadWriteTimeout = ms;
+            rq.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+            Stopwatch sw = Stopwatch.StartNew();
+            using (HttpWebResponse rs = (HttpWebResponse)rq.GetResponse())
+            using (Stream s = rs.GetResponseStream())
+            using (Stream f = part != null ? (Stream)File.Create(part) : new MemoryStream())
+            {
+                long total = rs.ContentLength, got = 0;
+                byte[] buf = new byte[1 << 16];
+                int n, last = -1;
+                while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                {
+                    if (stopping) throw new UpdNetError("stopped", 0);
+                    f.Write(buf, 0, n);
+                    got += n;
+                    if (got > max) throw new UpdNetError("too big", 0);
+                    if (to == null && sw.ElapsedMilliseconds > ms * 2) throw new UpdNetError("no answer (too slow)", 0);
+                    if (progress)
+                    {
+                        int pct = total > 0 ? (int)(got * 100 / total) : (int)(got / 1000000 % 100);
+                        if (pct != last) { last = pct; Progress(Math.Max(1, pct)); }
+                    }
+                }
+                if (total > 0 && got != total) throw new UpdNetError("the download was cut (" + got + " of " + total + " bytes)", 0);
+                if (to == null) return ((MemoryStream)f).ToArray();
+            }
+            if (File.Exists(to)) File.Delete(to);
+            File.Move(part, to);
+            return null;
+        }
+        catch (WebException e)
+        {
+            HttpWebResponse r = e.Response as HttpWebResponse;
+            int code = r != null ? (int)r.StatusCode : 0;
+            throw new UpdNetError(code == 403 || code == 429 ? "GitHub's limit for now (HTTP " + code + ")" : code != 0 ? "HTTP " + code :
+                e.Status == WebExceptionStatus.Timeout ? "no answer (timeout)" : e.Message, code);
+        }
+        catch (IOException e) { if (DiskFull(e)) throw new UpdFail("disk", DiskText()); throw new UpdNetError(e.Message, 0); }
+        finally { if (progress) Progress(0); if (part != null) try { if (File.Exists(part)) File.Delete(part); } catch { } }
+    }
+
+    // ---- files
+    static string Sha256File(string f)
+    {
+        using (System.Security.Cryptography.SHA256 h = System.Security.Cryptography.SHA256.Create())
+        using (FileStream s = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.Read)) return Hex(h.ComputeHash(s));
+    }
+    static string Hex(byte[] b) { StringBuilder sb = new StringBuilder(b.Length * 2); foreach (byte x in b) sb.Append(x.ToString("x2")); return sb.ToString(); }
+    // what Godot and Python make by themselves, and our own list, are not the release's files
+    static bool TreeSkip(string r) { return r.StartsWith(".godot/") || r.StartsWith("__pycache__/") || r.Contains("/__pycache__/") || r == ".release-files"; }
+    // a folder's files, "relative/path" -> SHA-256, in ordinal order (as release.json's tree_sha256 is made)
+    static SortedDictionary<string, string> TreeFiles(string dir)
+    {
+        SortedDictionary<string, string> d = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        string root = Path.GetFullPath(dir).TrimEnd('\\') + "\\";
+        foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            string r = Path.GetFullPath(f).Substring(root.Length).Replace('\\', '/');
+            if (!TreeSkip(r)) d[r] = Sha256File(f);
+        }
+        return d;
+    }
+    // the tree's SHA-256: of the lines "<sha256 of the file> <path>\n", in that order
+    static string TreeDigest(SortedDictionary<string, string> files)
+    {
+        StringBuilder sb = new StringBuilder();
+        foreach (KeyValuePair<string, string> kv in files) sb.Append(kv.Value).Append(' ').Append(kv.Key).Append('\n');
+        using (System.Security.Cryptography.SHA256 h = System.Security.Cryptography.SHA256.Create()) return Hex(h.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString())));
+    }
+    static void UDel(string dir)
+    {
+        if (!Directory.Exists(dir)) return;
+        foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)) try { File.SetAttributes(f, FileAttributes.Normal); } catch { }
+        Directory.Delete(dir, true);
+    }
+    static void UDelFile(string f) { if (File.Exists(f)) { File.SetAttributes(f, FileAttributes.Normal); File.Delete(f); } }
+    static string URead(string f) { try { return File.Exists(f) ? File.ReadAllText(f).Trim() : ""; } catch { return ""; } }
+    static Dictionary<string, string> UReadIni(string f)
+    {
+        if (!File.Exists(f)) return null;
+        Dictionary<string, string> d = new Dictionary<string, string>();
+        foreach (string l in File.ReadAllLines(f)) { int e = l.IndexOf('='); if (e > 0 && !l.StartsWith(";")) d[l.Substring(0, e).Trim()] = l.Substring(e + 1).Trim(); }
+        return d;
+    }
+    static string USafe(string v) { return Regex.Replace(v ?? "", "[^0-9A-Za-z.+-]", "_"); }
+    // a rename recorded, so that a step that fails puts everything back as it was (UUndo)
+    static void URen(List<string[]> done, string from, string to)
+    {
+        if (Directory.Exists(from)) Directory.Move(from, to); else File.Move(from, to);
+        done.Add(new[] { from, to });
+    }
+    static void UUndo(List<string[]> done)
+    {
+        for (int i = done.Count - 1; i >= 0; i--)
+            try { if (Directory.Exists(done[i][1])) Directory.Move(done[i][1], done[i][0]); else File.Move(done[i][1], done[i][0]); }
+            catch (Exception e) { Log("undo " + done[i][1] + ": " + e.Message); }
+        done.Clear();
+    }
+    // a program run hidden, its output kept: the exit code (-1: too long, -2: could not be started at all)
+    static int UExec(string exe, string args, string dir, int ms, out string output)
+    {
+        Log("> " + Path.GetFileName(exe) + " " + args);
+        StringBuilder sb = new StringBuilder();
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(exe, args) { WorkingDirectory = dir, UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true };
+            using (Process p = Process.Start(psi))
+            {
+                p.OutputDataReceived += (s, e) => { if (e.Data != null) lock (sb) sb.AppendLine(e.Data); };
+                p.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (sb) sb.AppendLine(e.Data); };
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+                if (!p.WaitForExit(ms)) { try { p.Kill(); } catch { } output = "it took too long"; return -1; }
+                p.WaitForExit();
+                lock (sb) output = sb.ToString();
+                return p.ExitCode;
+            }
+        }
+        catch (Exception e) { output = e.Message; return -2; }
+    }
+    static string FirstError(string log)
+    {
+        foreach (string l in (log ?? "").Split('\n')) if (l.Contains("error")) return l.Trim();
+        return (log ?? "").Trim().Split('\n')[0].Trim();
+    }
+
+    // ---- safety checks before anything is downloaded or replaced
+    static FileStream updLock;
+    static bool UpdTakeLock(int waitMs)
+    {
+        Stopwatch sw = Stopwatch.StartNew();
+        Directory.CreateDirectory(UpdDir);
+        while (true)
+        {
+            try { updLock = new FileStream(Path.Combine(UpdDir, "update.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); return true; }
+            catch (IOException) { if (sw.ElapsedMilliseconds >= waitMs) return false; Thread.Sleep(250); }
+        }
+    }
+    static void UpdReleaseLock() { if (updLock != null) { try { updLock.Dispose(); } catch { } updLock = null; } }
+    // a program running from components\ (Uplink's Godot, the bridge's Python, TN+, its DOSBox): its name
+    static string UpdInUse()
+    {
+        int me = Process.GetCurrentProcess().Id;
+        string comp = Path.GetFullPath(Comp).TrimEnd('\\') + "\\", upd = Path.GetFullPath(UpdDir) + "\\";
+        try
+        {
+            using (System.Management.ManagementObjectSearcher s = new System.Management.ManagementObjectSearcher("SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process"))
+                foreach (System.Management.ManagementObject o in s.Get())
+                {
+                    if (Convert.ToInt32(o["ProcessId"]) == me) continue;
+                    string t = (o["ExecutablePath"] as string ?? "") + " " + (o["CommandLine"] as string ?? "");
+                    if (t.IndexOf(comp, StringComparison.OrdinalIgnoreCase) >= 0 && t.IndexOf(upd, StringComparison.OrdinalIgnoreCase) < 0) return o["Name"] as string ?? "a program";
+                }
+        }
+        catch (Exception e) { Log("process list: " + e.Message); }
+        return null;
+    }
+    static void UpdCanWrite(long need)
+    {
+        foreach (string d in new[] { Root, UpdDir })
+            try { Directory.CreateDirectory(d); string p = Path.Combine(d, ".write-test"); File.WriteAllText(p, "x"); File.Delete(p); }
+            catch (UnauthorizedAccessException) { throw new UpdFail("readonly", ReadOnlyText()); }
+            catch (IOException e) { if (DiskFull(e)) throw new UpdFail("disk", DiskText()); throw; }
+        try
+        {
+            DriveInfo di = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Root)));
+            long free = di.AvailableFreeSpace;
+            string force = TestServer != null ? Environment.GetEnvironmentVariable("TN_UPLINK_TEST_FREE") : null;   // (checks: a full disk)
+            if (force != null) long.TryParse(force, out free);
+            if (free < need) throw new UpdFail("disk", DiskText());
+        }
+        catch (ArgumentException) { }                         // (a network path: not known)
+    }
+    static void UpdLast(string s) { Set("upd_last", s); SaveCfg(); Log("update: " + s); }
+    static void UpdNoticeOnce(string s, Color c) { if (updNoticed) { Log(s); return; } updNoticed = true; Status(s, c); }
+
+    // ---- the install pass's first step (Install). 0: no release.json published yet, nothing installed from one:
+    // the branches' heads as 2.7 did. 1: done here (installed, nothing to do, or not possible now: what is installed plays)
+    static int UpdInstall(Mode mode)
+    {
+        if (NoUpdate) return 0;
+        bool have = File.Exists(Path.Combine(UplinkDir, "project.godot"));
+        bool resume = Cfg("upd_resume") != "";
+        if (!RelLoad())
+        {
+            if (relCode == 404 && Cfg("upd_channel") == "") return 0;
+            if (!have) { if (Cfg("upd_channel") == "") return 0; throw new Exception("Uplink isn't installed and the update can't be checked (" + relError + ")"); }
+            UpdLast((relCode == 404 ? "norelease " : "offline ") + relError);
+            UpdNoticeOnce("Couldn't check for updates (" + relError + "): playing the installed version.", CDim);
+            UpdLabel("Couldn't check for updates (" + relError + ")", CDim);
+            UpdTnpMissing(mode);
+            return 1;
+        }
+        RelChan t = relTarget;
+        if (t == null) { UpdLast("nochannel"); if (!have) throw new Exception("release.json has no channel to install"); return 1; }
+        if (have && Cfg("upd_skip") != "" && Cfg("upd_skip") == t.Version && !resume)
+        {
+            UpdLast("skip " + t.Version);
+            UpdNoticeOnce("Uplink " + t.V.Short + " is skipped (you rolled back): Tools > Check for updates installs it.", CDim);
+            t = RelInstalled();
+        }
+        bool locked;
+        try { locked = UpdTakeLock(resume ? 20000 : 0); }
+        catch (Exception e)
+        {                                                     // (components\updates can't even be made: a read-only folder)
+            if (!have) throw;
+            UpdLast("failed readonly");
+            Log("update lock: " + e.Message);
+            Status(e is UnauthorizedAccessException ? ReadOnlyText() : "The update couldn't start (" + e.Message + "): the installed version still plays.", CRed);
+            UpdLabel("Update not installed: read-only folder", CRed);
+            return 1;
+        }
+        if (!locked)
+        {
+            UpdLast("locked");
+            UpdNoticeOnce("Another Uplink launcher is updating this folder: playing the installed version.", CAmber);
+            if (!have) throw new Exception("another Uplink launcher is installing this folder");
+            return 1;
+        }
+        try { UpdApply(t, mode, updAuto || resume || form == null); }
+        catch (UpdFail e)
+        {
+            UpdLast("failed " + e.Why);
+            Status(e.Message, CRed);
+            UpdLabel("Update not installed: " + (e.Why == "readonly" ? "read-only folder" : e.Why == "disk" ? "disk full" : "see the log"), CRed);
+            if (!have) throw new Exception(e.Message);
+        }
+        catch (UpdNetError e)
+        {
+            UpdLast("netfail " + e.Message);
+            UpdNoticeOnce("Couldn't download the update (" + e.Message + "): playing the installed version. It will be tried again next time.", CAmber);
+            if (!have) throw new Exception("the download failed (" + e.Message + ")");
+        }
+        catch (UnauthorizedAccessException) { UpdLast("failed readonly"); Status(ReadOnlyText(), CRed); if (!have) throw; }
+        catch (Exception e)
+        {                                                     // (anything else: never in the way of PLAY when something is installed)
+            if (!have) throw;
+            UpdLast("failed other");
+            Log(e.ToString());
+            Status("The update couldn't be installed (" + (DiskFull(e) ? "disk full" : e.Message) + "): the installed version still plays.", CRed);
+        }
+        finally
+        {
+            if (Cfg("upd_last").StartsWith("failed") || Cfg("upd_last").StartsWith("netfail")) UpdCleanStage();
+            UpdReleaseLock();
+            if (Cfg("upd_resume") != "") { Set("upd_resume", ""); SaveCfg(); }
+            Progress(0);
+        }
+        return 1;
+    }
+
+    // after a failed update: nothing of it left in components\updates (a staged tree is kept only for a launcher restart)
+    static void UpdCleanStage()
+    {
+        if (!Directory.Exists(UpdDir)) return;
+        foreach (string d in Directory.GetDirectories(UpdDir))
+            if (Path.GetFileName(d).StartsWith("s-") || Path.GetFileName(d) == "launcher")
+                try { UDel(d); } catch (Exception e) { Log("clean-up of " + d + ": " + e.Message); }
+        foreach (string f in Directory.GetFiles(UpdDir))
+            if (f.EndsWith(".exe") || f.EndsWith(".zip") || f.EndsWith(".part"))
+                try { UDelFile(f); } catch (Exception e) { Log("clean-up of " + f + ": " + e.Message); }
+    }
+
+    // offline: the TN+ this mode needs must at least be there
+    static void UpdTnpMissing(Mode mode)
+    {
+        if (mode == Mode.Play && !File.Exists(TnpExe)) throw new Exception("Terra Nova Plus isn't installed yet and the update can't be checked (" + relError + ")");
+        if (mode == Mode.Host && !File.Exists(TnpCoopExe)) throw new Exception("Terra Nova Plus's co-op build isn't installed yet and the update can't be checked (" + relError + ")");
+    }
+
+    // ---- bring this folder to channel t. The launcher first when it changes (built from t's sources, tested, swapped
+    // in, restarted: the new one does the rest); then Uplink's files and the TN+ builds, all staged and checked
+    // before the first one is replaced, undone together if one swap fails. auto: no question (asked for just now)
+    static void UpdApply(RelChan t, Mode mode, bool auto)
+    {
+        SemVer me = SemVer.Parse(VERSION), lv = SemVer.Parse(t.Launcher), minv = SemVer.Parse(t.MinLauncher);
+        bool have = File.Exists(Path.Combine(UplinkDir, "project.godot"));
+        bool game = !have || Cfg("uplink_sha") != t.Uplink.Ref;
+        if (minv != null && me != null && minv.CompareTo(me) > 0 && lv.CompareTo(minv) < 0)
+            throw new UpdFail("manifest", "release.json is not consistent (launcher " + t.Launcher + " below its minimum " + t.MinLauncher + "): nothing was changed.");
+        // a newer launcher always; an older one only with the files it came with (going back to stable, a roll back)
+        bool launcher = me == null || lv.CompareTo(me) > 0 || (lv.CompareTo(me) < 0 && game);
+        List<string> kinds = new List<string>();
+        foreach (string k in new[] { "tnplus", "tnplus_coop" })
+        {
+            RelPart p = k == "tnplus" ? t.Tnp : t.TnpCoop;
+            string exe = k == "tnplus" ? TnpExe : TnpCoopExe;
+            bool need = (k == "tnplus" ? mode == Mode.Play : mode == Mode.Host) || File.Exists(exe);
+            if (!need) continue;
+            if (p == null || p.Tree == null || p.Tree == "") { if (!File.Exists(exe)) BuildTnp(k == "tnplus_coop"); continue; }   // (no release commit known: as before)
+            if (!File.Exists(exe) || Cfg(k + "_sha") != p.Ref) kinds.Add(k);
+        }
+        if (!game && !launcher && kinds.Count == 0)
+        {
+            if (Cfg("upd_version") != t.Version && t.Uplink.Tree != null) UpdRecord(t);    // (installed by the branches' heads: the same files)
+            UpdLast("uptodate " + t.Version);
+            return;
+        }
+        string by = UpdInUse();
+        if (by != null)
+        {
+            UpdLast("deferred " + t.Version + " " + by);
+            UpdNoticeOnce("Uplink " + VerShort(t.Version) + " is ready to install: it will be the next time you press PLAY with nothing running (" + by + " runs now).", CAmber);
+            UpdLabel("Uplink " + VerShort(t.Version) + " ready: installed at the next start", CAmber);
+            return;
+        }
+        UpdCanWrite(200L << 20);
+        string tree = game || launcher ? StageTree(t.Uplink, "Uplink " + VerShort(t.Version)) : null;
+        if (launcher)
+        {
+            string exe = UpdBuildLauncher(tree, t.Launcher);
+            if (!auto && !Ask("Uplink " + VerShort(t.Version) + " comes with a new launcher. Restart now to install it?\n\n(No: you play the installed version this time.)"))
+            { UpdLast("put off " + t.Version); return; }
+            PrevBegin(t.Version);
+            Set("upd_resume", t.Version);
+            SaveCfg();
+            UpdSwapLauncher(exe);                             // (does not come back)
+            return;
+        }
+        // the TN+ builds, in components\updates: nothing replaced yet
+        Dictionary<string, string> built = new Dictionary<string, string>();
+        foreach (string k in kinds) built[k] = UpdBuildTnp(k == "tnplus" ? t.Tnp : t.TnpCoop, k);
+        string from = Installed;
+        bool back = have && VerCmp(t.Version, from) < 0;
+        List<string> kept = new List<string>();
+        List<string[]> done = new List<string[]>();
+        if (game && have) { PrevBegin(t.Version); SettingsSave(from); }
+        try
+        {
+            if (game)
+            {
+                StringBuilder list = new StringBuilder();
+                foreach (KeyValuePair<string, string> kv in TreeFiles(tree)) list.Append(kv.Value).Append(' ').Append(kv.Key).Append('\n');
+                if (have) kept = UpdKeepUserFiles(UplinkDir, tree);
+                File.WriteAllText(Path.Combine(tree, ".release-files"), list.ToString());
+                if (have)
+                {
+                    string pu = Path.Combine(PrevDir, "uplink");
+                    UDel(pu);
+                    URen(done, UplinkDir, pu);
+                }
+                URen(done, tree, UplinkDir);
+            }
+            foreach (KeyValuePair<string, string> kv in built)
+            {
+                string dir = kv.Key == "tnplus" ? TnpDir : TnpCoopDir, exe = Path.Combine(dir, "TNPlus.exe");
+                Directory.CreateDirectory(dir);
+                if (File.Exists(exe))
+                {
+                    string slot = game && have ? Path.Combine(PrevDir, kv.Key, "TNPlus.exe") : exe + ".old";
+                    Directory.CreateDirectory(Path.GetDirectoryName(slot));
+                    UDelFile(slot);
+                    URen(done, exe, slot);
+                }
+                URen(done, kv.Value, exe);
+            }
+        }
+        catch (Exception e)
+        {
+            UUndo(done);
+            if (DiskFull(e)) throw new UpdFail("disk", DiskText());
+            if (e is UnauthorizedAccessException) throw new UpdFail("readonly", ReadOnlyText());
+            throw new UpdFail("swap", "Uplink " + VerShort(t.Version) + " couldn't be put in place (" + e.Message + "): the installed version is unchanged and still plays.");
+        }
+        // done: what is installed now
+        if (game || (Cfg("upd_version") != t.Version && t.Uplink.Tree != null)) UpdRecord(t);
+        foreach (string k in built.Keys) { Set(k + "_sha", (k == "tnplus" ? t.Tnp : t.TnpCoop).Ref); UDelFile(Path.Combine(k == "tnplus" ? TnpDir : TnpCoopDir, "TNPlus.exe.old")); }
+        SaveCfg();
+        UpdLast("ok " + t.Version);
+        try { foreach (string d in Directory.GetDirectories(UpdDir, "s-*")) UDel(d); } catch (Exception e) { Log("clean-up: " + e.Message); }
+        if (kept.Count > 0)
+            Status(kept.Count + " file" + (kept.Count > 1 ? "s" : "") + " you had changed in components\\uplink " + (kept.Count > 1 ? "were" : "was") +
+                " kept beside the new one" + (kept.Count > 1 ? "s" : "") + " as .user-modified (" + kept[0] + (kept.Count > 1 ? ", ..." : "") + ").", CAmber);
+        else if (game) Status("Uplink " + VerFull(t.Version) + " is installed.", CGreen);
+        Ui(RefreshUi);
+        if (back)
+        {
+            bool restored = SettingsRestore(t.Version);
+            string say = restored
+                ? "Your Uplink " + VerShort(t.Version) + " settings are back as you left them. What you changed in " + VerShort(from) + " is kept in components\\settings."
+                : "Uplink " + VerShort(t.Version) + " keeps the settings you had in " + VerShort(from) + ": anything it doesn't know is left as it is.";
+            UpdRestartWith(say);
+        }
+    }
+
+    static void UpdRecord(RelChan t)
+    {
+        Set("uplink_sha", t.Uplink.Ref);
+        Set("upd_version", t.Version);
+        Set("upd_channel", t.Name);
+        if (t.Tnp != null) { Set("upd_tnplus_ref", t.Tnp.Ref); Set("upd_tnplus_tree", t.Tnp.Tree); }
+        if (t.TnpCoop != null) { Set("upd_tnplus_coop_ref", t.TnpCoop.Ref); Set("upd_tnplus_coop_tree", t.TnpCoop.Tree); }
+        if (Cfg("upd_skip") != "" && VerCmp(t.Version, Cfg("upd_skip")) > 0) Set("upd_skip", "");
+        SaveCfg();
+    }
+
+    // Uplink's files the player changed (their SHA-256 is not the installed release's): kept beside the new ones as
+    // <name>.user-modified; files of the player's own (not the release's) come along. Gives the changed ones' paths
+    static List<string> UpdKeepUserFiles(string live, string staged)
+    {
+        List<string> kept = new List<string>();
+        Dictionary<string, string> was = null;
+        string lf = Path.Combine(live, ".release-files");
+        if (File.Exists(lf))
+        {
+            was = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (string l in File.ReadAllLines(lf)) if (l.Length > 66) was[l.Substring(65)] = l.Substring(0, 64);
+        }
+        else
+            foreach (RelChan c in new[] { relStable, relBeta })
+                if (c != null && c.Uplink.Ref == Cfg("uplink_sha") && c.Uplink.Files != null) was = c.Uplink.Files;
+        if (was == null) { Log("no list of the installed files: files changed by hand can't be told apart (left with the old version)"); return kept; }
+        foreach (KeyValuePair<string, string> kv in TreeFiles(live))
+        {
+            string src = Path.Combine(live, kv.Key.Replace('/', '\\')), dst = Path.Combine(staged, kv.Key.Replace('/', '\\'));
+            string h;
+            if (was.TryGetValue(kv.Key, out h))
+            {
+                if (h == kv.Value) continue;
+                Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                File.Copy(src, dst + ".user-modified", true);
+                kept.Add(kv.Key);
+                Log("changed by hand, kept as " + kv.Key + ".user-modified");
+            }
+            else if (!File.Exists(dst)) { Directory.CreateDirectory(Path.GetDirectoryName(dst)); File.Copy(src, dst); }
+        }
+        return kept;
+    }
+
+    // a release's tree (Uplink, TN+'s sources): downloaded, unpacked and checked in components\updates, given back only
+    // whole and matching release.json (one checked before a launcher restart is taken again, checked again)
+    static string StageTree(RelPart p, string what)
+    {
+        string dir = Path.Combine(UpdDir, "s-" + p.Ref.Substring(0, 12)), zip = dir + ".zip", tmp = dir + ".x";   // (short: deep paths stay under 260)
+        if (Directory.Exists(dir)) { if (TreeOk(dir, p)) return dir; UDel(dir); }
+        Status("Downloading " + what + "...", CAmber);
+        UFetch(p.Url, zip, 30000, true, 2L << 30);
+        UDel(tmp);
+        try { UUnzip(zip, tmp); }
+        catch (InvalidDataException) { UDel(tmp); throw new UpdFail("damaged", what + ": the download is damaged. Nothing was changed; it will be tried again next time."); }
+        catch (PathTooLongException) { UDel(tmp); throw new UpdFail("path", what + " can't be unpacked here: the folder's path is too long (" + Root + "). Move the Terra Nova Uplink folder higher up (C:\\Games, for example). Nothing was changed."); }
+        catch (IOException e) { UDel(tmp); if (DiskFull(e)) throw new UpdFail("disk", DiskText()); throw; }
+        finally { try { File.Delete(zip); } catch { } }
+        Directory.Move(tmp, dir);
+        if (!TreeOk(dir, p))
+        {
+            UDel(dir);
+            throw new UpdFail("hash", what + " as downloaded doesn't match the release (SHA-256): nothing was changed. It will be tried again next time.");
+        }
+        return dir;
+    }
+    // an archive as GitHub makes it, unpacked without its top folder ("terra-nova-uplink-<commit>/": 58 letters less)
+    static void UUnzip(string zip, string dest)
+    {
+        Directory.CreateDirectory(dest);
+        string full = Path.GetFullPath(dest).TrimEnd('\\') + "\\";
+        using (ZipArchive a = ZipFile.OpenRead(zip))
+        {
+            string top = null;
+            bool one = true;
+            foreach (ZipArchiveEntry e in a.Entries)
+            {
+                int s = e.FullName.IndexOf('/');
+                string t = s > 0 ? e.FullName.Substring(0, s + 1) : null;
+                if (t == null || (top != null && t != top)) one = false;
+                if (top == null) top = t;
+            }
+            foreach (ZipArchiveEntry e in a.Entries)
+            {
+                string n = one && top != null ? e.FullName.Substring(top.Length) : e.FullName;
+                if (n == "") continue;
+                string to = Path.GetFullPath(Path.Combine(dest, n.Replace('/', '\\')));
+                if (!to.StartsWith(full, StringComparison.OrdinalIgnoreCase)) continue;            // (no way out of dest)
+                if (n.EndsWith("/")) { Directory.CreateDirectory(to); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(to));
+                e.ExtractToFile(to, true);
+            }
+        }
+    }
+    static bool TreeOk(string dir, RelPart p)
+    {
+        string d = TreeDigest(TreeFiles(dir));
+        if (d == p.Tree) return true;
+        Log("tree " + Path.GetFileName(dir) + ": SHA-256 " + d + ", release.json " + p.Tree);
+        return false;
+    }
+
+    // a new program just written: an antivirus that takes it away (or locks it) is told apart from a failed build
+    static string AvText(string what)
+    {
+        return "Windows or an antivirus took " + what + " away just after it was built. Nothing was changed: the installed version still plays. " +
+            "If your antivirus quarantined it, restore it or allow the Terra Nova Uplink folder, then Tools > Check for updates.";
+    }
+    static void UAvCheck(string exe, string what)
+    {
+        Thread.Sleep(1500);                                   // (the time an antivirus takes to look at a new program)
+        try { using (FileStream f = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.Read)) if (f.Length < 4096) throw new IOException("empty"); }
+        catch (Exception e) { Log(what + ": " + e.Message); throw new UpdFail("antivirus", AvText(what)); }
+    }
+
+    // the launcher of t, from t's sources with its build.bat's line, tested (--selftest: it must start and say its version)
+    static string UpdBuildLauncher(string tree, string want)
+    {
+        string dir = Path.Combine(tree, "launcher"), cs = Path.Combine(dir, "TerraNovaUplink.cs");
+        Match v = File.Exists(cs) ? Regex.Match(File.ReadAllText(cs), "const string VERSION = \"([^\"]+)\"") : Match.Empty;
+        if (!v.Success || v.Groups[1].Value != want) throw new UpdFail("manifest", "Uplink's launcher sources are not version " + want + ": nothing was changed.");
+        string outDir = Path.Combine(UpdDir, "launcher");
+        UDel(outDir);
+        Directory.CreateDirectory(outDir);
+        string exe = Path.Combine(outDir, Path.GetFileName(Application.ExecutablePath)), args = null, bat = Path.Combine(dir, "build.bat");
+        if (File.Exists(bat))
+        {
+            Match m = Regex.Match(File.ReadAllText(bat), "(?m)^\"%CSC%\"\\s+(.*?)/out:\"Terra Nova Uplink\\.exe\"\\s+TerraNovaUplink\\.cs\\s*$");
+            if (m.Success) args = m.Groups[1].Value + "/out:\"" + exe + "\" TerraNovaUplink.cs";
+        }
+        if (args == null)
+        {
+            string res = "";
+            foreach (string f in Directory.GetFiles(dir, "bg_*.jpg")) res += "/resource:" + Path.GetFileName(f) + " ";
+            args = "/nologo /optimize /target:winexe /platform:anycpu /win32manifest:app.manifest /win32icon:icon.ico /r:System.Windows.Forms.dll /r:System.Drawing.dll " +
+                "/r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll " + res + "/out:\"" + exe + "\" TerraNovaUplink.cs";
+        }
+        Status("Building the launcher of Uplink " + VerShort(want) + "...", CAmber);
+        string log;
+        int code = UExec(Csc(), args, dir, 180000, out log);
+        if (code != 0 || !File.Exists(exe))
+        {
+            Log("csc: " + log);
+            if (code == 0 && !File.Exists(exe)) throw new UpdFail("antivirus", AvText("the new launcher"));
+            throw new UpdFail("build", "The new launcher (" + VerShort(want) + ") didn't build (" + FirstError(log) + "). Nothing was changed: Uplink " +
+                VerShort(Installed) + " still plays.");
+        }
+        UAvCheck(exe, "the new launcher");
+        string said;
+        int sc = UExec(exe, "--selftest", outDir, 30000, out said);
+        if (sc != 0 || !said.Contains(TITLE + " " + want)) { Log("selftest " + sc + ": " + said); throw new UpdFail("antivirus", AvText("the new launcher")); }
+        return exe;
+    }
+
+    // a running program can be renamed, not deleted: this one becomes <exe>.old (put in components\previous by the new
+    // one), the new one takes its name and is started; the checks (no window) are told by exit code 3
+    static void UpdSwapLauncher(string exe)
+    {
+        string me = Application.ExecutablePath, old = me + ".old";
+        try
+        {
+            UDelFile(old);
+            File.Move(me, old);
+            try { File.Move(exe, me); }
+            catch { File.Move(old, me); throw; }
+        }
+        catch (UnauthorizedAccessException) { throw new UpdFail("readonly", ReadOnlyText()); }
+        catch (IOException e) { if (DiskFull(e)) throw new UpdFail("disk", DiskText()); throw new UpdFail("swap", "The new launcher couldn't be put in place (" + e.Message + "): nothing was changed."); }
+        Log("launcher " + VERSION + " replaced, starting the new one");
+        UpdReleaseLock();
+        if (form == null) { Console.WriteLine("launcher updated"); Environment.Exit(3); }
+        Process.Start(new ProcessStartInfo(me) { UseShellExecute = false, WorkingDirectory = Root });
+        Environment.Exit(0);
+    }
+    // restarted (the settings put back are what the window must show): what to say, said by the next start
+    static void UpdRestartWith(string say)
+    {
+        Set("upd_say", say);
+        SaveCfg();
+        Log(say);
+        if (form == null) { Console.WriteLine(say); return; }
+        UpdReleaseLock();
+        Process.Start(new ProcessStartInfo(Application.ExecutablePath) { UseShellExecute = false, WorkingDirectory = Root });
+        Environment.Exit(0);
+    }
+
+    // a TN+ build of release part p, in components\updates (TN+'s build.bat's compiler line, as BuildTnp)
+    static string UpdBuildTnp(RelPart p, string kind)
+    {
+        string what = kind == "tnplus" ? "Terra Nova Plus" : "Terra Nova Plus (co-op build)";
+        string src = StageTree(p, what), bat = Path.Combine(src, "src", "build.bat");
+        Match m = File.Exists(bat) ? Regex.Match(File.ReadAllText(bat), "(?m)^\"%CSC%\"([^\\r\\n]+)") : Match.Empty;
+        if (!m.Success) throw new UpdFail("build", what + ": its build.bat is not understood. Nothing was changed.");
+        Status("Building " + what + "...", CAmber);
+        string log;
+        int code = UExec(Csc(), m.Groups[1].Value.Trim(), Path.Combine(src, "src"), 180000, out log);
+        string built = Path.Combine(src, "src", "TNPlus.exe"), outExe = Path.Combine(UpdDir, kind + "-" + p.Ref.Substring(0, 12) + ".exe");
+        if (code != 0 || !File.Exists(built))
+        {
+            Log("csc: " + log);
+            throw new UpdFail("build", what + " didn't build (" + FirstError(log) + "). Nothing was changed: the installed version still plays.");
+        }
+        UDelFile(outExe);
+        File.Copy(built, outExe);
+        UDel(src);
+        UAvCheck(outExe, what);
+        return outExe;
+    }
+
+    // ---- components\previous: what the last change of version replaced (Tools > Roll back). for.txt: the version it
+    // was begun for (a launcher restart in between keeps it); state.ini: the version keys before
+    static readonly string[] STATE_KEYS = { "upd_version", "upd_channel", "uplink_sha", "tnplus_sha", "tnplus_coop_sha", "upd_tnplus_ref", "upd_tnplus_tree",
+        "upd_tnplus_coop_ref", "upd_tnplus_coop_tree" };
+    static void PrevBegin(string forVersion)
+    {
+        if (URead(Path.Combine(PrevDir, "for.txt")) == forVersion && File.Exists(Path.Combine(PrevDir, "state.ini"))) return;
+        UDel(PrevDir);
+        Directory.CreateDirectory(PrevDir);
+        StringBuilder sb = new StringBuilder();
+        foreach (string k in STATE_KEYS) sb.Append(k + " = " + (k == "upd_version" ? Installed : Cfg(k)) + "\r\n");
+        sb.Append("launcher = " + VERSION + "\r\n");
+        File.WriteAllText(Path.Combine(PrevDir, "state.ini"), sb.ToString());
+        File.WriteAllText(Path.Combine(PrevDir, "for.txt"), forVersion);
+    }
+    // at each start: the launcher this one replaced goes to components\previous; what the last one had to say is said
+    static void UpdStartup()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        if (args.Length > 1 && args[1] == "--rollback")      // checks: Tools > Roll back, without the window
+        {
+            try { UpdRollbackCore(); Console.WriteLine("rolled back"); Environment.Exit(0); }
+            catch (Exception e) { Log(e.Message); Console.WriteLine(e.Message); Environment.Exit(1); }
+        }
+        if (args.Length > 2 && args[1] == "--cooptext")      // checks: the session line said for Uplink's co-op lines
+        {
+            for (int i = 2; i < args.Length; i++) Console.WriteLine(UpdCoopText(args[i]));
+            Environment.Exit(0);
+        }
+        // a 2.7 launcher in a folder whose path has accents builds this one as "Terra Nova Uplink.new.exe" but its
+        // update.bat can't move it (cmd reads the path in another code page): opened by hand, it takes its place
+        string self = Application.ExecutablePath;
+        if (args.Length == 1 && self.EndsWith(".new.exe", StringComparison.OrdinalIgnoreCase))
+            try
+            {
+                string target = self.Substring(0, self.Length - 8) + ".exe";
+                if (File.Exists(target)) { UDelFile(target + ".old"); File.Move(target, target + ".old"); }
+                File.Move(self, target);
+                try { File.Delete(Path.Combine(Root, "update.bat")); } catch { }
+                Process.Start(new ProcessStartInfo(target) { UseShellExecute = false, WorkingDirectory = Root });
+                Environment.Exit(0);
+            }
+            catch (Exception e) { Log("taking the place of the launcher before: " + e.Message); }
+        string old = Application.ExecutablePath + ".old";
+        if (File.Exists(old))
+            for (int i = 0; i < 20; i++)
+                try
+                {
+                    string slot = Path.Combine(PrevDir, "launcher", Path.GetFileName(Application.ExecutablePath));
+                    Directory.CreateDirectory(Path.GetDirectoryName(slot));
+                    UDelFile(slot);
+                    File.Move(old, slot);
+                    break;
+                }
+                catch (Exception e) { if (i == 19) Log("the launcher before: " + e.Message); else Thread.Sleep(250); }
+    }
+    static string PrevVersion() { Dictionary<string, string> st = UReadIni(Path.Combine(PrevDir, "state.ini")); string v; return st != null && st.TryGetValue("upd_version", out v) && v != "" ? v : null; }
+
+    // Tools > Roll back to previous version: what components\previous holds and what is installed swap places (so that
+    // a second roll back goes forward again); the older version's settings come back; the version left is not put back
+    // by itself (upd_skip) until a newer one comes, or Tools > Check for updates
+    static void UpdRollback()
+    {
+        string back = PrevVersion();
+        if (back == null || !Directory.Exists(Path.Combine(PrevDir, "uplink"))) { Status("No previous version is kept in this folder.", CText); return; }
+        if (busy) return;
+        if (!Ask("Go back to Uplink " + VerFull(back) + "? (installed now: " + VerFull(Installed) + ")\n\nThe launcher restarts.")) return;
+        Background(UpdRollbackCore);
+    }
+    static void UpdRollbackCore()
+    {
+        string back = PrevVersion(), now = Installed;
+        if (back == null || !Directory.Exists(Path.Combine(PrevDir, "uplink"))) throw new Exception("no previous version is kept in this folder");
+        if (!UpdTakeLock(3000)) throw new Exception("another Uplink launcher is updating this folder");
+        List<string[]> done = new List<string[]>();
+        try
+        {
+            string by = UpdInUse();
+            if (by != null) throw new Exception("close Uplink and the game first (" + by + " is running)");
+            UpdCanWrite(0);
+            Dictionary<string, string> st = UReadIni(Path.Combine(PrevDir, "state.ini"));
+            SettingsSave(now);
+            StringBuilder sb = new StringBuilder();          // components\previous will hold what is installed now
+            foreach (string k in STATE_KEYS) sb.Append(k + " = " + (k == "upd_version" ? now : Cfg(k)) + "\r\n");
+            string me = Application.ExecutablePath, pl = Path.Combine(PrevDir, "launcher", Path.GetFileName(me)), tmp = Path.Combine(Comp, "swap.tmp");
+            bool swapLauncher = File.Exists(pl);
+            sb.Append("launcher = " + VERSION + "\r\n");
+            UDel(tmp); UDelFile(tmp);
+            URen(done, UplinkDir, tmp);
+            URen(done, Path.Combine(PrevDir, "uplink"), UplinkDir);
+            URen(done, tmp, Path.Combine(PrevDir, "uplink"));
+            foreach (string k in new[] { "tnplus", "tnplus_coop" })
+            {
+                string cur = Path.Combine(k == "tnplus" ? TnpDir : TnpCoopDir, "TNPlus.exe"), prev = Path.Combine(PrevDir, k, "TNPlus.exe");
+                string want; st.TryGetValue(k + "_sha", out want);
+                if (File.Exists(prev))
+                {
+                    if (File.Exists(cur)) { URen(done, cur, tmp); URen(done, prev, cur); URen(done, tmp, prev); }
+                    else { Directory.CreateDirectory(Path.GetDirectoryName(cur)); URen(done, prev, cur); }
+                }
+                else if (File.Exists(cur) && Cfg(k + "_sha") != (want ?? ""))
+                {                                         // (built after the change: built again, at its own commit, when needed)
+                    Directory.CreateDirectory(Path.Combine(PrevDir, k));
+                    URen(done, cur, prev);
+                }
+            }
+            if (swapLauncher) { URen(done, me, tmp); URen(done, pl, me); URen(done, tmp, pl); }
+            foreach (KeyValuePair<string, string> kv in st) if (Array.IndexOf(STATE_KEYS, kv.Key) >= 0) Set(kv.Key, kv.Value);
+            Set("upd_skip", now);
+            SaveCfg();
+            File.WriteAllText(Path.Combine(PrevDir, "state.ini"), sb.ToString());
+            File.WriteAllText(Path.Combine(PrevDir, "for.txt"), now);
+            done.Clear();
+            UpdLast("rolledback " + back);
+            bool restored = VerCmp(back, now) < 0 && SettingsRestore(back);
+            UpdReleaseLock();
+            UpdRestartWith("Back to Uplink " + VerFull(back) + "." + (restored ? " Your settings of that version are back." : "") +
+                " Tools > Check for updates installs " + VerShort(now) + " again.");
+        }
+        catch (Exception e)
+        {
+            UUndo(done);
+            UpdReleaseLock();
+            throw new Exception("roll back not done, nothing was changed: " + e.Message);
+        }
+    }
+
+    // ---- the settings of each version: kept when the version changes (components\settings\<version>), put back when
+    // an older version comes back. Not the update's own keys (upd_*, beta_updates, the commits): those are of the folder
+    static readonly string[] UPD_KEYS = { "uplink_sha", "tnplus_sha", "tnplus_coop_sha", "beta_updates" };
+    static bool UpdKey(string k) { return k.StartsWith("upd_") || Array.IndexOf(UPD_KEYS, k) >= 0; }
+    static string GodotUser()
+    {
+        string a = Environment.GetEnvironmentVariable("APPDATA");
+        if (string.IsNullOrEmpty(a)) a = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(a, "Godot", "app_userdata", "Terra Nova Uplink");
+    }
+    static string[][] SettingsFiles()
+    {
+        return new[] { new[] { "TerraNovaUplink.ini", Ini }, new[] { "tnplus.TNPlus.ini", Path.Combine(TnpDir, "TNPlus.ini") },
+            new[] { "tnplus_coop.TNPlus.ini", Path.Combine(TnpCoopDir, "TNPlus.ini") }, new[] { "viewer.cfg", Path.Combine(GodotUser(), "viewer.cfg") } };
+    }
+    static void SettingsSave(string ver)
+    {
+        string d = Path.Combine(SetDir, USafe(ver));
+        UDel(d);
+        Directory.CreateDirectory(d);
+        SaveCfg();
+        foreach (string[] f in SettingsFiles()) if (File.Exists(f[1])) File.Copy(f[1], Path.Combine(d, f[0]), true);
+        Log("settings of " + ver + " kept in " + d);
+    }
+    static bool SettingsRestore(string ver)
+    {
+        string d = Path.Combine(SetDir, USafe(ver));
+        Dictionary<string, string> old = UReadIni(Path.Combine(d, "TerraNovaUplink.ini"));
+        if (old == null) { Log("no settings kept for " + ver); return false; }
+        foreach (string[] f in SettingsFiles())
+        {
+            string c = Path.Combine(d, f[0]);
+            if (f[0] == "TerraNovaUplink.ini" || !File.Exists(c)) continue;
+            try { Directory.CreateDirectory(Path.GetDirectoryName(f[1])); File.Copy(c, f[1], true); } catch (Exception e) { Log("settings " + f[0] + ": " + e.Message); }
+        }
+        lock (cfg)
+        {
+            Dictionary<string, string> keep = new Dictionary<string, string>();
+            foreach (KeyValuePair<string, string> kv in cfg) if (UpdKey(kv.Key)) keep[kv.Key] = kv.Value;
+            cfg.Clear();
+            foreach (KeyValuePair<string, string> kv in old) if (!UpdKey(kv.Key)) cfg[kv.Key] = kv.Value;
+            foreach (KeyValuePair<string, string> kv in keep) cfg[kv.Key] = kv.Value;
+        }
+        SaveCfg();
+        Log("settings of " + ver + " put back");
+        return true;
+    }
+
+    // a dependency downloaded by Install (Godot, Python, its wheels): checked against release.json when it gives a hash
+    static void UpdVerifyDep(string name, string file)
+    {
+        string want = JStr(JGet(JGet(rel, "deps"), name), "sha256");
+        if (want == null) return;
+        if (Sha256File(file) == want) return;
+        try { File.Delete(file); } catch { }
+        throw new Exception(name + " as downloaded doesn't match its SHA-256 in release.json: nothing was installed. Try again later.");
+    }
+
+    // ---- at each start (CheckUpdates, in the background): the label, a finished restart's word, the invitation, the
+    // question to a beta tester whose beta became final. false: no release.json yet (the host says as before)
+    static bool UpdCheck()
+    {
+        if (NoUpdate) return false;
+        string say = Cfg("upd_say");
+        if (say != "") { Set("upd_say", ""); SaveCfg(); Status(say, CGreen); }
+        if (!RelLoad())
+        {
+            if (relCode == 404 && Cfg("upd_channel") == "") return false;
+            UpdLabel("Couldn't check for updates (offline?)", CDim);
+            return true;
+        }
+        if (Cfg("upd_resume") != "")
+        {
+            Ui(delegate {
+                Background(delegate {
+                    Status("Finishing the update to Uplink " + VerShort(Cfg("upd_resume")) + "...", CAmber);
+                    updAuto = true;
+                    try { Install(Mode.Play); } finally { updAuto = false; }
+                    UpdCheck();
+                });
+            });
+            return true;
+        }
+        RelChan t = relTarget;
+        string inst = Installed, chan = Cfg("upd_channel") == "beta" || (SemVer.Parse(inst) != null && SemVer.Parse(inst).IsPre) ? " (beta)" : "";
+        if (t == null) UpdLabel("Uplink " + VerFull(inst) + chan, CDim);
+        else if (Cfg("uplink_sha") == t.Uplink.Ref && (Cfg("upd_version") == t.Version || Cfg("upd_version") == "")) UpdLabel("Uplink " + VerFull(inst) + chan + ", up to date", CGreen);
+        else if (Cfg("upd_skip") == t.Version) UpdLabel("Uplink " + VerFull(inst) + chan + " (" + t.V.Short + " skipped)", CDim);
+        else UpdLabel("Uplink " + t.V.Full + " ready: installed when you press PLAY", CAmber);
+        UpdInviteCheck(true);
+        UpdFinalCheck();
+        return true;
+    }
+
+    // ---- the beta: invited when it is newer than stable and than what is installed, and betas are not taken yet.
+    // Shown by itself once per line (2.8, 2.9...: upd_invite), then a badge at the foot of the side bar opens it again
+    static bool InviteDue()
+    {
+        return relBeta != null && Cfg("beta_updates") != "1" && (relStable == null || relBeta.V.CompareTo(relStable.V) > 0) && VerCmp(relBeta.Version, Installed) > 0;
+    }
+    static List<Image> invitePics;
+    static List<string> inviteCaps;
+    static void UpdInviteCheck(bool auto)
+    {
+        bool due = InviteDue();
+        RelChan b = relBeta;
+        Ui(delegate { UpdBadge(due ? b.V.Line + " beta" : null); });
+        if (!due || !auto || Cfg("upd_invite") == b.V.Line) return;
+        Set("upd_invite", b.V.Line);
+        SaveCfg();
+        UpdPictures(b);
+        Ui(delegate { UpdInviteShow(); });
+    }
+    static void UpdPictures(RelChan b)
+    {
+        List<Image> l = new List<Image>();
+        List<string> caps = new List<string>();
+        foreach (string[] im in b.Pictures)
+        {
+            if (l.Count == 2) break;
+            try
+            {
+                string f = Path.Combine(UpdDir, "cache", im[1] + ".img");
+                if (!File.Exists(f) || Sha256File(f) != im[1])
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(f));
+                    UFetch(im[0], f, 15000, false, 8 << 20);
+                    if (Sha256File(f) != im[1]) { UDelFile(f); Log("picture " + im[0] + ": its SHA-256 isn't release.json's, left out"); continue; }
+                }
+                using (MemoryStream ms = new MemoryStream(File.ReadAllBytes(f)))
+                using (Image raw = Image.FromStream(ms)) l.Add(new Bitmap(raw));
+                caps.Add(im[2]);
+            }
+            catch (Exception e) { Log("picture left out: " + e.Message); }
+        }
+        invitePics = l; inviteCaps = caps;
+    }
+    static void UpdInviteShow()
+    {
+        RelChan b = relBeta;
+        if (b == null || form == null) return;
+        if (invitePics == null) { invitePics = new List<Image>(); inviteCaps = new List<string>(); }
+        bool yes;
+        using (BetaInvite d = new BetaInvite(b, invitePics, inviteCaps)) yes = d.ShowDialog(form) == DialogResult.OK;
+        if (yes) UpdTryBeta();
+    }
+    static void UpdTryBeta()
+    {
+        Set("beta_updates", "1");
+        SaveCfg();
+        UpdToggle(true);
+        UpdBadge(null);
+        UpdSwitchNow("Switching to Uplink " + (relBeta != null ? relBeta.V.Full : "beta") + "...");
+    }
+    static void UpdSwitchNow(string what)
+    {
+        if (busy) { Status("Close the game first: the switch is made the next time you press PLAY.", CAmber); return; }
+        Background(delegate {
+            Status(what, CAmber);
+            updAuto = true;
+            try { Install(Mode.Play); } finally { updAuto = false; }
+            UpdCheck();
+        });
+    }
+    // Settings > Updates > Beta updates
+    static void UpdBetaSwitched(bool on)
+    {
+        Set("beta_updates", on ? "1" : "0");
+        SaveCfg();
+        if (NoUpdate) { Status("Updates are off in this folder (no_update.txt).", CText); return; }
+        if (on)
+        {
+            UpdBadge(null);
+            if (relBeta != null && (relStable == null || relBeta.V.CompareTo(relStable.V) > 0) && VerCmp(relBeta.Version, Installed) > 0)
+            {
+                if (Ask("Install Uplink " + relBeta.V.Full + " now?\n\n(No: it is installed the next time you press PLAY.)")) UpdSwitchNow("Switching to Uplink " + relBeta.V.Full + "...");
+                else Status("Beta updates on: Uplink " + relBeta.V.Short + " is installed the next time you press PLAY.", CGreen);
+            }
+            else Status("Beta updates on: you get the next beta as soon as there is one.", CGreen);
+            return;
+        }
+        if (SemVer.Parse(Installed) != null && SemVer.Parse(Installed).IsPre && relStable != null)
+        {
+            if (Ask("Go back to Uplink " + relStable.V.Full + " (stable) now?\n\nYour " + relStable.V.Short + " settings come back as you left them.\n(No: at the next PLAY.)"))
+                UpdSwitchNow("Going back to Uplink " + relStable.V.Full + "...");
+            else Status("Beta updates off: back to Uplink " + relStable.V.Short + " the next time you press PLAY.", CGreen);
+        }
+        else Status("Beta updates off.", CGreen);
+        UpdInviteCheck(false);
+    }
+    // a beta tester whose beta became the stable version: once, keep getting betas or not
+    static void UpdFinalCheck()
+    {
+        SemVer inst = SemVer.Parse(Installed);
+        if (Cfg("beta_updates") != "1" || relStable == null || relTarget != relStable || inst == null || !inst.IsPre) return;
+        if (relStable.V.CompareTo(inst) <= 0 || Cfg("upd_final_asked") == relStable.V.Line) return;
+        Set("upd_final_asked", relStable.V.Line);
+        SaveCfg();
+        RelChan s = relStable;
+        Ui(delegate {
+            bool keep;
+            using (FinalAsk d = new FinalAsk(s)) keep = d.ShowDialog(form) != DialogResult.No;
+            Set("beta_updates", keep ? "1" : "0");
+            SaveCfg();
+            UpdToggle(keep);
+            Status(keep ? "You keep getting betas. Uplink " + s.V.Short + " is installed the next time you press PLAY."
+                : "Stable only from now on. Uplink " + s.V.Short + " is installed the next time you press PLAY.", CGreen);
+        });
+    }
+    // Tools: Check for updates now (a version rolled back from comes back), Roll back to previous version
+    static void UpdCheckNow()
+    {
+        if (NoUpdate) { Status("Updates are off in this folder (no_update.txt): nothing was checked.", CText); return; }
+        Set("upd_skip", "");
+        SaveCfg();
+        Background(delegate {
+            updAuto = true;
+            try { Install(Mode.Play); } finally { updAuto = false; }
+            string l = Cfg("upd_last");
+            if (l.StartsWith("ok ") || l.StartsWith("uptodate ") || l == "") Status("Up to date: Uplink " + VerFull(Installed) + ".", CGreen);
+            CheckUpdates();
+        });
+    }
+    static void UpdToolsItems(ContextMenuStrip m)
+    {
+        string back = PrevVersion();
+        ToolStripItem it = m.Items.Add(back != null ? "Roll back to previous version (" + VerFull(back) + ")" : "Roll back to previous version", null, delegate { UpdRollback(); });
+        it.Enabled = back != null && !NoUpdate;
+    }
+
+    // ---- co-op: two different versions. Uplink 2.8 and later say the friend's version ("friend is on Uplink 2.8
+    // beta"); 2.7 only its co-op protocol ("host 4, you 3", "HELLO4"): told by this table
+    static readonly string[][] COOP_PROTOCOLS = { new[] { "3", "2.7" }, new[] { "4", "2.8" } };
+    static string coopTheirs, coopOurs;
+    static string UpdCoopText(string t)
+    {
+        Match f = Regex.Match(t, @"friend is on (Uplink [^:;,()]+)");
+        if (f.Success) return "Your friend is on " + f.Groups[1].Value.Trim() + ": both need the same version (Beta updates, in Settings).";
+        string theirs = coopTheirs, ours = coopOurs;          // (one line may say the friend's, another ours)
+        Match h = Regex.Match(t, @"host (\S+), you (\d+)");
+        if (h.Success) { theirs = h.Groups[1].Value; ours = h.Groups[2].Value; }
+        Match g = Regex.Match(t, @"HELLO(\d+)");
+        if (g.Success) theirs = g.Groups[1].Value;
+        Match y = Regex.Match(t, @"yours: (\d+)");
+        if (y.Success) ours = y.Groups[1].Value;
+        coopTheirs = theirs; coopOurs = ours;
+        string name = null;
+        foreach (string[] p in COOP_PROTOCOLS) if (p[0] == theirs) name = p[1];
+        int a, b;
+        if (theirs != null && ours != null && int.TryParse(theirs, out a) && int.TryParse(ours, out b) && a != b)
+        {
+            if (a > b) return "Your friend is on a newer Uplink (" + (name ?? "protocol " + theirs) + "): both need the same version. Switch on Beta updates " +
+                "(in Settings) if it is a beta, or your friend goes back to stable.";
+            return "Your friend is on an older Uplink (" + (name ?? "protocol " + theirs) + "): both need the same version. Your friend updates (PLAY " +
+                "updates it), or you go back to stable (Beta updates, in Settings).";
+        }
+        if (theirs == "older") return "Your friend is on an older Uplink: both need the same version (your friend updates with PLAY).";
+        return "Different versions: both of you need the same Uplink (Beta updates, in Settings).";
+    }
+
+    // ---- the invitation and the final question: dark, orange, Bahnschrift, drawn at the window's scale
+    [DllImport("user32.dll", EntryPoint = "GetDC")] static extern IntPtr UGetDC(IntPtr h);
+    [DllImport("user32.dll", EntryPoint = "ReleaseDC")] static extern int UReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll", EntryPoint = "GetDeviceCaps")] static extern int UGetDeviceCaps(IntPtr dc, int what);
+    static int udpi;
+    static int UDpi()
+    {
+        if (udpi != 0) return udpi;
+        udpi = 96;
+        try { IntPtr dc = UGetDC(IntPtr.Zero); if (dc != IntPtr.Zero) { int d = UGetDeviceCaps(dc, 88); UReleaseDC(IntPtr.Zero, dc); if (d >= 48 && d <= 960) udpi = d; } } catch { }
+        return udpi;
+    }
+    static Font UFont(float px, bool bold)
+    {
+        float size = (float)Math.Round(px * UpdScale()) * 72f / UDpi();
+        foreach (string n in bold ? new[] { "Bahnschrift SemiBold", "Segoe UI Semibold" } : new[] { "Bahnschrift", "Segoe UI" })
+        {
+            Font f = new Font(n, size, FontStyle.Regular, GraphicsUnit.Point);
+            if (f.Name == n) return f;
+            f.Dispose();
+        }
+        return new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
+    }
+    static GraphicsPath URound(RectangleF r, float rad)
+    {
+        GraphicsPath p = new GraphicsPath();
+        float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+    static Color UMix(Color a, Color b, float t) { return Color.FromArgb((int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t)); }
+
+    class UButton : Control
+    {
+        public bool Primary;
+        bool over;
+        public UButton()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            Cursor = Cursors.Hand; TabStop = true;
+        }
+        protected override void OnMouseEnter(EventArgs e) { over = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { over = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { Focus(); base.OnMouseDown(e); }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Enter || k == Keys.Space || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) OnClick(EventArgs.Empty); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : CBack);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float z = UpdScale();
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            Color fill = Primary ? (over ? UMix(UOrange, Color.White, 0.18f) : UOrange) : (over ? UMix(CPanel, CText, 0.10f) : CPanel);
+            using (GraphicsPath p = URound(r, 6 * z))
+            {
+                using (Brush b = new SolidBrush(fill)) g.FillPath(b, p);
+                if (!Primary) using (Pen l = new Pen(UEdge)) g.DrawPath(l, p);
+            }
+            if (Focused && ShowFocusCues)
+                using (GraphicsPath p = URound(RectangleF.Inflate(r, -3 * z, -3 * z), 4 * z))
+                using (Pen l = new Pen(Primary ? UInk : CText)) { l.DashStyle = DashStyle.Dot; g.DrawPath(l, p); }
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle, Primary ? UInk : CText, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+    }
+
+    class BetaInvite : Form
+    {
+        RelChan b;
+        float z;
+        Font fTag, fTitle, fSub, fHead, fItem, fNote, fCap;
+        List<Image> pics; List<string> caps;
+        Rectangle notes;
+        int scroll, contentH;
+        int Z(float v) { return (int)Math.Round(v * z); }
+        public BetaInvite(RelChan beta, List<Image> pictures, List<string> captions)
+        {
+            b = beta; pics = pictures; caps = captions; z = UpdScale();
+            Text = "Uplink " + b.V.Line + " beta";
+            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText; KeyPreview = true; DoubleBuffered = true;
+            fTag = UFont(10, true); fTitle = UFont(25, true); fSub = UFont(14, false); fHead = UFont(11, true); fItem = UFont(13, false);
+            fNote = UFont(12, false); fCap = UFont(11, false);
+            Font = UFont(14, true);
+            int W = 600, H = pics.Count > 0 ? 600 : 480;
+            ClientSize = new Size(Z(W), Z(H));
+            int pich = pics.Count > 0 ? 150 + 26 : 0;
+            notes = new Rectangle(Z(28), Z(132), Z(W - 56), Z(H - 76 - 16 - 132 - pich));
+            UButton yes = new UButton { Primary = true, Text = "Try the beta", Name = "try_beta", Font = Font, Bounds = new Rectangle(Z(W - 28 - 160), Z(H - 58), Z(160), Z(40)) };
+            UButton no = new UButton { Text = "Not now", Name = "not_now", Font = Font, Bounds = new Rectangle(Z(W - 28 - 160 - 12 - 116), Z(H - 58), Z(116), Z(40)) };
+            yes.Click += delegate { DialogResult = DialogResult.OK; };
+            no.Click += delegate { DialogResult = DialogResult.Cancel; };
+            Controls.Add(no); Controls.Add(yes);
+            Shown += delegate { yes.Focus(); };
+            MouseWheel += delegate(object s, MouseEventArgs e) { ScrollBy(-e.Delta / 120 * Z(36)); };
+            using (Graphics g = CreateGraphics()) contentH = DrawNotes(g, false);
+        }
+        void ScrollBy(int dy) { int max = Math.Max(0, contentH - notes.Height); int s = Math.Max(0, Math.Min(max, scroll + dy)); if (s != scroll) { scroll = s; Invalidate(notes); } }
+        protected override bool ProcessCmdKey(ref Message msg, Keys k)
+        {
+            if (k == Keys.Escape) { DialogResult = DialogResult.Cancel; return true; }
+            if (k == Keys.Down || k == Keys.PageDown) { ScrollBy(k == Keys.Down ? Z(36) : notes.Height - Z(20)); return true; }
+            if (k == Keys.Up || k == Keys.PageUp) { ScrollBy(k == Keys.Up ? -Z(36) : -(notes.Height - Z(20))); return true; }
+            return base.ProcessCmdKey(ref msg, k);
+        }
+        // the changelog by sections; its height (drawn only when draw)
+        int DrawNotes(Graphics g, bool draw)
+        {
+            int y = 0, w = notes.Width - Z(14);
+            TextFormatFlags wrap = TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl | TextFormatFlags.PreserveGraphicsClipping;
+            List<KeyValuePair<string, List<string>>> secs = b.Changes.Count > 0 ? b.Changes :
+                new List<KeyValuePair<string, List<string>>> { new KeyValuePair<string, List<string>>("What's new", new List<string> { "See What's new once it is installed." }) };
+            foreach (KeyValuePair<string, List<string>> s in secs)
+            {
+                if (draw) TextRenderer.DrawText(g, s.Key.ToUpperInvariant(), fHead, new Point(notes.X, notes.Y + y - scroll), UOrange, TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
+                y += Z(22);
+                foreach (string it in s.Value)
+                {
+                    Size sz = TextRenderer.MeasureText(g, it, fItem, new Size(w - Z(18), 10000), wrap);
+                    if (draw)
+                    {
+                        using (Brush br = new SolidBrush(UOrange)) g.FillRectangle(br, notes.X + Z(2), notes.Y + y - scroll + Z(7), Z(5), Z(5));
+                        TextRenderer.DrawText(g, it, fItem, new Rectangle(notes.X + Z(18), notes.Y + y - scroll, w - Z(18), sz.Height), CText, wrap);
+                    }
+                    y += sz.Height + Z(6);
+                }
+                y += Z(12);
+            }
+            return y;
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int W = ClientSize.Width, H = ClientSize.Height;
+            using (Brush top = new SolidBrush(UOrange)) g.FillRectangle(top, 0, 0, W, Z(3));
+            // BETA tag, the title, the subtitle
+            string tag = b.V.Full.ToUpperInvariant();       // "2.8 BETA 1"
+            Size ts = TextRenderer.MeasureText(g, tag, fTag, new Size(1000, 100), TextFormatFlags.NoPadding);
+            RectangleF tr = new RectangleF(Z(28), Z(24), ts.Width + Z(18), Z(20));
+            using (GraphicsPath p = URound(tr, Z(10))) using (Pen l = new Pen(UOrange, Math.Max(1f, z))) g.DrawPath(l, p);
+            TextRenderer.DrawText(g, tag, fTag, Rectangle.Round(tr), UOrange, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, b.Title ?? "Uplink " + b.V.Line + " is in beta", fTitle, new Point(Z(26), Z(52)), CText, TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, b.Subtitle ?? "Try the next version before everyone else. You can go back to stable at any time.", fSub,
+                new Rectangle(Z(28), Z(90), W - Z(56), Z(36)), CDim, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            using (Pen l = new Pen(CLine)) g.DrawLine(l, Z(28), Z(122), W - Z(28), Z(122));
+            // the changelog (scrolls with the wheel and the arrows when it is longer than its place)
+            GraphicsState st = g.Save();
+            g.SetClip(notes);
+            DrawNotes(g, true);
+            g.Restore(st);
+            if (contentH > notes.Height)
+            {
+                float th = Math.Max(Z(24), notes.Height * (float)notes.Height / contentH), ty = notes.Y + (notes.Height - th) * scroll / (contentH - notes.Height);
+                using (Brush sb = new SolidBrush(CLine)) g.FillRectangle(sb, notes.Right - Z(4), notes.Y, Z(3), notes.Height);
+                using (Brush sb = new SolidBrush(CDim)) g.FillRectangle(sb, notes.Right - Z(4), ty, Z(3), th);
+            }
+            // the pictures (at most two, each with its caption)
+            if (pics.Count > 0)
+            {
+                int pw = (W - Z(56) - Z(16)) / 2, ph = Z(150), py = H - Z(76) - Z(16) - ph - Z(26);
+                for (int i = 0; i < pics.Count; i++)
+                {
+                    Rectangle box = new Rectangle(Z(28) + i * (pw + Z(16)), py, pw, ph);
+                    Image im = pics[i];
+                    float k = Math.Max((float)box.Width / im.Width, (float)box.Height / im.Height);
+                    RectangleF src = new RectangleF((im.Width - box.Width / k) / 2, (im.Height - box.Height / k) / 2, box.Width / k, box.Height / k);
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    using (GraphicsPath p = URound(box, Z(6)))
+                    {
+                        GraphicsState s2 = g.Save();
+                        g.SetClip(p);
+                        g.DrawImage(im, box, src, GraphicsUnit.Pixel);
+                        g.Restore(s2);
+                        using (Pen l = new Pen(UEdge)) g.DrawPath(l, p);
+                    }
+                    if (i < caps.Count && caps[i] != "")
+                        TextRenderer.DrawText(g, caps[i], fCap, new Rectangle(box.X, box.Bottom + Z(6), box.Width, Z(18)), CDim, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                }
+            }
+            // the foot: how to go back, the two buttons (controls)
+            using (Pen l = new Pen(CLine)) g.DrawLine(l, 0, H - Z(76), W, H - Z(76));
+            TextRenderer.DrawText(g, "Back to stable at any time:\nBeta updates, in Settings.", fNote, new Rectangle(Z(28), H - Z(58), Z(250), Z(40)), CDim,
+                TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+        }
+    }
+
+    class FinalAsk : Form
+    {
+        float z;
+        int Z(float v) { return (int)Math.Round(v * z); }
+        RelChan s;
+        Font fTitle, fBody;
+        public FinalAsk(RelChan stable)
+        {
+            s = stable; z = UpdScale();
+            Text = "Uplink " + s.V.Short;
+            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText; KeyPreview = true; DoubleBuffered = true;
+            fTitle = UFont(23, true); fBody = UFont(14, false); Font = UFont(14, true);
+            ClientSize = new Size(Z(540), Z(272));
+            UButton keep = new UButton { Primary = true, Text = "Keep getting betas", Name = "keep_betas", Font = Font, Bounds = new Rectangle(Z(540 - 28 - 190), Z(272 - 58), Z(190), Z(40)) };
+            UButton stab = new UButton { Text = "Stable only", Name = "stable_only", Font = Font, Bounds = new Rectangle(Z(540 - 28 - 190 - 12 - 140), Z(272 - 58), Z(140), Z(40)) };
+            keep.Click += delegate { DialogResult = DialogResult.Yes; };
+            stab.Click += delegate { DialogResult = DialogResult.No; };
+            Controls.Add(stab); Controls.Add(keep);
+            Shown += delegate { keep.Focus(); };
+        }
+        protected override bool ProcessCmdKey(ref Message msg, Keys k)
+        {
+            if (k == Keys.Escape) { DialogResult = DialogResult.Cancel; return true; }
+            return base.ProcessCmdKey(ref msg, k);
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            int W = ClientSize.Width, H = ClientSize.Height;
+            using (Brush top = new SolidBrush(UOrange)) g.FillRectangle(top, 0, 0, W, Z(3));
+            TextRenderer.DrawText(g, "Uplink " + s.V.Short + " is now final", fTitle, new Point(Z(26), Z(28)), CText, TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, "Thanks for trying the beta. " + s.V.Short + " is the stable version now: it is installed the next time you press PLAY.\n\n" +
+                "Keep getting beta versions when there are new ones?", fBody, new Rectangle(Z(28), Z(74), W - Z(56), Z(110)), CDim, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            using (Pen l = new Pen(CLine)) g.DrawLine(l, 0, H - Z(76), W, H - Z(76));
+        }
+    }
+
+    // the badge at the foot of the side bar ("2.8 beta"): opens the invitation again
+    class UBadge : Control
+    {
+        bool over;
+        public UBadge()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            Cursor = Cursors.Hand; TabStop = true; Visible = false; Name = "beta_badge";
+            Click += delegate { UpdInviteShow(); };
+        }
+        protected override void OnMouseEnter(EventArgs e) { over = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { over = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override bool IsInputKey(Keys k) { return k == Keys.Enter || k == Keys.Space || base.IsInputKey(k); }
+        protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) OnClick(EventArgs.Empty); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : CPanel);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float z = UpdScale();
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath p = URound(r, Height / 2f))
+            {
+                using (Brush b = new SolidBrush(over ? UMix(CPanel, UOrange, 0.22f) : UMix(CPanel, UOrange, 0.10f))) g.FillPath(b, p);
+                using (Pen l = new Pen(UOrange, Math.Max(1f, z))) g.DrawPath(l, p);
+            }
+            float d = 6 * z;
+            using (Brush b = new SolidBrush(UOrange)) g.FillEllipse(b, 10 * z, (Height - d) / 2f, d, d);
+            using (Font f = UFont(12, true))
+                TextRenderer.DrawText(g, Text, f, new Rectangle((int)(22 * z), 0, Width - (int)(26 * z), Height), UOrange, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            if (Focused && ShowFocusCues) using (Pen l = new Pen(CText)) { l.DashStyle = DashStyle.Dot; g.DrawRectangle(l, 2, 2, Width - 5, Height - 5); }
+        }
+    }
+    static UBadge badge;
+    static void UpdBadge(string text)
+    {
+        if (badge == null) return;
+        badge.Text = text ?? "";
+        badge.Visible = text != null;
+        badge.Invalidate();
+    }
+}
+
+// ====================================================================================================================
+// RELEASE CHANNELS, host glue: where this launcher's window shows them (Settings > Updates, the side bar's foot)
+// ====================================================================================================================
+static partial class Uplink
+{
+    static Switch betaSwitch;
+    static bool betaLoading;
+    static float UpdScale() { return K; }
+    static void UpdLabel(string s, Color c) { Ui(delegate { if (verLabel == null) return; verLabel.Text = s; verLabel.On = c; verLabel.Invalidate(); }); }
+    static void UpdToggle(bool on) { Ui(delegate { if (betaSwitch == null) return; betaLoading = true; betaSwitch.Checked = on; betaLoading = false; }); }
+    static void UpdSettingsRow(Control card, int x, int y, int w)
+    {
+        betaSwitch = new Switch { Text = "Beta updates", Em = "new versions early", Location = new Point(x, y), Size = new Size(w, 26), Name = "beta_updates" };
+        betaSwitch.Checked = Cfg("beta_updates") == "1";
+        betaSwitch.CheckedChanged += delegate { if (!betaLoading) UpdBetaSwitched(betaSwitch.Checked); };
+        card.Controls.Add(betaSwitch);
+    }
+    static void UpdBadgeAt(Control bar, int x, int y)
+    {
+        badge = new UBadge { Location = new Point(x, y), Size = new Size(114, 26) };
+        bar.Controls.Add(badge);
     }
 }

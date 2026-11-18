@@ -157,6 +157,7 @@ const REG_HOME: Array[Vector2] = [Vector2(17, 276), Vector2(118, 264), Vector2(2
 var reg_move: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
 var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
+var equip: Node                      # his drone and A.S.F. panels ('GEQ' packets, guest_equipment.gd)
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -167,6 +168,9 @@ func _ready() -> void:
 	layer = 9
 	lobby = preload("res://scripts/coop_lobby.gd").new()
 	add_child(lobby)
+	equip = preload("res://scripts/guest_equipment.gd").new()
+	equip.hud = self
+	add_child(equip)
 	udp.bind(HUD_PORT, "127.0.0.1", 1 << 20)
 	font = ThemeDB.fallback_font
 	if "--coop-preview" in OS.get_cmdline_user_args():
@@ -299,6 +303,8 @@ func _process(delta: float) -> void:
 			_cockpit(pk)
 		elif tag == "GLB":
 			lobby.feed(pk)
+		elif tag == "GEQ":
+			equip.feed(pk)
 		elif tag == "SND":
 			if sound == null:
 				sound = preload("res://scripts/coop_sound.gd").new()
@@ -950,6 +956,7 @@ func _draw_panel() -> void:
 		var bp := _box_pic(weapon_type, 0 if weapon_state in [1, 2] else (1 if weapon_state in [4, 5] else -1), weapon_ammo)
 		if bp:
 			panel.draw_texture_rect(bp, _grect(BOX.position.x, BOX.position.y, BOX.end.x, BOX.end.y), false)
+	equip.draw()                                     # his drone / A.S.F. page over the right panel (when shown)
 
 
 # one top bar: its pixels from a to b (counted from its left end) lit, in the game's own led colours (kind 0), the
@@ -1239,11 +1246,15 @@ func _draw_status() -> void:
 
 # the mouse free, a button pressed at a place of the window: true if it was on his map (his marker's, see own_mark)
 func map_click(at: Vector2, right: bool) -> bool:
+	if not right and cockpit.visible and state == 0 and root.size.x > 0 and equip.click(at / root.size * Vector2(320, 400)):
+		return true                                  # (a button of his drone / A.S.F. page, guest_equipment.gd)
 	var box := _map_box()
 	if not cockpit.visible or state != 0 or map_tex == null or not map_told or not box.has_point(at):
 		return false
 	var px := (at - box.position) / box.size * Vector2(map_tex.get_size())
 	var w := Vector2(map_from) + Vector2(px.x, px.y / 2.0) * map_step
+	if not right and equip.map_click(w):             # his drone waits for a destination: sent there
+		return true
 	var on_it := own_mark.x != 0.0 and absf(w.x - own_mark.x) <= 2.0 * map_step and absf(w.y - own_mark.y) <= 2.0 * map_step
 	mark_want = Vector2.ZERO if right or on_it else w.clamp(Vector2(1, 1), Vector2(511, 511))
 	mark_want_t = clock

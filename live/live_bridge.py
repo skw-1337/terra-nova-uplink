@@ -1173,12 +1173,24 @@ def carte_ordres():
 # Squadmates' subtitles (subtitles.py; the launcher's "Subtitles": nothing of it otherwise): who speaks and what the
 # clip he plays means, told to the viewer ('SUBT') when it starts and while it plays
 sous_titres = None
+sous_titres_faits = None                                # (made once: turned off and on again from Uplink's menu)
+
+
+def subs_switch(on):
+    """Uplink's menu (Options: "Squadmates' subtitles", packet 'SUBS' + '1' / '0'): on or off while the game runs"""
+    global sous_titres, sous_titres_faits
+    if on and sous_titres_faits is None:
+        import subtitles
+        try:
+            sous_titres_faits = subtitles.Subtitles(g, code, FR, os.environ.get('TN_GAME_DIR'), log=lambda *a: print(*a, flush=True))
+        except Exception as ex:
+            print('subtitles: %r' % (ex,), flush=True)
+            return
+    sous_titres = sous_titres_faits if on else None
+
+
 if os.environ.get('TN_SUBTITLES') == '1':
-    import subtitles
-    try:
-        sous_titres = subtitles.Subtitles(g, code, FR, os.environ.get('TN_GAME_DIR'), log=lambda *a: print(*a, flush=True))
-    except Exception as ex:
-        print('subtitles: %r' % (ex,), flush=True)
+    subs_switch(True)
 
 
 # The viewer's photo mode ('X' + 1: wanted, + 0: left; said twice a second while it lasts). The mission is paused and
@@ -1337,6 +1349,10 @@ def handle_input():
             break
         if pk == b'QUIT':                               # Uplink's menu: Quit (uplink_menu.gd quit_game)
             quitter()
+        elif pk[:4] == b'SUBS' and len(pk) >= 5:         # Uplink's menu: the subtitles on / off
+            if (pk[4:5] == b'1') != (sous_titres is not None):
+                subs_switch(pk[4:5] == b'1')
+                print('subtitles: %s (Uplink menu)' % ('on' if sous_titres is not None else 'off'), flush=True)
         elif pk[:1] == b'K' and len(pk) >= 4:
             sc, down = struct.unpack('<HB', pk[1:4])
             with touches:

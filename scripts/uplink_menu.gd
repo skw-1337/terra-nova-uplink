@@ -21,7 +21,8 @@ const DIM := Color8(122, 150, 142)
 const RED := Color8(236, 72, 60)
 const GROUPS := ["Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Gamepad", "Uplink"]
 const FX := [["cloud_shadows", "Cloud shadows", true], ["cliffs", "Unstretched cliffs", true], ["stars", "Sharp stars", true],
-		["marks", "Impact marks", false], ["lights", "Light from shots", false], ["look_down", "Look further down", false]]
+		["marks", "Impact marks", true], ["lights", "Light from shots", true], ["look_down", "Look further down", false],
+		["tracks", "Footprints and tracks", true]]
 
 var v: Node                        # the viewer
 var guest := false

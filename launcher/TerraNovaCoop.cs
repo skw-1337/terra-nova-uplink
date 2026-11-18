@@ -197,9 +197,9 @@ static class Uplink
     static bool loading;                                      // the options are being put on the pages: nothing is saved
     static int capValue;                                      // the frame limit (0: none)
     // Uplink's extras on top of the game's look, each on unless switched off (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
-    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars" };
-    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars" };
-    static Switch[] fxTicks = new Switch[6];
+    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks" };
+    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars", "Footprints, tracks" };
+    static Switch[] fxTicks = new Switch[7];
     static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Controls", "Settings" };
     const int SB = 150, MW = 610, MH = 500;                   // the side bar's width, a page's size
     const int P_WHEEL = 6;                                    // the order wheel's page (opened from In game)
@@ -523,7 +523,7 @@ static class Uplink
 
         c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 376, MW - 36, 104);
         for (int i = 0; i < FX.Length; i++)
-            fxTicks[i] = Row(c, FX_NAMES[i], X + 190 * (i % 3), 32 + RH * (i / 3), 168, COrange, save);
+            fxTicks[i] = Row(c, FX_NAMES[i], X + 142 * (i % 4), 32 + RH * (i / 4), 134, COrange, save);
     }
 
     // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed; the folder; updates; links
@@ -3725,7 +3725,7 @@ static class Uplink
         long stamp, had;
         string st;
         if (!s.TryGetValue("stamp", out st) || !long.TryParse(st, out stamp) || (long.TryParse(Cfg("game_stamp"), out had) && had >= stamp)) return false;
-        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars",
+        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks",
             "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps" };
         foreach (string k in allowed)
         {

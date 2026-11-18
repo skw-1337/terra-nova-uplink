@@ -602,7 +602,7 @@ static partial class Uplink
         { "cloud_shadows", new[] { "Cloud shadows", "The sky's clouds cast drifting shadows on the ground." } },
         { "look_down", new[] { "Look further down", "The view goes on down past the game's 45 degrees." } },
         { "cliffs", new[] { "Unstretched cliffs", "Steep faces textured along the slope, not stretched tiles." } },
-        { "stars", new[] { "Sharp stars", "The stars of airless skies as sharp points at your resolution." } },
+        { "stars", new[] { "Sharp stars", "Airless skies' stars as clean round points, not smeared pixels." } },
         { "tracks", new[] { "Footprints, tracks", "Suits and mechs leave footprints, vehicles leave tracks." } },
         { "own_body", new[] { "Own body", "Your own legs and feet when you look down." } } };
     static PresetTile[] presetTiles = new PresetTile[5];

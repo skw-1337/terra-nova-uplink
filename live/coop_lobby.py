@@ -43,6 +43,17 @@ SPARE_FACES = (31, 32)             # RESBASE 215 portraits no campaign pilot has
 SPECS = {1: 'Recon', 2: 'Weapons', 3: 'Demolitions', 4: 'Electronics', 5: 'Repair'}
 STATUS_NAMES = ['Available', 'Injured', 'Away on Mission', 'Ready']
 UNDO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'coop_lobby_undo.json')
+# The host and the guest pick at the same time. The redraw (0x0B) is handed to the screen's task by the game's own way
+# (0x2E809C: only while the task waits for 0x101, else dropped), and while the task redraws, every click of the host
+# that comes is dropped the same way (the task is not waiting): a redraw of ours costs the host the clicks of that
+# moment. So it is posted only while the host is idle: the screen waiting where it waits between clicks
+# (OUTFIT_SIG), the game's mouse queue empty, no mouse event of his for IDLE seconds, at most one each REDRAW_GAP.
+# Picks of the guest meanwhile are already in his column's data; they show at that redraw or at the host's own next
+# click (the game redraws every column after each of its own picks).
+IDLE, REDRAW_GAP = 0.8, 1.0
+# the game's mouse library (as mission_play.py / live_bridge.py find it): movzx esi, word [read index] / shl esi, 4 /
+# lea esi, [esi + queue]; the write index is the word before the read index
+MOUSE_SIG = rb'\x0f\xbf\x35(....)\xc1\xe6\x04\x8d\xb6(....)'
 
 
 class Lobby:
@@ -65,6 +76,12 @@ class Lobby:
         self.face_done, self.face_t = False, 0.0   # his face put on that screen (RESBASE 215 is not always loaded)
         self.outfit_t = 0.0              # the outfitting screen last seen: a redraw makes it busy for a moment
         self.undo = []                   # [(address, old bytes, new bytes)]
+        self.mouse = None                # (read index, write index) of the game's mouse queue; False: not found
+        self.mouse_w, self.mouse_t = None, 0.0   # its write index last seen, and when it last moved (the host's input)
+        self.redraw_t = 0.0              # our last redraw
+        self.redraws = 0                 # (tests: how many were posted)
+        self.mine = None                 # the guest's column as he left it (pilot .. ASF): the host may not change it
+        self.kept = 0                    # (tests: how many host changes to it were put back)
         self._load(data_dir)
         self._undo_old_run()
         atexit.register(self.untag)
@@ -208,9 +225,37 @@ class Lobby:
             return False
         return self.g.read(t + 0x10, 3) == OUTFIT_SIG    # another screen waiting for 0x101 never gets our event
 
+    def _mouse_at(self):
+        if self.mouse is None:
+            import re
+            self.mouse = False
+            try:
+                m = re.search(MOUSE_SIG, self.g.read(0x244000, 0x111000), re.S)
+                if m:
+                    rd = struct.unpack('<I', m.group(1))[0]
+                    self.mouse = (rd, rd - 4)
+            except (OSError, TypeError):
+                pass
+        return self.mouse
+
+    def host_idle(self, now=None):
+        """the host is not using the screen: his mouse queue empty and nothing new in it for IDLE seconds"""
+        now = time.time() if now is None else now
+        m = self._mouse_at()
+        if not m:
+            return now - self.redraw_t > 3.0             # (not found: rarely, as a last resort)
+        rd, wr = (self.u16(a) for a in m)
+        if wr != self.mouse_w:
+            self.mouse_w, self.mouse_t = wr, now
+        return rd == wr and now - self.mouse_t >= IDLE
+
     def redraw(self):
-        """posts the redraw (0x0B) to the outfitting task when it waits for it, else keeps it for later"""
+        """the redraw (0x0B) wanted: posted to the outfitting task when it waits for it between the host's clicks and
+        he is idle (see IDLE), else kept for later (tick)"""
         self.dirty = True
+        now = time.time()
+        if now - self.redraw_t < REDRAW_GAP or not self.host_idle(now):
+            return False
         t = self.task()
         if not t or not self.on_screen():
             return False
@@ -221,6 +266,8 @@ class Lobby:
         self.g.write(t + 0x80, struct.pack('<H', (struct.unpack_from('<H', o, 0x80)[0] + 1) & 0xFFFF))
         self.g.write(t + 0x24, b'\x00\x00')          # last: the task wakes up and draws
         self.dirty = False
+        self.redraw_t = now
+        self.redraws += 1
         return True
 
     def outfit_up(self, in_mission):
@@ -242,13 +289,33 @@ class Lobby:
             if want:
                 self._put_tag(*want)
             self.tag = want
-            self.redraw()
+            self.dirty = True
         elif want and want[3] and not self.face_done and time.time() - self.face_t > 1.0:
-            self.face_t = time.time()                  # his face: the portraits were not loaded, again
-            if self._put_face(want[0], want[3]):
-                self.redraw()
-        if self.dirty:
+            self.face_t = time.time()                  # his face: the portraits were not loaded, again (written only:
+            if self._put_face(want[0], want[3]):       # it shows at the next redraw, no redraw of its own)
+                self.dirty = True
+        if self.col and self.outfit_up(in_mission):
+            self.guard()
+        else:
+            self.mine = None
+        if self.dirty and self.outfit_up(in_mission):
             self.redraw()
+
+    def _mine_now(self):
+        return self.g.read(SQUAD + SQUAD_N * self.col + 6, 8)
+
+    def guard(self):
+        """the guest's column is his: what the host changes in it (a click on that column of the game's screen) is
+        put back, unless the host locked it (then it is the host's to set); the host's own column is never written"""
+        now = self._mine_now()
+        if self.mine is None or self.locked:
+            self.mine = now
+        elif now != self.mine:
+            self.g.write(SQUAD + SQUAD_N * self.col + 6, self.mine)
+            self.kept += 1
+            self.dirty = True
+            if self.kept == 1 or self.kept % 10 == 0:
+                self.say('host', '* %s\'s column is his own: change it after locking it *' % (self.guest_name or 'The guest'))
 
     # ---- the host's screen: the guest's name and face on his column
     def _write(self, a, data):
@@ -378,12 +445,12 @@ class Lobby:
                 return None
             if self.locked and self.col:
                 return 'join refused: locked'
-            self.col, self.ready = c, False
+            self.col, self.ready, self.mine = c, False, None
             return 'joined column %d' % (c + 1)
         if act == 'leave':
             if self.locked:
                 return 'leave refused: locked'
-            self.col, self.ready = 0, False
+            self.col, self.ready, self.mine = 0, False, None
             return 'left the squad'
         if not self.col or self.locked:
             return None
@@ -425,7 +492,8 @@ class Lobby:
             self.g.write(base + 0xD, bytes([a]))
         else:
             return None
-        self.redraw()
+        self.mine = self._mine_now()                   # (his own change: not one to put back)
+        self.dirty = True                              # (shown at the next redraw the host's idleness allows)
         return '%s %s' % (act, msg.get('id', msg.get('row', '')))
 
     def _asf_for_pilot(self, row):

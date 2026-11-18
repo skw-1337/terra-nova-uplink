@@ -32,7 +32,7 @@ const BELLY_FROM := 0.25                      # (model) the torso's lowest 30 %:
 const BELLY_W := 20.0                        # ... held to this half width (its pictures hold the arms too)
 const BELLY_DOME := 6.0                      # ... its top rounded back over this many rows (no flat lid)
 const BODY_GAIN := 1.35                      # (model) brighter than the pictures: lit from above, the suit's dark armour went black
-const PIECE_FADE := Vector2(0.05, 0.13)      # (model) a piece whose surface comes this near the eye dissolves, whole (a thigh
+const PIECE_FADE := Vector2(0.05, 0.065)      # (model) a piece whose surface comes this near the eye dissolves, whole (a thigh
                                              # swinging up; cut by the camera's near plane its inside showed)
 const THIGH_TAPER := 0.75                    # (model) the thighs' tops held to this much of their middle
 const THIGH_SLIM := 0.72                      # (model) the thighs this slim, their hip pads held to their middle
@@ -235,8 +235,8 @@ func _build(node: Node3D) -> void:
 		var part: Array = parts[k]
 		var belly: bool = body_mode == "model" and mini(part[1], part[2]) == 8 and maxi(part[1], part[2]) == 9
 		# (model) the whole suit as the others see it, from his eye at its head (as other games' full body views): legs,
-		# torso below the neck, upper arms; not the forearms and the weapon pods (his weapon is the game's)
-		var upper_arm: bool = body_mode == "model" and mini(part[1], part[2]) in [10, 11] and maxi(part[1], part[2]) in [12, 13]
+		# torso below the neck; not the arms and the weapon pods (his weapon is the game's)
+		var upper_arm := false        # (tried: at the eye's sides, dissolving, they hung there as half-seen blobs)
 		if maxi(part[1], part[2]) > 7 and not belly and not upper_arm:
 			continue
 		var seg: MeshInstance3D = part[0]

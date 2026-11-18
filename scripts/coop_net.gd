@@ -244,8 +244,6 @@ func _process(delta: float) -> void:
 				var tag := pk.slice(0, 3).get_string_from_ascii()
 				if tag == "GLB" and lobby_label:
 					_lobby_seen(pk)
-				if tag == "GLB":
-					pk = _glb_more(pk)
 				# a lost delta, a moment's beams, a HUD state (10 a second) or a sound (the bridge says the voices still
 				# playing twice a second: a lost end is caught up) breaks nothing; sent reliable, they waited behind the
 				# big reliable messages (the cockpit's picture, keyframes, decor) and came late, more and more so
@@ -865,20 +863,6 @@ func _on_chat(t: String) -> void:
 
 
 # host: the lobby state going to the guest (the bridge's 'GLB'): his column, ready, the chat, under the lock button
-# the lobby's state for the guest (coop_lobby.py), with what only this window knows: the link ("ok" / "slow") and its
-# ping (ms, -1 not measured yet), the host's own Steam name on his column (who_name)
-func _glb_more(pk: PackedByteArray) -> PackedByteArray:
-	var j = JSON.parse_string(pk.slice(3).get_string_from_utf8())
-	if typeof(j) != TYPE_DICTIONARY:
-		return pk
-	j["ping"] = ping_ms
-	j["link"] = "slow" if ping_ms >= 200 else "ok"
-	var cols = j.get("cols", [])
-	if cols is Array and cols.size() > 0 and cols[0] is Dictionary and steam:
-		cols[0]["who_name"] = steam.getPersonaName()
-	return ("GLB" + JSON.stringify(j)).to_utf8_buffer()
-
-
 func _lobby_seen(pk: PackedByteArray) -> void:
 	var j = JSON.parse_string(pk.slice(3).get_string_from_utf8())
 	if typeof(j) != TYPE_DICTIONARY:

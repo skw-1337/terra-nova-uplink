@@ -9,10 +9,14 @@
 import math, struct
 import numpy as np
 
-UNIT_BODY = {1: (0.30, 0.0, 0.75), 2: (0.55, 0.0, 0.6)}   # class: radius, bottom, top (units, from the entity's z)
+UNIT_BODY = {1: (0.35, -0.1, 0.8), 2: (0.55, -0.1, 0.65)}   # class: radius, bottom, top (units, from the entity's z)
 STEP = 0.25                                                  # the ground: a test every this many units along the line
 FAR = 150.0                                                  # no weapon range known: this far
 HMAP, HMAP_N = 0x36F50A, 513                                 # the game's height map (as coop_guest.py)
+PICK_CONE = math.radians(20)                                  # his window's pick: at most this far aside from his view
+PICK_DOWN, PICK_UP = 0.8, 0.35                               # ... and this much under / over it (rad: his camera looks
+                                                             # down past the game's limit, 0.9 rad, to 76 degrees)
+PICK_OFF = {1: 1.0, 2: 2.0, 3: 5.0}                          # ... a point this far at most from the unit's place
 MAP_TTL = 10.0                                               # the height map read again after this many seconds
 
 
@@ -126,3 +130,50 @@ class GuestAim:
             t, what = reach, 'far'
         self.last = (what, t)
         return tuple(e + v * t for e, v in zip(eye, view)), what
+
+    def from_pick(self, raw, eye, view, reach, skip, now):
+        """his window's pick (coop_fire_pick.gd: kind, entity, 3 floats) as a point now: a unit where it is now, at the
+        point of it he had under his crosshair (its own frame); the ground point; nothing: along his view at his weapon's
+        range. None when it fails the limits (the caller casts his view's line instead)"""
+        if len(raw) < 15:
+            return None
+        kind, ent = raw[0], struct.unpack_from('<H', raw, 1)[0]
+        a, b, c = struct.unpack_from('<3f', raw, 3)
+        if not all(math.isfinite(v) for v in (a, b, c)):
+            return None
+        if kind == 0:
+            r = max(5.0, min(FAR, reach or FAR))
+            return tuple(e + v * r for e, v in zip(eye, view)), 'pick nothing'
+        cg = self.cg
+        if kind == 1:
+            if not 0 < ent < cg.nent or ent in skip:
+                return None
+            rec = cg.g.read(cg.master + 0x25 * ent, 0x1D)
+            if not rec[0] or rec[1] not in PICK_OFF:
+                return None
+            if rec[1] == 1 and struct.unpack_from('<H', rec, 3)[0] > 200:
+                return None
+            ux, uy, uz = (v / 65536 for v in struct.unpack_from('<3i', rec, 0x0F))
+            h = struct.unpack_from('<H', rec, 0x1B)[0] / 65536 * 2 * math.pi
+            lim = PICK_OFF[rec[1]]
+            k = min(1.0, lim / max(1e-6, math.hypot(a, b)))
+            a, b, c = a * k, b * k, max(-lim, min(lim, c))
+            p = (ux + a * math.cos(h) - b * math.sin(h), uy + a * math.sin(h) + b * math.cos(h), uz + c)
+            what = 'pick unit %d' % ent
+        elif kind == 2:
+            p = (a, b, c)
+            hm = self.heights(now)
+            if hm is not None and abs(c - self.ground_at(hm, a, b)) > 0.5:
+                return None
+            what = 'pick ground'
+        else:
+            return None
+        d = [q - e for q, e in zip(p, eye)]
+        dist = math.sqrt(sum(v * v for v in d))
+        if dist < 0.3 or dist > max(2 * (reach or FAR), 30.0):
+            return None
+        side = abs((math.atan2(d[1], d[0]) - math.atan2(view[1], view[0]) + math.pi) % (2 * math.pi) - math.pi)
+        up = math.asin(max(-1.0, min(1.0, d[2] / dist))) - math.asin(max(-1.0, min(1.0, view[2])))
+        if side > PICK_CONE or not -PICK_DOWN <= up <= PICK_UP:
+            return None
+        return p, what

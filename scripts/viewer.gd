@@ -756,6 +756,8 @@ func _load(index: int) -> void:
 	for z in mis["zones"]:
 		zone_nodes[int(z.get("index", zone_nodes.size()))] = _add_zone(m, z)
 	current = {"map": m, "mission": mis, "entry": entry, "map_path": map_path}   # (map_path: the coop guest's map panel)
+	if not live:                              # the map's own burnt points, drawn as the live ones (the bridge sends
+		_live_scorch(_map_burns(m))             # them again in play, read from the game's memory)
 	_sync_sun_half()
 	_place_camera(m, mis)
 	info.text = "%s\nmap %s (%s), %d objects, %d named zones, %d plants%s\nloaded in %.1f s" % [
@@ -7222,6 +7224,17 @@ func _burn_pictures() -> Texture2DArray:
 	burn_pics = Texture2DArray.new()
 	burn_pics.create_from_images(imgs)
 	return burn_pics
+
+
+# The burnt points stored in the map (TNData._grid), as the bridge's packet: count, then y * 513 + x.
+func _map_burns(m: Dictionary) -> PackedByteArray:
+	var b: PackedInt32Array = m["detail"].get("burned", PackedInt32Array())
+	var pk := PackedByteArray()
+	pk.resize(4 + 4 * b.size())
+	pk.encode_u32(0, b.size())
+	for k in b.size():
+		pk.encode_u32(4 + 4 * k, b[k])
+	return pk
 
 
 func _live_scorch(pk: PackedByteArray) -> void:

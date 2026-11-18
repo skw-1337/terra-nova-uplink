@@ -346,8 +346,13 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, seed: int = -1) -> Dictio
 	var level := PackedByteArray()
 	level.resize(n * n)
 	var level_max := 0
+	# burnt ground stored in the map (bit 6 of byte 0: 322 points in 15 missions, MISS16's crash site among them): the
+	# game loads it with the rest of the point and draws its burn picture there from the start (as the live ones)
+	var burned := PackedInt32Array()
 	for i in n * n:
 		level[i] = (d[3 * i] >> 7) | ((d[3 * i + 1] & 3) << 1)
+		if d[3 * i] & 0x40 and n == DETAIL_N:
+			burned.append(i)
 		var t := d[3 * i] & 0x3F
 		if t >= count:
 			t = 0
@@ -372,7 +377,7 @@ func _grid(d: PackedByteArray, n: int, pl: Dictionary, seed: int = -1) -> Dictio
 		for y in 512:
 			for x in 512:
 				level_max = maxi(level_max, level[y * n + x])
-	var grid := {"n": n, "h": h, "col": col, "tile": tiles, "level": level, "level_max": level_max}
+	var grid := {"n": n, "h": h, "col": col, "tile": tiles, "level": level, "level_max": level_max, "burned": burned}
 	if pl["ok"]:          # R = tile, G = quarter turns: as the map stores them, the plain tiles as the game re-turns them
 		var out := PackedByteArray()
 		out.resize(n * n * 2)

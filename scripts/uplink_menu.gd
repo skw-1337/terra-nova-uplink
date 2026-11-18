@@ -19,7 +19,7 @@ const LINE := Color8(29, 53, 49)
 const TEXT := Color8(214, 226, 220)
 const DIM := Color8(122, 150, 142)
 const RED := Color8(236, 72, 60)
-const GROUPS := ["Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Uplink"]
+const GROUPS := ["Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Gamepad", "Uplink"]
 const FX := [["cloud_shadows", "Cloud shadows", true], ["cliffs", "Unstretched cliffs", true], ["stars", "Sharp stars", true],
 		["marks", "Impact marks", false], ["lights", "Light from shots", false], ["look_down", "Look further down", false]]
 
@@ -32,6 +32,7 @@ var page := ""
 var was_captured := false
 var menu_key := [KEY_F5, 0]        # the host's (TN_KEY_MENU, as Uplink's other keys); a guest's is Esc
 var model: Controls
+var pad_frame := -1                # the frame a gamepad binding was taken (pad_map.gd ignores that input)
 var capture := {}                  # a key being asked for: {id, column ("key" / "mouse"), button}
 var search: LineEdit
 var rows_box: VBoxContainer
@@ -357,7 +358,7 @@ func _switch(col: Control, text: String, on: bool, fn: Callable) -> void:
 
 # ---------------------------------------------------------------- controls
 func _controls(col: VBoxContainer) -> void:
-	_place(980, 900)
+	_place(1180, 900)
 	if model == null:
 		model = Controls.new()
 	var top := HBoxContainer.new()
@@ -371,7 +372,7 @@ func _controls(col: VBoxContainer) -> void:
 	top.add_child(search)
 	var heads := HBoxContainer.new()
 	col.add_child(heads)
-	for h in [["", 470], ["KEY", 190], ["MOUSE", 170]]:
+	for h in [["", 470], ["KEY", 190], ["MOUSE", 170], ["GAMEPAD", 200]]:
 		var l := Label.new()
 		l.text = h[0]
 		l.custom_minimum_size.x = h[1] * k
@@ -415,7 +416,7 @@ func _fill_rows() -> void:
 	for g in GROUPS:
 		var any := false
 		for c in model.cmds:
-			if c["group"] != g or (guest and c["kind"] == "tnplus" and c["id"] != "freelook") or (guest and c["id"] in ["menu", "order", "photo"]):
+			if c["group"] != g or (guest and c["kind"] == "tnplus" and c["id"] != "freelook") or (guest and c["id"] in ["order", "photo"]):
 				continue
 			if q != "" and not str(c["name"]).to_lower().contains(q) and not g.to_lower().contains(q):
 				continue
@@ -427,7 +428,9 @@ func _fill_rows() -> void:
 				h.add_theme_font_size_override("font_size", _px(15))
 				rows_box.add_child(h)
 				any = true
-			_row(c, clash.get(c["id"], ""))
+			_row(c, clash.get(c["id"], "") if c["kind"] != "pad" else "")
+	if q == "":
+		_sticks()
 
 
 func _row(c: Dictionary, clash: String) -> void:
@@ -448,16 +451,24 @@ func _row(c: Dictionary, clash: String) -> void:
 		kb.add_theme_color_override("font_color", ORANGE)
 	kb.pressed.connect(func(): _ask(c, "key", kb))
 	row.add_child(kb)
+	if c["kind"] == "pad" or (guest and c["id"] == "menu"):
+		kb.text = "Esc" if c["id"] == "menu" else ""      # (a guest's menu is on Esc; the pad's own: no key)
+		kb.disabled = true
 	if c["kind"] == "game" or c["kind"] == "tnplus":
 		var mb := Button.new()
 		mb.text = Controls.MOUSE_SHORT[int(c["mouse"])] if int(c["mouse"]) > 0 else "+"
 		mb.custom_minimum_size = Vector2(160 * k, 32 * k)
 		mb.pressed.connect(func(): _ask(c, "mouse", mb))
 		row.add_child(mb)
+	_pad_cell(row, c)
 
 
 func _ask(c: Dictionary, column: String, b: Button) -> void:
 	capture = {"id": c["id"], "column": column, "button": b}
+	if column == "pad":
+		b.text = "Press..."
+		note_label.text = "Press a button on the gamepad (or a trigger, or push a stick).  Esc: as it was.  Backspace: none."
+		return
 	b.text = "Press..." if column == "key" else "Click / wheel..."
 	note_label.text = ("Press the new key, alone or with Shift, Ctrl or Alt." if column == "key" else
 			"The middle or a side mouse button, the wheel, or PgUp / PgDn, Home / End, Ins / Del.") + "  Esc: as it was.  Backspace: none."
@@ -467,6 +478,8 @@ func _capture_input(event: InputEvent) -> bool:
 	var id: String = capture["id"]
 	var column: String = capture["column"]
 	var c: Dictionary = model.find(id)
+	if column == "pad":
+		return _capture_pad(event, c)
 	if event is InputEventKey and event.pressed and not event.echo:
 		var pk: Key = event.physical_keycode
 		get_viewport().set_input_as_handled()
@@ -546,6 +559,7 @@ func _apply(c: Dictionary, save := true) -> void:
 func _saved() -> void:
 	model.save_tnplus()
 	model.save_uplink()
+	model.save_pad()
 
 
 # what can change at once in this window: Uplink's keys, the free look's, a guest's game keys (his own Uplink turns
@@ -572,6 +586,8 @@ func _to_viewer() -> void:
 		v.key_map = model.key_map()
 	else:
 		v.binds = _binds()
+	if v.get("pad_map"):
+		v.pad_map.reload(model)                          # (the gamepad: at once)
 
 
 func _godot_key(key: Array) -> Array:
@@ -678,3 +694,86 @@ func _hint_fade(delta: float) -> void:
 		hint.queue_free()
 		hint = null
 		hint_done = true
+
+
+# ---------------------------------------------------------------- the guest's gamepad (pad_map.gd, controls.gd)
+func _ps() -> bool:
+	var pads := Input.get_connected_joypads()
+	return pads.size() > 0 and Controls.playstation(Input.get_joy_name(pads[0]))
+
+
+func _pad_cell(row: HBoxContainer, c: Dictionary) -> void:
+	if c["kind"] != "game" and c["kind"] != "tnplus" and c["kind"] != "fixed":
+		var gap := Control.new()                         # (no mouse column on this row: the pad's stays in its place)
+		gap.custom_minimum_size.x = 160 * k
+		row.add_child(gap)
+	if not model.pad_ok(c):
+		return
+	var pb := Button.new()
+	var clash: String = model.pad_conflicts().get(c["id"], "")
+	pb.text = Controls.pad_name(str(c["pad"]), _ps())
+	pb.custom_minimum_size = Vector2(190 * k, 32 * k)
+	pb.tooltip_text = ("Also " + clash) if clash != "" else ""
+	if clash != "":
+		pb.add_theme_color_override("font_color", RED)
+	elif str(c["pad"]) != str(c["pad_def"]):
+		pb.add_theme_color_override("font_color", ORANGE)
+	pb.pressed.connect(func(): _ask(c, "pad", pb))
+	row.add_child(pb)
+	if clash != "" and row.get_child(0) is Label:
+		(row.get_child(0) as Label).text += "   (pad: also " + clash + ")"
+		(row.get_child(0) as Label).add_theme_color_override("font_color", RED)
+
+
+func _capture_pad(event: InputEvent, c: Dictionary) -> bool:
+	var got := ""
+	if event is InputEventKey and event.pressed and not event.echo:
+		get_viewport().set_input_as_handled()
+		if event.physical_keycode == KEY_ESCAPE:
+			capture = {}
+			_fill_rows()
+		elif event.physical_keycode == KEY_BACKSPACE:
+			model.set_pad(c["id"], "")
+			_apply(c)
+		return true
+	if event is InputEventJoypadButton and event.pressed:
+		got = "B%d" % event.button_index
+	elif event is InputEventJoypadMotion and absf(event.axis_value) > 0.6:
+		got = "A%d%s" % [event.axis, "+" if event.axis_value > 0 or event.axis >= 4 else "-"]
+	if got == "":
+		return not (event is InputEventMouseButton)      # (a click: the menu's own buttons)
+	get_viewport().set_input_as_handled()
+	pad_frame = Engine.get_process_frames()             # (pad_map.gd leaves this press alone)
+	model.set_pad(c["id"], got)
+	_apply(c)
+	var clash: String = model.pad_conflicts().get(c["id"], "")
+	note_label.text = "%s: %s.%s" % [c["name"], Controls.pad_name(got, _ps()),
+			("  Also on " + clash + ": change one of them.") if clash != "" else ""]
+	return true
+
+
+# the sticks: which one moves, how fast the other looks, up / down, the dead zone, the triggers' threshold
+func _sticks() -> void:
+	var h := Label.new()
+	h.text = "GAMEPAD STICKS"
+	h.add_theme_font_override("font", font_b)
+	h.add_theme_color_override("font_color", ORANGE)
+	h.add_theme_font_size_override("font_size", _px(15))
+	rows_box.add_child(h)
+	var s: Dictionary = model.sticks
+	var pads := Input.get_connected_joypads()
+	var info := Label.new()
+	info.text = ("Gamepad: " + Input.get_joy_name(pads[0])) if pads.size() > 0 else "No gamepad seen (the settings are kept for when one is plugged in)."
+	info.add_theme_color_override("font_color", DIM)
+	rows_box.add_child(info)
+	_slider(rows_box, "Look speed, left / right", 0.25, 2.0, float(s["sens_x"]), func(x): _stick("sens_x", x), "%.2f", 0.05)
+	_slider(rows_box, "Look speed, up / down", 0.25, 2.0, float(s["sens_y"]), func(x): _stick("sens_y", x), "%.2f", 0.05)
+	_slider(rows_box, "Dead zone", 0.0, 0.6, float(s["dead"]), func(x): _stick("dead", x), "%.2f", 0.01)
+	_slider(rows_box, "Trigger threshold", 0.05, 0.95, float(s["trigger"]), func(x): _stick("trigger", x), "%.2f", 0.05)
+	_switch(rows_box, "Look up / down inverted", bool(s["invert_y"]), func(x: bool): _stick("invert_y", x))
+	_switch(rows_box, "Swap the sticks (right stick moves, left stick looks)", bool(s["swap"]), func(x: bool): _stick("swap", x))
+
+
+func _stick(key: String, x) -> void:
+	model.sticks[key] = x
+	model.save_pad()

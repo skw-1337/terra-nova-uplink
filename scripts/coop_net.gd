@@ -723,13 +723,23 @@ func _pad() -> void:
 	var ly := _axis(JOY_AXIS_LEFT_Y, -1.0)                # Godot: up = negative
 	var rx := _axis(JOY_AXIS_RIGHT_X, 1.0)
 	var ry := _axis(JOY_AXIS_RIGHT_Y, -1.0)
-	var fire := 1 if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT) > 0.25 else 0
-	if Input.is_joy_button_pressed(0, JOY_BUTTON_A):
-		fire |= 2                                         # bit 1: jump
-	if Input.is_joy_button_pressed(0, JOY_BUTTON_RIGHT_SHOULDER):
-		fire |= 4                                         # bit 2: lock target
-	if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.25:
-		fire |= 8                                         # bit 3: jump jets
+	var fire := 0
+	var pm: Node = get_parent().get("pad_map") if get_parent() else null
+	if pm:                                                # his bindings and sticks (pad_map.gd; the jets: their key)
+		var st: Array = pm.sticks()
+		lx = st[0]
+		ly = st[1]
+		rx = st[2]
+		ry = st[3]
+		fire = pm.bits                                    # bit 0 fire, bit 1 jump, bit 2 lock target
+	else:
+		fire = 1 if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT) > 0.25 else 0
+		if Input.is_joy_button_pressed(0, JOY_BUTTON_A):
+			fire |= 2                                     # bit 1: jump
+		if Input.is_joy_button_pressed(0, JOY_BUTTON_RIGHT_SHOULDER):
+			fire |= 4                                     # bit 2: lock target
+		if Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.25:
+			fire |= 8                                     # bit 3: jump jets
 	var used := lx != 0 or ly != 0 or rx != 0 or ry != 0 or fire != 0
 	if not used and not pad_live:                         # idle pad: nothing to send (one last all-zero packet)
 		return

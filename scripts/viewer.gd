@@ -220,6 +220,7 @@ var play_dx := 0.0
 # his camera (up to 120 degrees aside, 60 up / down), his suit and aim stay; let go: the view comes back
 var guest_win := false
 var uplink_menu: Node = null           # Uplink's own menu over a live window (uplink_menu.gd)
+var pad_map: Node = null               # the gamepad's bindings and sticks (pad_map.gd)
 var lobby_was_open := false
 var free_look := false
 var look_off := Vector2.ZERO
@@ -462,6 +463,9 @@ func _ready() -> void:
 		add_child(uplink_menu)
 	if live and guest_win:                    # coop guest: where the host's game is (host_state.gd)
 		add_child(load("res://scripts/host_state.gd").new())
+	if live and play:                         # the gamepad as the player set it (pad_map.gd): solo, host, guest
+		pad_map = load("res://scripts/pad_map.gd").new()
+		add_child(pad_map)
 	if live:                                  # shots and sparks glow (only what is brighter than white: no bloom
 		env.glow_enabled = true               # over the whole picture, it made it too bright)
 		env.glow_intensity = 0.8

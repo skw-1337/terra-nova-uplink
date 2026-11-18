@@ -26,7 +26,8 @@ const M5 := -3
 const UPLINK_ENV := {"menu": "TN_KEY_MENU", "order": "TN_ORDER_KEY", "photo": "TN_KEY_PHOTO", "oldschool": "TN_KEY_OLDSCHOOL",
 		"sharp": "TN_KEY_SHARP", "shot": "TN_KEY_SHOT", "fps": "TN_KEY_FPS"}
 
-var cmds := []                     # each: {group, id, name, kind ("game", "fixed", "tnplus", "uplink"), def: [sc, mods], key: [sc, mods], mouse}
+var cmds := []                     # each: {group, id, name, kind ("game", "fixed", "tnplus", "uplink", "pad"), def: [sc, mods], key: [sc, mods], mouse,
+                                   #        pad_def, pad: the co-op guest's gamepad ("B0", "A5+", "": none)}
 var ini_path := ""                 # TN+'s settings ("": none found: the game's keys are shown, not kept)
 var scancodes := {}                # Godot's physical key -> PC scancode (viewer.gd SCANCODES)
 
@@ -124,9 +125,12 @@ func reload() -> void:
 		var d := parse(p[3])
 		if p[4] != "uplink" and int(d[0]) >= 0x80 and int(d[0]) < 0x100:
 			d[0] = 0xE000 | (int(d[0]) & 0x7F)            # (TN+ writes the grey block's keys as 0x80 + code)
-		cmds.append({"group": p[0], "id": p[1], "name": p[2], "kind": p[4], "def": d, "key": d.duplicate(), "mouse": 0})
+		var pd := p[5].strip_edges().to_upper() if p.size() > 5 else ""
+		cmds.append({"group": p[0], "id": p[1], "name": p[2], "kind": p[4], "def": d, "key": d.duplicate(), "mouse": 0,
+				"pad_def": pd, "pad": pd})
 	_read_tnplus()
 	_read_uplink()
+	_read_pad()
 
 
 func find(id: String) -> Dictionary:
@@ -281,6 +285,8 @@ func reset() -> void:
 		if c["id"] == "freelook":
 			c["key"] = [0x21, 0]
 		c["mouse"] = 0
+		c["pad"] = c["pad_def"]
+	sticks = STICKS.duplicate()
 
 
 # TN+'s settings: the game's keys that are not as they come, its own keys, its keys' version 4; the rest kept
@@ -366,3 +372,87 @@ func _own_default(id: String) -> String:
 		if p.size() >= 5 and p[1] == id:
 			return p[3]
 	return ""
+
+
+# ---------------------------------------------------------------- the gamepad
+# Uplink's (pad_map.gd), solo, host and co-op guest. Kept in viewer.cfg, [gamepad]: bind_<id> = "B3" / "A5+" / ""
+# (none), written only when not as it comes, and the sticks' settings. The launcher's Controls page reads and writes
+# the same lines (one place: the window reads them as it starts, and the in-game page changes them at once).
+const STICKS := {"sens_x": 1.0, "sens_y": 1.0, "invert_y": false, "dead": 0.2, "swap": false, "trigger": 0.25}
+const PAD_NAMES := {0: ["A", "Cross"], 1: ["B", "Circle"], 2: ["X", "Square"], 3: ["Y", "Triangle"], 4: ["Back", "Share"],
+		5: ["Guide", "PS"], 6: ["Start", "Options"], 7: ["Left stick press", "L3"], 8: ["Right stick press", "R3"],
+		9: ["LB", "L1"], 10: ["RB", "R1"], 11: ["D-pad up", "D-pad up"], 12: ["D-pad down", "D-pad down"],
+		13: ["D-pad left", "D-pad left"], 14: ["D-pad right", "D-pad right"], 15: ["Misc", "Mic"]}
+const AXIS_NAMES := {"A0-": "Left stick left", "A0+": "Left stick right", "A1-": "Left stick up", "A1+": "Left stick down",
+		"A2-": "Right stick left", "A2+": "Right stick right", "A3-": "Right stick up", "A3+": "Right stick down"}
+var sticks := STICKS.duplicate()
+
+
+# a pad that Godot names as Sony's: its buttons' own names
+static func playstation(joy_name: String) -> bool:
+	var n := joy_name.to_lower()
+	return n.contains("ps3") or n.contains("ps4") or n.contains("ps5") or n.contains("playstation") or n.contains("dualshock") or n.contains("dualsense") or n.contains("sony")
+
+
+static func pad_name(spec_: String, ps := false) -> String:
+	var s := spec_.strip_edges().to_upper()
+	if s == "":
+		return "-"
+	if s == "A4+":
+		return "L2" if ps else "LT"
+	if s == "A5+":
+		return "R2" if ps else "RT"
+	if AXIS_NAMES.has(s):
+		return AXIS_NAMES[s]
+	if s.begins_with("B") and s.substr(1).is_valid_int():
+		var b := s.substr(1).to_int()
+		return PAD_NAMES[b][1 if ps else 0] if PAD_NAMES.has(b) else "Button %d" % b
+	return s
+
+
+# the commands a gamepad can drive: the game's (the player's keys), TN+'s and Uplink's own keys, the pad's own
+func pad_ok(c: Dictionary) -> bool:
+	return c["kind"] == "game" or c["kind"] == "pad" or c["kind"] == "tnplus" or c["kind"] == "uplink"
+
+
+func _read_pad() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(CFG)
+	for c in cmds:
+		c["pad"] = str(cfg.get_value("gamepad", "bind_" + str(c["id"]), c["pad_def"])).strip_edges().to_upper()
+	sticks = STICKS.duplicate()
+	for k in STICKS:
+		var v = cfg.get_value("gamepad", k, STICKS[k])
+		sticks[k] = bool(v) if STICKS[k] is bool else clampf(float(v), 0.0, 4.0)
+
+
+func set_pad(id: String, s: String) -> void:
+	var c := find(id)
+	if not c.is_empty() and pad_ok(c):
+		c["pad"] = s.strip_edges().to_upper()
+
+
+# commands on the same pad input
+func pad_conflicts() -> Dictionary:
+	var out := {}
+	for a in cmds:
+		if str(a["pad"]) == "" or not pad_ok(a):
+			continue
+		for b in cmds:
+			if b != a and pad_ok(b) and str(b["pad"]) == str(a["pad"]):
+				out[a["id"]] = b["name"]
+	return out
+
+
+func save_pad() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(CFG)
+	if cfg.has_section("gamepad"):
+		cfg.erase_section("gamepad")
+	for c in cmds:
+		if pad_ok(c) and str(c["pad"]) != str(c["pad_def"]):
+			cfg.set_value("gamepad", "bind_" + str(c["id"]), str(c["pad"]))
+	for k in STICKS:
+		if sticks[k] != STICKS[k]:
+			cfg.set_value("gamepad", k, sticks[k])
+	cfg.save(CFG)

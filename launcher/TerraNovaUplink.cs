@@ -429,9 +429,9 @@ static class Uplink
         Rectangle slot = new Rectangle(18 + 122 + 12, ry, 128, 30);
         Surface pad = GhostBox(slot.Right + 12, ry, 188, 30, Color.FromArgb(48, 255, 255, 255), null);
         pg.Controls.Add(pad);
-        // the guest's gamepad (TN_NO_PAD for the guest's Uplink): off unless asked for, a trigger that does not come
-        // back to zero keeps firing
-        padBox = new Switch { Text = "Gamepad for the guest", F = F12, Location = new Point(14, 1), Size = new Size(188 - 26, 28) };
+        // the gamepad (TN_NO_PAD: Uplink reads none; solo, host and guest; also on the Controls page): off unless asked
+        // for, a trigger that does not come back to zero keeps firing
+        padBox = new Switch { Text = "Gamepad", F = F12, Location = new Point(14, 1), Size = new Size(188 - 26, 28) };
         padBox.CheckedChanged += delegate { SaveOptions(); };
         pad.Controls.Add(padBox);
         hostBtn = new CoopTile { Text = "HOST A GAME", Desc = "Your campaign, your saves. Invite a friend.", Accent = COrange, Location = new Point(18, ty), Size = new Size(tw, 77) };
@@ -1935,7 +1935,8 @@ static class Uplink
         int cap;
         capValue = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap : 0;
         FillCap();
-        padBox.Checked = Cfg("gamepad") == "1";                  // (off unless asked for; up to 2.7 it was on unless turned off)
+        padBox.Checked = Cfg("gamepad") == "1";
+        if (padBox2 != null) padBox2.Checked = padBox.Checked;                  // (off unless asked for; up to 2.7 it was on unless turned off)
         int mi;
         string start = Cfg("start_at") != "" ? Cfg("start_at") : Cfg("lab_mission");   // (1.x: the lab's selector)
         missionBox.Selected = int.TryParse(start, out mi) && mi >= 0 && mi < missionBox.Items.Count ? mi : 0;
@@ -1962,6 +1963,7 @@ static class Uplink
         for (int i = 0; i < FX.Length; i++) Set("fx_" + FX[i], fxTicks[i].Checked ? "1" : "0");
         Set("fps_cap", capValue > 0 ? Math.Max(20, Math.Min(1000, capValue)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
+        if (padBox2 != null && padBox2.Checked != padBox.Checked) padBox2.Checked = padBox.Checked;
         Set("start_at", missionBox.Selected.ToString());
         SaveCfg();
     }
@@ -3146,12 +3148,12 @@ static class Uplink
     // keys' version 4: freelook on F, Centre view without a key; settings with keys from before keep F and Y as they
     // were), written to both TN+ (SyncKeys); Uplink's own keys are this launcher's (key_<id>). A key: a PC scancode
     // (E0xx: the grey block's), modifiers 1 Shift, 2 Ctrl, 4 Alt; -1 / -2 / -3 the middle / side mouse buttons.
-    class Cmd { public string Group, Id, Name, Kind; public int DefSc, DefMods, Sc, Mods, Mouse; }
+    class Cmd { public string Group, Id, Name, Kind, PadDef = "", Pad = ""; public int DefSc, DefMods, Sc, Mods, Mouse; }
     static List<Cmd> cmds = new List<Cmd>();
     static readonly string[] MOUSE_INI = { "", "MID", "M4", "M5", "WHEELUP", "WHEELDOWN", "PGUP", "PGDN", "HOME", "END", "INS", "DEL" };
     static readonly string[] MOUSE_SHORT = { "", "Middle", "Mouse 4", "Mouse 5", "Wheel up", "Wheel down", "PgUp", "PgDn", "Home", "End", "Ins", "Del" };
     static readonly int[] SPARE = { 0x25, 0x26, 0x27, 0x08, 0x09, 0x0A, 0x0B };
-    static readonly string[] CONTROL_GROUPS = { "Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Uplink" };
+    static readonly string[] CONTROL_GROUPS = { "Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Gamepad", "Uplink" };
 
     static int[] KeyParse(string spec)
     {
@@ -3191,8 +3193,10 @@ static class Uplink
             if (p.Length < 5) continue;
             int[] d = KeyParse(p[3]);
             if (p[4] != "uplink" && d[0] >= 0x80 && d[0] < 0x100) d[0] = 0xE000 | (d[0] & 0x7F);   // (TN+'s 0x80 + code)
-            cmds.Add(new Cmd { Group = p[0], Id = p[1], Name = p[2], Kind = p[4], DefSc = d[0], DefMods = d[1], Sc = d[0], Mods = d[1] });
+            string pd = p.Length > 5 ? p[5].Trim().ToUpperInvariant() : "";
+            cmds.Add(new Cmd { Group = p[0], Id = p[1], Name = p[2], Kind = p[4], DefSc = d[0], DefMods = d[1], Sc = d[0], Mods = d[1], PadDef = pd, Pad = pd });
         }
+        PadLoad();
         Dictionary<string, string> vals = new Dictionary<string, string>();
         string ini = KeysIni();
         int kv = 0;
@@ -3301,6 +3305,7 @@ static class Uplink
     }
 
     static KeyList keyList;
+    static Switch padBox2;                               // the Co-op page's Gamepad switch, here too
     static TextBox keySearch;
 
     static void BuildControls(Surface pg)
@@ -3308,8 +3313,11 @@ static class Uplink
         pg.Look = delegate(Graphics g) {
             g.Clear(CBack);
             Spaced(g, "CONTROLS", F14s, COrange, 18, 18, 1.2f);
-            Str(g, "KEY", F10b, CDim, 18 + 352, 52); Str(g, "MOUSE", F10b, CDim, 18 + 478, 52);
+            Str(g, "KEY", F10b, CDim, 18 + 262, 52); Str(g, "MOUSE", F10b, CDim, 18 + 370, 52); Str(g, "GAMEPAD", F10b, CDim, 18 + 466, 52);
         };
+        padBox2 = new Switch { Text = "Gamepad", F = F12, Location = new Point(150, 13), Size = new Size(130, 28) };
+        padBox2.CheckedChanged += delegate { if (padBox != null && padBox.Checked != padBox2.Checked) padBox.Checked = padBox2.Checked; };
+        pg.Controls.Add(padBox2);
         keySearch = new TextBox { Location = new Point(MW - 18 - 220, 14), Size = new Size(220, 24), BackColor = CButton, ForeColor = CText,
             BorderStyle = BorderStyle.FixedSingle, Font = F12 };
         keySearch.TextChanged += delegate { keyList.Filter = keySearch.Text; keyList.Top0 = 0; keyList.Invalidate(); };
@@ -3324,9 +3332,12 @@ static class Uplink
         Btn reset = Key(pg, 18, 460, 170, 28, "Reset to defaults");
         reset.Click += delegate {
             if (!Ask("Put every key back as it comes (freelook on F, Centre view without a key)?")) return;
-            foreach (Cmd c in cmds) { c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.DefSc; c.Mods = c.Id == "centre" || c.Id == "freelook" ? 0 : c.DefMods; c.Mouse = 0; }
-            ControlsSave(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);
+            foreach (Cmd c in cmds) { c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.DefSc; c.Mods = c.Id == "centre" || c.Id == "freelook" ? 0 : c.DefMods; c.Mouse = 0; c.Pad = c.PadDef; }
+            padSticks = new Dictionary<string, string>();
+            ControlsSave(); PadSave(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);
         };
+        Btn sticks = Key(pg, 18 + 178, 460, 150, 28, "Gamepad sticks...");
+        sticks.Click += delegate { using (PadSticks d = new PadSticks()) d.ShowDialog(form); };
         Btn adv = Key(pg, MW - 18 - 190, 460, 190, 28, "Advanced (Terra Nova Plus)...");
         adv.Click += delegate { GameKeys(); };
     }
@@ -3366,6 +3377,220 @@ static class Uplink
         }
         m.Show(at, p);
     }
+
+    // ------------------------------------------------------------------ the gamepad
+    // Uplink reads it (scripts\pad_map.gd), solo, host and co-op guest alike: a button presses the command's key as the
+    // player has it, the sticks move and look (the guest's go to the host as his gamepad). The list's sixth column is the
+    // binding as it comes; the player's are in Uplink's viewer.cfg, [gamepad] (bind_<id> = "B3" / "A5+" / "": none, and
+    // the sticks' settings), which Uplink reads as it starts and its in-game Controls page writes: one place for both.
+    // Godot's numbers: B0 A, B1 B, B2 X, B3 Y, B4 Back, B6 Start, B7 / B8 the sticks pressed, B9 LB, B10 RB, B11-B14 the
+    // D-pad; A0 / A1 left stick, A2 / A3 right stick, A4 LT, A5 RT.
+    static Dictionary<string, string> padSticks = new Dictionary<string, string>();     // sens_x, sens_y, invert_y, dead, swap, trigger
+    static readonly string[] PAD_STICK_KEYS = { "sens_x", "sens_y", "invert_y", "dead", "swap", "trigger" };
+    static readonly string[] PAD_STICK_DEF = { "1.0", "1.0", "false", "0.2", "false", "0.25" };
+
+    static bool PadOk(Cmd c) { return c.Kind == "game" || c.Kind == "pad" || c.Kind == "uplink" || c.Kind == "tnplus"; }
+
+    static string PadName(string s)
+    {
+        s = (s ?? "").Trim().ToUpperInvariant();
+        if (s == "") return "-";
+        if (s == "A4+") return "LT";
+        if (s == "A5+") return "RT";
+        string[] ax = { "A0-", "Left stick left", "A0+", "Left stick right", "A1-", "Left stick up", "A1+", "Left stick down",
+            "A2-", "Right stick left", "A2+", "Right stick right", "A3-", "Right stick up", "A3+", "Right stick down" };
+        for (int i = 0; i < ax.Length; i += 2) if (ax[i] == s) return ax[i + 1];
+        string[] bn = { "A", "B", "X", "Y", "Back", "Guide", "Start", "Left stick press", "Right stick press", "LB", "RB",
+            "D-pad up", "D-pad down", "D-pad left", "D-pad right" };
+        int b;
+        if (s.StartsWith("B") && int.TryParse(s.Substring(1), out b)) return b >= 0 && b < bn.Length ? bn[b] : "Button " + b;
+        return s;
+    }
+
+    static Dictionary<string, string> PadConflicts()
+    {
+        Dictionary<string, string> o = new Dictionary<string, string>();
+        foreach (Cmd a in cmds)
+            if (PadOk(a) && a.Pad != "")
+                foreach (Cmd b in cmds) if (b != a && PadOk(b) && b.Pad == a.Pad) o[a.Id] = b.Name;
+        return o;
+    }
+
+    static void PadLoad()
+    {
+        padSticks = new Dictionary<string, string>();
+        try
+        {
+            if (!File.Exists(ViewerCfg)) return;
+            bool sec = false;
+            foreach (string raw in File.ReadAllLines(ViewerCfg))
+            {
+                string l = raw.Trim();
+                if (l.StartsWith("[")) { sec = l == "[gamepad]"; continue; }
+                int e = l.IndexOf('=');
+                if (!sec || e <= 0) continue;
+                string k = l.Substring(0, e).Trim(), v = l.Substring(e + 1).Trim().Trim('"');
+                if (k.StartsWith("bind_")) { Cmd c = FindCmd(k.Substring(5)); if (c != null && PadOk(c)) c.Pad = v.ToUpperInvariant(); }
+                else if (Array.IndexOf(PAD_STICK_KEYS, k) >= 0) padSticks[k] = v;
+            }
+        }
+        catch { }
+    }
+
+    static string PadStick(string k) { string v; return padSticks.TryGetValue(k, out v) ? v : PAD_STICK_DEF[Array.IndexOf(PAD_STICK_KEYS, k)]; }
+
+    // the [gamepad] section written again (the rest of viewer.cfg kept)
+    static void PadSave()
+    {
+        try
+        {
+            List<string> keep = new List<string>();
+            if (File.Exists(ViewerCfg))
+            {
+                bool sec = false;
+                foreach (string raw in File.ReadAllLines(ViewerCfg))
+                {
+                    string l = raw.Trim();
+                    if (l.StartsWith("[")) sec = l == "[gamepad]";
+                    if (!sec) keep.Add(raw);
+                }
+            }
+            while (keep.Count > 0 && keep[keep.Count - 1].Trim() == "") keep.RemoveAt(keep.Count - 1);
+            List<string> mine = new List<string>();
+            foreach (Cmd c in cmds) if (PadOk(c) && c.Pad != c.PadDef) mine.Add("bind_" + c.Id + "=\"" + c.Pad + "\"");
+            for (int i = 0; i < PAD_STICK_KEYS.Length; i++)
+            {
+                string v = PadStick(PAD_STICK_KEYS[i]);
+                if (v != PAD_STICK_DEF[i]) mine.Add(PAD_STICK_KEYS[i] + "=" + v);
+            }
+            if (mine.Count > 0) { if (keep.Count > 0) keep.Add(""); keep.Add("[gamepad]"); keep.Add(""); keep.AddRange(mine); }
+            Directory.CreateDirectory(GodotData);
+            File.WriteAllText(ViewerCfg, string.Join("\n", keep.ToArray()) + "\n");
+        }
+        catch (Exception e) { Status("The gamepad settings could not be saved: " + e.Message, CRed); }
+    }
+
+    static void AskPad(Cmd c)
+    {
+        using (PadAsk d = new PadAsk(c.Name.ToLowerInvariant(), PadName(c.Pad)))
+        {
+            if (d.ShowDialog(form) != DialogResult.OK) return;
+            c.Pad = d.Spec;
+            PadSave();
+            string clash;
+            bool bad = PadConflicts().TryGetValue(c.Id, out clash);
+            Status(c.Name + " (gamepad): " + PadName(c.Pad) + (bad ? ". Also on " + clash + ": change one of them." : "."), bad ? CAmber : CGreen);
+        }
+        keyList.Invalidate();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct XState { public uint Packet; public ushort Buttons; public byte LT, RT; public short LX, LY, RX, RY; }
+    [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")] static extern int XInputGetState(int user, out XState s);
+
+    // what is pressed on the first XInput pad, as Godot names it (B<n>, A<n>+/-); checks: TN_TEST_PAD_INPUT after 1 s
+    static HashSet<string> PadNow(DateTime since)
+    {
+        HashSet<string> o = new HashSet<string>();
+        string test = Environment.GetEnvironmentVariable("TN_TEST_PAD_INPUT");
+        if (test != null) { if ((DateTime.Now - since).TotalSeconds > 1.0 && test != "") o.Add(test.ToUpperInvariant()); return o; }
+        XState s;
+        try { if (XInputGetState(0, out s) != 0) return o; } catch { return o; }
+        int[,] map = { { 0x1000, 0 }, { 0x2000, 1 }, { 0x4000, 2 }, { 0x8000, 3 }, { 0x20, 4 }, { 0x10, 6 }, { 0x40, 7 }, { 0x80, 8 },
+            { 0x100, 9 }, { 0x200, 10 }, { 0x1, 11 }, { 0x2, 12 }, { 0x4, 13 }, { 0x8, 14 } };
+        for (int i = 0; i < map.GetLength(0); i++) if ((s.Buttons & map[i, 0]) != 0) o.Add("B" + map[i, 1]);
+        if (s.LT > 153) o.Add("A4+");
+        if (s.RT > 153) o.Add("A5+");
+        const int th = 19660;                                  // (0.6 of the way)
+        if (s.LX > th) o.Add("A0+"); if (s.LX < -th) o.Add("A0-");
+        if (s.LY > th) o.Add("A1-"); if (s.LY < -th) o.Add("A1+");    // (XInput: up positive; Godot: up negative)
+        if (s.RX > th) o.Add("A2+"); if (s.RX < -th) o.Add("A2-");
+        if (s.RY > th) o.Add("A3-"); if (s.RY < -th) o.Add("A3+");
+        return o;
+    }
+
+    // a gamepad input asked for: the first one pressed that was not already held when the window opened
+    class PadAsk : Form
+    {
+        public string Spec;
+        System.Windows.Forms.Timer poll;
+        HashSet<string> held;
+        DateTime t0 = DateTime.Now;
+        public PadAsk(string what, string now)
+        {
+            Text = "Gamepad"; ClientSize = new Size(440, 150); FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false; StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText;
+            Font = form.Font; ShowInTaskbar = false; KeyPreview = true;
+            Controls.Add(new Label { Text = "Press a button on the gamepad for " + what + ".", Location = new Point(16, 18), Size = new Size(408, 22),
+                Font = Px(14f, 600), ForeColor = CAmber });
+            Controls.Add(new Label { Text = "Now: " + now + ".  A button, a trigger, or a stick pushed far.", Location = new Point(16, 48), Size = new Size(408, 20) });
+            Controls.Add(new Label { Text = "Esc: change nothing.    Del: none.", Location = new Point(16, 72), Size = new Size(408, 20), ForeColor = CDim });
+            held = PadNow(t0);
+            poll = new System.Windows.Forms.Timer { Interval = 25 };
+            poll.Tick += delegate {
+                HashSet<string> n = PadNow(t0);
+                foreach (string s in n) if (!held.Contains(s)) { poll.Stop(); Spec = s; DialogResult = DialogResult.OK; return; }
+                held.IntersectWith(n);                           // (let go: it may be pressed again)
+            };
+            poll.Start();
+        }
+        protected override void OnLoad(EventArgs e) { Dpi(this); base.OnLoad(e); }
+        protected override void OnFormClosed(FormClosedEventArgs e) { poll.Stop(); poll.Dispose(); base.OnFormClosed(e); }
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape) { DialogResult = DialogResult.Cancel; return true; }
+            if (keyData == Keys.Delete || keyData == Keys.Back) { Spec = ""; DialogResult = DialogResult.OK; return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+    }
+
+    // the sticks: how fast the look stick turns, up / down inverted, the dead zone, which stick moves, the triggers
+    class PadSticks : Form
+    {
+        public PadSticks()
+        {
+            Text = "Gamepad sticks"; ClientSize = new Size(440, 330); FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false; MinimizeBox = false; StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText;
+            Font = form.Font; ShowInTaskbar = false;
+            Controls.Add(new Label { Text = "Gamepad sticks", Location = new Point(16, 14), Size = new Size(408, 22), Font = Px(14f, 600), ForeColor = CAmber });
+            int y = 46;
+            Slide("Look speed, left / right", "sens_x", 25, 200, 100f, ref y);
+            Slide("Look speed, up / down", "sens_y", 25, 200, 100f, ref y);
+            Slide("Dead zone", "dead", 0, 60, 100f, ref y);
+            Slide("Trigger threshold", "trigger", 5, 95, 100f, ref y);
+            Check("Look up / down inverted", "invert_y", ref y);
+            Check("Swap the sticks (right stick moves, left looks)", "swap", ref y);
+            Button ok = new Button { Text = "Close", Location = new Point(440 - 16 - 100, y + 6), Size = new Size(100, 28), FlatStyle = FlatStyle.Flat, BackColor = CButton };
+            ok.Click += delegate { Close(); };
+            Controls.Add(ok);
+            CancelButton = ok;
+        }
+        void Slide(string text, string key, int lo, int hi, float scale, ref int y)
+        {
+            Controls.Add(new Label { Text = text, Location = new Point(16, y + 6), Size = new Size(170, 20) });
+            float v;
+            float.TryParse(PadStick(key), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+            TrackBar tb = new TrackBar { Minimum = lo, Maximum = hi, Value = Math.Max(lo, Math.Min(hi, (int)Math.Round(v * scale))), TickStyle = TickStyle.None,
+                Location = new Point(190, y), Size = new Size(180, 30), Name = "pad_" + key };
+            Label n = new Label { Text = (tb.Value / scale).ToString("0.00", CultureInfo.InvariantCulture), Location = new Point(376, y + 6), Size = new Size(50, 20), ForeColor = CDim };
+            tb.ValueChanged += delegate {
+                padSticks[key] = (tb.Value / scale).ToString("0.0#", CultureInfo.InvariantCulture);
+                n.Text = (tb.Value / scale).ToString("0.00", CultureInfo.InvariantCulture);
+                PadSave();
+            };
+            Controls.Add(tb); Controls.Add(n);
+            y += 36;
+        }
+        void Check(string text, string key, ref int y)
+        {
+            CheckBox c = new CheckBox { Text = text, Checked = PadStick(key) == "true", Location = new Point(16, y + 2), Size = new Size(408, 24), Name = "pad_" + key };
+            c.CheckedChanged += delegate { padSticks[key] = c.Checked ? "true" : "false"; PadSave(); };
+            Controls.Add(c);
+            y += 30;
+        }
+        protected override void OnLoad(EventArgs e) { Dpi(this); base.OnLoad(e); }
+    }
+
 
     // the list: group names, then per command its name, its key, its second bind; the mouse wheel scrolls it
     class KeyList : Drawn
@@ -3408,7 +3633,7 @@ static class Uplink
         {
             float x = e.X / K, y = e.Y / K;
             row = Top0 + (int)(y / RH);
-            col = x >= 340 && x < 466 ? 1 : x >= 476 && x < 572 ? 2 : 0;
+            col = x >= 254 && x < 356 ? 1 : x >= 362 && x < 450 ? 2 : x >= 456 && x < 572 ? 3 : 0;
         }
         protected override void OnMouseMove(MouseEventArgs e)
         {
@@ -3424,14 +3649,15 @@ static class Uplink
             List<object> rows = Rows();
             Cmd c = r >= 0 && r < rows.Count ? rows[r] as Cmd : null;
             if (c == null || c.Kind == "fixed" || e.Button != MouseButtons.Left) return;
-            if (col == 1) AskControl(c);
+            if (col == 1 && c.Kind != "pad") AskControl(c);
             else if (col == 2 && (c.Kind == "game" || c.Kind == "tnplus")) AskMouse(c, this, e.Location);
+            else if (col == 3 && PadOk(c)) AskPad(c);
         }
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = Begin(e);
             List<object> rows = Rows();
-            Dictionary<string, string> clash = Conflicts();
+            Dictionary<string, string> clash = Conflicts(), pclash = PadConflicts();
             if (cmds.Count == 0) { Str(g, "The list comes with Uplink: start once (PLAY or MAP VIEWER) so that it is installed.", F12, CDim, 0, 6); return; }
             for (int i = 0; i < Fits && Top0 + i < rows.Count; i++)
             {
@@ -3439,14 +3665,19 @@ static class Uplink
                 string grp = rows[Top0 + i] as string;
                 if (grp != null) { Spaced(g, grp.ToUpperInvariant(), F10b, grp == "Uplink" ? CBlue : COrange, 2, y + 8, 1.2f); continue; }
                 Cmd c = (Cmd)rows[Top0 + i];
-                string cl;
-                bool bad = clash.TryGetValue(c.Id, out cl);
-                StrIn(g, c.Name + (bad ? "   (also " + cl + ")" : ""), F12, bad ? CRed : c.Kind == "fixed" ? CDim : CText, new RectangleF(10, y, 326, RH), TFLeft);
+                string cl, pcl;
+                bool bad = clash.TryGetValue(c.Id, out cl), pbad = pclash.TryGetValue(c.Id, out pcl);
+                StrIn(g, c.Name + (bad ? "   (also " + cl + ")" : pbad ? "   (pad: also " + pcl + ")" : ""), F12, bad || pbad ? CRed : c.Kind == "fixed" ? CDim : CText,
+                    new RectangleF(10, y, 240, RH), TFLeft);
                 bool hot = Top0 + i == hotRow;
-                DrawBox(g, new RectangleF(340, y + 2, 126, RH - 4), KeyLabel(c.Sc, c.Mods), c.Kind == "fixed" ? CDim : c.Sc != c.DefSc || c.Mods != c.DefMods ? COrange : CText,
-                    hot && hotCol == 1 && c.Kind != "fixed", c.Kind == "fixed");
+                if (c.Kind != "pad")
+                    DrawBox(g, new RectangleF(254, y + 2, 102, RH - 4), KeyLabel(c.Sc, c.Mods), c.Kind == "fixed" ? CDim : c.Sc != c.DefSc || c.Mods != c.DefMods ? COrange : CText,
+                        hot && hotCol == 1 && c.Kind != "fixed", c.Kind == "fixed");
                 if (c.Kind == "game" || c.Kind == "tnplus")
-                    DrawBox(g, new RectangleF(476, y + 2, 96, RH - 4), c.Mouse > 0 ? MOUSE_SHORT[c.Mouse] : "+", c.Mouse > 0 ? CText : CDim, hot && hotCol == 2, false);
+                    DrawBox(g, new RectangleF(362, y + 2, 88, RH - 4), c.Mouse > 0 ? MOUSE_SHORT[c.Mouse] : "+", c.Mouse > 0 ? CText : CDim, hot && hotCol == 2, false);
+                if (PadOk(c))
+                    DrawBox(g, new RectangleF(456, y + 2, 116, RH - 4), c.Pad != "" ? PadName(c.Pad) : "+", pbad ? CRed : c.Pad != c.PadDef ? COrange : c.Pad != "" ? CText : CDim,
+                        hot && hotCol == 3, false);
             }
             if (rows.Count > Fits)                       // where in the list
             {

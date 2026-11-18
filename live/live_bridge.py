@@ -1286,6 +1286,47 @@ def photo_fin():
         pass
 
 
+def quitter():
+    """Uplink's Quit: the game closed as the launcher's STOP closes it (its windows asked to close, ended after 3 s),
+    Uplink given a moment to close itself (then ended), and this bridge stops. The launcher, finding its bridge gone,
+    closes what is left of what it started (Terra Nova Plus)."""
+    import ctypes, subprocess
+    import psutil
+    from ctypes import wintypes as wt
+    print('Uplink: Quit: closing the game (DOSBox %d), Uplink and the bridge' % g.pid, flush=True)
+    try:
+        p = psutil.Process(g.pid)
+        u = ctypes.windll.user32
+        u.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        wins = []
+
+        @ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_void_p, ctypes.c_void_p)
+        def cb(h, _):
+            q = wt.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(q))
+            if q.value == g.pid: wins.append(h)
+            return True
+        u.EnumWindows(cb, 0)
+        for h in wins:
+            u.PostMessageW(h, 0x0010, None, None)               # WM_CLOSE
+        try:
+            p.wait(3)
+        except psutil.TimeoutExpired:
+            print('the game did not close in 3 s: ended', flush=True)
+            p.kill(); p.wait(3)
+    except psutil.NoSuchProcess:
+        pass
+    except Exception as ex:
+        print('closing the game:', repr(ex), flush=True)
+    for w in (viewer, globals().get('gviewer')):
+        if w is None: continue
+        try:
+            w.wait(4)
+        except subprocess.TimeoutExpired:
+            w.terminate()
+    print('closed', flush=True)
+    os._exit(0)                                         # (the atexit handlers write into the game: it is gone)
+
+
 def handle_input():
     global guest
     look = False
@@ -1294,7 +1335,9 @@ def handle_input():
             pk, _ = rx.recvfrom(64)
         except (BlockingIOError, OSError):
             break
-        if pk[:1] == b'K' and len(pk) >= 4:
+        if pk == b'QUIT':                               # Uplink's menu: Quit (uplink_menu.gd quit_game)
+            quitter()
+        elif pk[:1] == b'K' and len(pk) >= 4:
             sc, down = struct.unpack('<HB', pk[1:4])
             with touches:
                 (joueur.add if down else joueur.discard)(sc)

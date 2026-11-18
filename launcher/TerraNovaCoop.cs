@@ -2339,7 +2339,7 @@ static class Uplink
                 "Uplink is open: invite your friend from its list (top right), go to Mission Outfitting, wait for READY.", CGreen);
         else
             Status(load != null ? "Uplink is open. In the game: Load Game, then \"" + load + "\"." :
-                "Uplink is open: click in its window to take the mouse, " + ScanName(FreelookScan()) + " for the game's cursor, " + KeyName(OldKey()) +
+                "Uplink is open: click in its window to take the mouse, Esc for Uplink's menu, " + ScanName(FreelookScan()) + " for the game's cursor, " + KeyName(OldKey()) +
                 " for the old school look" + (SharpKey() != "" ? " (" + KeyName(SharpKey()) + ": finer pixels)." : "."), CGreen);
         int n = 0;
         while (!stopping && !bridge.HasExited)
@@ -3388,7 +3388,7 @@ static class Uplink
         pg.Controls.Add(keyList);
         pg.Controls.Add(new Txt { Text = "Keys are places on the keyboard (shown with your keyboard's letters). The game's keys change at the next",
             F = F11, Ink = CDim, Location = new Point(18, 424), Size = new Size(MW - 36, 16) });
-        pg.Controls.Add(new Txt { Text = "start of the game, Uplink's at the next start of Uplink (in game: its menu's Controls, at once).",
+        pg.Controls.Add(new Txt { Text = "start of the game, Uplink's at the next start of Uplink (in game: Esc, then Controls: at once).",
             F = F11, Ink = CDim, Location = new Point(18, 440), Size = new Size(MW - 36, 16) });
         Btn reset = Key(pg, 18, 460, 170, 28, "Reset to defaults");
         reset.Click += delegate {
@@ -3791,7 +3791,8 @@ static class Uplink
         string st;
         if (!s.TryGetValue("stamp", out st) || !long.TryParse(st, out stamp) || (long.TryParse(Cfg("game_stamp"), out had) && had >= stamp)) return false;
         string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks",
-            "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps" };
+            "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps",
+            "hud_colours", "crosshair", "fps_cap", "fps_counter", "window" };       // (its Graphics page)
         foreach (string k in allowed)
         {
             string v;

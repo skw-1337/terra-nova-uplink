@@ -82,7 +82,7 @@ Tools|stereo|Stereo swap (TN+)|41|tnplus
 Gamepad|p_fire|Fire|-|pad|A5+
 Gamepad|p_lock|Lock target|-|pad|B10
 Gamepad|p_jumpto|Jump towards the left stick|-|pad|B0
-Uplink|menu|Uplink menu (host; Esc for a guest)|3F|uplink|B6
+Uplink|menu|Uplink menu (Esc opens it too)|3F|uplink|B6
 Uplink|order|Order wheel (hold)|MID|uplink
 Uplink|photo|Photo mode|26|uplink
 Uplink|oldschool|Old school look|2B|uplink

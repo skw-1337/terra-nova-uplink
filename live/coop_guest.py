@@ -1175,6 +1175,8 @@ class Guest:
         still = src[4] if len(src) > 4 else None
         if fw < 100 or fh < 100:                               # the game's map or a menu: not the cockpit
             return
+        if fh > 300:                                           # the host's full view (G): his, not the guest's, whose
+            return                                             # window makes its own (coop_views.gd)
         # ... nor while the game writes a line for the host at the bottom of his cockpit (what a button does: a box
         # drawn in its green, 161 pixels across): it stayed on the guest's cockpit until the next picture
         line = np.cumsum(scr[360:400] == 0x84, axis=1)

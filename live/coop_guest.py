@@ -181,6 +181,14 @@ M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_
 SOUND, VOICES, VOICE_N, SAMPLES = 0x82, 0x370738, 0x4F, 0x44B600
 SND_PIECE = 0x29055D              # TN+ coop's sound piece there (a call): his shots already sound like a squadmate's
 LASER_SOUNDS = {2046}             # the one weapon sound the player's path plays until stopped (weapon 4, table 0x39512A)
+# With TN+ coop's sound piece his shots take the squadmates' path (0x29079C): their own variant of the sound (+13 for
+# the player's side, the laser's 2059), played once, a shot dropped while the suit's voice still plays. The game's
+# laser is a beam heard for as long as its player holds the fire (the player's path loops it, stopped when he lets
+# go); a squadmate's came out in pieces, with gaps of 0.3 s, and rang on 1.3 s after he let go. The bridge holds that
+# voice's driver sample going while he fires (put back to its start before its end, as a loop: the game drops his
+# shots meanwhile) and ends it when he lets go, as before.
+LASER_MATE_SOUNDS = {2059}
+LOOP_MARGIN = 4096                # bytes before its end (0.18 s of the 22 kHz sample) at which it is put back to its start
 # The game's sounds for the guest's window (coop_sound.gd): the game's voices (VOICES: 16 here, their number at
 # 0x35982D) as it starts and ends them, seen each update. A voice: byte 0 the driver's sample (-1: free), +1 its kind
 # (0 not placed; 1 at a place of the world, x y z 16.16 at +0x1A; 2 and 5 at a unit, its entity at +0x1A), +0x15 its
@@ -276,6 +284,7 @@ class Guest:
         self.gnav, self.gnav_t, self.gnav_told, self.gnav_mis = None, 0.0, False, None   # his map marker (world x, y)
         self.fired_t, self.laser_said = 0.0, None             # when he last held the fire (his laser's sound: laser_off)
         self.snd_piece = None                                  # (the TN+ build's sound piece: None not looked yet)
+        self.looped = None                                     # (voice, driver sample) of his laser held looping (laser_off)
         self.voices, self.voices_t = {}, 0.0                   # the game's voices seen playing: slot -> (sound, kind, ent, sample pos)
         self.rpad, self.rpad_t = None, 0.0                    # online: the guest's gamepad (lx, ly, rx, ry, fire, jets)
         self.shift, self.pad_jump, self.jump_clock = False, False, None   # jump_clock: no jump before (game clock)
@@ -1111,29 +1120,45 @@ class Guest:
         """the laser's sound of suit e (his, or the one he leaves) ended once he no longer fires: see SOUND"""
         if firing:
             self.fired_t = time.time()
-        if not e or firing or time.time() - self.fired_t < 0.12:
+        held = firing or time.time() - self.fired_t < 0.12
+        if not e:
             return
         g = self.g
         if self.snd_piece is None:                             # a TN+ coop build that plays his shots as a squadmate's
-            self.snd_piece = g.read(SND_PIECE, 1) == b'\xe8'  # (each once): nothing to stop, the driver left alone
+            self.snd_piece = g.read(SND_PIECE, 1) == b'\xe8'  # (each once): his laser held looping (LASER_MATE_SOUNDS)
             print("coop : the guest's shots sound", "at his suit (TN+ coop sound piece)" if self.snd_piece else
                   "as the player's (older TN+ coop build: his laser is stopped by the bridge)", flush=True)
-        if self.snd_piece:
-            return
+        if held and not self.snd_piece:
+            return                                             # (the player's path loops it until stopped)
         v = self.i32(self.suit(e) + SOUND)
         if not 0 <= v < g.read(0x35982D, 1)[0]:
+            self.looped = None
             return
         r = g.read(VOICES + VOICE_N * v, 0x1A)
         k = struct.unpack_from('<b', r, 0)[0]
-        if k < 0 or r[0x17] != 0 or struct.unpack_from('<H', r, 0x18)[0] not in LASER_SOUNDS:
+        sound = struct.unpack_from('<H', r, 0x18)[0]
+        if self.snd_piece:
+            if k < 0 or sound not in LASER_MATE_SOUNDS:
+                self.looped = None
+                return
+        elif k < 0 or r[0x17] != 0 or sound not in LASER_SOUNDS:
             return                                             # (no sample, or a sound played once: it ends by itself)
         p = self.i32(SAMPLES + 4 * k)
         if not 0x100000 <= p < 0x2000000:
             return
         status, length, pos, loops = (struct.unpack('<i', g.read(p + o, 4))[0] for o in (4, 0x10, 0x18, 0x30))
+        if held:                                               # (TN+ coop sound piece) his laser goes on while he fires:
+            if status == 4 and length > 4 * LOOP_MARGIN and pos > length - LOOP_MARGIN:   # back to its start before
+                g.write(p + 0x18, struct.pack('<i', 0))        # its end (its loop count left alone: set to 0 on this
+            self.looped = (v, k) if status == 4 else None      # sample it was cut at once, the laser was silent)
+            return
+        if self.snd_piece and self.looped != (v, k):
+            return                                             # (a shot's sound of his own, not held: it ends by itself)
+        self.looped = None
         said = (v, k, status, loops)
-        if status == 4 and loops == 0:
-            g.write(p + 0x30, struct.pack('<i', 1))
+        if status == 4 and (loops == 0 or self.snd_piece):
+            if loops == 0:
+                g.write(p + 0x30, struct.pack('<i', 1))
             if 0 < pos < length - 2048:
                 g.write(p + 0x18, struct.pack('<i', length - 1024))   # (and its end now: under a twentieth of a second)
             print('guest: laser sound stopped (voice %d, sample %d, entity %d)' % (v, k, e), flush=True)
@@ -1144,6 +1169,8 @@ class Guest:
     def sounds(self, me):
         """the game's sounds started and ended since the last update, for the guest's window (see VOICE_MAX)"""
         g = self.g
+        if self.snd_piece and self.gid:
+            self.laser_off(self.gid)                           # (his laser's voice set looping before it is told)
         n = min(g.read(VOICE_MAX, 1)[0], 32)
         t = g.read(VOICES, VOICE_N * n)
         owners = {}                                            # a suit's own sound (kind 0): whose
@@ -1168,12 +1195,15 @@ class Guest:
                 ent = owners.get(k, me)                        # cockpit's): at the suit that fired, else at the host's
             p = self.i32(SAMPLES + 4 * drv) if 0 <= drv < 16 else 0
             pos = self.i32(p + 0x18) if 0x100000 <= p < 0x2000000 else 0
-            now[k] = (sound, kind, ent, pos)
+            once = 0 if self.looped == (k, drv) else r[0x17]   # (his laser held looping: laser_off)
+            now[k] = (sound, kind, ent, pos, once)
             was = self.voices.get(k)
-            if was is None or was[:3] != (sound, kind, ent) or (r[0x17] and pos + 4096 < was[3]):   # (a loop going round: the same)
+            if was is None or was[:3] != (sound, kind, ent) or (once and pos + 4096 < was[3]):   # (a loop going round: the same)
                 if was is not None:
                     out.append(b'E' + bytes([k]))
-                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, r[0x17], r[0x15], ent, *at))
+                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, once, r[0x15], ent, *at))
+            elif was[4] and not once:                          # (held looping since: his window loops it too, from
+                out.append(b'S' + struct.pack('<BHBBBH3f', k, sound, kind & 0xFF, once, r[0x15], ent, *at))   # the start)
         for k in self.voices:
             if k not in now:
                 out.append(b'E' + bytes([k]))

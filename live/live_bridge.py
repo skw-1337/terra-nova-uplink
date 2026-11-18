@@ -869,6 +869,11 @@ FOV_SANS_ZOOM = 104.58                     # avant la camera (menus) : la vue du
 ZOOM_NORMAL = 0.88916                      # --fov N, comme avant : le champ a ce zoom (0xE3A0), suivant 1 / zoom
 
 
+def fov_rest():
+    # the field at the game's own zoom, the host's helmet zoom (+ / -) left out: a co-op guest's view (his own suit's)
+    return FOV_SANS_ZOOM if FOV is None else FOV
+
+
 def fov_now():
     # le champ du jeu au zoom lu ; --fov N : ce champ au zoom normal, suivant 1 / zoom (91.5 = auto, voir FOV)
     z = d32(A_ZOOM) / 65536 if A_ZOOM else 0
@@ -1174,6 +1179,7 @@ def carte_ordres():
 # clip he plays means, told to the viewer ('SUBT') when it starts and while it plays
 sous_titres = None
 sous_titres_faits = None                                # (made once: turned off and on again from Uplink's menu)
+subs_guest_made = False                                 # (made for a co-op guest's window once)
 
 
 def subs_switch(on):
@@ -1402,7 +1408,7 @@ def handle_input():
             import coop_guest
             guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV',
                                      eye_fixed='--eye' in sys.argv, oeil=OEIL)
-            guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
+            guest.hud_src, guest.post_key, guest.fov_rest = (lambda: hud_last), (post_key if PLAY else None), fov_rest
             print('coop: hosting online', flush=True)
         elif pk in (b'LOCK1', b'LOCK0') and guest is not None:   # the host window's lock of the guest's column
             guest.lobby.locked = pk == b'LOCK1'
@@ -2266,7 +2272,7 @@ if '--guest' in sys.argv or '--guest-remote' in sys.argv:   # coop (TN+ Coop bui
                              view_hz=arg('--view-hz', 40.0),   # online: views a second to the guest
                              versus='--versus' in sys.argv,     # 1v1 (Terra Nova Coop's mode)
                              eye_fixed='--eye' in sys.argv, oeil=OEIL)   # (his suit's eye: the game's, as the host's)
-    guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
+    guest.hud_src, guest.post_key, guest.fov_rest = (lambda: hud_last), (post_key if PLAY else None), fov_rest
 atexit.register(cursor_restore)
 atexit.register(maj_lacher)               # (a Shift still down when the bridge stops: the player would bound on)
 atexit.register(courir_fin)               # (the run: the suit's own pace and the Bound back)
@@ -2404,7 +2410,7 @@ while True:
     if db or debris_prev:
         pk = b'DEBR' + struct.pack('<H', len(db)) + b''.join(db)
         s.sendto(pk, ('127.0.0.1', 47821))
-        if guest and not guest.remote: guest.s.sendto(pk, ('127.0.0.1', coop_guest.LIVE_PORT))
+        if guest: guest.relay(pk, force=not db)   # (the guest's window too; online 10 a second, the last one always)
     debris_prev = bool(db)
     an = animations(tab)                      # the animated effects' frames, before the entities
     if an or anim_prev:
@@ -2745,10 +2751,16 @@ while True:
         menu_beat = time.time()
         print('menus : fil relance', file=sys.stderr, flush=True)
         threading.Thread(target=menu_loop, daemon=True).start()
-    if sous_titres is not None:
+    if guest and sous_titres_faits is None and not subs_guest_made:   # a co-op guest has his own switch: the lines
+        subs_guest_made = True                    # are always made for his window (the host's own shows them only
+        host_on = sous_titres is not None         # if he wants them)
+        subs_switch(True)
+        subs_switch(host_on)
+    if sous_titres_faits is not None and (sous_titres is not None or guest):
         try:
-            for pk in sous_titres.poll(time.time(), x + y > 0):
-                s.sendto(pk, ('127.0.0.1', 47821))
+            for pk in sous_titres_faits.poll(time.time(), x + y > 0):
+                if sous_titres is not None:
+                    s.sendto(pk, ('127.0.0.1', 47821))
                 if guest:                             # the coop guest's window too (online: 'LIV', see coop_net.gd)
                     guest.s.sendto(b'LIV' + pk if guest.remote else pk,
                                    ('127.0.0.1', coop_guest.REMOTE_VIEW if guest.remote else coop_guest.LIVE_PORT))

@@ -4102,8 +4102,13 @@ static func _binds() -> Dictionary:
 # is on screen by then: a game screen that came while it was down left its key down in the game (repeated into the
 # menus and the next mission, an Alt bind turning every later key into an Alt chord).
 func _bind(name: String, down: bool) -> bool:
-	if not binds.has(name) or guest_win:
+	if not binds.has(name):
 		return false
+	if guest_win:                                     # a co-op guest's own binds: his command, as his own key does
+		if (binds[name] as Array).is_empty() or name.begins_with("WHEEL") or not play_started:
+			return false                              # (his wheel zooms his map, his middle button is his free look)
+		_guest_bind(name, down)
+		return true
 	if not down and bind_down.has(name):
 		_bind_set(name, false)
 		return true
@@ -4118,6 +4123,27 @@ func _bind(name: String, down: bool) -> bool:
 	else:
 		_bind_set(name, down)
 	return true
+
+
+# a co-op guest's bind: the key it stands for is his own key for a command (TN_BINDS), turned as his keys are (his
+# cockpit's keys, the turns, the bridge's few moving keys: see _play_scancode)
+func _guest_bind(name: String, down: bool) -> void:
+	var b: Array = binds[name]
+	var cmd: int = key_map.get(int(b[0]), int(b[0]))
+	for n in get_children():
+		if n.has_method("cockpit_key") and n.cockpit_key(cmd, down):
+			return
+	if GUEST_TURN.has(cmd):
+		if down:
+			guest_turn[int(b[0])] = GUEST_TURN[cmd]
+		else:
+			guest_turn.erase(int(b[0]))
+		return
+	var sc: int = GUEST_KEYS.get(cmd, cmd)
+	if int(b[1]) != 0:
+		_key_hold(int(b[1]), name, down)
+	if sc != 0:
+		_key_hold(sc, name, down)
 
 
 func _bind_set(name: String, down: bool) -> void:
@@ -4843,7 +4869,7 @@ var subs_view: Subtitles
 
 # the bridge's 'SUBT': number, squadmate, pilot, event, flags (bit 0: playing), clip, length (ms), text
 func _subs_packet(q: PackedByteArray) -> void:
-	if not (subs_on or guest_win) or q.size() < 13:     # (a coop guest: the host's, when he has them on)
+	if not subs_on or q.size() < 13:                   # (a coop guest: his own switch; the host's bridge sends them)
 		return
 	var mate := int(q[5])
 	var now := Time.get_ticks_msec()
@@ -4852,14 +4878,43 @@ func _subs_packet(q: PackedByteArray) -> void:
 		if q[8] & 1 == 0:
 			return                                         # (the end of a line never shown)
 		s = {"n": int(q[4]), "pilot": int(q[6]), "event": int(q[7]), "clip": q.decode_u16(9), "ms": q.decode_u16(11),
-				"text": q.slice(13).get_string_from_utf8(), "since": now}
+				"text": _subs_text(q), "since": now}
 		subs[mate] = s
 	s["seen"] = now
 	s["playing"] = q[8] & 1 == 1
 
 
+# the line's text: the host's language; a co-op guest's window its own game's (flag 4: English, then French, each
+# after a 0)
+func _subs_text(q: PackedByteArray) -> String:
+	var raw := q.slice(13)
+	var cut := raw.find(0)
+	if cut < 0:
+		return raw.get_string_from_utf8()
+	var text := raw.slice(0, cut).get_string_from_utf8()
+	if guest_win and q[8] & 4:
+		var rest := raw.slice(cut + 1)
+		var cut2 := rest.find(0)
+		if cut2 >= 0:
+			text = (rest.slice(cut2 + 1) if _own_french() else rest.slice(0, cut2)).get_string_from_utf8()
+	return text
+
+
+var own_fr := -1                         # this PC's game in French (1) or not (0); -1 not read yet
+
+func _own_french() -> bool:
+	if own_fr < 0:
+		own_fr = 0
+		if data != null:
+			var r = LGRes.open(data.data_dir().path_join("RESGAME.RES"))
+			if r != null and r.has(0x16E):
+				var items: PackedStringArray = r.strings(0x16E)   # its items: "Smoke Grenade" / "Grenade fumigene"
+				own_fr = 1 if items.size() > 2 and items[2].to_lower().begins_with("grenade") else 0
+	return own_fr == 1
+
+
 func _subs_update() -> void:
-	if not (subs_on or guest_win):
+	if not subs_on:
 		return
 	var now := Time.get_ticks_msec()
 	var shown := []

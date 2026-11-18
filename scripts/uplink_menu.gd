@@ -382,6 +382,10 @@ func _options(col: VBoxContainer) -> void:
 			_keep("sound", "guest_volume_db", AudioServer.get_bus_volume_db(0)), "%d %%")
 		var mus := preload("res://scripts/coop_music.gd")    # the game's music (g5: coop_music.gd; 100 by default, 0 = off)
 		_slider(left, "Music", 0.0, 100.0, mus.user_volume(), func(x: float): mus.set_user_volume(get_tree(), x), "%d %%")
+		var awe_now := 1 if OS.get_environment("TN_MUSIC").to_upper() == "AWE32" else 0   # (his own synthesizer, at once:
+		_seg(left, "Sound set", ["Roland / GS", "AWE32"], awe_now, func(i: int):   # coop_music.gd reads it each packet)
+			OS.set_environment("TN_MUSIC", "AWE32" if i == 1 else "ROLAND")
+			_keep("launcher", "music", "AWE32" if i == 1 else "ROLAND"))
 		_head(left, "CO-OP")
 		_movie_switch(left)
 	else:
@@ -452,7 +456,7 @@ func _later(env: String, key: String, on: bool) -> void:
 
 
 # ---------------------------------------------------------------- accessibility
-# The launcher's Settings > Accessibility: the squadmates' subtitles (solo / host: the guest's window shows the host's),
+# The launcher's Settings > Accessibility: the squadmates' subtitles (each player his own: a co-op guest too),
 # their size, the colour-blind mode (colour_vision.gd). All at once; kept in viewer.cfg [launcher] as the others.
 const SUB_SIZES := ["Normal", "Large", "Larger"]
 const CV_NOTES := ["The game's colours.",
@@ -465,12 +469,9 @@ func _access(col: VBoxContainer) -> void:
 	_place(860, 470)
 	_title(col, "ACCESSIBILITY", ORANGE)
 	_head(col, "SUBTITLES")
-	if guest:
-		_note(col, "Your squadmates' radio lines show when the host has them on.")
-	else:
-		_switch(col, "Squadmates' subtitles  (their radio lines)", bool(v.get("subs_on")), func(on: bool):
-			_set_subs(on)
-			_keep("launcher", "subtitles", "1" if on else "0"))
+	_switch(col, "Squadmates' subtitles  (their radio lines)", bool(v.get("subs_on")), func(on: bool):
+		_set_subs(on)
+		_keep("launcher", "subtitles", "1" if on else "0"))
 	_seg(col, "Size", SUB_SIZES, clampi(int(v.get("subs_size")), 0, 2), func(i: int):
 		v.subs_size = i
 		OS.set_environment("TN_SUBTITLE_SIZE", str(i))
@@ -508,8 +509,8 @@ func _set_subs(on: bool) -> void:
 		v.subs.clear()
 		if v.subs_view != null:
 			v.subs_view.visible = false
-	if v.get("play_udp") != null:
-		v._play_send(("SUBS" + ("1" if on else "0")).to_ascii_buffer())
+	if v.get("play_udp") != null and not guest:          # (a co-op guest's: his window only, the host's bridge
+		v._play_send(("SUBS" + ("1" if on else "0")).to_ascii_buffer())   # always sends them)
 
 
 func _note(col: Control, text: String) -> Label:
@@ -575,18 +576,17 @@ func _graphics(col: VBoxContainer) -> void:
 		if int(SHARP[i][0]) == int(v.get("old_sharp")):
 			sharp_at = i
 	_seg(left, "Pixels", SHARP.map(func(s): return s[1]), sharp_at, func(i: int): _set_sharp(int(SHARP[i][0])))
-	if not guest:
-		_switch(left, "Uplink HUD colours", bool(v.get("hud_colours")), func(on: bool):
-			_set_hud_colours(on)
-			_keep("launcher", "hud_colours", "1" if on else "0")
-			_gfx_touched())
-		var ci := 0
-		for i in CROSS.size():
-			if CROSS[i][0] == str(v.get("crosshair")):
-				ci = i
-		_seg(left, "Crosshair", CROSS.map(func(c): return c[1]), ci, func(i: int):
-			v.crosshair = CROSS[i][0]
-			_keep("launcher", "crosshair", CROSS[i][0]))
+	_switch(left, "Uplink HUD colours", bool(v.get("hud_colours")), func(on: bool):
+		_set_hud_colours(on)
+		_keep("launcher", "hud_colours", "1" if on else "0")
+		_gfx_touched())
+	var ci := 0
+	for i in CROSS.size():
+		if CROSS[i][0] == str(v.get("crosshair")):
+			ci = i
+	_seg(left, "Crosshair", CROSS.map(func(c): return c[1]), ci, func(i: int):   # (a co-op guest's: coop_hud.gd)
+		v.crosshair = CROSS[i][0]
+		_keep("launcher", "crosshair", CROSS[i][0]))
 	var caps := CAPS.duplicate()
 	if Engine.max_fps > 0 and not caps.has(Engine.max_fps):
 		caps.append(Engine.max_fps)                      # (another chosen in the launcher: "Other...")
@@ -735,8 +735,7 @@ func apply_preset(id: String) -> void:
 			_set_old(on)
 			cfg.set_value("launcher", "old_school", "1" if on else "0")
 		elif key == "hud_colours":
-			if not guest:
-				_set_hud_colours(on)
+			_set_hud_colours(on)                         # (a co-op guest's too: coop_hud.gd _ucol)
 			cfg.set_value("launcher", "hud_colours", "1" if on else "0")
 		else:
 			_set_fx(key, on)

@@ -67,7 +67,7 @@ HOST_LIVE = 47821             # the host's own window (the guest's map marker fo
 REMOTE_VIEW = 47841           # online guest (--guest-remote): the host window's coop_net.gd sends it over Steam
 # online: the bridge's packets about the picture relayed to the guest (relay), and their least gap (s): the sky's
 # drift 5 a second (it moves slowly), the waypoint (its angle word turns every frame) twice; the rest when it changes
-RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25, b'GAIT': 0.5}
+RELAY_GAP = {b'SKYO': 0.2, b'WAYP': 0.5, b'HAZE': 0.25, b'SLEN': 0.25, b'ARMS': 0.25, b'GAIT': 0.5, b'DEBR': 0.1}
 KEYS = {0x11, 0x1F, 0x1E, 0x20, 0x39}   # the only keys a guest can hold: W S A D, Space (network input is filtered)
 # The jets (Space), as the game's 0x288EF0 / 0x288F78 for a suit: near the ground a kick of 150 up every 2nd game
 # update, unpaid; in the air free for 200 ms, then each update pays energy dt x 2^32 / ((f + 0x20000) / 3) (16.16, f =
@@ -283,11 +283,14 @@ def axis(v, dead=7849):
 
 def launch(godot, vpath, mission):
     import subprocess
+    # (tests on one PC: TN_GUEST_SET_<NAME>=value gives the guest's window its own setting <NAME>, as his own PC would)
+    env = dict(os.environ)
+    env.update({k[len('TN_GUEST_SET_'):]: v for k, v in os.environ.items() if k.startswith('TN_GUEST_SET_')})
     return subprocess.Popen([godot, '--path', vpath, '--resolution', os.environ.get('TN_GUEST_RES', '1280x720')] +
                             (['--position', os.environ['TN_GUEST_POS']] if 'TN_GUEST_POS' in os.environ else []) +
                             ['--', '--live', '--live-port', str(LIVE_PORT), '--play', '--play-port', str(PLAY_PORT), '--coop-hud'] +
                             (['--coop-preview'] if os.environ.get('TN_COOP_PREVIEW') else []) +   # Steam name / avatar
-                            (['--mission', mission] if mission else []))
+                            (['--mission', mission] if mission else []), env=env)
 
 
 class Guest:
@@ -309,6 +312,7 @@ class Guest:
         self.enc, self.resync_t = coop_view.Encoder() if remote else None, 0.0
         self.g, self.master, self.pid_addr, self.nent, self.eye, self.sens_x = g, master, pid_addr, nent, eye, sens_x
         self.fov_now, self.s = fov_now, sock
+        self.fov_rest = None          # the game's field without the host's helmet zoom (the bridge's): the guest's view
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.bind(('127.0.0.1', PLAY_PORT)); self.rx.setblocking(False)
         self.keys, self.gid, self.pitch, self.fire = set(), 0, 0.0, False
@@ -1734,7 +1738,7 @@ class Guest:
                 # after the index: the height of the feet in the world (the game's entity height minus its 0.12)
                 joints = joints + [struct.pack('<if', me, self.i32(M + 0x25 * me + 0x17) / 65536 - 0.12) + pose]
         dv = self.equip.camera((*eye, gh, self.pitch))         # his view through his drone: from it, the drone hidden
-        view = (struct.pack('<6f2i', *(dv[:5] if dv else (*eye, gh, self.pitch)), self.fov_now(), len(body), self.gid) +
+        view = (struct.pack('<6f2i', *(dv[:5] if dv else (*eye, gh, self.pitch)), (self.fov_rest or self.fov_now)(), len(body), self.gid) +
                 b''.join(body) + struct.pack('<i', len(joints)) + b''.join(joints) +
                 struct.pack('<i', len(arts)) + b''.join(arts) + struct.pack('<2i', dv[5] if dv else self.gid, 1 if alarm else 0))
         self.send(view)
@@ -1871,7 +1875,7 @@ class Guest:
             self.weather_pk, self.weather_t = pk, time.time()
             self.s.sendto(b'WTH' + pk[4:], ('127.0.0.1', REMOTE_VIEW))
 
-    def relay(self, pk):
+    def relay(self, pk, force=False):
         """What the bridge sends the host's window about his picture and the guest's needs as well: the sky's drift
         and sway (SKYO), the waypoint (WAYP), the haze (HAZE), the soldiers' bone lengths, arms and walks (SLEN, ARMS, GAIT), the
         ground tiles (TEXL, local only). Local: as it is. Online: 'LIV' + the packet (coop_net.gd hands the listed
@@ -1884,7 +1888,7 @@ class Guest:
         if gap is None:
             return
         last, t = self.relayed.get(tag, (b'', 0.0))
-        if (pk != last and now - t >= gap) or now - t >= 2.0:
+        if (pk != last and (now - t >= gap or force)) or now - t >= 2.0:
             self.relayed[tag] = (pk, now)
             self.s.sendto(b'LIV' + pk, ('127.0.0.1', REMOTE_VIEW))
 

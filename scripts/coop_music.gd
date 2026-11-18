@@ -236,7 +236,10 @@ func feed(pk: PackedByteArray) -> void:
 	gm = (pk[5] & 2) != 0
 	if user_pct <= 0.5 or not _setup():
 		return
-	var want_awe := (pk[5] & 4) != 0 and _sf2_open()
+	# the synthesizer: his own Music device (his launcher's TN_MUSIC: AWE32 when he has the bank), not the host's; the
+	# arrangement (General MIDI or FM) stays the host's: the place in the music comes from his sequences
+	var dev := OS.get_environment("TN_MUSIC").to_upper()
+	var want_awe := (dev == "AWE32" if dev != "" else (pk[5] & 4) != 0) and _sf2_open()
 	if want_awe != awe:                                        # (another synthesizer: the notes again from the host's place)
 		_log("bank: %s" % ("TN+'s AWE32 bank %s" % sf2.get("path", "") if want_awe else "the GS set (gm.dls)"))
 		_stop_all()

@@ -576,18 +576,17 @@ func _graphics(col: VBoxContainer) -> void:
 		if int(SHARP[i][0]) == int(v.get("old_sharp")):
 			sharp_at = i
 	_seg(left, "Pixels", SHARP.map(func(s): return s[1]), sharp_at, func(i: int): _set_sharp(int(SHARP[i][0])))
-	if not guest:
-		_switch(left, "Uplink HUD colours", bool(v.get("hud_colours")), func(on: bool):
-			_set_hud_colours(on)
-			_keep("launcher", "hud_colours", "1" if on else "0")
-			_gfx_touched())
-		var ci := 0
-		for i in CROSS.size():
-			if CROSS[i][0] == str(v.get("crosshair")):
-				ci = i
-		_seg(left, "Crosshair", CROSS.map(func(c): return c[1]), ci, func(i: int):
-			v.crosshair = CROSS[i][0]
-			_keep("launcher", "crosshair", CROSS[i][0]))
+	_switch(left, "Uplink HUD colours", bool(v.get("hud_colours")), func(on: bool):
+		_set_hud_colours(on)
+		_keep("launcher", "hud_colours", "1" if on else "0")
+		_gfx_touched())
+	var ci := 0
+	for i in CROSS.size():
+		if CROSS[i][0] == str(v.get("crosshair")):
+			ci = i
+	_seg(left, "Crosshair", CROSS.map(func(c): return c[1]), ci, func(i: int):   # (a co-op guest's: coop_hud.gd)
+		v.crosshair = CROSS[i][0]
+		_keep("launcher", "crosshair", CROSS[i][0]))
 	var caps := CAPS.duplicate()
 	if Engine.max_fps > 0 and not caps.has(Engine.max_fps):
 		caps.append(Engine.max_fps)                      # (another chosen in the launcher: "Other...")
@@ -736,8 +735,7 @@ func apply_preset(id: String) -> void:
 			_set_old(on)
 			cfg.set_value("launcher", "old_school", "1" if on else "0")
 		elif key == "hud_colours":
-			if not guest:
-				_set_hud_colours(on)
+			_set_hud_colours(on)                         # (a co-op guest's too: coop_hud.gd _ucol)
 			cfg.set_value("launcher", "hud_colours", "1" if on else "0")
 		else:
 			_set_fx(key, on)

@@ -8,6 +8,8 @@ TERRA NOVA UPLINK - WHAT'S NEW
   badge stays at the bottom of the side bar.
 - Tools > Roll back to previous version.
 - Co-op: when your friend runs another version, the launcher says which.
+- If the launcher asks to restart at every start without updating (a folder
+  name with accents, such as é), open "Terra Nova Uplink.new.exe" once.
 
 2.7
 - New launcher: Play, Co-op, Maps, In game and Settings each have their page.

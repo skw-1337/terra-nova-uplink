@@ -115,6 +115,8 @@ static class Uplink
         { Set("game_dir", args[3]); Console.WriteLine(MakeSave(args[3], int.Parse(args[2]) - 1, args[1] == "--makesave" ? COOP_SAVE : PLAY_SAVE) ?? "failed"); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--closegame")   // checks: close the game this launcher started (exit 0 = one was)
         { Environment.Exit(CloseOurGame() ? 0 : 2); }
+        if (args.Length > 1 && args[1] == "--steam-ready") // checks: Steam running and logged in (exit 0 = yes)
+        { Environment.Exit(SteamReady() ? 0 : 2); }
         if (args.Length > 1 && args[1] == "--binds")       // checks: TN+'s second binds, as Uplink is told them
         { Console.WriteLine(Binds()); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--env")         // checks: what Uplink is told when it starts (the options)
@@ -2611,18 +2613,47 @@ static class Uplink
         try { Process p = Process.GetProcessById(id); Log("closing " + p.ProcessName + " " + id); p.Kill(); p.WaitForExit(3000); } catch { }
     }
 
+    // HOST / JOIN: Steam running AND logged in before Uplink starts its Steam (started too early, while Steam was still
+    // starting, it stayed OFFLINE). Test switch TN_TEST_STEAM_WAIT=N: Steam "ready" after N s, never started for real
     static bool SteamUp()
     {
-        if (Process.GetProcessesByName("steam").Length > 0) return true;
-        Status("Starting Steam...", CAmber);
-        try { Process.Start("steam://open/main"); } catch { }
-        for (int i = 0; i < 60 && !stopping; i++)
+        int test = -1;
+        int.TryParse(Environment.GetEnvironmentVariable("TN_TEST_STEAM_WAIT") ?? "", out test);
+        bool testing = Environment.GetEnvironmentVariable("TN_TEST_STEAM_WAIT") != null;
+        DateTime t0 = DateTime.Now;
+        Func<bool> ready = () => testing ? (DateTime.Now - t0).TotalSeconds >= test : SteamReady();
+        if (ready()) return true;
+        if (!testing && Process.GetProcessesByName("steam").Length == 0)
         {
-            Thread.Sleep(1000);
-            if (Process.GetProcessesByName("steam").Length > 0) { Thread.Sleep(8000); return true; }
+            Log("Steam isn't running: starting it");
+            try { Process.Start("steam://open/main"); } catch { }
         }
-        Status("Steam isn't running: start it, log in, then click again.", CRed);
+        const int wait = 180;                              // (an update of Steam, then the login)
+        for (int i = 0; i < wait && !stopping; i++)
+        {
+            if (i % 5 == 0) Status("Waiting for Steam... start it and log in (" + (wait - i) + " s left).", CAmber);
+            Thread.Sleep(1000);
+            if (ready()) { Log("Steam ready after " + (i + 1) + " s"); Thread.Sleep(3000); return true; }
+        }
+        if (!stopping) Status("Steam isn't ready: start it, log in, then click again.", CRed);
         return false;
+    }
+
+    // Steam's own: HKCU\Software\Valve\Steam\ActiveProcess, pid (running) and ActiveUser (not 0 once logged in). The
+    // values are only compared, never logged or shown
+    static bool SteamReady()
+    {
+        try
+        {
+            using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam\ActiveProcess"))
+            {
+                if (k == null) return false;
+                object pid = k.GetValue("pid"), user = k.GetValue("ActiveUser");
+                if (!(pid is int) || !(user is int) || (int)pid == 0 || (int)user == 0) return false;
+                using (Process p = Process.GetProcessById((int)pid)) return !p.HasExited;
+            }
+        }
+        catch { return false; }
     }
 
     static Process Run(string exe, string args, string dir, Dictionary<string, string> env, bool capture)

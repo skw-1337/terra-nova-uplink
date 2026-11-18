@@ -1849,6 +1849,7 @@ static class Uplink
         ContextMenuStrip m = Menu();
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
         m.Items.Add("Check for updates now", null, delegate {
+            if (NoUpdate) { Status("Updates are off in this folder (no_update.txt): nothing was checked.", CText); return; }
             Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); });
         m.Items.Add("Import keys from my Terra Nova Plus...", null, delegate { ImportKeys(); });
         m.Items.Add("Repair (download everything again)", null, delegate { Repair(); });

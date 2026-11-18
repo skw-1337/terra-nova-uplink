@@ -51,6 +51,11 @@ UNDO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'coop_lo
 # Picks of the guest meanwhile are already in his column's data; they show at that redraw or at the host's own next
 # click (the game redraws every column after each of its own picks).
 IDLE, REDRAW_GAP = 0.8, 1.0
+# A pick list open on the game's outfitting screen (measured 18/11/2026, English exe, mission 20): the task waits at the
+# same place (OUTFIT_SIG) whether a list is open or not, but this dword is 0 while one is open (a pointer otherwise).
+# A redraw posted then wiped the list off the screen while the game still waited for a pick in it: the host's next
+# clicks went into a list he could no longer see ("the host could not choose"). No redraw while it is 0.
+POPUP = 0x447090
 # the game's mouse library (as mission_play.py / live_bridge.py find it): movzx esi, word [read index] / shl esi, 4 /
 # lea esi, [esi + queue]; the write index is the word before the read index
 MOUSE_SIG = rb'\x0f\xbf\x35(....)\xc1\xe6\x04\x8d\xb6(....)'
@@ -238,6 +243,10 @@ class Lobby:
                 pass
         return self.mouse
 
+    def popup_open(self):
+        """a pick list open on the game's outfitting screen (the host is choosing in it)"""
+        return struct.unpack('<I', self.g.read(POPUP, 4))[0] == 0
+
     def host_idle(self, now=None):
         """the host is not using the screen: his mouse queue empty and nothing new in it for IDLE seconds"""
         now = time.time() if now is None else now
@@ -254,7 +263,7 @@ class Lobby:
         he is idle (see IDLE), else kept for later (tick)"""
         self.dirty = True
         now = time.time()
-        if now - self.redraw_t < REDRAW_GAP or not self.host_idle(now):
+        if now - self.redraw_t < REDRAW_GAP or not self.host_idle(now) or self.popup_open():
             return False
         t = self.task()
         if not t or not self.on_screen():

@@ -10,12 +10,29 @@
 extends Node
 
 const LEGS = preload("res://legs.gdshader")
+const BodyModel = preload("res://scripts/body_model.gd")
 
 const LIMIT := 0x2000                        # the game's head: 45 degrees down (its angle units, 65536 a turn)
 const UNIT := 8                              # the bridge: units of the game's angle per mouse count (SENS_Y)
 const RAD := TAU / 65536.0 * UNIT            # radians per mouse count
 const MAX := 0.75                            # how far past the limit (rad): 43 degrees, 88 down in all
 const EYE_CLEAR := 0.07                      # a leg piece whose bone passes this close to the eye: not drawn
+# His body (TN_LOOK_DOWN_BODY): "model" a solid model of his suit's legs built from their own pictures (body_model.gd),
+# seen as from a head bent over them: the eye comes back and down behind the hips and the view narrows as it goes
+# down (the legs fill the picture, as in other games' first person views); "old" the round pieces dressed in the
+# legs' front pictures (legs.gdshader), the eye brought over the hips
+var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else "model"
+const EYE_BACK := 0.15                        # (model) at the lowest: the eye this far behind its place
+const EYE_BACK_STAND := 0.07                  # ... and this much more while he stands (his feet in view)
+const EYE_DOWN := 0.12                        # ... and this much lower
+const FOV_LOW := 60.0                         # ... the view this wide (degrees across)
+const THIGH_SLIM := 0.75                      # (model) the thighs this slim, their hip pads held to their middle
+const THIGH_TOP := 0.6
+const THIGH_DARK := 0.7                       # ... their back and side pictures this much towards the armour's grey
+var stand_k := 1.0                            # how much he stands (eased)
+var last_pos := Vector3.ZERO
+var size_set := -1.0                          # the camera's width last set here (another: the viewer's own again)
+var size_base := 0.0
 const BACK := 0.9                            # at the lowest, the eye this far back from the game's to over the hips
 const TEST := "TN_LOOK_DOWN_TEST"            # tests: "start,rate[,hold]" = from that second on, the mouse pulled down for
                                              # 3 s at that many counts a second, held 3 s (or hold), pulled back up 3 s
@@ -105,7 +122,9 @@ func _process(dt: float) -> void:
 	if extra < 0.0 and (v.menu_mode or v.current.is_empty()):
 		extra = 0.0                              # one of the game's screens: the view as the game's
 	var on := extra < -0.001
-	if on:
+	if on and body_mode == "model":
+		_model_eye(dt)
+	elif on:
 		var k := -extra / max_extra
 		# the game's eye is ahead of the suit (its cockpit): looking down from there the legs stood behind the view, at
 		# the bottom edge, under the cockpit (two knee tops). The eye comes back over the hips as the view goes down
@@ -115,6 +134,10 @@ func _process(dt: float) -> void:
 			var over := body.global_position
 			var cp: Vector3 = v.camera.position
 			v.camera.position = Vector3(lerpf(cp.x, over.x, k * BACK), cp.y, lerpf(cp.z, over.z, k * BACK))
+	elif size_set > 0.0:
+		if is_equal_approx(v.camera.size, size_set):
+			v.camera.size = size_base               # (back up: the view's own width again)
+		size_set = -1.0
 	if on or shown:
 		_legs(on)
 	mark.visible = on
@@ -122,7 +145,28 @@ func _process(dt: float) -> void:
 		mark.queue_redraw()
 
 
-# The player's own legs and feet (joints 0 to 7: toes, ankles, knees, hips) for the main view while it looks past the
+# (model) the eye as a head bent over the legs: back and down, the view narrowed, eased in from the game's limit
+func _model_eye(dt: float) -> void:
+	var k := clampf(-extra / max_extra, 0.0, 1.0)
+	var ks := k * k * (3.0 - 2.0 * k)
+	var body: Node3D = v.live_player_node
+	if body != null and is_instance_valid(body):
+		var p := body.global_position
+		var sp := Vector2(p.x - last_pos.x, p.z - last_pos.z).length() / maxf(dt, 1e-3)
+		last_pos = p
+		stand_k = lerpf(stand_k, 1.0 if sp < 0.08 else 0.0, 1.0 - exp(-dt * 4.0))
+	var fwd := Vector3(-sin(v.yaw), 0.0, -cos(v.yaw))
+	v.camera.position += fwd * (-(EYE_BACK + EYE_BACK_STAND * stand_k) * ks) + Vector3(0.0, -EYE_DOWN * ks, 0.0)
+	if v.camera.projection == Camera3D.PROJECTION_FRUSTUM and v.camera.near > 0.0:
+		if size_set < 0.0 or not is_equal_approx(v.camera.size, size_set):
+			size_base = v.camera.size                  # (the viewer's own width, set again by it)
+		var fov := 2.0 * atan(size_base / (2.0 * v.camera.near))
+		var want := lerpf(fov, deg_to_rad(FOV_LOW), ks)
+		size_set = size_base * tan(want * 0.5) / tan(fov * 0.5)
+		v.camera.size = size_set
+
+
+# (old) The player's own legs and feet (joints 0 to 7: toes, ankles, knees, hips) for the main view while it looks past the
 # limit. His body's limbs are the game's flat pictures, taken all around each bone and none from above: they stay the
 # side views' alone. Each leg piece gets a round solid around its bone instead (legs.gdshader), a child of the limb
 # (it takes every pose with it), as thick as the limb's front picture and dressed in it; a foot is flatter than wide.
@@ -171,20 +215,30 @@ func _build(node: Node3D) -> void:
 		if ld.is_empty() or not is_instance_valid(seg):
 			continue
 		var foot: bool = maxi(part[1], part[2]) <= 3
-		if not ld.has("solid"):
-			ld["solid"] = _solid(ld, foot)
-		var mat := ShaderMaterial.new()
-		mat.shader = LEGS
-		mat.set_shader_parameter("views", ld["tex"])
-		mat.set_shader_parameter("front", float(mini(8, int(ld["views"]) - 1)))
-		v._limb_light_set(mat)
+		var thigh: bool = maxi(part[1], part[2]) >= 6
 		var mi := MeshInstance3D.new()
 		mi.set_meta("shadow_twin", true)             # (the viewer's passes over a unit's pieces leave it alone)
-		mi.mesh = ld["solid"]
-		mi.material_override = mat
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # (his body's own twins cast its shadow)
 		mi.set_instance_shader_parameter("mirror", seg.get_instance_shader_parameter("mirror"))
-		mi.set_instance_shader_parameter("fade_top", 0.6 if maxi(part[1], part[2]) >= 6 else 0.0)   # (a thigh: hip to knee)
+		if body_mode == "model":
+			var m := BodyModel.mesh(ld, float(seg.get_instance_shader_parameter("mirror")) > 0.5, 0.0, 0.0,
+					THIGH_TOP if thigh else 0.0, THIGH_SLIM if thigh else 1.0)
+			if m == null:
+				continue
+			mi.mesh = m
+			mi.material_override = BodyModel.material(ld)
+			mi.set_instance_shader_parameter("back_dark", THIGH_DARK if thigh else 0.0)
+		else:
+			if not ld.has("solid"):
+				ld["solid"] = _solid(ld, foot)
+			var mat := ShaderMaterial.new()
+			mat.shader = LEGS
+			mat.set_shader_parameter("views", ld["tex"])
+			mat.set_shader_parameter("front", float(mini(8, int(ld["views"]) - 1)))
+			v._limb_light_set(mat)
+			mi.mesh = ld["solid"]
+			mi.material_override = mat
+			mi.set_instance_shader_parameter("fade_top", 0.6 if thigh else 0.0)   # (a thigh: hip to knee)
 		mi.extra_cull_margin = 2.0
 		mi.set_meta("bone_px", float(ld["len"]))
 		seg.add_child(mi)

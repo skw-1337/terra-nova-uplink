@@ -56,7 +56,7 @@ const BOX := Rect2i(146, 226, 26, 26)
 const MAP_BOX := Rect2i(118, 264, 84, 108)
 const MAP_LIGHT := "02020202020202020202020202020202030303030303030304040404040404040405050505060606060606060707070707070606060606060505050505050404"
 const MAP_LIGHT_8 := "04040404040404040404040404040404040404040404040404040404040404040505050505050505050505050505050505050505050505050505050505050505"
-enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE }   # the marks' kinds (coop_guest.py)
+enum { M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_NOTEZ, M_SYS, M_ROW }   # the marks' kinds (coop_guest.py)
 
 const LOCK_SOUND := 2021                     # the game's sound when its player locks a target (0x262BBF)
 const LOCK_SEEN := 2028                      # ... and when it first draws the new target's box (0x26A309)
@@ -118,7 +118,7 @@ var big_font := PackedByteArray()     # the game's small HUD letters, for the pa
 var note_font := PackedByteArray()    # the game's small letters (the map's written notes)
 var pal_map := ""                    # the map file the palette was taken with (another planet: other ground colours)
 var map_from := Vector2i.ZERO        # its top left corner in the world, and the world units of a pixel
-var map_step := 1
+var map_step := 1.0
 var map_marks := []                  # the marks the host's game would draw: [kind, palette colour, payload]
 var map_told := false                # the host sends them (an older host: the squad from the view's entities)
 # His own map marker (the host's is the game's nav marker): a click on his map with the mouse free puts it there, a
@@ -157,6 +157,7 @@ const REG_HOME: Array[Vector2] = [Vector2(17, 276), Vector2(118, 264), Vector2(2
 var reg_move: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
 var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
+var panels: Node                     # his cockpit's buttons and map zoom (coop_panels.gd)
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -167,6 +168,9 @@ func _ready() -> void:
 	layer = 9
 	lobby = preload("res://scripts/coop_lobby.gd").new()
 	add_child(lobby)
+	panels = preload("res://scripts/coop_panels.gd").new()
+	panels.hud = self
+	add_child(panels)
 	udp.bind(HUD_PORT, "127.0.0.1", 1 << 20)
 	font = ThemeDB.fallback_font
 	if "--coop-preview" in OS.get_cmdline_user_args():
@@ -368,6 +372,8 @@ func _process(delta: float) -> void:
 			_map_paint()
 		if rear_on:
 			_rear_follow()
+		panels.update()
+		panels.update_mid()
 		panel.visible = true
 		panel.queue_redraw()
 
@@ -571,11 +577,11 @@ func _map_box() -> Rect2:
 
 # a place of the world (1/64 units, two words of a mark) -> its pixel of the map picture, as the game's (a screen
 # row is half a pixel)
-func _map_at(d: PackedByteArray, o: int, plus := Vector2i.ZERO) -> Vector2i:
+func _map_at(d: PackedByteArray, o: int, plus: Vector2i, fr: Vector2i, step: float) -> Vector2i:
 	if o + 4 > d.size():
 		return Vector2i(-99, -99)
 	var w := Vector2(d.decode_u16(o) + plus.x, d.decode_u16(o + 2) + plus.y) / 64.0
-	return Vector2i(floori((w.x - map_from.x) / map_step), floori((w.y - map_from.y) * 2.0 / map_step))
+	return Vector2i(floori((w.x - fr.x) / step), floori((w.y - fr.y) * 2.0 / step))
 
 
 func _dot(img: Image, x: int, y: int, c: Color) -> void:
@@ -608,25 +614,54 @@ func _map_paint() -> void:
 	var size := _map_size()
 	if size.x < 8 or size.y < 8:
 		return
-	map_step = 2 if big_map else 1                           # world units a pixel (the game's zooms 2 and 4)
-	var span := Vector2i(size.x * map_step, size.y / 2 * map_step)
-	map_from = Vector2i(clampi(floori(guest_xy.x) - span.x / 2, 0, maxi(0, 512 - span.x)),
-			clampi(floori(guest_xy.y) - span.y / 2, 0, maxi(0, 512 - span.y)))
+	map_step = panels.step()                                 # world units a pixel: his zoom level (coop_panels.gd)
+	var r := _map_image(size, map_step, guest_xy, panels.note_bit())
+	map_from = r[1]
+	var img: Image = r[0]
+	if not map_told:                                         # an older host: the squad from the view's entities
+		_map_squad(img)
+	map_img = img
+	if map_tex == null or Vector2i(map_tex.get_size()) != size:
+		map_tex = ImageTexture.create_from_image(img)
+	else:
+		map_tex.update(img)
+
+
+# A map picture: size pixels, step world units a pixel (two screen rows for one), centred on centre (game x, y) and
+# kept inside the map, with the marks, the notes those of note bit nbit (its zoom's): [the picture, its top left
+# corner in the world]
+func _map_image(size: Vector2i, step: float, centre: Vector2, nbit: int) -> Array:
+	var span := Vector2i(ceili(size.x * step), ceili(size.y / 2 * step))
+	var fr := Vector2i(clampi(floori(centre.x - size.x * step / 2.0), 0, maxi(0, 512 - span.x)),
+			clampi(floori(centre.y - size.y / 2 * step / 2.0), 0, maxi(0, 512 - span.y)))
 	var img := Image.create_empty(size.x, size.y, false, Image.FORMAT_RGBA8)
 	img.fill(Color.BLACK)
 	var g := _ground()
 	if g != null:
 		var part := Image.create_empty(span.x, span.y, false, Image.FORMAT_RGBA8)
 		part.fill(Color.BLACK)
-		part.blit_rect(g, Rect2i(map_from, span), Vector2i.ZERO)
-		part.resize(size.x, size.y, Image.INTERPOLATE_NEAREST)
-		img = part
+		part.blit_rect(g, Rect2i(fr, span), Vector2i.ZERO)
+		part.resize(maxi(1, roundi(span.x / step)), maxi(1, roundi(span.y * 2 / step)), Image.INTERPOLATE_NEAREST)
+		img.blit_rect(part, Rect2i(Vector2i.ZERO, size), Vector2i.ZERO)
 	var pal := hud_pal
+	var any_z := false                                       # (a newer host: the notes of every zoom, M_NOTEZ)
+	for m in map_marks:
+		if m[0] == M_NOTEZ:
+			any_z = true
+			break
 	for m in map_marks:
 		var d: PackedByteArray = m[2]
 		var c: Color = pal[m[1]] if not pal.is_empty() else Color.WHITE
-		var p := _map_at(d, 0)
-		match m[0]:
+		var kind: int = m[0]
+		if kind == M_NOTEZ:                                  # zoom bits, kind, then the note as an older host sends it
+			if d.size() < 2 or not (d[0] & (1 << nbit)):
+				continue
+			kind = d[1]
+			d = d.slice(2)
+		elif any_z and kind in [M_RECT, M_ROUND, M_TEXT]:
+			continue
+		var p := _map_at(d, 0, Vector2i.ZERO, fr, step)
+		match kind:
 			M_CROSS:
 				_cross(img, p, c)
 			M_SELF:
@@ -635,7 +670,7 @@ func _map_paint() -> void:
 				_line(img, p, p + Vector2i(roundi(6.0 * cos(a)), roundi(12.0 * sin(a))), c)
 			M_SHAPE:
 				for k in range(0, d.size() - 3, 4):
-					_line(img, _map_at(d, k), _map_at(d, (k + 4) % (d.size() & ~3)), c)
+					_line(img, _map_at(d, k, Vector2i.ZERO, fr, step), _map_at(d, (k + 4) % (d.size() & ~3), Vector2i.ZERO, fr, step), c)
 			M_WAYPOINT:
 				_frame(img, p - Vector2i(2, 2), p + Vector2i(1, 1), c)
 			M_NAV:
@@ -645,22 +680,16 @@ func _map_paint() -> void:
 			M_RECT, M_ROUND, M_TEXT:
 				if d.size() < 8:
 					continue
-				var q := _map_at(d, 0, Vector2i(d.decode_u16(4), d.decode_u16(6)))
-				if m[0] == M_RECT:
+				var q := _map_at(d, 0, Vector2i(d.decode_u16(4), d.decode_u16(6)), fr, step)
+				if kind == M_RECT:
 					_frame(img, p, q, c)
-				elif m[0] == M_ROUND:
+				elif kind == M_ROUND:
 					var r := (q.x - p.x) / 2.0
 					for k in 64:
 						_dot(img, roundi((p.x + q.x) / 2.0 + r * cos(k * TAU / 64.0)), roundi((p.y + q.y) / 2.0 + r * sin(k * TAU / 64.0)), c)
 				else:
 					_write(img, p, d.slice(8), c)
-	if not map_told:                                         # an older host: the squad from the view's entities
-		_map_squad(img)
-	map_img = img
-	if map_tex == null or Vector2i(map_tex.get_size()) != size:
-		map_tex = ImageTexture.create_from_image(img)
-	else:
-		map_tex.update(img)
+	return [img, fr]
 
 
 # a note's letters in the game's small font (RESHLMHI.RES 503: first and last letter at +36, +38, the bits at the
@@ -915,6 +944,9 @@ func _draw_panel() -> void:
 	# health bar, filled from the left with the pilot's health in red (half the bar when whole), then the suit's
 	# armour in the indicator's light blue (the other half), the rest unlit
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
+	if panels.left_page != panels.COMM:                  # STAT / VIEW / MAP (coop_panels.gd)
+		rows = []
+		panels.draw_left()
 	for i in rows.size():
 		var y0 := 277.0 + reg_move[0].y + 28.0 * i
 		var x0 := reg_move[0].x
@@ -928,7 +960,8 @@ func _draw_panel() -> void:
 		_text(nm.to_upper(), 42.0 + x0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
 		var hp: float = squad_health[i] / 100.0 if i < squad_health.size() and squad_health[i] <= 100 else 1.0
 		_draw_mini_bar(Rect2(42.0 + x0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
-	if status_page:
+	panels.draw_buttons()                                # his own pages' buttons lit (coop_panels.gd)
+	if status_page and not panels.draw_status():          # (the game's STATUS pages: coop_panels.gd; an older host: this)
 		_draw_status()
 	# WEAPON: his selected weapon, its picture under the texts where the game puts it
 	var wm := reg_move[2]
@@ -944,6 +977,7 @@ func _draw_panel() -> void:
 	if map_tex:
 		panel.draw_texture_rect(map_tex, _map_box(), false)
 	if big_map:
+		panels.draw_mid()                                # his view in the map's panel, as the game's
 		_text("MAP  (M: back)", win.position.x + 16.0, win.position.y + 10.0, 10.0, Color(0.9, 0.9, 1.0))
 	# the small box over the map: his weapon, as the game's
 	if not rear_on:
@@ -1257,6 +1291,25 @@ func _mark_ask() -> void:
 	b.encode_float(1, mark_want.x)
 	b.encode_float(5, mark_want.y)
 	lobby.out.put_packet(b)
+
+
+# his cockpit's buttons, keys and wheel (coop_panels.gd; viewer.gd's input): true if taken
+func cockpit_click(at: Vector2, right: bool) -> bool:
+	if not cockpit.visible or state != 0 or not root.visible:
+		return false
+	var s := root.size
+	return panels.click(Vector2(at.x * 320.0 / s.x, at.y * 400.0 / s.y), right)
+
+
+func cockpit_key(sc: int, down: bool) -> bool:
+	return cockpit.visible and state == 0 and root.visible and panels.key(sc, down)
+
+
+func cockpit_wheel(at: Vector2, up: bool) -> bool:
+	if not cockpit.visible or state != 0 or not root.visible:
+		return false
+	var s := root.size
+	return panels.wheel(Vector2(at.x * 320.0 / s.x, at.y * 400.0 / s.y), up)
 
 
 func toggle_map() -> void:

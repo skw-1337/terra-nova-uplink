@@ -145,7 +145,7 @@ static class Uplink
         }
         Build();
         form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
-        form.FormClosing += delegate { AdoptNow(); loading = false; SaveOptions(); stopping = true; };
+        form.FormClosing += delegate { AdoptNow(); loading = false; SaveOptions(); stopping = true; quitting = true; };
         Application.Run(form);
     }
 
@@ -2950,15 +2950,33 @@ static class Uplink
         }
     }
 
-    static void StopNow() { new Thread(StopAll) { IsBackground = true }.Start(); }
+    // STOP's work on a thread of its own, a foreground one: the window closed meanwhile goes at once, the process stays
+    // (with no window) until everything it started is closed. Closing the window also cuts the waits short (quitting)
+    static Thread stopper;
+    static volatile bool quitting;
+
+    static void StopNow()
+    {
+        if (stopper != null && stopper.IsAlive) return;
+        stopper = new Thread(StopAll) { IsBackground = false };
+        stopper.Start();
+    }
 
     static void StopAll()
     {
         stopping = true;
+        Log("stopping what this launcher started");
         lock (mine)
         {
             foreach (Process p in mine)
-                try { if (!p.HasExited) { p.CloseMainWindow(); if (!p.WaitForExit(1500)) p.Kill(); } } catch { }
+                try
+                {
+                    if (p.HasExited) continue;
+                    p.CloseMainWindow();
+                    for (int t = 0; t < 1500 && !quitting && !p.WaitForExit(100); t += 100) { }
+                    if (!p.HasExited) { p.Kill(); p.WaitForExit(2000); }
+                }
+                catch { }
             mine.Clear();
         }
         // and what those had started in turn: this launcher's Uplink (opened by the bridge) and its game (opened by

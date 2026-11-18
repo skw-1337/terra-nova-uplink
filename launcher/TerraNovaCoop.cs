@@ -602,7 +602,7 @@ static partial class Uplink
         { "cloud_shadows", new[] { "Cloud shadows", "The sky's clouds cast drifting shadows on the ground." } },
         { "look_down", new[] { "Look further down", "The view goes on down past the game's 45 degrees." } },
         { "cliffs", new[] { "Unstretched cliffs", "Steep faces textured along the slope, not stretched tiles." } },
-        { "stars", new[] { "Sharp stars", "The stars of airless skies as sharp points at your resolution." } },
+        { "stars", new[] { "Sharp stars", "Airless skies' stars as clean round points, not smeared pixels." } },
         { "tracks", new[] { "Footprints, tracks", "Suits and mechs leave footprints, vehicles leave tracks." } },
         { "own_body", new[] { "Own body", "Your own legs and feet when you look down." } } };
     static PresetTile[] presetTiles = new PresetTile[5];
@@ -5933,6 +5933,16 @@ static partial class Uplink
         catch (Exception e) { Log(what + ": " + e.Message); throw new UpdFail("antivirus", AvText(what)); }
     }
 
+    // the Graphics page's previews as build.bat embeds them (previews\*.jpg as previews.<name>), "" without any
+    static string PreviewRes(string dir)
+    {
+        string pv = Path.Combine(dir, "previews"), res = "";
+        if (!Directory.Exists(pv)) return res;
+        string[] fs = Directory.GetFiles(pv, "*.jpg");
+        Array.Sort(fs, StringComparer.OrdinalIgnoreCase);
+        foreach (string f in fs) res += "/resource:previews\\" + Path.GetFileName(f) + ",previews." + Path.GetFileName(f) + " ";
+        return res;
+    }
     // the launcher of t, from t's sources with its build.bat's line, tested (--selftest: it must start and say its version)
     static string UpdBuildLauncher(string tree, string want)
     {
@@ -5947,10 +5957,12 @@ static partial class Uplink
         {
             Match m = Regex.Match(File.ReadAllText(bat), "(?m)^\"%CSC%\"\\s+(.*?)/out:\"Terra Nova Uplink\\.exe\"\\s+TerraNovaUplink\\.cs\\s*$");
             if (m.Success) args = m.Groups[1].Value + "/out:\"" + exe + "\" TerraNovaUplink.cs";
+            if (args != null) args = args.Replace("%PV%", PreviewRes(dir));          // (build.bat's for loop over previews\*.jpg)
+            if (args != null && Regex.IsMatch(args, "%[A-Za-z_][A-Za-z0-9_]*%")) args = null;   // (another variable: the line below)
         }
         if (args == null)
         {
-            string res = "";
+            string res = PreviewRes(dir);
             foreach (string f in Directory.GetFiles(dir, "bg_*.jpg")) res += "/resource:" + Path.GetFileName(f) + " ";
             args = "/nologo /optimize /target:winexe /platform:anycpu /win32manifest:app.manifest /win32icon:icon.ico /r:System.Windows.Forms.dll /r:System.Drawing.dll " +
                 "/r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll " + res + "/out:\"" + exe + "\" TerraNovaUplink.cs";

@@ -344,13 +344,21 @@ void fragment() {
 	vec2 dy = dFdy(g);
 	vec3 n_geo = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	float vl = vlight;
+	float cloud_cs = 0.0;          // modern look: the rows a cloud's shadow takes, as a smooth share (see below)
 	if (cloud_shadows) {
 		vec3 up = wpos + cloud_sun.xyz * max(cloud_sun.w - wpos.y, 0.0) / cloud_sun.y;   // where the sun's ray meets the ceiling
 		// whole rows, under the thickest 45 % of the sky one, under its thickest 20 % two: the steps of the ground's own
 		// light stay where they are. (A share of a row, taken smoothly, moved every one of those steps as the clouds
 		// drifted: waves running over the ground and the cliffs while the player stood still.)
+		// The modern look: the same up to two rows, but taken smoothly over a wide band of the cover (soft patches with
+		// gradual edges; whole rows there drew large dark zones with hard straight edges over the hills, owner 18/11).
+		// The shadows now creep as slowly as the clouds seem to (viewer.gd _cloud_shadows_drift): no waves.
 		float cover = texture(cloud_cover, (up.zx + cloud_off) / 256.0).r;
-		vl -= min(cloud_rows, step(0.55, cover) + step(0.8, cover));
+		if (modern) {
+			cloud_cs = min(cloud_rows, smoothstep(0.35, 0.75, cover) + smoothstep(0.65, 0.95, cover));
+		} else {
+			vl -= min(cloud_rows, step(0.55, cover) + step(0.8, cover));
+		}
 	}
 	int frow = 15 - clamp(int(floor(vl)), 0, 15);           // the row's file row (0 = full light)
 	float row_light = per_index ? 1.0 : light_rows[frow];
@@ -563,6 +571,12 @@ void fragment() {
 		vec3 lit = ALBEDO * row_light * bump_light * ground_light;
 		if (game_colours) {                  // the game's colours on the screen (its texels in sRGB, through the view)
 			lit = tn_game_colour(tn_haze_srgb(ALBEDO * row_light)) * bump_light;
+		}
+		if (cloud_cs > 0.0) {                // a cloud's soft shadow: the light of cloud_cs more rows, between two rows
+			float fr = float(frow) + cloud_cs;
+			int r0 = min(int(floor(fr)), 15);
+			float l1 = mix(light_rows[r0], light_rows[min(r0 + 1, 15)], fract(fr));
+			lit *= light_rows[frow] > 0.001 ? clamp(l1 / light_rows[frow], 0.0, 1.0) : 1.0 - 0.12 * cloud_cs;
 		}
 		vec3 glow = EMISSION;
 		// hazed as the game does (tn_haze.gdshaderinc). ALBEDO only serves the shadows (light()): what a full shadow

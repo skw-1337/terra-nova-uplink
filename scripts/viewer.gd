@@ -1447,7 +1447,8 @@ func _haze_globals() -> void:
 # wind moves it (live: the game's own offset, SKYO; the viewer: from the mission's wind); the desert missions' clouds
 # also ripple and sway in a circle of 30 texels (0x2A6F38). At most 10 times a second (a sky's change redraws its light).
 var mis_params := {}
-var cloud_sh := Vector2.ZERO           # the cloud shadows' offset (texels): cloud_base, eased
+var cloud_sh := Vector2.ZERO           # the cloud shadows' offset (texels): see _cloud_shadows_drift
+var cloud_sh_base := Vector2.INF       # the clouds' offset it last followed
 var cloud_base := Vector2.ZERO         # texels (column, row)
 var cloud_set := Vector2(-1.0, -1.0)   # (cloud_px, time) last set
 var cloud_sway := 0                    # live: the game's sway phase
@@ -1510,15 +1511,27 @@ func _clouds_update() -> void:
 	cloud_set = Vector2(px, now)
 
 
-# The cloud shadows' place (terrain.gdshader): the clouds' steady drift only, eased, every frame. The desert skies'
-# sway (+/- 30 texels round and round) and ripple are the clouds' own shimmer: carried onto the ground they made its
-# shadows swing to and fro, a wave over the ground and the cliffs that moved by itself; and moved 10 times a second
-# with the sky (_clouds_update) the shadows' edges went by jerks.
-func _cloud_shadows_drift(delta: float) -> void:
+# The cloud shadows' place (terrain.gdshader): the clouds' steady drift only, every frame. The desert skies' sway
+# (+/- 30 texels round and round) and ripple are the clouds' own shimmer: carried onto the ground they made its
+# shadows swing to and fro, a wave over the ground and the cliffs that moved by itself.
+# They move as the clouds the player sees move, not as far: the sky draws its clouds on a ceiling ~44 units over the
+# eye, the ground is 0.4 under it, and a cloud's real shadow, gone as far as the cloud, crossed the ground before it 110 times
+# faster than the sky seemed to move (mission 36's wind, ~3 texels a second: a broad shadow swept the ground in 5 s
+# while the sky stood nearly still, "it moves by itself"). Each drift of the clouds is carried onto their shadows
+# scaled by eye height / ceiling height: a shadow at some angle below the horizon then moves on the screen exactly as
+# a cloud at the same angle above it (the same direction, the same speed); still sky, still shadows.
+func _cloud_shadows_drift(_delta: float) -> void:
 	if cloud_cover == null:
 		return
-	var ds := Vector2(wrapf(cloud_base.x - cloud_sh.x, -128.0, 128.0), wrapf(cloud_base.y - cloud_sh.y, -128.0, 128.0))
-	cloud_sh = cloud_base if ds.length() > 20.0 else cloud_sh + ds * (1.0 - exp(-delta * 2.0))
+	if cloud_sh_base == Vector2.INF:
+		cloud_sh = cloud_base
+		cloud_sh_base = cloud_base
+	var ds := Vector2(wrapf(cloud_base.x - cloud_sh_base.x, -128.0, 128.0), wrapf(cloud_base.y - cloud_sh_base.y, -128.0, 128.0))
+	cloud_sh_base = cloud_base
+	if ds.length() <= 20.0:                          # (more: a jump, a new mission's offset)
+		var ceiling := 1.12 * (cloud_set.x if cloud_set.x > 1.0 else 44.0)   # (the sky's texels per unit of slope, sky.gdshader)
+		cloud_sh += ds * SKY_EYE / ceiling
+		cloud_sh = Vector2(fposmod(cloud_sh.x, 256.0), fposmod(cloud_sh.y, 256.0))
 	for sm in ground_mats:
 		sm.set_shader_parameter("cloud_off", cloud_sh)
 

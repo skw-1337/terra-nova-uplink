@@ -962,7 +962,8 @@ func _show(t: String, d: String, c: Color) -> void:
 	if label and not label.text.begins_with("● " + t):
 		_log("%s  %s" % [t, d])
 	label.text = "● " + t + ("\n   " + d if d != "" else "")
-	label.add_theme_color_override("font_color", c)
+	var cv := preload("res://scripts/colour_vision.gd")   # (colour-blind mode: its own fine / warning / bad colours)
+	label.add_theme_color_override("font_color", cv.led(0, c) if c == ok_col else (cv.led(1, c) if c == warn_col else (cv.led(2, c) if c == bad_col else c)))
 
 
 # ---------------------------------------------------------------- Steam not there (yet)

@@ -240,7 +240,7 @@ func _process(delta: float) -> void:
 				# a lost delta, a moment's beams, a HUD state (10 a second) or a sound (the bridge says the voices still
 				# playing twice a second: a lost end is caught up) breaks nothing; sent reliable, they waited behind the
 				# big reliable messages (the cockpit's picture, keyframes, decor) and came late, more and more so
-				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS" or tag == "GHD" or tag == "SND") and pk.size() <= UNRELIABLE_MAX
+				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS" or tag == "GHD" or tag == "SND" or tag == "MUS") and pk.size() <= UNRELIABLE_MAX
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
 					guest_ent = pk.decode_u16(8)
@@ -329,7 +329,7 @@ func _read(ch: int) -> void:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
 			elif tag == "PNO" and data.size() >= 11:
 				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
-			elif tag == "GHD" or tag == "GCK" or tag == "GLB" or tag == "SND" or tag == "GEQ":   # HUD, cockpit, lobby, the game's sounds, his drone / A.S.F.: to coop_hud.gd
+			elif tag == "GHD" or tag == "GCK" or tag == "GLB" or tag == "SND" or tag == "GEQ" or tag == "MUS":   # HUD, cockpit, lobby, the game's sounds and music, his drone / A.S.F.: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
 			elif tag == "HST":                            # where the host's game is: to host_state.gd (host_state.py)
 				if hst_out == null:

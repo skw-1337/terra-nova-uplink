@@ -263,7 +263,7 @@ func _show(p: String) -> void:
 
 # ---------------------------------------------------------------- options
 func _options(col: VBoxContainer) -> void:
-	_place(560, 560 if guest else 600)
+	_place(560, 600)
 	_title(col, "OPTIONS", ORANGE)
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
@@ -272,6 +272,8 @@ func _options(col: VBoxContainer) -> void:
 		_slider(col, "Game sound", 0.0, 100.0, roundf(db_to_linear(db) * 100.0), func(x: float):
 			AudioServer.set_bus_volume_db(0, linear_to_db(maxf(x, 0.1) / 100.0) if x > 0.5 else -80.0)
 			_keep("sound", "guest_volume_db", AudioServer.get_bus_volume_db(0)), "%d %%")
+		var mus := preload("res://scripts/coop_music.gd")    # the game's music (g5: coop_music.gd; 0 = off)
+		_slider(col, "Music", 0.0, 100.0, mus.user_volume(), func(x: float): mus.set_user_volume(get_tree(), x), "%d %%")
 	_slider(col, "Mouse speed", 0.2, 3.0, float(v.mouse_sens), func(x: float):
 		v.mouse_sens = x
 		_keep("launcher", "mouse", "%.1f" % x), "x %.1f", 0.1)

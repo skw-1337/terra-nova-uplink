@@ -162,7 +162,9 @@ func _suit(n: Node3D, m: Dictionary, now: float) -> void:
 		var toe: Vector3 = n.to_global(Vector3(q[i].z, q[i].y, q[i].x))
 		var ankle: Vector3 = n.to_global(Vector3(q[2 + i].z, q[2 + i].y, q[2 + i].x))
 		places.append([ankle, toe])
-	_feet(n, st, q, places, "s%d" % suit, m, now, func() -> Dictionary: return _sole_shape(suit))
+	# (joints 0 / 2: the left foot, drawn from the right one's sprite mirrored: its print mirrored too)
+	_feet(n, st, q, places, "s%d" % suit, m, now, func() -> Dictionary: return _sole_shape(suit, false),
+			"s%dm" % suit, func() -> Dictionary: return _sole_shape(suit, true))
 
 
 func _mech(n: Node3D, m: Dictionary, now: float) -> void:
@@ -188,7 +190,9 @@ func _mech(n: Node3D, m: Dictionary, now: float) -> void:
 
 
 # one look at a walker's feet: [ankle, toe] each, in the world; a foot that swung and now stays still is planted
-func _feet(n: Node3D, st: Dictionary, ref, places: Array, key: String, m: Dictionary, now: float, make: Callable) -> void:
+# (left_key / left_make: the left foot's own shape, joints 0 / 2; none: the same as the right one's)
+func _feet(n: Node3D, st: Dictionary, ref, places: Array, key: String, m: Dictionary, now: float, make: Callable,
+		left_key := "", left_make := Callable()) -> void:
 	if st.is_empty():
 		st = {"ref": ref, "t": now, "f": [[places[0][1], false, Vector3(-99, 0, 0)], [places[1][1], false, Vector3(-99, 0, 0)]]}
 		feet[n] = st
@@ -216,10 +220,12 @@ func _feet(n: Node3D, st: Dictionary, ref, places: Array, key: String, m: Dictio
 		if (f[2] as Vector3).distance_to(toe) < 0.03:
 			continue
 		f[2] = toe
-		var sh: Dictionary = shapes.get(key, {})
+		var left := i == 0 and left_key != ""
+		var k_sh := left_key if left else key
+		var sh: Dictionary = shapes.get(k_sh, {})
 		if sh.is_empty():
-			sh = make.call()
-			shapes[key] = sh
+			sh = left_make.call() if left else make.call()
+			shapes[k_sh] = sh
 		if sh.is_empty() or int(sh["layer"]) == 0:
 			continue
 		var along := Vector3(toe.x - ankle.x, 0.0, toe.z - ankle.z)
@@ -430,8 +436,11 @@ func _layer(img: Image) -> int:
 
 
 # A suit's sole: the back view of its foot's limb sprite (the foot seen from below), its outline in the atlas with
-# the bone along x (ankle -> toe), across y; its size and centre in the sprite's pixels, and the bone's pixels
-func _sole_shape(suit: int) -> Dictionary:
+# the bone along x (ankle -> toe), across y; its size and centre in the sprite's pixels, and the bone's pixels.
+# Across, the atlas is centred on the bone (the sprite's anchor column, as the limb is drawn: the sole is not
+# centred on it, 0 to 2.5 pixels off): sprite x to the right of the bone is the walker's right for the right foot
+# (seen from below, toes down the sprite); the left foot is the right one's sprite mirrored (mirror: its print too)
+func _sole_shape(suit: int, mirror := false) -> Dictionary:
 	if not v.objects_ok or v.pal.is_empty():
 		return {}
 	# (the sprite's own pixels, as tn_objects.gd _limb_views reads them: view 0, its anchor = the ankle)
@@ -446,19 +455,21 @@ func _sole_shape(suit: int) -> Dictionary:
 	if img == null:
 		return {}
 	var a1 := float(f[o + 17])                 # (the ankle's row; the bone runs down the sprite)
+	var ax := float(f[o + 16])                 # (the bone's column)
 	var bone_px := float(f.decode_u16(9))
 	var used_r := img.get_used_rect()
 	if used_r.size.x < 2 or used_r.size.y < 2:
 		return {}
 	var out := Image.create(ATLAS, ATLAS, false, Image.FORMAT_L8)
 	var len_px := float(used_r.size.y)
-	var wid_px := float(used_r.size.x)
-	var s := float(ATLAS - 4) / maxf(len_px, wid_px)
+	var half_w := maxf(ax - used_r.position.x, used_r.end.x - ax)     # (either side of the bone)
+	var s := float(ATLAS - 4) / maxf(len_px, 2.0 * half_w)
+	var sgn := -1.0 if mirror else 1.0
 	for y in ATLAS:
 		for x in ATLAS:
-			# atlas x along the bone (ankle -> toe: down the sprite), atlas y across
-			var sy := used_r.position.y + (x - ATLAS / 2.0) / s + len_px / 2.0
-			var sx := used_r.position.x + (y - ATLAS / 2.0) / s + wid_px / 2.0
+			# atlas x along the bone (ankle -> toe: down the sprite), atlas y across (+: the walker's right)
+			var sy := used_r.position.y + (x + 0.5 - ATLAS / 2.0) / s + len_px / 2.0
+			var sx := ax + sgn * (y + 0.5 - ATLAS / 2.0) / s
 			if sx >= 0 and sy >= 0 and sx < img.get_width() and sy < img.get_height():
 				out.set_pixel(x, y, Color(img.get_pixel(int(sx), int(sy)).a, 0, 0))
 	var layer := _layer(out)

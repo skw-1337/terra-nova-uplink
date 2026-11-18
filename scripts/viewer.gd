@@ -4312,10 +4312,10 @@ func _order_input(event: InputEvent) -> bool:
 
 # ------------------------------------------------------------------ orders on the map
 # With the order wheel on, the game's map shown in the HUD (its full screen map: key M, the MAP button) takes orders
-# too. A click on it sends the entire squad to that place (MOVE THERE), a click on an enemy's mark orders the attack
-# on it (ATTACK TARGET; the units the map shows and the game lets be attacked: the bridge's 'MAPV' and 'ORDS'). The
-# wheel's button held on the map opens the wheel at the cursor, on that place or unit (who gets the order: the mouse
-# wheel, as ever); a short press is the click. The order's mark is drawn on the map. A click with Shift, Ctrl or Alt
+# too (the units the map shows and the game lets be attacked: the bridge's 'MAPV' and 'ORDS'). The wheel's button
+# held on the map opens the wheel at the cursor, on that place or unit (who gets the order: the mouse wheel, as
+# ever); a short press gives the quick tap's order there. The order's mark is drawn on the map. A plain left click
+# puts the player's marker (map_click_orders below; before, it sent the squad there). A click with Shift, Ctrl or Alt
 # held is the game's own, as without the option (it puts the player's nav marker there), and so are a click on the
 # map's box of switches and any click while the game itself waits for one on its map (an order of its COMM menu that
 # asks for a place or a target).
@@ -4328,6 +4328,10 @@ var map_step := Vector2.ONE              # the world's length of one of its colu
 var map_keys := Rect2()                  # its box of switches (the game's own: what the map shows), on the game's screen
 var map_ents := {}                       # the units it shows (the game's contacts)
 var map_click := false                   # the left button went down on it for an order
+# Since 18/11/2026 a plain left click on that map is the game's own again: it puts the player's marker there (in co-op
+# the host's, drawn orange; the guest's window: his own, light blue). Orders on the map stay on the wheel's button
+# (held: the wheel at the cursor; a short press: the quick tap). TN_MAP_CLICK_ORDERS=1: the click orders, as before.
+var map_click_orders := OS.get_environment("TN_MAP_CLICK_ORDERS") == "1"
 var order_centre = null                  # the wheel's middle when it opened on the map (else: the crosshair)
 
 
@@ -4401,13 +4405,13 @@ func _map_click(event: InputEventMouseButton) -> bool:
 		if not map_click:
 			return false
 		map_click = false
-		if order_state == 0 and _order_ready() and _map_on():
+		if order_state == 0 and _order_ready() and _map_on() and map_click_orders:
 			if int(order_aim.get("ent", -1)) >= 0:
 				_order_send(0, 0)
 			elif order_aim.get("point") != null:
 				_order_send(1, 0)
 		return true
-	if order_state != 0 or play_hold or map_wait or not _map_on() or not _order_ready() \
+	if not map_click_orders or order_state != 0 or play_hold or map_wait or not _map_on() or not _order_ready() \
 			or Input.mouse_mode == Input.MOUSE_MODE_CAPTURED or event.shift_pressed or event.ctrl_pressed or event.alt_pressed:
 		return false
 	var aim := _map_pick(event.position)

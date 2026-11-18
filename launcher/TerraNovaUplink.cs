@@ -1659,9 +1659,6 @@ static class Uplink
             msg = s; Text = s;
             edge = c == CRed ? CRed : c == CAmber ? CAmber : CBlue;
             stays = c == CRed || c == CAmber;
-            Size sz = TextRenderer.MeasureText(GM, s, F12, new Size(S(330), 2000), TFWrap);
-            ClientSize = new Size(sz.Width + S(28), sz.Height + S(17));
-            using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), 5)) Region = new Region(p);
             Place();
             Opacity = 0.96;
             until = DateTime.Now.AddSeconds(Math.Min(12, 4 + s.Length * 0.05));
@@ -1672,8 +1669,16 @@ static class Uplink
         public void Place()
         {
             if (form == null || !form.Visible || form.WindowState == FormWindowState.Minimized) return;
-            // (under the top line of a page with a picture; over the cards' titles on the others: no switch is covered)
-            Location = form.PointToScreen(new Point(S(SB + MW - 18) - Width, S(pageNow <= 2 ? 56 : pageNow == P_CONTROLS ? 418 : 7)));
+            // Where it covers nothing: on a page with a picture, at its top right under the page's first line (Co-op:
+            // under the session's line); the pages of cards and lists are full, so there it sits in the side bar,
+            // between the pages' names and What's new, as narrow as the bar
+            bool side = pageNow > 2;
+            Size sz = TextRenderer.MeasureText(GM, msg, F12, new Size(side ? S(SB - 16 - 28) : S(330), 2000), TFWrap);
+            ClientSize = new Size(side ? S(SB - 16) : sz.Width + S(28), sz.Height + S(17));
+            using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), 5)) Region = new Region(p);
+            Location = form.PointToScreen(side ? new Point(S(8), S(436) - Height)
+                                               : new Point(S(SB + MW - 18) - Width, S(pageNow == 1 ? 82 : 56)));
+            Invalidate();
         }
         protected override void OnPaint(PaintEventArgs e)
         {

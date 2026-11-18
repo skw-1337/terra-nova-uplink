@@ -2645,6 +2645,9 @@ while True:
         try:
             for pk in sous_titres.poll(time.time(), x + y > 0):
                 s.sendto(pk, ('127.0.0.1', 47821))
+                if guest:                             # the coop guest's window too (online: 'LIV', see coop_net.gd)
+                    guest.s.sendto(b'LIV' + pk if guest.remote else pk,
+                                   ('127.0.0.1', coop_guest.REMOTE_VIEW if guest.remote else coop_guest.LIVE_PORT))
         except Exception as ex:
             if os.environ.get('TN_DEBUG'): print('subtitles:', repr(ex), flush=True)
     if PLAY:

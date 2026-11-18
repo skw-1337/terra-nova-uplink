@@ -34,7 +34,7 @@ const HUD_OUT := 47832               # guest: its coop_hud.gd
 const PAD_DEAD := 0.2
 # host -> guest 'LIV' + one of the bridge's own live packets about the picture (coop_guest.py relay): only these
 # reach the guest's viewer (an older guest drops 'LIV': no version change)
-const LIV_TAGS := ["SKYO", "WAYP", "HAZE", "SLEN", "ARMS", "GAIT"]
+const LIV_TAGS := ["SKYO", "WAYP", "HAZE", "SLEN", "ARMS", "GAIT", "SUBT"]   # (SUBT: the squad's subtitles, viewer.gd)
 
 var steam: Object = null
 var fake_steam: Object = null        # set before _ready (tests): this instead of GodotSteam; --fake-steam: a lone one

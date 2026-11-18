@@ -1580,7 +1580,7 @@ func _apply_look() -> void:
 const PITCH_SIGN := 1.0   # a mission record's pitch: nose up for > 0 (not compared with the game yet, MISS16 #20)
 
 
-# team: the mission's side of its group (1 = the player's; 0: unknown, told from the type's name); pitch: the mission
+# team: the mission's side of its group (1 = the player's, anything else the enemy's); pitch: the mission
 # record's (classes 0, 3 and 4; vehicles and building type 0x2F lie on the slope instead, 0x29DD64); state: a decor
 # object's picture (1: hit once, its burnt stump; the mission file or the live game say so).
 func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading: float, group: String,
@@ -1663,10 +1663,10 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 				mi.material_override = mats["decor"]
 			1:
 				box.size = Vector3(0.5, 1.4, 0.5)
-				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
+				mi.material_override = mats["friend"] if team == 1 else mats["enemy"]
 			2, 3:
 				box.size = Vector3(1.4, 0.8, 1.4)
-				mi.material_override = mats["friend"] if (team == 1 or (team == 0 and data.is_friendly(name))) else mats["enemy"]
+				mi.material_override = mats["friend"] if team == 1 else mats["enemy"]
 			_:
 				box.size = Vector3(4, 3, 4)
 				mi.material_override = mats["building"]

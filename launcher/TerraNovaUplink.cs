@@ -476,10 +476,10 @@ static partial class Uplink
         padBox.CheckedChanged += delegate { SaveOptions(); };
         pad.Controls.Add(padBox);
         hostBtn = new CoopTile { Text = "HOST A GAME", Desc = "Your campaign, your saves. Invite a friend.", Accent = COrange, Location = new Point(18, ty), Size = new Size(tw, 77) };
-        hostBtn.Click += delegate { if (busy) StopNow(); else Start(Mode.Host); };
+        hostBtn.Click += delegate { if (busy) StopNow(); else if (CoopWarned()) Start(Mode.Host); };
         pg.Controls.Add(hostBtn);
         joinBtn = new CoopTile { Text = "JOIN A FRIEND", Desc = "Take a seat in their squad.", Accent = CBlue, Location = new Point(18 + tw + 12, ty), Size = new Size(tw, 77) };
-        joinBtn.Click += delegate { if (busy) StopNow(); else Start(Mode.Join); };
+        joinBtn.Click += delegate { if (busy) StopNow(); else if (CoopWarned()) Start(Mode.Join); };
         pg.Controls.Add(joinBtn);
         pg.Look = delegate(Graphics g) { Hero(g, heroes[1]); Tape(g, slot); };
     }
@@ -2011,6 +2011,11 @@ static partial class Uplink
             }
             Spaced(g, Stop ? "STOP" : Text, F16b, Enabled ? Color.White : CDim, 19, 17, 1.2f);
             Str(g, Stop ? "Close this session." : Desc, F115, Enabled ? CSoft : Mix(CSoft, CBack, 0.5f), 19, 44);
+            if (!Stop)
+            {   // the co-op is experimental: said on both tiles, always (and once in words: CoopWarned)
+                float tw = Spaced(g, "EXPERIMENTAL", F95b, Color.Empty, 0, 0, 1.2f);
+                Spaced(g, "EXPERIMENTAL", F95b, Enabled ? COrange : Mix(COrange, CBack, 0.6f), W - tw - 14, 12, 1.2f);
+            }
         }
     }
 
@@ -3021,6 +3026,18 @@ static partial class Uplink
                 Set("game_dirs", (Cfg("game_dirs") + "|" + p).Trim('|'));          // kept in the list
             Set("game_dir", p); SaveCfg(); ShowGame(); FillMissions(); RefreshUi();
         }
+    }
+
+    // the first HOST A GAME / JOIN A FRIEND of this install: what to expect of the co-op, once (coop_warned)
+    static bool CoopWarned()
+    {
+        if (Cfg("coop_warned") == "1") return true;
+        if (MessageBox.Show(form, "Co-op is experimental." + Environment.NewLine + Environment.NewLine +
+                "Two players, over Steam. Few people have tested it so far: expect rough edges (aim, sound, things out of step)." + Environment.NewLine + Environment.NewLine +
+                "If something goes wrong, both players click \"Report a bug\" (Settings) and say which mission it was." + Environment.NewLine + Environment.NewLine +
+                "This message is shown once.", TITLE, MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return false;
+        Set("coop_warned", "1"); SaveCfg();
+        return true;
     }
 
     static bool Ask(string q)

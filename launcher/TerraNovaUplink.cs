@@ -225,10 +225,11 @@ static partial class Uplink
     static bool loading;                                      // the options are being put on the pages: nothing is saved
     static int capValue;                                      // the frame limit (0: none)
     // Uplink's extras on top of the game's look, each on unless switched off (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
-    // (own_body: his legs and feet when he looks past the game's limit; the deeper look itself is look_down)
-    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks", "own_body" };
-    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars", "Footprints, tracks", "Own body" };
-    static Switch[] fxTicks = new Switch[8];
+    // (look_down: the deeper look AND his own legs and feet in it; Uplink still reads TN_FX_OWN_BODY, told the same, and
+    // an older ini's fx_own_body is left alone)
+    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks" };
+    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars", "Footprints, tracks" };
+    static Switch[] fxTicks = new Switch[7];
     static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Graphics", "Controls", "Settings" };
     const int SB = 150, MW = 610, MH = 500;                   // the side bar's width, a page's size
     const int P_WHEEL = 7;                                    // the order wheel's page (opened from In game)
@@ -589,12 +590,12 @@ static partial class Uplink
     static readonly string[] PRESET_NAMES = { "Original", "Classic+", "Modern", "Light", "Custom" };
     static readonly string[] PRESET_LINES = { "As in 1996", "Old look, small extras", "Everything on", "For older PCs", "Your own mix" };
     // each preset's switches, in GFX_KEYS' order (ini keys: old_school, hud_colours, fx_<the rest>)
-    static readonly string[] GFX_KEYS = { "old_school", "hud_colours", "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks", "own_body" };
+    static readonly string[] GFX_KEYS = { "old_school", "hud_colours", "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks" };
     static readonly int[][] PRESET_VALUES = {
-        new[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0 },      // Original: the game's look; the deeper look down stays (no body)
-        new[] { 1, 0, 1, 1, 0, 1, 0, 0, 1, 1 },      // Classic+: old school with marks, light from shots, footprints
-        new[] { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1 },      // Modern: everything
-        new[] { 0, 1, 1, 1, 0, 1, 0, 1, 0, 1 } };    // Light: the costliest off (measured: see the commit)
+        new[] { 1, 0, 0, 0, 0, 1, 0, 0, 0 },      // Original: the game's look; the deeper look down stays (seen only past 45 degrees)
+        new[] { 1, 0, 1, 1, 0, 1, 0, 0, 1 },      // Classic+: old school with marks, light from shots, footprints
+        new[] { 0, 1, 1, 1, 1, 1, 1, 1, 1 },      // Modern: everything
+        new[] { 0, 1, 1, 1, 0, 1, 0, 1, 0 } };    // Light: the costliest off (measured: see the commit)
     // what each switch shows in the preview: its name and one line
     static readonly Dictionary<string, string[]> PV_TEXT = new Dictionary<string, string[]> {
         { "old_school", new[] { "Old school look", "The game's own pixels and palette over Uplink's view." } },
@@ -602,13 +603,12 @@ static partial class Uplink
         { "marks", new[] { "Impact marks", "Shots leave scorch marks where they hit." } },
         { "lights", new[] { "Light from shots", "Gun flashes, bolts and blasts light up what is around them." } },
         { "cloud_shadows", new[] { "Cloud shadows", "The sky's clouds cast drifting shadows on the ground." } },
-        { "look_down", new[] { "Look further down", "The view goes on down past the game's 45 degrees." } },
+        { "look_down", new[] { "Look further down", "Look down past the game's 45 degrees and see your own legs and feet." } },
         { "cliffs", new[] { "Unstretched cliffs", "Steep faces textured along the slope, not stretched tiles." } },
         { "stars", new[] { "Sharp stars", "Airless skies' stars as clean round points, not smeared pixels." } },
-        { "tracks", new[] { "Footprints, tracks", "Suits and mechs leave footprints, vehicles leave tracks." } },
-        { "own_body", new[] { "Own body", "Your own legs and feet when you look down." } } };
+        { "tracks", new[] { "Footprints, tracks", "Suits and mechs leave footprints, vehicles leave tracks." } } };
     static PresetTile[] presetTiles = new PresetTile[5];
-    static Switch[] gfxSw = new Switch[10];                   // GFX_KEYS' switches (oldBox, hudTick, fxTicks)
+    static Switch[] gfxSw = new Switch[9];                // GFX_KEYS' switches (oldBox, hudTick, fxTicks)
     static bool presetting;                                   // the switches set by a preset: not the player's change
     static Surface pvCard, igGfxCard;
     static string pvKey;                                      // what the preview shows (null: the preset in use)
@@ -629,10 +629,10 @@ static partial class Uplink
             c.Controls.Add(presetTiles[i]);
             Hover(presetTiles[i], "preset_" + PRESET_IDS[i]);
         }
-        // the switches, three columns of four rows; the old school look and the HUD colours lead (the In game page
-        // keeps the old school key and its pixel size)
+        // the switches, three columns of three rows, a line under them; the old school look and the HUD colours lead (the
+        // In game page keeps the old school key and its pixel size)
         c = Card(pg, "WHAT IT SETS", COrange, "Change one: Custom", 18, 134, MW - 36, 154);
-        string[] order = { "old_school", "hud_colours", "cloud_shadows", "marks", "lights", "tracks", "look_down", "own_body", "cliffs", "stars" };
+        string[] order = { "old_school", "hud_colours", "cloud_shadows", "marks", "lights", "tracks", "look_down", "cliffs", "stars" };
         const int SW = (MW - 36 - 2 * X - 2 * 16) / 3;
         EventHandler changed = delegate { GfxTouched(); SaveOptions(); };
         for (int i = 0; i < order.Length; i++)
@@ -646,13 +646,13 @@ static partial class Uplink
             else fxTicks[Array.IndexOf(FX, order[i])] = s;
         }
         c.Controls.Add(new Txt { Text = "Uplink's own extras: none of them is in the game.", F = F11, Ink = CDim,
-            Location = new Point(X + SW + 16, 32 + 29 * 3), Size = new Size(2 * SW + 16, 29) });
+            Location = new Point(X, 32 + 29 * 3), Size = new Size(3 * SW + 32, 29) });
 
         // the preview: a picture of the switch off and on, or of the preset
         pvCard = new Surface { Location = new Point(18, 300), Size = new Size(MW - 36, 184) };
         pvCard.Look = PreviewLook;
         pg.Controls.Add(pvCard);
-        pvCard.VisibleChanged += delegate { PvAnimSync(); };
+        pvCard.VisibleChanged += delegate { PvAnimSync(); if (!pvCard.Visible) PvRelease(); };
         form.Resize += delegate { PvAnimSync(); };
         form.Activated += delegate { pvAway = false; PvAnimSync(); };
         form.Deactivate += delegate { pvAway = !form.Bounds.Contains(Cursor.Position); PvAnimSync(); };
@@ -735,19 +735,21 @@ static partial class Uplink
 
     // Animated previews, for what a still can't show: <key>_anim.jpg in previews\, its frames stacked top to bottom (each
     // as wide as the strip), shown from the start while the switch is pointed at or has the keyboard, nothing played
-    // otherwise. Each table gives, frame by frame of the loop, the strip's frame for OFF and for ON; a strip that doesn't
-    // fit its table (or can't be read) leaves the two stills.
+    // otherwise. Each table gives, frame by frame of the loop, the strip's frame for OFF and for ON (and where OFF is held
+    // at the game's stop while ON goes on); a strip that doesn't fit its table (or can't be read) leaves the two stills.
     class PvAnim
     {
         public int Frames, Fps;
         public int[] Off, On;
-        public int Limit = -1;                                // look down: the strip's frame where the game stops the view
+        public bool[] Stop;                                   // look down: OFF held at the game's stop, ON past it
     }
-    // (look down: 29 frames 2.8 degrees apart from level, the game's stop at the 18th, 48 degrees down as the camera
-    // measured it; cloud shadows: the view without them, then 48 frames of one whole turn of the cloud cover)
+    // (look down: one walk of LOOKDOWN_N frames with the view tilted down and up again, then the OFF view's own frames
+    // for the steps where ON is past the game's stop (OFF held there, the walk going on); cloud shadows: the view without
+    // them, then 48 frames of one whole turn of the cloud cover)
+    const int LOOKDOWN_N = 144, LOOKDOWN_FROM = 36, LOOKDOWN_TO = 103;
     static readonly Dictionary<string, PvAnim> PV_ANIM = new Dictionary<string, PvAnim> {
         { "cloud_shadows", PvCloud(48, 12) },
-        { "look_down", PvTilt(29, 17, 15, 6, 18) } };
+        { "look_down", PvWalk(LOOKDOWN_N, LOOKDOWN_FROM, LOOKDOWN_TO, 20) } };
 
     // the cloud shadows: frame 0 the view without them, then a loop of them drifting over it (one whole turn of the sky)
     static PvAnim PvCloud(int n, int fps)
@@ -757,33 +759,37 @@ static partial class Uplink
         return a;
     }
 
-    // the view tilted down from level, frame by frame: OFF stays at the game's limit, ON goes on; a rest at both ends
-    static PvAnim PvTilt(int n, int limit, int fps, int restStart, int restEnd)
+    // a walk of n frames with the view going down and up again (ON: frames 0 to n-1); from step "from" to "to" (not
+    // included) ON is past the game's stop and OFF shows its own frames, held at the stop (n, n+1...), else ON's
+    static PvAnim PvWalk(int n, int from, int to, int fps)
     {
-        int len = restStart + n + restEnd;
-        PvAnim a = new PvAnim { Frames = n, Fps = fps, Off = new int[len], On = new int[len], Limit = limit };
-        for (int i = 0; i < len; i++)
+        PvAnim a = new PvAnim { Frames = n + to - from, Fps = fps, Off = new int[n], On = new int[n], Stop = new bool[n] };
+        for (int i = 0; i < n; i++)
         {
-            int f = Math.Max(0, Math.Min(n - 1, i - restStart));
-            a.On[i] = f;
-            a.Off[i] = Math.Min(f, limit);
+            a.On[i] = i;
+            a.Stop[i] = i >= from && i < to;
+            a.Off[i] = a.Stop[i] ? n + i - from : i;
         }
         return a;
     }
 
-    static Dictionary<string, Bitmap[]> pvFrames = new Dictionary<string, Bitmap[]>();
+    // an animation's frames: its strip read once into one picture (a frame is a band of it), kept while the Graphics
+    // page is up and let go when it is left (a long strip is tens of MB once read)
+    class PvStrip { public Bitmap Img; public int H; }
+    static Dictionary<string, PvStrip> pvFrames = new Dictionary<string, PvStrip>();
     static System.Windows.Forms.Timer pvAnimTimer;
     static string pvAnimKey;                                  // the animation playing (null: none)
     static int pvAnimT0, pvAnimAt = -1;
 
-    // its frames, cut from the strip once (null: no strip, or one that doesn't fit: the stills stay)
-    static Bitmap[] PvFrames(string key)
+    // its frames (null: no strip, or one that doesn't fit: the stills stay)
+    static PvStrip PvFrames(string key)
     {
-        Bitmap[] fr;
+        PvStrip fr;
         if (pvFrames.TryGetValue(key, out fr)) return fr;
         pvFrames[key] = null;
         PvAnim a = PV_ANIM[key];
         Image strip = null;
+        Bitmap img = null;
         try
         {
             string f = Path.Combine(Path.Combine(UplinkDir, "launcher"), Path.Combine("previews", key + "_anim.jpg"));
@@ -801,27 +807,32 @@ static partial class Uplink
             foreach (int i in a.Off) if (i < 0 || i >= a.Frames) return null;
             foreach (int i in a.On) if (i < 0 || i >= a.Frames) return null;
             int w = strip.Width, h = strip.Height / a.Frames;
-            fr = new Bitmap[a.Frames];
-            for (int i = 0; i < a.Frames; i++)
+            if (w < 16 || h < 8 || w > 4 * h) return null;    // (not frames of a preview: the stills)
+            img = new Bitmap(w, strip.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using (Graphics g = Graphics.FromImage(img))
             {
-                fr[i] = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-                using (Graphics g = Graphics.FromImage(fr[i]))
-                {
-                    g.CompositingMode = CompositingMode.SourceCopy;
-                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
-                    g.DrawImage(strip, new Rectangle(0, 0, w, h), new Rectangle(0, i * h, w, h), GraphicsUnit.Pixel);
-                }
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                g.DrawImage(strip, new Rectangle(0, 0, w, strip.Height), 0, 0, w, strip.Height, GraphicsUnit.Pixel);
             }
+            fr = new PvStrip { Img = img, H = h };
             pvFrames[key] = fr;
             return fr;
         }
         catch (Exception e)
         {
             Log("preview " + key + ": " + e.Message);
-            if (fr != null) foreach (Bitmap b in fr) if (b != null) b.Dispose();
+            if (img != null) img.Dispose();
             return null;
         }
         finally { if (strip != null) strip.Dispose(); }
+    }
+
+    // the strips let go (the Graphics page left): read again when pointed at next time
+    static void PvRelease()
+    {
+        foreach (PvStrip s in pvFrames.Values) if (s != null) s.Img.Dispose();
+        pvFrames.Clear();
     }
 
     // plays the animation of what the preview shows, only while it can be seen (its page up, the window not minimized)
@@ -880,7 +891,7 @@ static partial class Uplink
     static void PreviewLive(Graphics g)
     {
         if (pvAnimKey == null || pvAnimKey != pvKey) return;
-        Bitmap[] fr = PvFrames(pvAnimKey);
+        PvStrip fr = PvFrames(pvAnimKey);
         if (fr == null) return;
         PvAnim a = PV_ANIM[pvAnimKey];
         int t = pvAnimAt < 0 ? PvAnimFrame() : pvAnimAt;
@@ -888,8 +899,8 @@ static partial class Uplink
         {
             RectangleF r = PvHalf(k);
             int f = k == 0 ? a.Off[t] : a.On[t];
-            DrawCover(g, fr[f], r, false);
-            bool stop = k == 0 && a.Limit >= 0 && a.On[t] >= a.Limit;      // (OFF held at the game's stop: said so)
+            DrawCover(g, fr.Img, new Rectangle(0, f * fr.H + 1, fr.Img.Width, fr.H - 2), r, false);   // (a row in: no line of the next frame)
+            bool stop = k == 0 && a.Stop != null && a.Stop[t];             // (OFF held at the game's stop: said so)
             if (stop)
                 using (GraphicsPath p = Round(new RectangleF(r.X + 1, r.Y + 1, r.Width - 2, r.Height - 2), 5))
                 using (Pen l = new Pen(Color.FromArgb(230, 120, 40, 20), 2f)) g.DrawPath(l, p);
@@ -899,6 +910,12 @@ static partial class Uplink
 
     // a picture over a place, cut to fill it (not squeezed), corners rounded; dimmed (Custom's) or "no picture"
     static void DrawCover(Graphics g, Image img, RectangleF r, bool dim)
+    {
+        DrawCover(g, img, img == null ? Rectangle.Empty : new Rectangle(0, 0, img.Width, img.Height), r, dim);
+    }
+
+    // ... of a part of a picture (src: an animation's frame in its strip)
+    static void DrawCover(Graphics g, Image img, Rectangle src, RectangleF r, bool dim)
     {
         GraphicsState st = g.Save();
         using (GraphicsPath p = Round(r, 5))
@@ -911,13 +928,13 @@ static partial class Uplink
                 StrIn(g, "No picture", F11, CDim, r, TFMid);
                 return;
             }
-            float k = Math.Max(r.Width / img.Width, r.Height / img.Height), w = img.Width * k, h = img.Height * k;
+            float k = Math.Max(r.Width / src.Width, r.Height / src.Height), w = src.Width * k, h = src.Height * k;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             using (System.Drawing.Imaging.ImageAttributes ia = new System.Drawing.Imaging.ImageAttributes())
             {
                 ia.SetWrapMode(WrapMode.TileFlipXY);                  // (no grey seam at the edges)
-                g.DrawImage(img, Rectangle.Round(new RectangleF(r.X + (r.Width - w) / 2f, r.Y + (r.Height - h) / 2f, w, h)), 0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
+                g.DrawImage(img, Rectangle.Round(new RectangleF(r.X + (r.Width - w) / 2f, r.Y + (r.Height - h) / 2f, w, h)), src.X, src.Y, src.Width, src.Height, GraphicsUnit.Pixel, ia);
             }
             if (dim) using (Brush b = new SolidBrush(Color.FromArgb(170, 8, 17, 15))) g.FillPath(b, p);
             using (Pen l = new Pen(Color.FromArgb(40, 255, 255, 255))) g.DrawPath(l, p);
@@ -3382,6 +3399,7 @@ static partial class Uplink
         env["TN_ORDER_TAP_MS"] = Num("tap_ms", TAP_MS0, 100, 350).ToString();
         env["TN_ORDER_DEAD"] = Num("wheel_dead", DEAD0, 24, 104).ToString();
         foreach (string fx in FX) env["TN_FX_" + fx.ToUpperInvariant()] = Cfg("fx_" + fx) == "0" ? "0" : "1";
+        env["TN_FX_OWN_BODY"] = env["TN_FX_LOOK_DOWN"];        // (his legs and feet come with the deeper look: one switch)
         return env;
     }
 
@@ -4827,7 +4845,7 @@ static partial class Uplink
         long stamp, had;
         string st;
         if (!s.TryGetValue("stamp", out st) || !long.TryParse(st, out stamp) || (long.TryParse(Cfg("game_stamp"), out had) && had >= stamp)) return false;
-        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks", "fx_own_body", "gfx_preset",
+        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks", "gfx_preset",
             "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps",
             "hud_colours", "crosshair", "fps_cap", "fps_counter", "window",          // (its Graphics page)
             "subtitles", "invert_y", "gamepad", "shift_run", "order_wheel", "skip_intro" };   // (its Options page)

@@ -29,19 +29,21 @@ const DIM := Color8(122, 150, 142)
 const RED := Color8(236, 72, 60)
 const GROUPS := ["Move", "Fight", "View", "Squad", "Map", "Drone", "System", "Tools", "Gamepad", "Uplink"]
 const FX := [["cloud_shadows", "Cloud shadows", true], ["cliffs", "Unstretched cliffs", true], ["stars", "Sharp stars", true],
-		["marks", "Impact marks", true], ["lights", "Light from shots", true], ["look_down", "Look further down", false],
-		["tracks", "Footprints and tracks", true], ["own_body", "Own body (legs, feet)", true]]
+		["marks", "Impact marks", true], ["lights", "Light from shots", true], ["look_down", "Look further down, own legs", false],
+		["tracks", "Footprints and tracks", true]]
 # The graphics presets, as the launcher has them (TerraNovaUplink.cs PRESETS, same order and values): each sets the old
 # school look, Uplink's HUD colours and every extra; any switch changed afterwards makes it "custom". Kept in
 # viewer.cfg [launcher] gfx_preset (the launcher takes it over), told by the launcher at the start (TN_GFX_PRESET).
 const PRESET_IDS := ["original", "classic", "modern", "light", "custom"]
 const PRESET_NAMES := ["Original", "Classic+", "Modern", "Light", "Custom"]
-const PRESET_KEYS := ["old_school", "hud_colours", "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks", "own_body"]
+# (look_down: the deeper look and his own legs and feet in it, one switch since the launcher's own body was merged
+# into it; TN_FX_OWN_BODY follows it)
+const PRESET_KEYS := ["old_school", "hud_colours", "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks"]
 const PRESETS := {
-	"original": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-	"classic": [1, 0, 1, 1, 0, 1, 0, 0, 1, 1],
-	"modern": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-	"light": [0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+	"original": [1, 0, 0, 0, 0, 1, 0, 0, 0],
+	"classic": [1, 0, 1, 1, 0, 1, 0, 0, 1],
+	"modern": [0, 1, 1, 1, 1, 1, 1, 1, 1],
+	"light": [0, 1, 1, 1, 0, 1, 0, 1, 0],
 }
 const FX_NODES := {"marks": "fx_marks.gd", "lights": "fx_lights.gd", "tracks": "fx_tracks.gd"}
 # the launcher's lists (TerraNovaUplink.cs SIZES, CROSSHAIRS, FillCap), kept with the same values
@@ -802,9 +804,10 @@ func _set_fx(id: String, on: bool) -> void:
 	elif id == "cliffs":
 		for sm in v.ground_mats:
 			sm.set_shader_parameter("cliffs", on)
-	elif id == "own_body":
+	elif id == "look_down":
+		OS.set_environment("TN_FX_OWN_BODY", "1" if on else "0")   # (the deeper look itself at the next start; his legs at once)
 		if v.get("look_dn") != null:
-			v.look_dn.body_on = on                       # (the legs hidden at the next frame; the look down stays)
+			v.look_dn.body_on = on
 
 
 # the host's briefings and other videos played in the guest's window (coop_movie.gd), or the text briefing only

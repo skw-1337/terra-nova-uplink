@@ -22,7 +22,8 @@ const EYE_CLEAR := 0.07                      # a leg piece whose bone passes thi
 # down (the legs fill the picture, as in other games' first person views); "old" the round pieces dressed in the
 # legs' front pictures (legs.gdshader), the eye brought over the hips
 var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else "model"
-# his legs and feet drawn at all (TN_FX_OWN_BODY, the launcher's "Own body": on unless turned off); off, the view still
+# his legs and feet drawn at all (TN_FX_OWN_BODY: on unless turned off; the launcher and the Esc menu set it with "Look
+# further down", one switch since 2.8; an older launcher's "Own body" still sets it alone); off, the view still
 # turns past the game's limit and shows the ground only. Set again live by the Esc menu (uplink_menu.gd)
 var body_on := OS.get_environment("TN_FX_OWN_BODY") != "0"
 const EYE_BACK := 0.0                        # (model) at the lowest: the eye this far behind its place

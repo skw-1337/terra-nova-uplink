@@ -8365,6 +8365,7 @@ func _process(delta: float) -> void:
 # environment: TN_FX_<NAME>=0), each in its own script, nothing of them made when off:
 # TN_FX_MARKS    impact marks where the shots hit the ground (fx_marks.gd)
 # TN_FX_LIGHTS   light from the shots: gun flashes, flying bolts, blasts (fx_lights.gd)
+# TN_FX_TRACKS   footprints of the walking suits and mechs, tracks of the ground vehicles (fx_tracks.gd)
 # TN_FX_CLOUD_SHADOWS  the sky's clouds cast drifting shadows on the ground (_cloud_cover, terrain.gdshader)
 # TN_FX_LOOK_DOWN the view turns on down past the game's 45 degrees, onto the player's own legs (look_down.gd)
 # TN_FX_CLIFFS    steep faces textured along the slope instead of stretched tiles (terrain.gdshader cliffs)
@@ -8385,6 +8386,10 @@ func _extras() -> void:
 		lt.v = self
 		lt.shots = _fx_shots()
 		add_child(lt)
+	if live and OS.get_environment("TN_FX_TRACKS") != "0":         # (host, solo and guest: from the units they draw)
+		var tr: Node = load("res://scripts/fx_tracks.gd").new()
+		tr.v = self
+		add_child(tr)
 	if live and OS.get_environment("TN_FX_LOOK_DOWN") != "0":     # (the co-op guest too: his own suit, his own look)
 		look_dn = load("res://scripts/look_down.gd").new()
 		look_dn.v = self

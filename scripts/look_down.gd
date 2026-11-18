@@ -10,12 +10,39 @@
 extends Node
 
 const LEGS = preload("res://legs.gdshader")
+const BodyModel = preload("res://scripts/body_model.gd")
 
 const LIMIT := 0x2000                        # the game's head: 45 degrees down (its angle units, 65536 a turn)
 const UNIT := 8                              # the bridge: units of the game's angle per mouse count (SENS_Y)
 const RAD := TAU / 65536.0 * UNIT            # radians per mouse count
 const MAX := 0.75                            # how far past the limit (rad): 43 degrees, 88 down in all
 const EYE_CLEAR := 0.07                      # a leg piece whose bone passes this close to the eye: not drawn
+# His body (TN_LOOK_DOWN_BODY): "model" a solid model of his suit's legs built from their own pictures (body_model.gd),
+# seen as from a head bent over them: the eye comes back and down behind the hips and the view narrows as it goes
+# down (the legs fill the picture, as in other games' first person views); "old" the round pieces dressed in the
+# legs' front pictures (legs.gdshader), the eye brought over the hips
+var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else "model"
+const EYE_BACK := 0.0                        # (model) at the lowest: the eye this far behind its place
+const EYE_BACK_STAND := 0.0                  # ... and this much more while he stands (his feet in view)
+const EYE_DOWN := 0.0                       # ... and this much lower (< 0: higher: the knees and feet in view)
+var down_max := float(OS.get_environment("TN_LOOK_DOWN_CAP")) if OS.get_environment("TN_LOOK_DOWN_CAP") != "" else DOWN_MAX   # (tests: another cap)
+const DOWN_MAX := 76.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
+                                             # looked past them
+const FOV_LOW := 0.0                         # ... the view this wide (degrees across)
+const BELLY_FROM := 0.25                      # (model) the torso's lowest 30 %: the belly joining the thighs
+const BELLY_W := 20.0                        # ... held to this half width (its pictures hold the arms too)
+const BELLY_DOME := 6.0                      # ... its top rounded back over this many rows (no flat lid)
+const BODY_GAIN := 1.35                      # (model) brighter than the pictures: lit from above, the suit's dark armour went black
+const PIECE_FADE := Vector2(0.065, 0.08)       # (model) a piece whose surface comes this near the eye dissolves, whole (a thigh
+                                             # swinging up; cut by the camera's near plane its inside showed)
+const THIGH_TAPER := 0.75                    # (model) the thighs' tops held to this much of their middle
+const THIGH_SLIM := 0.72                      # (model) the thighs this slim, their hip pads held to their middle
+const THIGH_TOP := 0.6
+const THIGH_DARK := 0.6                       # ... their back and side pictures this much towards the armour's grey
+var stand_k := 1.0                            # how much he stands (eased)
+var last_pos := Vector3.ZERO
+var size_set := -1.0                          # the camera's width last set here (another: the viewer's own again)
+var size_base := 0.0
 const BACK := 0.9                            # at the lowest, the eye this far back from the game's to over the hips
 const TEST := "TN_LOOK_DOWN_TEST"            # tests: "start,rate[,hold]" = from that second on, the mouse pulled down for
                                              # 3 s at that many counts a second, held 3 s (or hold), pulled back up 3 s
@@ -47,10 +74,12 @@ func setup_guest() -> void:
 	rad = 0.003
 	lim = int(round(0.9 / rad))
 	max_extra = minf(MAX, PI / 2.0 - 0.04 - 0.9)       # (down to nearly straight under him, as the host)
+	_cap()
 	known = true
 
 
 func _ready() -> void:
+	_cap()
 	var cl := CanvasLayer.new()
 	cl.layer = 19                            # over the game's HUD, under Uplink's own lines
 	add_child(cl)
@@ -102,10 +131,14 @@ func _process(dt: float) -> void:
 		head = clampi(int(round(-float(v.cam_to[2]) / rad)), -lim, lim)
 	if OS.has_environment(TEST) and known:
 		_test(dt)
+	if OS.has_environment(SWEEP) and known:
+		_sweep()
 	if extra < 0.0 and (v.menu_mode or v.current.is_empty()):
 		extra = 0.0                              # one of the game's screens: the view as the game's
 	var on := extra < -0.001
-	if on:
+	if on and body_mode == "model":
+		_model_eye(dt)
+	elif on:
 		var k := -extra / max_extra
 		# the game's eye is ahead of the suit (its cockpit): looking down from there the legs stood behind the view, at
 		# the bottom edge, under the cockpit (two knee tops). The eye comes back over the hips as the view goes down
@@ -115,6 +148,10 @@ func _process(dt: float) -> void:
 			var over := body.global_position
 			var cp: Vector3 = v.camera.position
 			v.camera.position = Vector3(lerpf(cp.x, over.x, k * BACK), cp.y, lerpf(cp.z, over.z, k * BACK))
+	elif size_set > 0.0:
+		if is_equal_approx(v.camera.size, size_set):
+			v.camera.size = size_base               # (back up: the view's own width again)
+		size_set = -1.0
 	if on or shown:
 		_legs(on)
 	mark.visible = on
@@ -122,7 +159,33 @@ func _process(dt: float) -> void:
 		mark.queue_redraw()
 
 
-# The player's own legs and feet (joints 0 to 7: toes, ankles, knees, hips) for the main view while it looks past the
+func _cap() -> void:
+	if body_mode == "model":
+		max_extra = clampf(deg_to_rad(down_max) - float(lim) / float(unit) * rad, 0.05, max_extra)
+
+
+# (model) the eye as a head bent over the legs: back and down, the view narrowed, eased in from the game's limit
+func _model_eye(dt: float) -> void:
+	var k := clampf(-extra / max_extra, 0.0, 1.0)
+	var ks := k * k * (3.0 - 2.0 * k)
+	var body: Node3D = v.live_player_node
+	if body != null and is_instance_valid(body):
+		var p := body.global_position
+		var sp := Vector2(p.x - last_pos.x, p.z - last_pos.z).length() / maxf(dt, 1e-3)
+		last_pos = p
+		stand_k = lerpf(stand_k, 1.0 if sp < 0.08 else 0.0, 1.0 - exp(-dt * 4.0))
+	var fwd := Vector3(-sin(v.yaw), 0.0, -cos(v.yaw))
+	v.camera.position += fwd * (-(EYE_BACK + EYE_BACK_STAND * stand_k) * ks) + Vector3(0.0, -EYE_DOWN * ks, 0.0)
+	if FOV_LOW > 0.0 and v.camera.projection == Camera3D.PROJECTION_FRUSTUM and v.camera.near > 0.0:
+		if size_set < 0.0 or not is_equal_approx(v.camera.size, size_set):
+			size_base = v.camera.size                  # (the viewer's own width, set again by it)
+		var fov := 2.0 * atan(size_base / (2.0 * v.camera.near))
+		var want := lerpf(fov, deg_to_rad(FOV_LOW), ks)
+		size_set = size_base * tan(want * 0.5) / tan(fov * 0.5)
+		v.camera.size = size_set
+
+
+# (old) The player's own legs and feet (joints 0 to 7: toes, ankles, knees, hips) for the main view while it looks past the
 # limit. His body's limbs are the game's flat pictures, taken all around each bone and none from above: they stay the
 # side views' alone. Each leg piece gets a round solid around its bone instead (legs.gdshader), a child of the limb
 # (it takes every pose with it), as thick as the limb's front picture and dressed in it; a foot is flatter than wide.
@@ -153,8 +216,17 @@ func _legs(on: bool) -> void:
 				var a: Vector3 = seg.global_position
 				var b: Vector3 = a + seg.global_transform.basis.y * float(l.get_meta("bone_px", 0.0))
 				var ab := b - a
-				var s := clampf((eye - a).dot(ab) / maxf(ab.length_squared(), 1e-8), 0.0, 1.0)
-				near = eye.distance_to(a + ab * s) < EYE_CLEAR
+				var s0 := float(l.get_meta("from", 0.0))
+				var s := clampf((eye - a).dot(ab) / maxf(ab.length_squared(), 1e-8), s0, 1.0)
+				var d := eye.distance_to(a + ab * s)
+				if body_mode == "model":
+					# the whole piece dissolves alike (a fade by the pixel's own distance showed the piece's inside through
+					# its front's holes)
+					var keep := smoothstep(PIECE_FADE.x, PIECE_FADE.y, d - float(l.get_meta("radius", 0.04)))
+					l.set_instance_shader_parameter("piece_keep", keep)
+					near = keep < 0.03
+				else:
+					near = d < EYE_CLEAR
 			l.visible = on and not near
 
 
@@ -164,27 +236,51 @@ func _build(node: Node3D) -> void:
 	var parts: Array = node.get_meta("soldier")
 	for k in mini(segs.size(), parts.size()):
 		var part: Array = parts[k]
-		if maxi(part[1], part[2]) > 7:
+		var belly: bool = body_mode == "model" and mini(part[1], part[2]) == 8 and maxi(part[1], part[2]) == 9
+		# (model) the whole suit as the others see it, from his eye at its head (as other games' full body views): legs,
+		# torso below the neck; not the arms and the weapon pods (his weapon is the game's)
+		var upper_arm := false        # (tried: at the eye's sides, dissolving, they hung there as half-seen blobs)
+		if maxi(part[1], part[2]) > 7 and not belly and not upper_arm:
 			continue
 		var seg: MeshInstance3D = part[0]
 		var ld: Dictionary = v.objects.limb(suit, segs[k][2], v.pal, v.pal_key)
 		if ld.is_empty() or not is_instance_valid(seg):
 			continue
 		var foot: bool = maxi(part[1], part[2]) <= 3
-		if not ld.has("solid"):
-			ld["solid"] = _solid(ld, foot)
-		var mat := ShaderMaterial.new()
-		mat.shader = LEGS
-		mat.set_shader_parameter("views", ld["tex"])
-		mat.set_shader_parameter("front", float(mini(8, int(ld["views"]) - 1)))
-		v._limb_light_set(mat)
+		var thigh: bool = maxi(part[1], part[2]) in [6, 7]
 		var mi := MeshInstance3D.new()
 		mi.set_meta("shadow_twin", true)             # (the viewer's passes over a unit's pieces leave it alone)
-		mi.mesh = ld["solid"]
-		mi.material_override = mat
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # (his body's own twins cast its shadow)
 		mi.set_instance_shader_parameter("mirror", seg.get_instance_shader_parameter("mirror"))
-		mi.set_instance_shader_parameter("fade_top", 0.6 if maxi(part[1], part[2]) >= 6 else 0.0)   # (a thigh: hip to knee)
+		if body_mode == "model":
+			var m: ArrayMesh
+			if belly:
+				m = BodyModel.mesh(ld, false, BELLY_FROM, BELLY_W, 0.0, 1.0, BELLY_DOME)
+			else:
+				m = BodyModel.mesh(ld, float(seg.get_instance_shader_parameter("mirror")) > 0.5, 0.0, 0.0,
+						THIGH_TOP if thigh else 0.0, THIGH_SLIM if thigh else 1.0, 0.0, THIGH_TAPER)
+			if m == null:
+				continue
+			mi.mesh = m
+			mi.material_override = BodyModel.material(ld)
+			mi.set_instance_shader_parameter("back_dark", THIGH_DARK if thigh or belly else 0.0)
+			var bb := m.get_aabb()
+			mi.set_meta("radius", maxf(bb.size.x, bb.size.z) * 0.5 / 256.0)
+			mi.set_meta("from", BELLY_FROM if belly else 0.0)
+			mi.set_instance_shader_parameter("mirror", 0.0 if belly else seg.get_instance_shader_parameter("mirror"))
+			mi.set_meta("belly", belly)
+			mi.set_instance_shader_parameter("gain", BODY_GAIN)
+		else:
+			if not ld.has("solid"):
+				ld["solid"] = _solid(ld, foot)
+			var mat := ShaderMaterial.new()
+			mat.shader = LEGS
+			mat.set_shader_parameter("views", ld["tex"])
+			mat.set_shader_parameter("front", float(mini(8, int(ld["views"]) - 1)))
+			v._limb_light_set(mat)
+			mi.mesh = ld["solid"]
+			mi.material_override = mat
+			mi.set_instance_shader_parameter("fade_top", 0.6 if thigh else 0.0)   # (a thigh: hip to knee)
 		mi.extra_cull_margin = 2.0
 		mi.set_meta("bone_px", float(ld["len"]))
 		seg.add_child(mi)
@@ -271,8 +367,24 @@ func _draw_mark() -> void:
 	mark.draw_polyline(tri + PackedVector2Array([tri[0]]), rim, 1.5 * s, true)
 
 
+# tests: TN_LOOK_DOWN_SWEEP = "start (Unix time), first angle, step, seconds a step, steps, rounds": the view held at
+# that angle down in all (degrees), then the next, round after round (the head first pulled to its limit by TEST)
+const SWEEP := "TN_LOOK_DOWN_SWEEP"
+
+
+func _sweep() -> void:
+	var a := OS.get_environment(SWEEP).split_floats(",")
+	if a.size() < 6:
+		return
+	var k := int(floor((Time.get_unix_time_from_system() - a[0]) / a[3]))
+	if k < 0 or k >= int(a[4]) * int(a[5]):
+		return
+	var want := deg_to_rad(a[1] + a[2] * float(k % int(a[4])))
+	extra = clampf(-(want - float(head) / float(unit) * rad), -max_extra, 0.0)
+
+
 func _test(dt: float) -> void:
-	var a := OS.get_environment(TEST).split_floats(",")
+	var a := OS.get_environment(TEST + "_GUEST" if guest and OS.has_environment(TEST + "_GUEST") else TEST).split_floats(",")
 	if a.size() < 2:
 		return
 	test_t += dt if test_t >= 0.0 else dt + 1.0

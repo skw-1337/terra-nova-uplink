@@ -5866,7 +5866,8 @@ func _input(event: InputEvent) -> void:
 			if captured:
 				if guest_win and bt == 2 and event.pressed:
 					_play_send(_guest_lock_packet())
-				elif guest_win and bt == 1 and event.pressed and coop_hud_node != null and coop_hud_node.fire_pick != null 						and coop_hud_node.fire_pick.on:
+				elif guest_win and bt == 1 and event.pressed and coop_hud_node != null and coop_hud_node.fire_pick != null \
+						and coop_hud_node.fire_pick.on:
 					_play_send(PackedByteArray([0x42, 1, 1]) + coop_hud_node.fire_pick.pick())   # (what his crosshair is on)
 				else:
 					_play_send(PackedByteArray([0x42, bt, 1 if event.pressed else 0]))

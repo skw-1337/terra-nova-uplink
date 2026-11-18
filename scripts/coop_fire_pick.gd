@@ -145,12 +145,18 @@ func _process(_dt: float) -> void:
 	if vp == null or not vp.live:
 		return
 	if OS.has_environment("TN_PICK_TRACE"):
+		_test_look()
 		_trace()
 		var ff := OS.get_environment("TN_PICK_TRACE") + ".fire"   # (tests: his click, as his left button sends it)
 		if FileAccess.file_exists(ff):
 			DirAccess.remove_absolute(ff)
-			vp._play_send(PackedByteArray([0x42, 1, 1]) + (pick() if on else PackedByteArray()))
-			get_tree().create_timer(0.06).timeout.connect(func(): vp._play_send(PackedByteArray([0x42, 1, 0])))
+			var pk := pick()
+			_click_log(pk)
+			vp._play_send(PackedByteArray([0x42, 1, 1]) + (pk if on else PackedByteArray()))
+			vp.play_buttons[1] = true
+			get_tree().create_timer(0.06).timeout.connect(func():
+				vp._play_send(PackedByteArray([0x42, 1, 0]))
+				vp.play_buttons.erase(1))
 	if not on or hud.state != 0 or not vp.play_buttons.has(1):
 		return
 	var now := Time.get_ticks_msec() / 1000.0
@@ -158,6 +164,50 @@ func _process(_dt: float) -> void:
 		return
 	sent_t = now
 	vp._play_send(PackedByteArray([0x46]) + pick())
+
+
+# tests: his mouse, as the viewer takes a captured mouse's moves (viewer.gd _input; a hidden test window cannot capture
+# the mouse): <TN_PICK_TRACE>.look holds "seq total_dx total_dy" (counts), what is new since the last read is applied
+var look_applied := Vector2.ZERO
+func _test_look() -> void:
+	var lf := OS.get_environment("TN_PICK_TRACE") + ".look"
+	if not FileAccess.file_exists(lf):
+		return
+	var w := FileAccess.get_file_as_string(lf).strip_edges().split(" ")
+	if w.size() < 3:
+		return
+	var tot := Vector2(w[1].to_float(), w[2].to_float())
+	var d := tot - look_applied
+	look_applied = tot
+	if d == Vector2.ZERO:
+		return
+	var vp := _vp()
+	vp.play_dx += d.x * vp.mouse_sens
+	var down: float = d.y * vp.mouse_sens * (-1.0 if vp.invert_y else 1.0)
+	vp.play_dy += vp.look_dn.take(down) if vp.look_dn != null else down
+
+
+# tests: the frame of his click: his line, the target's drawn place, what was sent (<TN_PICK_TRACE>.clicks)
+func _click_log(pk: PackedByteArray) -> void:
+	var f := FileAccess.open(OS.get_environment("TN_PICK_TRACE") + ".clicks", FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open(OS.get_environment("TN_PICK_TRACE") + ".clicks", FileAccess.WRITE)
+	if f == null:
+		return
+	f.seek_end()
+	var l := line()
+	var eye: Vector3 = l[0]
+	var dir: Vector3 = l[1]
+	var tp := Vector3.ZERO
+	var n: Node3D = hud._drawn(trace_ent) if trace_ent > 0 else null
+	if n != null:
+		var e: Array = _vp().live_ents.get(trace_ent, [])
+		var fz: float = float(e[5]) - float(n.get_meta("ez", float(e[5]))) if e.size() > 6 else 0.0
+		tp = n.global_position + Vector3(0.0, fz, 0.0)
+	f.store_line("%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%d,%.4f,%.4f,%.4f,%d,%d,%.4f,%.4f,%.4f" % [
+			Time.get_unix_time_from_system(), eye.x, eye.z, eye.y, dir.x, dir.z, dir.y, trace_ent if n != null else -1,
+			tp.x, tp.z, tp.y, pk[0], pk.decode_u16(1), pk.decode_float(3), pk.decode_float(7), pk.decode_float(11)])
+	f.close()
 
 
 # tests: his camera and line, the target's drawn place (the game's x, y, z), each frame

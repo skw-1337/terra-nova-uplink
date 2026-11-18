@@ -8,6 +8,7 @@
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
 import builtins, ctypes, json, math, os, socket, struct, time, zlib
 import host_state
+import coop_music
 import coop_lobby, coop_view
 from coop_name import NameTag
 
@@ -1242,6 +1243,7 @@ class Guest:
         # view hides, then the alarm (the type-57 lamps)
         g, M = self.g, self.master
         host_state.tick(self)                                  # where the host's game is, for his window (host_state.py)
+        coop_music.tick(self)                                  # the game's music, for his window (coop_music.py)
         if not self.ready:
             self.ready = g.read(CAVE, 4) != bytes(4)
             if self.ready:

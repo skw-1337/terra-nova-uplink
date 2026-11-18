@@ -157,6 +157,7 @@ const REG_HOME: Array[Vector2] = [Vector2(17, 276), Vector2(118, 264), Vector2(2
 var reg_move: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
 var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
+var music: Node                      # the game's music ('MUS' packets, coop_music.gd)
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -304,6 +305,11 @@ func _process(delta: float) -> void:
 				sound = preload("res://scripts/coop_sound.gd").new()
 				add_child(sound)
 			sound.feed(pk)
+		elif tag == "MUS":                                    # the game's music ('MUS': coop_music.gd)
+			if music == null:
+				music = preload("res://scripts/coop_music.gd").new()
+				add_child(music)
+			music.feed(pk)
 		elif tag == "GHD" and pk.size() >= 10:
 			state = pk.decode_u8(3)
 			armour = pk.decode_s16(4)

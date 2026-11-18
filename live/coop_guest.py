@@ -166,7 +166,9 @@ NOTES, NOTES_END, NOTE_ZOOM = 0x39A510, 0x39A518, 4   # (the panel's zoom 4: bit
 CONTACTS_AT = {1: (PBA, PBA_N, 0xB2), 2: (0x3A19E8, 0x128, 0x4D), 3: (0x39E590, 0x14F, 0x62)}
 SQUAD_COLOURS, DRONE, FOOTPRINTS, WAYPOINTS = 0x35B3ED, 0x396868, 0x3C5DD0, 0x392170
 WAYPOINT_COLOURS = (0x38, 0x3F, 0x7E, 0x84)
-M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE = range(9)
+M_CROSS, M_SELF, M_SHAPE, M_WAYPOINT, M_NAV, M_RECT, M_ROUND, M_TEXT, M_MATE, M_NOTEZ, M_SYS, M_ROW = range(12)
+# M_NOTEZ: a map note of any zoom (the game draws a note on a map of zoom z when bit (word 0x35B3DC + 2 z) of its byte
+# +0xD is set: zooms 0-7 -> bits 4 3 3 2 2 1 1 0, 0x2784ae); an older guest window ignores the kind
 # The guest's laser on the host's speakers. The cave fires for him as the game does for its player (the player's
 # entity word is his during his pass), so the shot's sound takes the player's path (0x290524): heard as the host's
 # own, its voice kept in his suit (+0x82: a voice of the game's table 0x370738, 0x4F bytes each; byte 0 the sound
@@ -294,6 +296,7 @@ class Guest:
         self.lobby, self.lobby_t, self.lobby_msgs = coop_lobby.Lobby(g, self.data_dir), 0.0, []
         self.frames = {}                                       # 3D window -> its cockpit frame (mask, pixels), the host whole
         self.tint_t, self.map_said = 0.0, False                 # his weapon box's colour tables: when last sent
+        self.plant_top = {}                                    # suit record -> the most energy max seen (status_marks)
         self.comm, self.ind, self.ind_at = [], None, None      # his COMM rows' entities; the armour indicator's picture
         # (False: none) and where the host's game draws it (his window draws his own there)
         self.equip = GuestEquipment(self)                     # his drone and A.S.F. (guest_equipment.py, TN_COOP_EQUIP=1)
@@ -885,12 +888,14 @@ class Guest:
         while a != NOTES_END and 0x300000 < a < 0x2000000 and n < 24:   # the mission's notes on the map
             r = g.read(a, 0x23 + 24)
             n += 1
-            if r[0x0D] & NOTE_ZOOM and r[0x0E] & 1 and r[0x0A] in (0, 2, 3):
+            if r[0x0E] & 1 and r[0x0A] in (0, 2, 3):
                 box = pt(*struct.unpack_from('<2i', r, 0x0F)) + pt(*struct.unpack_from('<2i', r, 0x17))
-                if r[0x0A] == 0:
-                    marks.append((M_TEXT, r[0x0B], box + r[0x23:].split(b'\0')[0][:24]))
-                else:
-                    marks.append((M_RECT if r[0x0A] == 2 else M_ROUND, r[0x0B], box))
+                kind = M_TEXT if r[0x0A] == 0 else M_RECT if r[0x0A] == 2 else M_ROUND
+                body = box + (r[0x23:].split(b'\0')[0][:24] if kind == M_TEXT else b'')
+                if r[0x0D] & NOTE_ZOOM:                        # (as an older window draws them: the panel's zoom 4)
+                    marks.append((kind, r[0x0B], body))
+                # every zoom's, for his window's map zoom (coop_hud.gd): the note's zoom bits, its kind, then as above
+                marks.append((M_NOTEZ, r[0x0B], bytes([r[0x0D], kind]) + body))
             a = struct.unpack_from('<I', r, 0)[0]
         ents = g.read(self.master, 0x25 * 300)
         rec = lambda e: ents[0x25 * e:0x25 * e + 0x25]
@@ -947,6 +952,10 @@ class Guest:
             marks.append((M_NAV, 0x9C, pt(nx, ny)))
         if self.gnav:                                          # his own marker (an older window draws nothing of it)
             marks.append((M_MATE, 0, pt(*(int(v * 65536) for v in self.gnav))))
+        try:                                                   # his STATUS pages and his squad's STAT (coop_panels.gd)
+            marks += self.status_marks()
+        except (OSError, struct.error, IndexError):
+            pass
         marks = marks[:255]
         tables = b''
         if time.time() - self.tint_t > 5.0:                    # the weapon box's two colour tables, now and then
@@ -1001,6 +1010,40 @@ class Guest:
             maps = []
         self.s.sendto(b'GNAV' + struct.pack('<2fB', *(self.gnav or (0.0, 0.0)), len(maps)) + b''.join(maps),
                       ('127.0.0.1', HOST_LIVE))
+
+    def status_marks(self):
+        """M_SYS: his suit's systems as the game's STATUS pages list them (each %: record [suit +0x9C], 5 bytes a
+        system, max word at +1, current at +3, 100 when the max is 0: 0x27e01b; systems 1-7 sensors, targdisc,
+        jumpjets, infrared, target, video, drone: 0x27df14, the infrared off at 4, the 360 view off at 6), its power
+        plant (the energy's max now over the most seen for this suit) and its armour parts front, left, back, right
+        (%); M_ROW: each COMM row's entity, energy % and its pilot's health % (the left MFD's STAT page)"""
+        out = []
+        if self.gid:
+            s = self.suit(self.gid)
+            p = struct.unpack('<I', self.g.read(s + HEALTH_PTR, 4))[0]
+            sy = self.g.read(p, 40) if 0x380000 <= p < 0x470000 else bytes(40)
+            # his suit is a squadmate's to the game, which counts systems 0-3 only for one (0x27df4e: the player's 0-7;
+            # what its record holds after them read as damage in a live test, infrared 0 %, drone 7 %): the others
+            # are given as whole
+            n = 4
+            pc = []
+            for k in range(1, 8):
+                mx, cur = struct.unpack_from('<HH', sy, 5 * k + 1) if k < n else (0, 0)
+                pc.append(100 if mx == 0 else max(0, min(100, cur * 100 // mx)))
+            emax = struct.unpack('<i', self.g.read(s + EN_MAX, 4))[0]
+            top = self.plant_top.get(s, 0)
+            if emax > top:
+                self.plant_top[s] = top = emax
+            pc.append(100 if top <= 0 else max(0, min(100, emax * 100 // top)))
+            r = self.g.read(s, 0x30)
+            for c, m in PARTS:
+                cur, mx = struct.unpack_from('<h', r, c)[0], struct.unpack_from('<h', r, m)[0]
+                pc.append(0 if mx <= 0 else max(0, min(100, cur * 100 // mx)))
+            out.append((M_SYS, 0, bytes(pc)))
+        for e in self.comm[:3]:
+            c, m = self.health(e)
+            out.append((M_ROW, 0, struct.pack('<HBB', e, self.energy_pct(e), c * 100 // m if m else 255)))
+        return out
 
     def energy_pct(self, e):
         """the energy as the game's panel bar shows it: the current over the suit's max now, both read live (power

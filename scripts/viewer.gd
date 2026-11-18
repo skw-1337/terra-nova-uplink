@@ -5248,6 +5248,32 @@ func _guest_map_click(event: InputEventMouseButton) -> bool:
 	return false
 
 
+# coop guest: a button of his cockpit with the mouse free (left or right), or the wheel (free: over a map; in the
+# look: the map in the HUD) for his map's zoom (coop_hud.gd cockpit_click / cockpit_wheel)
+func _guest_cockpit(event: InputEventMouseButton, captured: bool) -> bool:
+	var b := event.button_index
+	for n in get_children():
+		if not n.has_method("cockpit_click"):
+			continue
+		if b == MOUSE_BUTTON_WHEEL_UP or b == MOUSE_BUTTON_WHEEL_DOWN:
+			return n.cockpit_wheel(event.position, b == MOUSE_BUTTON_WHEEL_UP)
+		if not captured and (b == MOUSE_BUTTON_LEFT or b == MOUSE_BUTTON_RIGHT):
+			return n.cockpit_click(event.position, b == MOUSE_BUTTON_RIGHT)
+	return false
+
+
+# coop guest: his key as the game's (his own keys' command, as _play_scancode) to his cockpit first
+func _guest_cockpit_key(event: InputEventKey) -> bool:
+	var sc: int = SCANCODES.get(event.physical_keycode, 0)
+	sc = key_map.get(sc, sc)
+	if sc == 0:
+		return false
+	for n in get_children():
+		if n.has_method("cockpit_key"):
+			return n.cockpit_key(sc, event.pressed)
+	return false
+
+
 # Window position -> the game's 320 x 400 screen (the HUD image is stretched over the whole window).
 func _play_game_pos(p: Vector2) -> Vector2i:
 	var vs := get_viewport().get_visible_rect().size
@@ -5344,17 +5370,10 @@ func _input(event: InputEvent) -> void:
 					_play_send(_guest_lock_packet())                # coop guest: a right click is his lock, not lost
 		elif guest_win and event.button_index == MOUSE_BUTTON_MIDDLE:
 			free_look = event.pressed
+		elif guest_win and event.pressed and _guest_cockpit(event, captured):
+			pass                                          # coop guest: his cockpit's buttons, map zoom (coop_panels.gd)
 		elif guest_win and not captured and event.pressed and _guest_map_click(event):
 			pass                                          # coop guest: his own marker on his map (coop_hud.gd)
-		elif guest_win and not captured and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and \
-				(Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position))) or
-				Rect2(240, 256, 44, 14).has_point(Vector2(_play_game_pos(event.position)))):
-			var on_map := Rect2(58, 377, 28, 17).has_point(Vector2(_play_game_pos(event.position)))
-			for n in get_children():                     # coop guest: the cockpit's MAP / STATUS buttons, mouse free
-				if on_map and n.has_method("toggle_map"):
-					n.toggle_map()
-				elif not on_map and n.has_method("toggle_status"):
-					n.toggle_status()
 		elif event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_RIGHT:
 			var bt := 1 if event.button_index == MOUSE_BUTTON_LEFT else 2
 			if captured:
@@ -5393,6 +5412,9 @@ func _input(event: InputEvent) -> void:
 			play_cursor = _play_game_pos(event.position)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey:
+		if guest_win and not event.echo and _guest_cockpit_key(event):
+			get_viewport().set_input_as_handled()     # coop guest: map zoom, the MFDs' pages (coop_panels.gd)
+			return
 		if guest_win and event.physical_keycode == KEY_TAB and event.pressed and not event.echo:
 			for n in get_children():                 # coop guest: WEAPON / STATUS page (coop_hud.gd)
 				if n.has_method("toggle_status"):
@@ -8269,12 +8291,12 @@ const FX_NOT_FOLLOWED := [28, 29, 31, 32, 33]   # class 6: beams, particles, lig
 
 
 func _extras() -> void:
-	if live and not guest_win and OS.get_environment("TN_FX_MARKS") != "0":
+	if live and OS.get_environment("TN_FX_MARKS") != "0":         # (the co-op guest too: the shots are in his views)
 		var mk: Node = load("res://scripts/fx_marks.gd").new()
 		mk.v = self
 		mk.shots = _fx_shots()
 		add_child(mk)
-	if live and not guest_win and OS.get_environment("TN_FX_LIGHTS") != "0":
+	if live and OS.get_environment("TN_FX_LIGHTS") != "0":
 		var lt: Node = load("res://scripts/fx_lights.gd").new()
 		lt.v = self
 		lt.shots = _fx_shots()

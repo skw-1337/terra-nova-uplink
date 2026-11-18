@@ -41,8 +41,9 @@ static func front_layer(ld: Dictionary) -> int:
 # top: the share of the limb's rows from its top end whose section is held to the limb's own middle size (a thigh:
 # its hip pad, right under the eye, looked like a rump; 0: none)
 # slim: the section's width and depth scaled by it (the thighs: their pictures' width read as padded shorts from above)
-static func mesh(ld: Dictionary, mirror: bool, from := 0.0, max_w := 0.0, top := 0.0, slim := 1.0) -> ArrayMesh:
-	var key := "%d/%s/%.2f/%.1f/%.2f/%.2f" % [(ld["tex"] as Object).get_instance_id(), mirror, from, max_w, top, slim]
+# dome: > 0 the top end rounded back over that many rows (instead of a flat end)
+static func mesh(ld: Dictionary, mirror: bool, from := 0.0, max_w := 0.0, top := 0.0, slim := 1.0, dome := 0.0, taper := 0.9) -> ArrayMesh:
+	var key := "%d/%s/%.2f/%.1f/%.2f/%.2f/%.1f/%.2f" % [(ld["tex"] as Object).get_instance_id(), mirror, from, max_w, top, slim, dome, taper]
 	if meshes.has(key):
 		return meshes[key]
 	var tex: Texture2DArray = ld["tex"]
@@ -75,6 +76,8 @@ static func mesh(ld: Dictionary, mirror: bool, from := 0.0, max_w := 0.0, top :=
 		var cx: float = (s[0] + s[1] + 1) * 0.5 - w * 0.5 if not s.is_empty() else 0.0
 		if max_w > 0.0:
 			hw = minf(hw, max_w)
+			hd = minf(hd, max_w * 0.8)
+			cx = clampf(cx, -max_w * 0.3, max_w * 0.3)
 			cz = clampf(cz, -max_w * 0.2, max_w * 0.2)
 		sections.append([row - a1, cx * slim, maxf(hd * lerpf(1.0, slim, 0.6), 1.0), cz * slim, maxf(hw * slim, 1.0)])
 	if sections.size() < 2:
@@ -85,14 +88,23 @@ static func mesh(ld: Dictionary, mirror: bool, from := 0.0, max_w := 0.0, top :=
 		for i in n_top:
 			var sc: Array = sections[i]
 			var k := float(i) / maxf(n_top, 1.0)          # (from the top end down: eased back to the picture's own)
-			sc[2] = lerpf(minf(sc[2], mid[2] * 0.9), sc[2], k * k)
-			sc[4] = lerpf(minf(sc[4], mid[4] * 0.9), sc[4], k * k)
+			sc[2] = lerpf(minf(sc[2], mid[2] * taper), sc[2], k * k)
+			sc[4] = lerpf(minf(sc[4], mid[4] * taper), sc[4], k * k)
 			sc[1] = lerpf(mid[1], sc[1], k * k)
 			sc[3] = lerpf(mid[3], sc[3], k * k)
 	var mz := -1.0 if mirror else 1.0
-	var pts := []                                        # rings of points
+	# a domed top (the belly: its upper end curves back, away from the eye, instead of a flat lid)
+	if dome > 0.0:
+		var s0: Array = sections[0]
+		for i in range(1, 4):
+			var k := float(i) / 4.0
+			sections.push_front([s0[0] - dome * k * 6.0, s0[1] - s0[2] * k * 0.6, s0[2] * sqrt(1.0 - k * k * 0.85),
+					s0[3], s0[4] * sqrt(1.0 - k * k * 0.6)])
+	var pts := []                                        # rings of points, and their normals (outwards)
+	var nrm := []
 	for sc in sections:
 		var ring := []
+		var rn := []
 		for i in SIDES:
 			var t := TAU * float(i) / SIDES
 			var c := cos(t)
@@ -100,19 +112,19 @@ static func mesh(ld: Dictionary, mirror: bool, from := 0.0, max_w := 0.0, top :=
 			var ex := signf(c) * pow(absf(c), 2.0 / ROUND)
 			var ez := signf(s) * pow(absf(s), 2.0 / ROUND)
 			ring.append(Vector3(sc[1] + sc[2] * ex, sc[0], (sc[3] + sc[4] * ez) * mz))
+			rn.append(Vector3(ex / maxf(sc[2], 0.5), 0.0, ez / maxf(sc[4], 0.5) * mz).normalized())
 		pts.append(ring)
+		nrm.append(rn)
+	# every face both ways (the material draws both sides): a closed shell, its normals set outwards here, so that no
+	# winding can show the inside of a piece
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	st.set_smooth_group(0)
 	for r in pts.size() - 1:
 		for i in SIDES:
 			var j := (i + 1) % SIDES
-			var p00: Vector3 = pts[r][i]
-			var p01: Vector3 = pts[r][j]
-			var p10: Vector3 = pts[r + 1][i]
-			var p11: Vector3 = pts[r + 1][j]
-			_tri(st, mirror, p00, p01, p11)
-			_tri(st, mirror, p00, p11, p10)
+			for v in [[r, i], [r, j], [r + 1, j], [r, i], [r + 1, j], [r + 1, i]]:
+				st.set_normal(nrm[v[0]][v[1]])
+				st.add_vertex(pts[v[0]][v[1]])
 	# the ends closed, a little domed
 	for e in [0, pts.size() - 1]:
 		var ring: Array = pts[e]
@@ -124,27 +136,16 @@ static func mesh(ld: Dictionary, mirror: bool, from := 0.0, max_w := 0.0, top :=
 		for p in pts[1 if e == 0 else e - 1]:
 			other += p
 		other /= ring.size()
-		mid += (mid - other).normalized() * 1.5
+		var out := (mid - other).normalized()
+		var tip := mid + out * 1.5
 		for i in SIDES:
 			var j := (i + 1) % SIDES
-			if e == 0:
-				_tri(st, mirror, mid, ring[j], ring[i])
-			else:
-				_tri(st, mirror, mid, ring[i], ring[j])
-	st.generate_normals()
+			for q in [tip, ring[i], ring[j]]:
+				st.set_normal(((q - mid) * 0.15 + out).normalized() if q != tip else out)
+				st.add_vertex(q)
 	var m := st.commit()
 	meshes[key] = m
 	return m
-
-
-static func _tri(st: SurfaceTool, mirror: bool, a: Vector3, b: Vector3, c: Vector3) -> void:
-	st.add_vertex(a)
-	if mirror:                                           # (mirrored points: the faces' winding turned back)
-		st.add_vertex(c)
-		st.add_vertex(b)
-	else:
-		st.add_vertex(b)
-		st.add_vertex(c)
 
 
 static func material(ld: Dictionary) -> ShaderMaterial:

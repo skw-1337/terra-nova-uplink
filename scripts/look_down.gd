@@ -28,9 +28,14 @@ const EYE_DOWN := 0.12                        # ... and this much lower
 const DOWN_MAX := 76.0                       # (model) how far down the view goes in all (degrees): further, the eye behind the legs
                                              # looked past them
 const FOV_LOW := 74.0                         # ... the view this wide (degrees across)
-const THIGH_SLIM := 0.75                      # (model) the thighs this slim, their hip pads held to their middle
+const BELLY_FROM := 0.7                      # (model) the torso's lowest 30 %: the belly joining the thighs
+const BELLY_W := 15.0                        # ... held to this half width (its pictures hold the arms too)
+const BELLY_DOME := 6.0                      # ... its top rounded back over this many rows (no flat lid)
+const NEAR_FADE := Vector2(0.07, 0.13)       # (model) a piece nearer the eye than this dissolves (a thigh swinging up)
+const THIGH_TAPER := 0.75                    # (model) the thighs' tops held to this much of their middle
+const THIGH_SLIM := 0.72                      # (model) the thighs this slim, their hip pads held to their middle
 const THIGH_TOP := 0.6
-const THIGH_DARK := 0.7                       # ... their back and side pictures this much towards the armour's grey
+const THIGH_DARK := 0.6                       # ... their back and side pictures this much towards the armour's grey
 var stand_k := 1.0                            # how much he stands (eased)
 var last_pos := Vector3.ZERO
 var size_set := -1.0                          # the camera's width last set here (another: the viewer's own again)
@@ -207,7 +212,7 @@ func _legs(on: bool) -> void:
 				var b: Vector3 = a + seg.global_transform.basis.y * float(l.get_meta("bone_px", 0.0))
 				var ab := b - a
 				var s := clampf((eye - a).dot(ab) / maxf(ab.length_squared(), 1e-8), 0.0, 1.0)
-				near = eye.distance_to(a + ab * s) < EYE_CLEAR
+				near = eye.distance_to(a + ab * s) < EYE_CLEAR and not bool(l.get_meta("belly", false))   # (the belly: around the eye's bone, its near part dissolves instead)
 			l.visible = on and not near
 
 
@@ -217,7 +222,8 @@ func _build(node: Node3D) -> void:
 	var parts: Array = node.get_meta("soldier")
 	for k in mini(segs.size(), parts.size()):
 		var part: Array = parts[k]
-		if maxi(part[1], part[2]) > 7:
+		var belly: bool = body_mode == "model" and mini(part[1], part[2]) == 8 and maxi(part[1], part[2]) == 9
+		if maxi(part[1], part[2]) > 7 and not belly:
 			continue
 		var seg: MeshInstance3D = part[0]
 		var ld: Dictionary = v.objects.limb(suit, segs[k][2], v.pal, v.pal_key)
@@ -230,13 +236,20 @@ func _build(node: Node3D) -> void:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # (his body's own twins cast its shadow)
 		mi.set_instance_shader_parameter("mirror", seg.get_instance_shader_parameter("mirror"))
 		if body_mode == "model":
-			var m := BodyModel.mesh(ld, float(seg.get_instance_shader_parameter("mirror")) > 0.5, 0.0, 0.0,
-					THIGH_TOP if thigh else 0.0, THIGH_SLIM if thigh else 1.0)
+			var m: ArrayMesh
+			if belly:
+				m = BodyModel.mesh(ld, false, BELLY_FROM, BELLY_W, 0.0, 1.0, BELLY_DOME)
+			else:
+				m = BodyModel.mesh(ld, float(seg.get_instance_shader_parameter("mirror")) > 0.5, 0.0, 0.0,
+						THIGH_TOP if thigh else 0.0, THIGH_SLIM if thigh else 1.0, 0.0, THIGH_TAPER)
 			if m == null:
 				continue
 			mi.mesh = m
 			mi.material_override = BodyModel.material(ld)
-			mi.set_instance_shader_parameter("back_dark", THIGH_DARK if thigh else 0.0)
+			mi.set_instance_shader_parameter("back_dark", THIGH_DARK if thigh or belly else 0.0)
+			mi.set_instance_shader_parameter("near_fade", NEAR_FADE)
+			mi.set_instance_shader_parameter("mirror", 0.0 if belly else seg.get_instance_shader_parameter("mirror"))
+			mi.set_meta("belly", belly)
 		else:
 			if not ld.has("solid"):
 				ld["solid"] = _solid(ld, foot)

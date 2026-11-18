@@ -28,6 +28,10 @@
      "His own infrared, full view (G) and 360 view",
      "One map marker per player, the host's in orange",
      "Smoother guest view and lower delay",
+     "His own settings: sound and music, subtitles, zoom, crosshair, HUD colours, mouse buttons",
+     "His shots go where his crosshair points and leave from his own gun, with his own weapon and jet sounds",
+     "Both players pick their gear at the same time",
+     "Still experimental: for the guest, drone, A.S.F. and guided missiles are not there yet",
      "Squad orders no longer stall when a friend plays one of your squadmates",
      "Clear message when Steam is missing (Retry / Exit), and when a friend runs another version"]},
     {"section": "Look", "items": [

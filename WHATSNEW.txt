@@ -1,6 +1,50 @@
 TERRA NOVA UPLINK - WHAT'S NEW
 
 2.8 beta 1
+- Co-op: your friend's cockpit now matches the game: HUD, map with zoom,
+  cockpit buttons and pages, weapon box, compass, STAT and STATUS pages,
+  squad list with specialties, all in the game's own font
+- Co-op: lock works like the game's: units under the crosshair, coloured IFF
+  brackets, lock light, target camera
+- Co-op: sound on the guest's side: game sounds from his point of view,
+  radio voices, subtitles and music
+- Co-op: briefing videos and launch cinematics on both screens
+- Co-op: his own infrared, full view (G) and 360 view
+- Co-op: one map marker per player, the host's in orange
+- Co-op: smoother guest view and lower delay
+- Co-op: his own settings: sound and music, subtitles, zoom, crosshair, HUD
+  colours, mouse buttons
+- Co-op: his shots go where his crosshair points and leave from his own gun,
+  with his own weapon and jet sounds
+- Co-op: both players pick their gear at the same time
+- Co-op: still experimental: for the guest, drone, A.S.F. and guided
+  missiles are not there yet
+- Co-op: squad orders no longer stall when a friend plays one of your
+  squadmates
+- Co-op: clear message when Steam is missing (Retry / Exit), and when a
+  friend runs another version
+- Graphics presets: Original, Classic+, Modern, Light, with a preview of
+  every setting
+- New installs start in the modern look (old school is one click away)
+- See your own legs and feet when you look down, including on slopes
+- Footprints for every suit and continuous tracks behind vehicles
+- Cloud shadows that follow the clouds, soft edges
+- Sky without lines, smoke drawn from the game's own particles
+- Impact marks, light from shots, cliffs, sharp stars (each can be turned
+  off)
+- Ground tiles keep their own edges, no more stray pixels over the view
+- Squadmates look right from any angle
+- Drone screen fills its panel, "DRONE RECALLED" shown like in the game
+- Game: esc opens Uplink's menu: game menu, controls, graphics, options,
+  accessibility, quit
+- Game: order wheel: hold a button, pick an order, choose who gets it with
+  the mouse wheel; "move there" stops in front of walls
+- Game: click on the HUD map to place your marker
+- Game: gamepad support for solo, host and guest, with remapping
+- Game: photo mode on L
+- Game: squadmates' subtitles
+- Accessibility: colour-blind modes: protanopia, deuteranopia, tritanopia
+- Accessibility: subtitle size: normal, large, larger
 - Beta updates: Settings > Updates (off unless you switch it on). Switch it
   off to go back to stable, with your settings as you left them.
 - Updates are checked before they replace anything, the version before is

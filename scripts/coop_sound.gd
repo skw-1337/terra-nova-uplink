@@ -208,7 +208,7 @@ func _place(v: Dictionary) -> void:
 		src = _ent_pos(v["ent"])
 		if src == null and v["at"] != Vector3.ZERO:
 			src = v["at"]                                  # (a shot or a blast: not among his units, where it started)
-	if src != null or v["kind"] in [1, 2, 5]:
+	if (src != null or v["kind"] in [1, 2, 5]) and not _is_speech(v["sound"]):
 		vol = 0
 		var me = _listener()
 		if src != null and me != null:
@@ -282,8 +282,9 @@ func _stream(sound: int, loop: bool) -> AudioStreamWAV:
 		return streams[key]
 	_open()
 	var s: AudioStreamWAV = null
-	if res and res.has(sound):
-		var d: PackedByteArray = res.data(sound)
+	var rf = res if res and res.has(sound) else _speech_res(sound)   # (the squad's radio: SPEECH\RESBRKnn.RES)
+	if rf and rf.has(sound):
+		var d: PackedByteArray = rf.data(sound)
 		if d.size() >= 0x20 and d.slice(0, 19).get_string_from_ascii() == "Creative Voice File":
 			var p := d.decode_u16(0x14)
 			var pcm := PackedByteArray()
@@ -314,3 +315,30 @@ func _stream(sound: int, loop: bool) -> AudioStreamWAV:
 				s.loop_end = pcm.size()
 	streams[key] = s
 	return s
+
+# ---------------------------------------------------------------- the squad's radio
+# What the squadmates say (answers to orders, reports: live/subtitles.py) is not in RESSOUND.RES: one file a voice,
+# SPEECH\RESBRKnn.RES beside DATA, sounds 3050 + (voice - 1) x 275 + clip (265 clips, 18 voices). The game plays
+# them on the radio: not placed in the world (no distance, no side), at the voice's volume and the game's.
+const SPEECH0 := 3050
+const SPEECH_PER := 275
+const SPEECH_FILES := 18
+var speech := {}                         # file number -> LGRes (null: not in his files)
+
+
+func _is_speech(sound: int) -> bool:
+	return sound >= SPEECH0 and sound < SPEECH0 + SPEECH_PER * SPEECH_FILES
+
+
+func _speech_res(sound: int):
+	if not _is_speech(sound):
+		return null
+	var n := (sound - SPEECH0) / SPEECH_PER + 1
+	if not speech.has(n):
+		speech[n] = null
+		var vp := _viewer()
+		if vp and "data" in vp:
+			var f: String = vp.data.data_dir().get_base_dir().path_join("SPEECH").path_join("RESBRK%02d.RES" % n)
+			if FileAccess.file_exists(f):
+				speech[n] = LGRes.open(f)
+	return speech[n]

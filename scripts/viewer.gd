@@ -2230,16 +2230,29 @@ func _note_move(node: Node3D, p2: Vector2) -> void:
 	var mv: Array = node.get_meta("mv")
 	if (mv[-1][1] as Vector2) == p2:
 		return
-	if (mv[-1][1] as Vector2).distance_to(p2) > 1.0 or now - int(mv[-1][0]) > 120:
+	var span := _move_span(node)
+	if (mv[-1][1] as Vector2).distance_to(p2) > 1.0 or now - int(mv[-1][0]) > span[1]:
 		mv.clear()                                   # (put elsewhere, or moving again)
+	elif unit_lead and guest_win:                    # (how often the game moves it: _move_span)
+		node.set_meta("mv_gap", lerpf(float(node.get_meta("mv_gap", 33.0)), clampf(float(now - int(mv[-1][0])), 8.0, UNIT_GAP_FAR), 0.25))
 	mv.append([now, p2])
-	while mv.size() > 2 and now - int(mv[1][0]) >= 90:   # (150 ms: a suit slowing down or speeding up was 0.3 units a
-		mv.pop_front()                                   # second off, its steps a pace too long or short)
+	while mv.size() > 2 and now - int(mv[1][0]) >= span[0]:   # (150 ms: a suit slowing down or speeding up was 0.3
+		mv.pop_front()                                   # units a second off, its steps a pace too long or short)
+
+
+# the window its speed is taken over and how long without a move it is stopped (ms): 90 and 120, or in the co-op
+# guest's window as long as the game takes to move it (far from the game's player it moves it less often: its legs
+# stopped between two moves while it went on, eased)
+func _move_span(node: Node3D) -> Vector2:
+	if not (unit_lead and guest_win):
+		return Vector2(90.0, 120.0)
+	var g := float(node.get_meta("mv_gap", 33.0))
+	return Vector2(maxf(90.0, 2.0 * g), maxf(120.0, 2.5 * g))
 
 
 func _unit_velocity(node: Node3D, now: int) -> Vector2:
 	var mv: Array = node.get_meta("mv", [])
-	if mv.size() < 2 or now - int(mv[-1][0]) > 120:
+	if mv.size() < 2 or now - int(mv[-1][0]) > _move_span(node).y:
 		return Vector2.ZERO
 	var v: Vector2 = ((mv[-1][1] as Vector2) - (mv[0][1] as Vector2)) / maxf((int(mv[-1][0]) - int(mv[0][0])) / 1000.0, 0.001)
 	return v if v.length() < 20.0 else Vector2.ZERO
@@ -6676,7 +6689,7 @@ func _live_units(pk: PackedByteArray) -> void:
 			# steps for 3 s: one the game drew in all but 2 frames in 760 walked on them most of the time, its feet on
 			# the map's ground, strides narrower than the game's, a leg straight on a step)
 			# Nor one with a bone too long to draw (_pose_soldier left the suit in its last pose, for as long as they came)
-			if not _bones_long(node, joints[idx]) and not _arms_off(joints[idx]):
+			if not _bones_long(node, joints[idx]) and not _arms_off(joints[idx]) and not _pose_stuck(node, joints[idx], now_ms):
 				if now_ms - int(node.get_meta("jt", -100000)) > GAIT_STALE:
 					node.set_meta("jt0", now_ms)            # its poses again after a while without (GAIT_BACK; after a
 					# shorter gap, GAIT_STALE_MOVING, the game never stopped posing it: back on its pose at once)
@@ -6696,6 +6709,22 @@ func _live_units(pk: PackedByteArray) -> void:
 			node.position.y = feet[idx]              # on its feet: the walker's entity is 0.23 to 0.39 above them
 			# as it walks (a suit's: 0.15), so GAME_Z left it floating
 			node.set_meta("feet_off", feet[idx] - float(node.get_meta("ez", feet[idx])))
+
+
+# The co-op guest's window: a pose of the game whose legs no longer change while the suit walks is one the game no
+# longer draws (it writes the knees, shoulders, elbows and hands only when it draws the suit; far from the host it
+# does not, and the bridge's own test, perimees, let some through): taken as none, so that after GAIT_STALE_MOVING
+# the suit walks on its own steps. Measured (18/11/2026, Aegis, enemies 50-75 units from the host near the guest):
+# their legs did not move on 100 % of the frames they walked, on these stale poses. (TN_COOP_UNIT_LEAD=0: off)
+func _pose_stuck(node: Node3D, j: Array, now: int) -> bool:
+	if not (unit_lead and guest_win) or j.size() < 6:
+		return false
+	# (the bridge sends them in the suit's frame: left behind in the world, they still move against it; what stays is
+	# how far apart the two knees and the two ankles are)
+	var sep := Vector2((j[4] as Vector3).distance_to(j[5]), (j[2] as Vector3).distance_to(j[3]))
+	var was: Vector2 = node.get_meta("knees", Vector2(-1.0, -1.0))
+	node.set_meta("knees", sep)
+	return was.distance_to(sep) < 0.0002 and _unit_velocity(node, now).length() > 0.3
 
 
 # The game's infrared view on or off (key I): the host's as his bridge reads it ('IRVW'), a co-op guest's his own
@@ -7139,6 +7168,14 @@ func _live_smooth() -> void:
 # game (the bridge): eased together, its planted feet stay put. Jumps of more than SMOOTH_JUMP are taken at once.
 var unit_smooth := OS.get_environment("TN_UNIT_SMOOTH") != "0"
 const UNIT_GAP := Vector2(8.0, 90.0)              # ms: the shortest and longest easing
+# The co-op guest's window: the host's views come at their rate and not all of them hold a new state of the game (the
+# game's pictures and the views are not in step): a walking unit reached its place in one gap and stood until the next
+# state, a halt every few views. There it goes on along its way for at most UNIT_LEAD gaps past its place (its place
+# only, not its turn or pose), and eases back when two views in a row leave it where it was (it stopped). A unit the
+# game moves less often (far from its player) is eased over its own gap, up to UNIT_GAP_FAR (TN_COOP_UNIT_LEAD=0: off)
+const UNIT_LEAD := 1.0
+const UNIT_GAP_FAR := 400.0
+var unit_lead := OS.get_environment("TN_COOP_UNIT_LEAD") != "0"
 var smooth_nodes: Array[Node3D] = []
 var sm_n := 0                                     # the units' captures so far (one a packet)
 
@@ -7164,14 +7201,16 @@ func _smooth_capture() -> void:
 		elif node.has_meta("mech") and node.has_meta("mech_pose"):
 			to[2] = node.get_meta("mech_pose")
 		var sm: Array = node.get_meta("sm", [])
+		var lead := unit_lead and guest_win
 		if sm.is_empty() or int(node.get_meta("sm_n", -1)) != sm_n - 1 or (to[0] as Vector3).distance_to(sm[1][0]) >= SMOOTH_JUMP:
 			sm = [to, to, now, float(node.get_meta("sm_gap", 33.0)), gait, now]    # new, shown again, jumped: at once
 		elif not ((to[0] as Vector3).is_equal_approx(sm[1][0]) and (to[1] as Quaternion).is_equal_approx(sm[1][1])
 				and to[2] == sm[1][2] and is_equal_approx(to[3], sm[1][3])):
 			var gap := float(node.get_meta("sm_gap", 33.0))
 			var dt := float(now - int(sm[5]))           # since its last new state
-			if dt > 0.0 and dt < 200.0:
-				gap = lerpf(gap, clampf(dt, UNIT_GAP.x, UNIT_GAP.y), 0.25)
+			var top := UNIT_GAP_FAR if lead else UNIT_GAP.y
+			if dt > 0.0 and dt < top * 2.2:
+				gap = lerpf(gap, clampf(dt, UNIT_GAP.x, top), 0.25)
 				node.set_meta("sm_gap", gap)
 			var from := _unit_drawn(sm, now)
 			if bool(sm[4]) and not gait:              # back on the game's pose from its own steps: its height eased
@@ -7180,7 +7219,15 @@ func _smooth_capture() -> void:
 				p0.y = (to[0] as Vector3).y
 				from[0] = p0
 				node.set_meta("y_off", [float(node.get_meta("gait_y", (to[0] as Vector3).y)) - (to[0] as Vector3).y, now])
-			sm = [from, to, now, gap, gait, now]
+			sm = [from, to, now, gap, gait, now, lead]
+			node.set_meta("sm_same", 0)
+		elif sm.size() > 6 and bool(sm[6]) and now - int(sm[2]) > int(sm[3]):
+			# (led past its place: a second view in a row with it there, it stopped: back to it over a gap)
+			var same := int(node.get_meta("sm_same", 0)) + 1
+			node.set_meta("sm_same", same)
+			if same >= 2:
+				sm = [_unit_drawn(sm, now), sm[1], now, float(sm[3]), gait, int(sm[5])]
+				node.remove_meta("sm_done")
 		node.set_meta("sm", sm)
 		node.set_meta("sm_n", sm_n)
 		smooth_nodes.append(node)
@@ -7205,6 +7252,9 @@ func _unit_drawn(sm: Array, now: int) -> Array:
 	var a := clampf(float(now - int(sm[2])) / float(sm[3]), 0.0, 1.0)
 	var f: Array = sm[0]
 	var t: Array = sm[1]
+	if a >= 1.0 and sm.size() > 6 and bool(sm[6]):  # (the guest's: on along its way, its place only)
+		var x := minf(float(now - int(sm[2])) / float(sm[3]), 1.0 + UNIT_LEAD)
+		return [(f[0] as Vector3).lerp(t[0], x), t[1], t[2], lerpf(f[3], t[3], x)]
 	if a >= 1.0:
 		return t
 	var q = null
@@ -7223,7 +7273,7 @@ func _unit_smooth(node: Node3D, now: int) -> void:
 	if int(node.get_meta("sm_done", -1)) == int(sm[2]) and (gait or not node.has_meta("y_off")):
 		return                                       # (reached: left where it is, a suit's own steps move it)
 	var d := _unit_drawn(sm, now)
-	if now - int(sm[2]) >= int(sm[3]):
+	if now - int(sm[2]) >= int(sm[3]) * (1.0 + UNIT_LEAD if sm.size() > 6 and bool(sm[6]) else 1.0):
 		node.set_meta("sm_done", int(sm[2]))
 	var p: Vector3 = d[0]
 	if gait:

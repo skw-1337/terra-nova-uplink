@@ -4,9 +4,12 @@
 # While the host watches the briefing (a Smacker video Godot cannot play), the guest reads it: the game's own text
 # briefing of that mission (its options' "Briefings: Text"), from his own game files: RESPTERM.RES 1455, the string of
 # the mission's number (MISSn.RES -> [n]).
+# The video itself, when asked for (coop_movie.gd: TN_COOP_VIDEOS / the guest's Options): a newer host adds the
+# frame the game's video shows (u16 after the 16 bytes: 0xFFFF no video plays, 0xFFFE not known yet).
 extends Node
 
 const LGRes = preload("res://scripts/lgres.gd")
+const CoopMovie = preload("res://scripts/coop_movie.gd")
 const PORT := 47836
 const BLUE := Color8(61, 139, 240)
 const ORANGE := Color8(232, 134, 42)
@@ -32,6 +35,8 @@ var briefs_read := false
 var panel: PanelContainer
 var panel_text: Label
 var panel_of := -1
+var movie_frame := -1                               # (-1 not said: an older host; -2 no video plays; -3 not known yet)
+var movie_node: CoopMovie                           # coop_movie.gd
 
 
 func _ready() -> void:
@@ -49,6 +54,9 @@ func _ready() -> void:
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.visible = false
 	layer.add_child(label)
+	movie_node = CoopMovie.new()
+	movie_node.v = v
+	add_child(movie_node)
 
 
 func _process(delta: float) -> void:
@@ -61,8 +69,17 @@ func _process(delta: float) -> void:
 			movie = pk.slice(7, 15).get_string_from_ascii().strip_edges()
 			custom = pk[15] & 2 != 0
 			last = clock
+			movie_frame = -1
+			if pk.size() >= 18:
+				var fr := pk.decode_u16(16)
+				movie_frame = -2 if fr == 0xFFFF else (-3 if fr == 0xFFFE else fr)
+			movie_node.host(state, movie, movie_frame, mission, custom)
+	if clock - last > 6.0 and movie_node.want != "":
+		movie_node.want = ""                            # (no news from the host: his video not played on)
 	_briefing_text()
 	var t := _text()
+	if movie_node.is_playing():
+		t = ""                                          # (his video over the whole window: nothing in the way)
 	label.visible = t != ""
 	if t == "":
 		return
@@ -130,7 +147,7 @@ func _mission_name() -> String:
 
 # the text briefing, over the guest's view, while the host's game plays the briefing's video
 func _briefing_text() -> void:
-	var want := state == BRIEFING and clock - last < 6.0 and mission > 0 and not custom
+	var want := state == BRIEFING and clock - last < 6.0 and mission > 0 and not custom and not movie_node.is_playing()
 	if not want:
 		if panel:
 			panel.visible = false

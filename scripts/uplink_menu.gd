@@ -263,7 +263,7 @@ func _show(p: String) -> void:
 
 # ---------------------------------------------------------------- options
 func _options(col: VBoxContainer) -> void:
-	_place(560, 600)
+	_place(560, 640)
 	_title(col, "OPTIONS", ORANGE)
 	var cfg := ConfigFile.new()
 	cfg.load(CFG)
@@ -274,6 +274,7 @@ func _options(col: VBoxContainer) -> void:
 			_keep("sound", "guest_volume_db", AudioServer.get_bus_volume_db(0)), "%d %%")
 		var mus := preload("res://scripts/coop_music.gd")    # the game's music (g5: coop_music.gd; 100 by default, 0 = off)
 		_slider(col, "Music", 0.0, 100.0, mus.user_volume(), func(x: float): mus.set_user_volume(get_tree(), x), "%d %%")
+		_movie_switch(col)
 	_slider(col, "Mouse speed", 0.2, 3.0, float(v.mouse_sens), func(x: float):
 		v.mouse_sens = x
 		_keep("launcher", "mouse", "%.1f" % x), "x %.1f", 0.1)
@@ -300,6 +301,17 @@ func _options(col: VBoxContainer) -> void:
 				v.fx_stars = x
 			_keep("launcher", "fx_" + id, "1" if x else "0"))
 	_button(col, "Back", func(): _show("main"))
+
+
+# the host's briefings and other videos played in the guest's window (coop_movie.gd), or the text briefing only
+func _movie_switch(col: Control) -> void:
+	for n in v.get_children():
+		var m = n.get("movie_node")
+		if m is Node:
+			_switch(col, "Briefing videos", bool(m.on), func(x: bool):
+				m.set_on(x)
+				_keep("launcher", "coop_videos", "1" if x else "0"))
+			return
 
 
 func _keep(section: String, key: String, value) -> void:

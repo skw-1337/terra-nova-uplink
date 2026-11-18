@@ -38,17 +38,20 @@ It's a prototype: expect bugs. Help, bugs, or looking for someone to play with: 
 | F8 | next squadmate |
 | Enter | call the dropship |
 | F | free the mouse (Y on an installation made before this version; the freelook key of **Game keys**) |
+| I / G / B | infrared / full view / 360 view (his own, whatever the host uses) |
 
 A gamepad works too: switch on **Gamepad for the guest** on the launcher's Co-op page.
 
 Keys changed in the launcher's **Game keys** follow for the guest too: forward, back, the side steps, the turns, the jets and the weapon keys.
 
-**Sound**: the game runs on the host's PC only, so only the host hears it. The guest's window is silent in a mission (he gets the menu sounds of the outfitting screen). Use a voice chat.
+**Sound**: the guest hears the mission from where he stands: the game's sounds, his own weapons and jets, the radio voices with their subtitles, and the music. Briefing videos and launch cinematics play on both screens. His sound, music, subtitles, zoom, crosshair and HUD colours are his own settings.
+
+**Not there yet for the guest**: the drone, the A.S.F. and guided missiles.
 
 ## If something goes wrong
 
 - **Your friend isn't in the list**: you must be Steam friends, and he must have clicked HOST A GAME.
-- **"Different versions"**: both close Uplink and click again, it updates.
+- **"Your friend is on Uplink 2.8 beta, you on Uplink 2.7"** (or the other way round): you must both run the same version. Both close Uplink and open it again so it updates; for a beta, both switch **Beta updates** on (Settings > Updates), or both off.
 - **The guest keeps firing**: a gamepad trigger that doesn't go back to zero. Switch **Gamepad for the guest** off.
 - **Anything else**: click **Report a bug** in the launcher and send the zip it puts on your desktop on [Discord](https://discord.gg/UqtEpuUZh3), with a few words on what happened. The zip holds the logs and settings of Uplink and Terra Nova Plus; your Windows user name, your folders and Steam names are taken out of it (it says so inside).
 

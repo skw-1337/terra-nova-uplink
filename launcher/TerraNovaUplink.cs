@@ -746,7 +746,7 @@ static partial class Uplink
     // (look down: one walk of LOOKDOWN_N frames with the view tilted down and up again, then the OFF view's own frames
     // for the steps where ON is past the game's stop (OFF held there, the walk going on); cloud shadows: the view without
     // them, then 48 frames of one whole turn of the cloud cover)
-    const int LOOKDOWN_N = 144, LOOKDOWN_FROM = 38, LOOKDOWN_TO = 110;
+    const int LOOKDOWN_N = 144, LOOKDOWN_FROM = 36, LOOKDOWN_TO = 103;
     static readonly Dictionary<string, PvAnim> PV_ANIM = new Dictionary<string, PvAnim> {
         { "cloud_shadows", PvCloud(48, 12) },
         { "look_down", PvWalk(LOOKDOWN_N, LOOKDOWN_FROM, LOOKDOWN_TO, 20) } };

@@ -1408,7 +1408,7 @@ def handle_input():
             import coop_guest
             guest = coop_guest.Guest(g, A_MASTER, A_PID, NENT, EYE, SENS_X, fov_now, s, remote=True, versus=pk == b'HOSTV',
                                      eye_fixed='--eye' in sys.argv, oeil=OEIL)
-            guest.hud_src, guest.post_key = (lambda: hud_last), (post_key if PLAY else None)
+            guest.hud_src, guest.post_key, guest.fov_rest = (lambda: hud_last), (post_key if PLAY else None), fov_rest
             print('coop: hosting online', flush=True)
         elif pk in (b'LOCK1', b'LOCK0') and guest is not None:   # the host window's lock of the guest's column
             guest.lobby.locked = pk == b'LOCK1'

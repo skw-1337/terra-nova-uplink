@@ -6,7 +6,7 @@
 # read: the guest window's coop_net.gd sends its own gamepad as 'P' packets (lx, ly, rx, ry int8 with XInput signs,
 # fire 0 / 1), used only while fresh (0.3 s). The guest window's HUD gets 'GHD' packets (coop_hud.gd). Online the
 # view goes as coop_view.py messages (keyframes, deltas, decor), view_hz a second; 'R' from the guest: decor again.
-import builtins, ctypes, json, math, os, socket, struct, time, zlib
+import builtins, ctypes, json, math, os, random, socket, struct, time, zlib
 import host_state
 import coop_music
 import coop_lobby, coop_view
@@ -365,6 +365,7 @@ class Guest:
         self.gpick = None                                     # (time, 15 bytes): what it is on in his window (coop_fire_pick.gd)
         self.aim_on, self.pick_on = AIM_ON, os.environ.get('TN_COOP_PICK') != '0'
         self.view_delay, self.held_views, self.ctl_t = 0.0, [], 0.0   # (tests: test_ctl)
+        self.view_jitter, self.test_hz = 0.0, 0.0
         # The host's suit in his window walks with the game's own walk ported to Uplink (suit_gait.gd, as every suit
         # the game does not pose), from its real motion. host_anim.py's learned cycle (TN_HOST_ANIM=1, the old way)
         # sent a pose every view: with no cycle learned yet (a new install) it was a standing pose for good, the
@@ -2005,7 +2006,8 @@ class Guest:
 
     def test_ctl(self):
         """tests (TN_COOP_TEST_CTL = a file, read again when it changes): 'aim=0|1 pick=0|1 hits=0|1 delay=MS', the last his
-        views held back that long (the local guest window standing for one over Steam)"""
+        views held back that long (the local guest window standing for one over Steam); 'jitter=MS' that much more or
+        less at random each (kept in order, as one link keeps them), 'hz=N' only N views a second (online: --view-hz)"""
         f = os.environ.get('TN_COOP_TEST_CTL')
         if not f:
             return
@@ -2020,13 +2022,19 @@ class Guest:
         self.aim_on = kv.get('aim', '1') != '0'
         self.pick_on = kv.get('pick', '1') != '0'
         self.view_delay = float(kv.get('delay', '0')) / 1000
+        self.view_jitter = float(kv.get('jitter', '0')) / 1000
+        self.test_hz = float(kv.get('hz', '0'))
         self.unit_hits.on = kv.get('hits', '1' if UNIT_HITS_ON else '0') != '0'
 
     def send(self, view):
         if not self.remote:
-            if self.view_delay > 0 or self.held_views:         # (tests: TN_COOP_TEST_CTL delay)
+            if self.view_delay > 0 or self.held_views or self.test_hz:   # (tests: TN_COOP_TEST_CTL delay)
                 now = time.time()
-                self.held_views.append((now + self.view_delay, view))
+                if not self.test_hz or now - self.sent_t >= 1 / self.test_hz:
+                    if self.test_hz:
+                        self.sent_t = max(self.sent_t + 1 / self.test_hz, now - 1 / self.test_hz)
+                    at = now + max(0.0, self.view_delay + random.uniform(-self.view_jitter, self.view_jitter))
+                    self.held_views.append((max(at, self.held_views[-1][0]) if self.held_views else at, view))
                 while self.held_views and self.held_views[0][0] <= now:
                     self.s.sendto(self.held_views.pop(0)[1], ('127.0.0.1', LIVE_PORT))
                 return

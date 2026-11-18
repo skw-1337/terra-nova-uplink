@@ -2285,6 +2285,8 @@ func _gait_place(node: Node3D, now: int) -> void:
 	# packet. Taken from an easing it no longer gets, the co-op guest's body stayed at the height it had when he took
 	# that suit: on the ground under him in a jump, its legs and the camera moving apart)
 	st["ez"] = float(node.get_meta("ez_s", ez)) if unit_smooth and not node.has_meta("player_body") else ez
+	if node.has_meta("ez_own"):                      # (the co-op guest's own: eased with his camera, _own_body_place)
+		st["ez"] = float(node.get_meta("ez_own"))
 	if hist.is_empty() or hist[-1][1] != p2 or hist[-1][2] != ez:
 		if not hist.is_empty() and now - int(hist[-1][0]) > 120:   # moving again: from one game move before
 			hist.assign([[now - 33, hist[-1][1], hist[-1][2]]])
@@ -2575,7 +2577,7 @@ func _gait_game(node: Node3D, m: Dictionary, dt: float) -> void:
 	else:
 		var far := maxf(node.global_position.distance_to(camera.global_position), 0.5)
 		sg.detail = roundi(live_lod * (float(sg.torso) + float(sg.legtot)) / far)
-	var v2 := _unit_velocity(node, now)
+	var v2 := _own_body_vel(node) if node.has_meta("own_vh") else _unit_velocity(node, now)   # (the guest's own: as drawn)
 	var vel: Vector2 = (st["vel"] as Vector2).lerp(v2, 1.0 - exp(-dt * 30.0))
 	if v2 == Vector2.ZERO and vel.length() < 0.02:
 		vel = Vector2.ZERO
@@ -6202,6 +6204,7 @@ func _live_update() -> void:
 		# its entities once black, so a third of the way is soon enough, and a short dim (a flash) stops nothing)
 	elif pk.size() >= 32 and not current.is_empty():
 		_live_units(pk)
+		_own_body_capture()                             # (co-op guest: his own body with his camera)
 		_smooth_capture()
 		_pose_flush_all()
 		live_units_seen += 1
@@ -6998,6 +7001,11 @@ func _own_body_follow() -> void:
 	var n: Node3D = live_player_node
 	if n == null or not is_instance_valid(n):
 		return
+	if n.has_meta("own_to"):                         # (the co-op guest's own body: placed as his camera is, below)
+		for k in ["follow_off", "follow_at"]:
+			if n.has_meta(k):
+				n.remove_meta(k)
+		return
 	var off: Vector3 = (camera.position - (cam_to[0] as Vector3)) if smooth and not photo_on else Vector3.ZERO
 	if off.length() > SMOOTH_JUMP:
 		off = Vector3.ZERO
@@ -7009,6 +7017,105 @@ func _own_body_follow() -> void:
 	n.position = base + off
 	n.set_meta("follow_off", off)
 	n.set_meta("follow_at", n.position)
+
+
+# The co-op guest's own body is his: each frame it is where his camera's view puts it, eased exactly as his camera is.
+# Each view from the host gives the camera and his suit (place, height, heading) from the same picture of the game;
+# his camera goes from where it is drawn to the view's in the time the views come apart (_cam_target, _live_smooth),
+# and his body now does the same from where IT is drawn, at the same pace: between the two, the host window's own
+# relation at every frame, whatever the network does (a late view: both wait; two at once: both go on together). Its
+# legs step at the speed he is drawn moving (the last OWN_VEL ms of his frames), not at the jerky arrival of the views.
+# (Before: his place moved by the camera's easing offset, his heading and height only as views came, his legs' speed
+# from the views' arrival times. TN_COOP_OWN_BODY=0: that.) What the host sends stays the truth: only its picture eases.
+var own_body_on := OS.get_environment("TN_COOP_OWN_BODY") != "0"
+var own_node: Node3D                              # the suit eased so (its metas cleared when it is no longer his)
+var own_cam_t := -1                               # the camera's easing start the suit's last view was taken with
+const OWN_VEL := 150                              # ms of his drawn moves for his legs' speed
+const OWN_KEYS := ["own_from", "own_to", "own_drawn", "own_vh", "ez_own", "own_eye", "own_t"]
+const AIR_FROM := 0.35                            # (his entity this far over the ground: in the air)
+const AIR_SPAN := 0.4
+const AIR_HANG := 0.05
+
+
+func _own_body_mode(n: Node3D) -> bool:
+	return own_body_on and guest_win and smooth and not photo_on and n != null and is_instance_valid(n) \
+			and n.has_meta("soldier") and n.has_meta("player_body")
+
+
+# a view came (after _live_units): his suit's place in it, to be reached as the camera reaches the view's
+func _own_body_capture() -> void:
+	var n: Node3D = live_player_node
+	if own_node != null and (not is_instance_valid(own_node) or own_node != n or not _own_body_mode(n)):
+		if is_instance_valid(own_node):
+			for k in OWN_KEYS:
+				if own_node.has_meta(k):
+					own_node.remove_meta(k)
+		own_node = null
+	if not _own_body_mode(n):
+		return
+	var to := [n.get_meta("pkt", Vector2(n.position.x, n.position.z)), float(n.get_meta("ez", n.position.y)), n.rotation.y]
+	var last = n.get_meta("own_drawn", null)
+	# from where it is drawn (unless the camera jumped with this view, or the suit did), over the camera's easing; a
+	# view that changed nothing of the camera (the game turns the suit a picture after its view) eased as long from now
+	var cam_new := cam_t != own_cam_t
+	var jumped: bool = cam_new and cam_from[0] == cam_to[0] and cam_from[1] == cam_to[1] and cam_from[2] == cam_to[2]
+	var eased: bool = last != null and not jumped \
+			and (to[0] as Vector2).distance_to(last[0]) < SMOOTH_JUMP and absf(float(to[1]) - float(last[1])) < SMOOTH_JUMP
+	if last != null and not cam_new and to == n.get_meta("own_to", null):
+		return                                       # (the same again: its easing goes on)
+	n.set_meta("own_from", last if eased else to)
+	n.set_meta("own_to", to)
+	n.set_meta("own_t", cam_t if cam_new else _ticks())
+	own_cam_t = cam_t
+	own_node = n
+
+
+# every frame, before its steps (_gait_update): his suit where his camera's easing has it
+func _own_body_place() -> void:
+	var n: Node3D = own_node
+	if n == null or not is_instance_valid(n) or n != live_player_node or not n.has_meta("own_to") or not _own_body_mode(n):
+		return
+	var now := _ticks()
+	var a := clampf(float(now - int(n.get_meta("own_t", cam_t))) / sm_int, 0.0, 1.0)   # (the camera's, _live_smooth)
+	var f: Array = n.get_meta("own_from")
+	var t: Array = n.get_meta("own_to")
+	var p: Vector2 = (f[0] as Vector2).lerp(t[0], a)
+	var ez := lerpf(float(f[1]), float(t[1]), a)
+	var h := lerp_angle(float(f[2]), float(t[2]), a)
+	# in the air, under his eye as on the ground: his eye is the game's from his suit's own pose (coop_guest.py EYE_K),
+	# which rises over the suit as it goes up (0.06 at 4 units a second: his legs hung 0.53 to 0.67 under his eye in
+	# jets, the host's own 0.53 all the way). Off the ground (from AIR_FROM, fully AIR_SPAN higher) his height is his
+	# eye's less what it was on the ground, raised by AIR_HANG: the walk hangs the legs that much lower in the air, and
+	# the game lowers the host's eye as much there (0.52 over his entity standing, 0.46 flying): the host's window keeps
+	# 0.53-0.54 from his eye to his feet in both
+	n.set_meta("own_drawn", [p, ez, h])               # (the next view eased from here)
+	var o := camera.position.y - ez
+	var up := ez - TNData.height_at(current["map"], p.x, p.y) if current.has("map") else 0.0
+	var w := clampf((up - AIR_FROM) / AIR_SPAN, 0.0, 1.0)
+	if w <= 0.0 or not n.has_meta("own_eye"):
+		n.set_meta("own_eye", o)
+	else:
+		ez = lerpf(ez, camera.position.y - float(n.get_meta("own_eye")) + AIR_HANG, w)
+	n.position.x = p.x
+	n.position.z = p.y
+	n.basis = Basis(Vector3.UP, h)
+	n.set_meta("ez_own", ez)
+	var vh: Array = n.get_meta("own_vh", [])
+	if not vh.is_empty() and (p.distance_to(vh[-1][1]) > 1.0 or now - int(vh[-1][0]) > 250):
+		vh.clear()                                       # (put elsewhere, or a long pause)
+	vh.append([now, p])
+	while vh.size() > 2 and now - int(vh[1][0]) >= OWN_VEL:
+		vh.pop_front()
+	n.set_meta("own_vh", vh)
+
+
+# his speed as he is drawn moving (for his legs, _gait_game)
+func _own_body_vel(n: Node3D) -> Vector2:
+	var vh: Array = n.get_meta("own_vh", [])
+	if vh.size() < 2:
+		return Vector2.ZERO
+	var v: Vector2 = ((vh[-1][1] as Vector2) - (vh[0][1] as Vector2)) / maxf((int(vh[-1][0]) - int(vh[0][0])) / 1000.0, 0.001)
+	return v if v.length() < 20.0 else Vector2.ZERO
 
 
 func _live_smooth() -> void:
@@ -8926,6 +9033,7 @@ func _process(delta: float) -> void:
 		if photo_on:
 			_photo_update()
 		_dust_update()
+		_own_body_place()
 		_gait_update(0.0 if still else delta)
 		_own_body_follow()
 		_waypoint_update(0.0 if still else delta)

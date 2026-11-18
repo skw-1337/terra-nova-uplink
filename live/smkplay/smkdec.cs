@@ -114,8 +114,9 @@ static class SmkDec
 
     static int U32(byte[] d, int o) { return d[o] | d[o + 1] << 8 | d[o + 2] << 16 | d[o + 3] << 24; }
     static void W32(Stream s, long v) { s.WriteByte((byte)v); s.WriteByte((byte)(v >> 8)); s.WriteByte((byte)(v >> 16)); s.WriteByte((byte)(v >> 24)); }
-    // the 6-bit palette values as the VGA card shows them (DOSBox: v << 2 | v >> 4; the same as Smacker's own table)
-    static byte Six(int v) { v &= 63; return (byte)(v << 2 | v >> 4); }
+    // the 6-bit palette values as the game's screen shows them (DOSBox's DAC: v x 255 / 63, rounded; measured on the
+    // game's own picture of BRIEF30A: 11 -> 45, 49 -> 198)
+    static byte Six(int v) { v &= 63; return (byte)((v * 255 + 31) / 63); }
 
     static int Main(string[] args)
     {

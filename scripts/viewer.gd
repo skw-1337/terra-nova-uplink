@@ -6926,6 +6926,27 @@ func _cam_target(p: Vector3, y: float, pt: float) -> void:
 	cam_t = now
 
 
+# The view's own body with its camera. The co-op guest's camera is eased from one view of the host to the next
+# (smooth): his body, placed as each view comes, stepped against it (in the air, 0.1 unit a frame, 0.46 to 0.63 under
+# the eye for 0.49 to 0.53 in the host's window: his legs juddered and the view passed into them). Each frame it is
+# moved as the camera is from the view's place: the two keep the game's own distance, and move together.
+func _own_body_follow() -> void:
+	var n: Node3D = live_player_node
+	if n == null or not is_instance_valid(n):
+		return
+	var off: Vector3 = (camera.position - (cam_to[0] as Vector3)) if smooth and not photo_on else Vector3.ZERO
+	if off.length() > SMOOTH_JUMP:
+		off = Vector3.ZERO
+	var prev: Vector3 = n.get_meta("follow_off", Vector3.ZERO)
+	var at: Vector3 = n.get_meta("follow_at", Vector3(INF, INF, INF))
+	var p := n.position
+	var base := Vector3(p.x - prev.x if p.x == at.x else p.x, p.y - prev.y if p.y == at.y else p.y,
+			p.z - prev.z if p.z == at.z else p.z)        # (a component written since, by a view or the steps: as it is)
+	n.position = base + off
+	n.set_meta("follow_off", off)
+	n.set_meta("follow_at", n.position)
+
+
 func _live_smooth() -> void:
 	var now := _ticks()
 	var a := clampf(float(now - cam_t) / sm_int, 0.0, 1.0)
@@ -8834,6 +8855,7 @@ func _process(delta: float) -> void:
 			_photo_update()
 		_dust_update()
 		_gait_update(0.0 if still else delta)
+		_own_body_follow()
 		_waypoint_update(0.0 if still else delta)
 		if hud and not _photo_hides():
 			_compass_update()

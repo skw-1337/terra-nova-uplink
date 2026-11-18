@@ -34,7 +34,7 @@ static class Uplink
     // the branches checked by each repo's .github/workflows/stable.yml (main once its checks have passed, never a broken
     // push): Uplink's, TN+'s (PLAY) and TN+'s co-op build (HOST)
     const string UPLINK_BRANCH = "stable", TNPLUS_BRANCH = "stable", TNPLUS_COOP_BRANCH = "coop-stable";
-    const string DISCORD = "https://discord.gg/AHpqNeT7s";
+    const string DISCORD = "https://discord.gg/UqtEpuUZh3";
     const string GODOT_VER = "4.7.2";
     const string GODOT_URL = "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip";
     const string PY_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip";
@@ -102,6 +102,15 @@ static class Uplink
         // The keys a new installation comes with (2: freelook on F), as against one that was already there (1: on
         // Y): said once, when the settings do not say yet, so that nobody's key changes with an update
         if (Cfg("keys_gen") != "1" && Cfg("keys_gen") != "2") Set("keys_gen", had && cfg.Count > 0 ? "1" : "2");
+        // 2.7 saved gamepad = 1 for everybody (its switch showed on unless "0"): an installation made before this
+        // version gets it off once, as a new one has it (pad_gen = 2: done; switched on afterwards, it stays on)
+        if (Cfg("pad_gen") != "2")
+        {
+            bool upgrade = had && cfg.Count > 0;
+            if (upgrade) Set("gamepad", "0");
+            Set("pad_gen", "2");
+            if (upgrade) SaveCfg();
+        }
         string[] args = Environment.GetCommandLineArgs();
         if (args.Length > 2 && args[1] == "--install")    // checks: install / update only, no window (exit code 0 = ok)
         {
@@ -121,6 +130,14 @@ static class Uplink
         { Console.WriteLine(Binds()); Environment.Exit(0); }
         if (args.Length > 1 && args[1] == "--env")         // checks: what Uplink is told when it starts (the options)
         { foreach (KeyValuePair<string, string> kv in Env()) Console.WriteLine(kv.Key + "=" + kv.Value); Environment.Exit(0); }
+        if (args.Length > 1 && args[1] == "--conflicts")   // checks: the Controls page's keys and the clashes it shows
+        {
+            ControlsLoad();
+            Dictionary<string, string> cl = Conflicts();
+            foreach (Cmd c in cmds) Console.WriteLine(c.Id + "=" + KeySpec(c.Sc, c.Mods) + (cl.ContainsKey(c.Id) ? "  CLASH " + cl[c.Id] : ""));
+            Console.WriteLine("clashes " + cl.Count);
+            Environment.Exit(0);
+        }
         if (args.Length > 1 && args[1] == "--games")       // checks: every Terra Nova found
         { foreach (string d in Installs()) Console.WriteLine(Edition(d) + (IsEnglish(d) ? " EN  " : "     ") + d); Environment.Exit(0); }
         if (args.Length > 3 && args[1] == "--roundtrip")   // checks: an LG Res file read and written back
@@ -145,7 +162,7 @@ static class Uplink
         }
         Build();
         form.Shown += delegate { RefreshUi(); new Thread(CheckUpdates) { IsBackground = true }.Start(); };
-        form.FormClosing += delegate { AdoptNow(); loading = false; SaveOptions(); stopping = true; };
+        form.FormClosing += delegate { AdoptNow(); loading = false; SaveOptions(); stopping = true; quitting = true; };
         Application.Run(form);
     }
 
@@ -513,7 +530,7 @@ static class Uplink
 
         // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY); what
         // a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
-        c = Card(pg, "SQUAD", CBlue, null, 18, 268, MW - 36, 74);
+        c = Card(pg, "SQUAD", CBlue, null, 18, 252, MW - 36, 74);
         wheelTick = Row(c, "Order wheel", X, 32, 296, CBlue, save);
         wheelKeyBtn = Key(c, X + 296 - 38 - 92, 32, 92); wheelKeyBtn.Click += delegate { AskOrderKey(); };
         Btn custom = Key(c, X + 296 - 38 - 92 - 8 - 74, 32, 74);
@@ -521,9 +538,11 @@ static class Uplink
         custom.Click += delegate { ShowPage(P_WHEEL); };
         subsTick = Row(c, "Squadmates' subtitles", X + 296 + 16, 32, MW - 36 - 26 - 296 - 16, CBlue, save);
 
-        c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 376, MW - 36, 104);
+        // three columns of three rows: every name in full, each switch inside the card
+        c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 342, MW - 36, 133);
+        const int FXW = (MW - 36 - 2 * X - 2 * 16) / 3;
         for (int i = 0; i < FX.Length; i++)
-            fxTicks[i] = Row(c, FX_NAMES[i], X + 142 * (i % 4), 32 + RH * (i / 4), 134, COrange, save);
+            fxTicks[i] = Row(c, FX_NAMES[i], X + (FXW + 16) * (i % 3), 32 + RH * (i / 3), FXW, COrange, save);
     }
 
     // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed; the folder; updates; links
@@ -1659,9 +1678,6 @@ static class Uplink
             msg = s; Text = s;
             edge = c == CRed ? CRed : c == CAmber ? CAmber : CBlue;
             stays = c == CRed || c == CAmber;
-            Size sz = TextRenderer.MeasureText(GM, s, F12, new Size(S(330), 2000), TFWrap);
-            ClientSize = new Size(sz.Width + S(28), sz.Height + S(17));
-            using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), 5)) Region = new Region(p);
             Place();
             Opacity = 0.96;
             until = DateTime.Now.AddSeconds(Math.Min(12, 4 + s.Length * 0.05));
@@ -1672,8 +1688,16 @@ static class Uplink
         public void Place()
         {
             if (form == null || !form.Visible || form.WindowState == FormWindowState.Minimized) return;
-            // (under the top line of a page with a picture; over the cards' titles on the others: no switch is covered)
-            Location = form.PointToScreen(new Point(S(SB + MW - 18) - Width, S(pageNow <= 2 ? 56 : pageNow == P_CONTROLS ? 418 : 7)));
+            // Where it covers nothing: on a page with a picture, at its top right under the page's first line (Co-op:
+            // under the session's line); the pages of cards and lists are full, so there it sits in the side bar,
+            // between the pages' names and What's new, as narrow as the bar
+            bool side = pageNow > 2;
+            Size sz = TextRenderer.MeasureText(GM, msg, F12, new Size(side ? S(SB - 16 - 28) : S(330), 2000), TFWrap);
+            ClientSize = new Size(side ? S(SB - 16) : sz.Width + S(28), sz.Height + S(17));
+            using (GraphicsPath p = Round(new Rectangle(0, 0, Width, Height), 5)) Region = new Region(p);
+            Location = form.PointToScreen(side ? new Point(S(8), S(436) - Height)
+                                               : new Point(S(SB + MW - 18) - Width, S(pageNow == 1 ? 82 : 56)));
+            Invalidate();
         }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1834,6 +1858,7 @@ static class Uplink
         ContextMenuStrip m = Menu();
         m.Items.Add("Open the folder", null, delegate { Process.Start("explorer.exe", "\"" + Root + "\""); });
         m.Items.Add("Check for updates now", null, delegate {
+            if (NoUpdate) { Status("Updates are off in this folder (no_update.txt): nothing was checked.", CText); return; }
             Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); });
         m.Items.Add("Import keys from my Terra Nova Plus...", null, delegate { ImportKeys(); });
         m.Items.Add("Repair (download everything again)", null, delegate { Repair(); });
@@ -2156,9 +2181,26 @@ static class Uplink
             x = S(GameLine.Badge(e.Graphics, d, x / K, (e.Bounds.Y + e.Bounds.Height / 2f) / K) + 8);
             e.Graphics.Restore(st);
         }
-        TextRenderer.DrawText(e.Graphics, d == "" ? "Another folder... (the one that contains TNOVA)" : d, FBody,
-            new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x - 4, e.Bounds.Height), d == "" ? CSoft : sel ? Color.White : CText,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis | TextFormatFlags.NoPrefix);
+        // (the folder shortened here, "...\" in its middle, its last name kept: Windows' own path ellipsis let a long
+        // one run past the list's edge at 150 %)
+        Rectangle r = new Rectangle(x, e.Bounds.Y, e.Bounds.Right - x - S(8), e.Bounds.Height);
+        TextFormatFlags tf = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+        TextRenderer.DrawText(e.Graphics, d == "" ? "Another folder... (the one that contains TNOVA)" : FitPath(e.Graphics, d, FBody, r.Width, tf), FBody,
+            r, d == "" ? CSoft : sel ? Color.White : CText, tf | TextFormatFlags.EndEllipsis);
+    }
+
+    static string FitPath(IDeviceContext g, string path, Font f, int width, TextFormatFlags tf)
+    {
+        Func<string, bool> fits = t => TextRenderer.MeasureText(g, t, f, new Size(int.MaxValue, 100), tf).Width <= width;
+        if (fits(path)) return path;
+        int cut = path.LastIndexOf('\\');
+        string tail = cut > 0 ? path.Substring(cut) : "";
+        for (int a = (cut > 0 ? cut : path.Length) - 1; a >= 3; a--)
+        {
+            string t = path.Substring(0, a).TrimEnd('\\', ' ') + "..." + tail;
+            if (fits(t)) return t;
+        }
+        return path;                                              // (then cut at its end: EndEllipsis)
     }
 
     static void PickGame()
@@ -2423,7 +2465,7 @@ static class Uplink
         string req = Path.Combine(Comp, "play_request.txt");
         try { File.Delete(req); } catch { }
         env["TN_PLAY_REQUEST"] = req;
-        env["TN_OLDSCHOOL"] = "0";                             // ("Old school look" is the live game's: here F12 turns it on)
+        env["TN_OLDSCHOOL"] = "0";                             // ("Old school look" is the live game's: here its key turns it on)
         Process g = Run(GodotExe, "--path \"" + UplinkDir + "\" " + win + (size == "native" ? "-- --native" : ""), UplinkDir, env, true);
         string open = "Map viewer open: right mouse button to look, WASD to move, Tab for the mission list." + (editor ? " F6: the mission editor." : "");
         Status(open, CGreen);
@@ -2950,15 +2992,33 @@ static class Uplink
         }
     }
 
-    static void StopNow() { new Thread(StopAll) { IsBackground = true }.Start(); }
+    // STOP's work on a thread of its own, a foreground one: the window closed meanwhile goes at once, the process stays
+    // (with no window) until everything it started is closed. Closing the window also cuts the waits short (quitting)
+    static Thread stopper;
+    static volatile bool quitting;
+
+    static void StopNow()
+    {
+        if (stopper != null && stopper.IsAlive) return;
+        stopper = new Thread(StopAll) { IsBackground = false };
+        stopper.Start();
+    }
 
     static void StopAll()
     {
         stopping = true;
+        Log("stopping what this launcher started");
         lock (mine)
         {
             foreach (Process p in mine)
-                try { if (!p.HasExited) { p.CloseMainWindow(); if (!p.WaitForExit(1500)) p.Kill(); } } catch { }
+                try
+                {
+                    if (p.HasExited) continue;
+                    p.CloseMainWindow();
+                    for (int t = 0; t < 1500 && !quitting && !p.WaitForExit(100); t += 100) { }
+                    if (!p.HasExited) { p.Kill(); p.WaitForExit(2000); }
+                }
+                catch { }
             mine.Clear();
         }
         // and what those had started in turn: this launcher's Uplink (opened by the bridge) and its game (opened by
@@ -3234,6 +3294,7 @@ static class Uplink
             }
             else if (c.Kind == "uplink")
             {
+                if (c.Id == "oldschool" && Cfg("keys_gen") == "1") { c.DefSc = 0x58; c.DefMods = 0; }   // (see OldKey)
                 int[] k = KeyParse(c.Id == "menu" ? MenuKey() : c.Id == "order" ? OrderKey() : c.Id == "photo" ? PhotoKey() :
                     c.Id == "oldschool" ? OldKey() : c.Id == "sharp" ? SharpKey() : c.Id == "shot" ? ShotKey() : c.Id == "fps" ? FpsKey() : "");
                 c.Sc = k[0]; c.Mods = k[1];
@@ -3261,8 +3322,8 @@ static class Uplink
     // The Uplink menu's key (key_menu): F5 unless another is chosen (F10 is the game's Sensor range)
     static string MenuKey() { string k = Cfg("key_menu").ToUpperInvariant(); return KeyOk(k) && k != "" ? k : "3F"; }
 
-    // commands sharing a key (not the game's fixed keys, nor two both as they come: Uplink's F12 is the game's Mission
-    // info on purpose)
+    // commands sharing a key (not the game's fixed keys), keys as they come included: none of those share one (the old
+    // school look left F12, the game's Mission info, for \; Centre view has no key, F being the freelook's)
     static Dictionary<string, string> Conflicts()
     {
         Dictionary<string, string> o = new Dictionary<string, string>();
@@ -3270,7 +3331,7 @@ static class Uplink
         {
             if (a.Kind == "fixed" || a.Sc == 0) continue;
             foreach (Cmd b in cmds)
-                if (b != a && b.Kind != "fixed" && b.Sc == a.Sc && b.Mods == a.Mods && !(a.Sc == a.DefSc && a.Mods == a.DefMods && b.Sc == b.DefSc && b.Mods == b.DefMods))
+                if (b != a && b.Kind != "fixed" && b.Sc == a.Sc && b.Mods == a.Mods)
                     o[a.Id] = b.Name;
         }
         return o;
@@ -3331,10 +3392,14 @@ static class Uplink
             F = F11, Ink = CDim, Location = new Point(18, 440), Size = new Size(MW - 36, 16) });
         Btn reset = Key(pg, 18, 460, 170, 28, "Reset to defaults");
         reset.Click += delegate {
-            if (!Ask("Put every key back as it comes (freelook on F, Centre view without a key)?")) return;
-            foreach (Cmd c in cmds) { c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.DefSc; c.Mods = c.Id == "centre" || c.Id == "freelook" ? 0 : c.DefMods; c.Mouse = 0; c.Pad = c.PadDef; }
+            if (!Ask("Put every key back as it comes (freelook on F, the old school look on \\, Centre view without a key)?")) return;
+            foreach (Cmd c in cmds)
+            {
+                bool now = c.Id == "centre" || c.Id == "freelook" || c.Id == "oldschool";    // (as a new installation has them)
+                c.Sc = c.Id == "centre" ? 0 : c.Id == "freelook" ? 0x21 : c.Id == "oldschool" ? 0x2B : c.DefSc; c.Mods = now ? 0 : c.DefMods; c.Mouse = 0; c.Pad = c.PadDef;
+            }
             padSticks = new Dictionary<string, string>();
-            ControlsSave(); PadSave(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);
+            ControlsSave(); PadSave(); ControlsLoad(); keyList.Invalidate(); Status("Every key is as it comes.", CGreen);   // (read again: the old school look's three companions follow its key)
         };
         Btn sticks = Key(pg, 18 + 178, 460, 150, 28, "Gamepad sticks...");
         sticks.Click += delegate { using (PadSticks d = new PadSticks()) d.ShowDialog(form); };
@@ -3633,7 +3698,7 @@ static class Uplink
         {
             float x = e.X / K, y = e.Y / K;
             row = Top0 + (int)(y / RH);
-            col = x >= 254 && x < 356 ? 1 : x >= 362 && x < 450 ? 2 : x >= 456 && x < 572 ? 3 : 0;
+            col = x >= 254 && x < 356 ? 1 : x >= 362 && x < 450 ? 2 : x >= 456 && x < 562 ? 3 : 0;
         }
         protected override void OnMouseMove(MouseEventArgs e)
         {
@@ -3676,7 +3741,7 @@ static class Uplink
                 if (c.Kind == "game" || c.Kind == "tnplus")
                     DrawBox(g, new RectangleF(362, y + 2, 88, RH - 4), c.Mouse > 0 ? MOUSE_SHORT[c.Mouse] : "+", c.Mouse > 0 ? CText : CDim, hot && hotCol == 2, false);
                 if (PadOk(c))
-                    DrawBox(g, new RectangleF(456, y + 2, 116, RH - 4), c.Pad != "" ? PadName(c.Pad) : "+", pbad ? CRed : c.Pad != c.PadDef ? COrange : c.Pad != "" ? CText : CDim,
+                    DrawBox(g, new RectangleF(456, y + 2, 106, RH - 4), c.Pad != "" ? PadName(c.Pad) : "+", pbad ? CRed : c.Pad != c.PadDef ? COrange : c.Pad != "" ? CText : CDim,
                         hot && hotCol == 3, false);
             }
             if (rows.Count > Fits)                       // where in the list
@@ -3903,13 +3968,20 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ Uplink's own keys
-    // The old school look on / off (F12) and its pixel size (Shift+F12) are keys of Uplink's window, not of the game:
-    // TN+'s KEYBOARD page does not have them. A small keyboard has no F12: each can be put on another key, alone or
+    // The old school look on / off (\, see OldKey) and its pixel size (Shift with it) are keys of Uplink's window, not of
+    // the game: TN+'s KEYBOARD page does not have them. Each can be put on another key, alone or
     // with Shift, Ctrl or Alt (TerraNovaUplink.ini: key_oldschool, key_sharp = [SHIFT+][CTRL+][ALT+]scancode, as TN+
     // writes its keys; E0xx: a key of the grey block). Uplink is told when it starts (TN_KEY_OLDSCHOOL, TN_KEY_SHARP).
     static bool KeyOk(string k) { return Regex.IsMatch(k ?? "", @"^((SHIFT|CTRL|ALT)\+)*[0-9A-F]{1,4}$"); }
 
-    static string OldKey() { string k = Cfg("key_oldschool").ToUpperInvariant(); return KeyOk(k) ? k : "58"; }
+    // Its key as it comes: \ (2B, the key above Enter, or next to it on an ISO keyboard), which neither the game, nor
+    // TN+, nor Uplink's other keys use (F12 was the game's Mission info). An installation made before this version
+    // keeps F12 (keys_gen 1: nobody's key changes with an update; the Controls page shows that clash)
+    static string OldKey()
+    {
+        string k = Cfg("key_oldschool").ToUpperInvariant();
+        return KeyOk(k) && k != "" ? k : Cfg("keys_gen") == "1" ? "58" : "2B";
+    }
 
     static string SharpKey()
     {

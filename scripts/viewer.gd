@@ -3698,7 +3698,8 @@ static func _look_key() -> int:
 	return KEY_F
 
 
-# The viewer's own two keys: the old school look on / off (F12) and its pixel grid finer or coarser (Shift+F12). The
+# The viewer's own two keys: the old school look on / off (\; F12 on installations made before) and its pixel grid finer
+# or coarser (Shift with it). The
 # player picks them in the launcher (TN_KEY_OLDSCHOOL, TN_KEY_SHARP: a PC scancode in hex, after SHIFT+, CTRL+ or ALT+
 # if any, as TN+ writes its keys). The grid's not given: Shift with the look's key.
 # Two more of its own: a screenshot (TN_KEY_SHOT; not given: Ctrl with the look's key) and the frame counter on / off
@@ -3709,7 +3710,7 @@ var own_held := {}                # those that are down: their release is the vi
 static func _own_keys() -> Array:
 	var old := _own_key(OS.get_environment("TN_KEY_OLDSCHOOL"))
 	if old.is_empty():
-		old = [KEY_F12, 0]
+		old = [KEY_BACKSLASH, 0]                     # (as it comes: \, free in the game; F12 is its Mission info)
 	var sharp := _own_key(OS.get_environment("TN_KEY_SHARP"))
 	if sharp.is_empty():
 		sharp = [KEY_NONE, 0] if int(old[1]) & KEY_MASK_SHIFT else [old[0], int(old[1]) | KEY_MASK_SHIFT]

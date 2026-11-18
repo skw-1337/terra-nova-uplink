@@ -22,13 +22,13 @@ Windows may warn about an unknown app (not signed): More info, then Run anyway.
 
 ## Live mode
 
-Same moment: the original game, Uplink, and Uplink with its old school filter (`F12`).
+Same moment: the original game, Uplink, and Uplink with its old school filter (`\`).
 
 ![The game, Uplink and Uplink old school](docs/live_compare_base.jpg)
 
 The game keeps running in DOSBox, so it's still the real game you play. A small bridge reads its state about 120 times a second and Uplink draws the same scene, with the game's own cockpit on top.
 
-Click in the window to take the mouse: it looks around, the buttons fire and lock. `F` or `Pause` gives you the game's cursor (cockpit buttons, map); the freelook key you set in **Game keys** replaces `F` (an installation made before this version keeps `Y`). `F12` switches to the old school look, `Shift+F12` makes its pixels finer; both keys can be changed in the launcher (**In game**), which can also swap the crosshair for a dot or hide it. Every other key goes to the game, and so do the wheel and the extra mouse buttons you set in **Game keys**. Close Uplink to stop.
+Click in the window to take the mouse: it looks around, the buttons fire and lock. `F` or `Pause` gives you the game's cursor (cockpit buttons, map); the freelook key you set in **Game keys** replaces `F` (an installation made before this version keeps `Y`). `\` switches to the old school look, `Shift+\` makes its pixels finer (`F12` / `Shift+F12` on an installation made before this version); both keys can be changed in the launcher (**In game**), which can also swap the crosshair for a dot or hide it. Every other key goes to the game, and so do the wheel and the extra mouse buttons you set in **Game keys**. Close Uplink to stop.
 
 ## Gallery
 

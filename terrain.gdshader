@@ -187,13 +187,30 @@ vec3 cliff_tile(vec2 cell, vec2 q, vec2 dqx, vec2 dqy, float loff) {
 
 uniform float blend_width = 0.3;      // blend between two cells (share of a cell each side)
 
-// the four cells around the point blended into each other along an uneven edge (no more square tiles)
+// a cell's tile, its mean colour (its smallest level)
+vec3 cell_mean(vec2 cell) {
+	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
+	float tile = floor(texture(tilemap, (cell + 0.5) / grid_n).r * 255.0 + 0.5);
+	return textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
+}
+
+// the four cells around the point blended into each other along an uneven edge (no more square tiles), between tiles of
+// the same kind of ground only: where they differ (sand against a concrete pad, a road, a striped line) each keeps its
+// own square as the game draws it (the uneven edge ran a third of a cell into the next one: the sand spilled over the
+// concrete pads, training 2)
 vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff) {
 	vec2 qc = q - 0.5;
 	vec2 c0 = floor(qc);
 	vec2 fb = fract(qc);
-	vec2 jit = vec2(detail_noised(wp.xz * 0.7).x, detail_noised(wp.xz * 0.7 + 31.7).x) - 0.5;
-	float bw = game_colours ? blend_live : blend_width;
+	vec3 ma = cell_mean(c0);
+	vec3 mb = cell_mean(c0 + vec2(1.0, 0.0));
+	vec3 mc = cell_mean(c0 + vec2(0.0, 1.0));
+	vec3 md = cell_mean(c0 + vec2(1.0, 1.0));
+	float diff = max(max(max(distance(ma, mb), distance(mc, md)), max(distance(ma, mc), distance(mb, md))),
+			max(distance(ma, md), distance(mb, mc)));
+	float same = 1.0 - smoothstep(0.06, 0.12, diff);
+	vec2 jit = (vec2(detail_noised(wp.xz * 0.7).x, detail_noised(wp.xz * 0.7 + 31.7).x) - 0.5) * same;
+	float bw = max((game_colours ? blend_live : blend_width) * same, 0.002);
 	vec2 fw = smoothstep(0.5 - bw, 0.5 + bw, clamp(fb + jit * 0.5, 0.0, 1.0));
 	vec3 a = cell_tile(c0, q, dx, dy, loff);
 	vec3 b = cell_tile(c0 + vec2(1.0, 0.0), q, dx, dy, loff);

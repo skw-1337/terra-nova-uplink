@@ -5,7 +5,8 @@
 # key_game_<id> and mouse_<id>), Tools (Terra Nova Plus's own keys: key_<id>), Uplink (Uplink's own keys: the
 # launcher's key_<id>). The key: a PC scancode in hex (80 + the code for a key of the grey block, as TN+ writes them;
 # E0xx for Uplink's), after SHIFT+, CTRL+ or ALT+; - : none; MID, M4, M5: a mouse button (Uplink's order wheel).
-# "fixed": the game's own, which cannot be changed. Centre view comes without a key (F is the freelook's).
+# "fixed": the game's own, which cannot be changed. (mapout / mapin: TN+'s names for the game's 33 and 34, which zoom
+# the map in and out: the names shown are what the keys do in the game.) Centre view comes without a key (F is the freelook's).
 Move|fwd|Forward|11|game
 Move|back|Back|2D|game
 Move|turnl|Turn left|1E|game
@@ -52,8 +53,8 @@ Squad|o_status|Status check|ALT+1F|game
 Squad|o_target|Attack my target|ALT+14|game
 Map|recentre|Recentre map|31|game
 Map|maphud|Map to HUD|32|game
-Map|mapout|Map zoom out|33|game
-Map|mapin|Map zoom in|34|game
+Map|mapout|Map zoom in|33|game
+Map|mapin|Map zoom out|34|game
 Map|squadinfo|Squad info|43|game
 Map|sensor|Sensor range|44|game
 Map|wrange|Weapon range|57|game

@@ -2890,6 +2890,7 @@ func _oldschool_toggle() -> void:
 	if oldschool_rect != null and oldschool_key != "":
 		oldschool_rect.visible = not oldschool_rect.visible
 		_apply_look()
+		_mode_toast("Old school look: " + ("on" if oldschool_rect.visible else "off"))
 
 
 # How fine the old school's pixel grid is (Shift+F12, kept in viewer.cfg): the game's own pixels (848 x 400 over the
@@ -2927,8 +2928,7 @@ func _oldschool_sharper() -> void:
 	cfg.set_value("look", "old_sharp", old_sharp)
 	cfg.save(CFG)
 	var g := _old_grid(old_sharp)
-	_note("Old school: %s (%d x %d)" % ["the game's pixels" if old_sharp == 1 else ("the window's pixels" if
-			g == get_viewport().get_visible_rect().size else "%d x finer" % old_sharp), g.x, g.y])
+	_mode_toast("Pixels: " + ("Max" if g == get_viewport().get_visible_rect().size else "%d×" % old_sharp))
 
 
 # A line at the top of the window for a moment (a setting just changed).
@@ -3534,6 +3534,8 @@ func _hud_update() -> void:
 				hud_parts.clear()
 	if not last_pal.is_empty():
 		hud_win = Rect2i(last_pal.decode_s16(7), last_pal.decode_s16(9), last_pal.decode_s16(11), last_pal.decode_s16(13))
+		if play and not guest_win and not menu_mode and hud_win.size.y > 0:
+			_mode_toast("Full view", "full", hud_win.size.y > 300)   # (the game's full view: its 3D window down to the bottom)
 		hud_pal_img.set_data(256, 1, false, Image.FORMAT_RGB8, last_pal.slice(15, 15 + 768))
 		hud_pal.update(hud_pal_img)
 		var places := last_pal.slice(15 + 768, 15 + 768 + 16)
@@ -4485,6 +4487,8 @@ func _shot_key() -> void:
 		return
 	var path := _shot_path()
 	var dir := path.get_base_dir()
+	if mode_toast != null and mode_toast.hide_now():
+		await RenderingServer.frame_post_draw          # (the modes' notice: not in the picture)
 	var img := get_viewport().get_texture().get_image()
 	if img != null and img.save_png(path) == OK:
 		_note("Screenshot saved: " + path)
@@ -4505,6 +4509,21 @@ func _shot_path(tag := "") -> String:
 func _fps_toggle() -> void:
 	if fps_label != null:
 		fps_label.visible = not fps_label.visible
+		_mode_toast("Frame counter: " + ("on" if fps_label.visible else "off"))
+
+
+# ------------------------------------------------------------------ the modes' notice (mode_toast.gd)
+var mode_toast: Node = null
+
+
+func _mode_toast(text: String, watch_id := "", on := false, stale := false) -> void:
+	if mode_toast == null:
+		mode_toast = load("res://scripts/mode_toast.gd").new()
+		add_child(mode_toast)
+	if watch_id != "":
+		mode_toast.watch(watch_id, on, text, stale)
+	else:
+		mode_toast.show_mode(text)
 
 
 # its name on the player's keyboard (the key at that place: Y is Z on a German one)
@@ -6157,6 +6176,8 @@ func _live_units(pk: PackedByteArray) -> void:
 # The game's infrared view on or off (key I): the host's as his bridge reads it ('IRVW'), a co-op guest's his own
 # (coop_views.gd: his key, whatever the host's)
 func _ir_set(on: bool) -> void:
+	if live and play and not menu_mode:
+		_mode_toast("Infrared", "ir", on)
 	if ir_on != on:
 		ir_on = on
 		for k in mats:                              # (the suits: unlit in it, _limb_light)
@@ -6189,6 +6210,8 @@ func _sub_views(q: PackedByteArray) -> void:
 		if o + 37 > q.size():
 			break
 		var panel := q[o]
+		if panel in [5, 6, 7] and play and not guest_win:
+			_mode_toast("360 view", "360", true, true)  # (the game's 360 view: its mirrors; stale: off)
 		if not SUB_RECTS.has(panel):
 			continue
 		var sv: Dictionary = sub_views.get(panel, {})

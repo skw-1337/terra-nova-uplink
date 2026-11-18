@@ -193,9 +193,9 @@ static class Uplink
     }
 
     // ------------------------------------------------------------------ window
-    // A side bar (the five pages, What's new and Help at its foot) and one page at a time, 610 x 500. Play, Co-op and
-    // Maps lie on a picture of Uplink's own (bg_play.jpg, bg_coop.jpg, bg_maps.jpg: see LoadHero); In game and
-    // Settings are cards. Everything is drawn here (switches, lists, sliders, key buttons): no Windows control shows.
+    // A side bar (the seven pages, What's new and Help at its foot) and one page at a time, 610 x 500. Play, Co-op and
+    // Maps lie on a picture of Uplink's own (bg_play.jpg, bg_coop.jpg, bg_maps.jpg: see LoadHero); In game,
+    // Graphics and Settings are cards (Graphics' previews: see PvImage). Everything is drawn here (switches, lists, sliders, key buttons): no Windows control shows.
     static Surface[] pages;
     static Surface side;
     static Nav[] navs;
@@ -220,13 +220,14 @@ static class Uplink
     static bool loading;                                      // the options are being put on the pages: nothing is saved
     static int capValue;                                      // the frame limit (0: none)
     // Uplink's extras on top of the game's look, each on unless switched off (fx_<name> in the ini, TN_FX_<NAME> for Uplink)
-    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks" };
-    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars", "Footprints, tracks" };
-    static Switch[] fxTicks = new Switch[7];
-    static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Controls", "Settings" };
+    // (own_body: his legs and feet when he looks past the game's limit; the deeper look itself is look_down)
+    static readonly string[] FX = { "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks", "own_body" };
+    static readonly string[] FX_NAMES = { "Impact marks", "Light from shots", "Cloud shadows", "Look further down", "Unstretched cliffs", "Sharp stars", "Footprints, tracks", "Own body" };
+    static Switch[] fxTicks = new Switch[8];
+    static readonly string[] PAGES = { "Play", "Co-op", "Maps", "In game", "Graphics", "Controls", "Settings" };
     const int SB = 150, MW = 610, MH = 500;                   // the side bar's width, a page's size
-    const int P_WHEEL = 6;                                    // the order wheel's page (opened from In game)
-    const int P_CONTROLS = 4, P_SETTINGS = 5;
+    const int P_WHEEL = 7;                                    // the order wheel's page (opened from In game)
+    const int P_GRAPHICS = 4, P_CONTROLS = 5, P_SETTINGS = 6;
     // the squad's orders, by their number (as Uplink and its bridge count them: scripts\order_wheel.gd, live\orders.py)
     static readonly string[] ORDERS = { "Attack target", "Move there", "Take cover", "Retreat", "Follow me", "Hold position", "Assume formation" };
     static readonly Color CSoft = Color.FromArgb(157, 176, 169), CTape = Color.FromArgb(242, 194, 26), CTapeInk = Color.FromArgb(21, 20, 15);
@@ -259,14 +260,24 @@ static class Uplink
 
     static int pageNow;
 
+    // the page shown last time: its name, or (an ini of 2.7 or before) its number then, when Graphics was not there
+    static int PageAtStart()
+    {
+        int n = Array.IndexOf(PAGES, Cfg("page"));
+        if (n >= 0) return n;
+        string[] old = { "Play", "Co-op", "Maps", "In game", "Controls", "Settings" };
+        return int.TryParse(Cfg("page"), out n) && n >= 0 && n < old.Length ? Array.IndexOf(PAGES, old[n]) : 0;
+    }
+
     static void ShowPage(int k)
     {
         pageNow = k;
         for (int i = 0; i < pages.Length; i++) pages[i].Visible = i == k;
         int nav = k == P_WHEEL ? 3 : k;
         for (int i = 0; i < navs.Length; i++) { navs[i].On = i == nav; navs[i].Invalidate(); }
-        Set("page", nav.ToString());
+        Set("page", PAGES[nav]);                              // (by its name: up to 2.7 its number, see PageAtStart)
         if (k == 3) ReadSharp();
+        if (k == P_GRAPHICS) PreviewShow(null);
         if (k == P_SETTINGS) MusicUi();
         if (k == P_WHEEL) WheelUi();
         if (k == P_CONTROLS) { ControlsLoad(); keyList.Top0 = 0; keyList.Invalidate(); }
@@ -377,6 +388,7 @@ static class Uplink
         BuildCoop(pages[1]);
         BuildMaps(pages[2]);
         BuildInGame(pages[3]);
+        BuildGraphics(pages[P_GRAPHICS]);
         BuildControls(pages[P_CONTROLS]);
         BuildSettings(pages[P_SETTINGS]);
         BuildWheel(pages[P_WHEEL]);
@@ -404,8 +416,7 @@ static class Uplink
         ShowGame();
         if (K != 1f) { ScaleTree(form); foreach (Surface s in pages) s.Dirty(); side.Dirty(); }
         loading = false;
-        int pg0;
-        ShowPage(int.TryParse(Cfg("page"), out pg0) && pg0 >= 0 && pg0 < PAGES.Length ? pg0 : 0);
+        ShowPage(PageAtStart());
         Fit();
         // a new Uplink since the last look at What's new: said once
         if (Cfg("uplink_sha") != "" && Cfg("news_seen") != Cfg("uplink_sha") && File.Exists(NewsFile))
@@ -496,11 +507,12 @@ static class Uplink
     {
         const int CW = 281, RH = 29, X = 13, IW = CW - 26;
         EventHandler save = delegate { SaveOptions(); };
-        Surface c = Card(pg, "DISPLAY", COrange, null, 18, 16, CW, 220);
+        Surface c = Card(pg, "DISPLAY", COrange, null, 18, 16, CW, 192);
         int y = 32;
-        // the old school look (TN_OLDSCHOOL) and its key; its pixel size, kept by Uplink itself (see ReadSharp)
-        oldBox = Row(c, "Old school look", X, y, IW, COrange, save);
-        oldKeyBtn = Key(c, X + IW - 38 - 62, y, 62); oldKeyBtn.Click += delegate { AskKey(false); };
+        // the old school look's key (the look itself: a switch of the Graphics page, TN_OLDSCHOOL); its pixel size,
+        // kept by Uplink itself (see ReadSharp)
+        c.Controls.Add(new Txt { Text = "Old school look", Em = "key", Location = new Point(X, y), Size = new Size(150, RH) });
+        oldKeyBtn = Key(c, X + IW - 137, y, 137); oldKeyBtn.Click += delegate { AskKey(false); };
         y += RH;
         c.Controls.Add(new Txt { Text = "Pixels", Ink = Color.FromArgb(185, 199, 193), Location = new Point(X + 8, y), Size = new Size(46, RH) });
         sharpSeg = new Seg { Items = new[] { "1×", "2×", "3×", "Max" }, Text = "Pixels", Location = new Point(X + IW - 137, y + 3), Size = new Size(137, 23) };
@@ -508,8 +520,6 @@ static class Uplink
         c.Controls.Add(sharpSeg);
         sharpKeyBtn = Key(c, X + IW - 137 - 8 - 62, y, 62); sharpKeyBtn.Click += delegate { AskKey(true); };
         y += RH;
-        // Uplink's own colours on the cockpit: orange energy bar, light blue armour indicator (off: the game's; TN_HUD_COLOURS)
-        hudTick = Row(c, "Uplink HUD colours", X, y, IW, COrange, save); y += RH;
         c.Controls.Add(new Txt { Text = "Crosshair", Location = new Point(X, y), Size = new Size(120, RH) });      // (the look mode's)
         crossBox = new Drop { Text = "Crosshair", Items = new List<string> { "The game's", "A dot", "None" }, Location = new Point(X + IW - 104, y + 3), Size = new Size(104, 23) };
         crossBox.Changed += save;
@@ -520,7 +530,7 @@ static class Uplink
         c.Controls.Add(capBox); y += RH;
         fpsBox = Row(c, "Frame counter", X, y, IW, COrange, save);
 
-        c = Card(pg, "CONTROLS", COrange, null, 18 + CW + 12, 16, CW, 220);
+        c = Card(pg, "CONTROLS", COrange, null, 18 + CW + 12, 16, CW, 192);
         y = 32;
         // Shift with a move key: the game's Bound (a leap every four strides, its only fast pace), or a run without the
         // leap at the same pace (Uplink's bridge: TN_RUN)
@@ -537,7 +547,7 @@ static class Uplink
 
         // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY); what
         // a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
-        c = Card(pg, "SQUAD", CBlue, null, 18, 252, MW - 36, 74);
+        c = Card(pg, "SQUAD", CBlue, null, 18, 220, MW - 36, 74);
         wheelTick = Row(c, "Order wheel", X, 32, 296, CBlue, save);
         wheelKeyBtn = Key(c, X + 296 - 38 - 92, 32, 92); wheelKeyBtn.Click += delegate { AskOrderKey(); };
         Btn custom = Key(c, X + 296 - 38 - 92 - 8 - 74, 32, 74);
@@ -545,11 +555,247 @@ static class Uplink
         custom.Click += delegate { ShowPage(P_WHEEL); };
         subsTick = Row(c, "Squadmates' subtitles", X + 296 + 16, 32, MW - 36 - 26 - 296 - 16, CBlue, save);
 
-        // three columns of three rows: every name in full, each switch inside the card
-        c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 342, MW - 36, 133);
-        const int FXW = (MW - 36 - 2 * X - 2 * 16) / 3;
-        for (int i = 0; i < FX.Length; i++)
-            fxTicks[i] = Row(c, FX_NAMES[i], X + (FXW + 16) * (i % 3), 32 + RH * (i / 3), FXW, COrange, save);
+        // the look (old school, HUD colours, Uplink's extras): on the Graphics page; here the preset in use and the way there
+        igGfxCard = Card(pg, "GRAPHICS", COrange, null, 18, 306, MW - 36, 178);
+        Action<Graphics> card = igGfxCard.Look;
+        igGfxCard.Look = delegate(Graphics g) {
+            card(g);
+            int i = Array.IndexOf(PRESET_IDS, PresetNow());
+            Str(g, "Preset", F11, CDim, 13, 36);
+            Spaced(g, PRESET_NAMES[i].ToUpperInvariant(), F16b, Color.White, 13, 52, 1.2f);
+            Str(g, PRESET_LINES[i], F115, CSoft, 13, 78);
+            StrIn(g, "Old school look, HUD colours and Uplink's extras, each with a preview.", F11, CDim,
+                new RectangleF(13, 102, 236, 34), TFWrap);
+            DrawCover(g, PvImage("preset_" + (i < 4 ? PRESET_IDS[i] : "modern") + ".jpg"), new RectangleF(MW - 36 - 13 - 296, 13, 296, 152), i == 4);
+        };
+        Btn go = Key(igGfxCard, 13, 137, 140, 28, "Graphics page");
+        go.Click += delegate { ShowPage(P_GRAPHICS); };
+    }
+
+    // ---- Graphics: a preset (five tiles), the switches it sets, and a picture of what the pointer or the keyboard is
+    // on: a switch off and on at the same instant, or a preset's look. A preset picked sets the switches; a switch
+    // changed afterwards makes it Custom. Kept as gfx_preset (and told to Uplink: TN_GFX_PRESET, its Esc menu has the
+    // same five, scripts\uplink_menu.gd PRESETS); an ini without it: Custom if it holds switches of an earlier
+    // launcher (they are never changed), else a new installation, Modern.
+    static readonly string[] PRESET_IDS = { "original", "classic", "modern", "light", "custom" };
+    static readonly string[] PRESET_NAMES = { "Original", "Classic+", "Modern", "Light", "Custom" };
+    static readonly string[] PRESET_LINES = { "As in 1996", "Old look, small extras", "Everything on", "For older PCs", "Your own mix" };
+    // each preset's switches, in GFX_KEYS' order (ini keys: old_school, hud_colours, fx_<the rest>)
+    static readonly string[] GFX_KEYS = { "old_school", "hud_colours", "marks", "lights", "cloud_shadows", "look_down", "cliffs", "stars", "tracks", "own_body" };
+    static readonly int[][] PRESET_VALUES = {
+        new[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0 },      // Original: the game's look; the deeper look down stays (no body)
+        new[] { 1, 0, 1, 1, 0, 1, 0, 0, 1, 1 },      // Classic+: old school with marks, light from shots, footprints
+        new[] { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1 },      // Modern: everything
+        new[] { 0, 1, 1, 1, 0, 1, 0, 1, 0, 1 } };    // Light: the costliest off (measured: see the commit)
+    // what each switch shows in the preview: its name and one line
+    static readonly Dictionary<string, string[]> PV_TEXT = new Dictionary<string, string[]> {
+        { "old_school", new[] { "Old school look", "The game's own pixels and palette over Uplink's view." } },
+        { "hud_colours", new[] { "Uplink HUD colours", "An orange energy bar and a light blue armour indicator." } },
+        { "marks", new[] { "Impact marks", "Shots leave scorch marks where they hit." } },
+        { "lights", new[] { "Light from shots", "Gun flashes, bolts and blasts light up what is around them." } },
+        { "cloud_shadows", new[] { "Cloud shadows", "The sky's clouds cast drifting shadows on the ground." } },
+        { "look_down", new[] { "Look further down", "The view goes on down past the game's 45 degrees." } },
+        { "cliffs", new[] { "Unstretched cliffs", "Steep faces textured along the slope, not stretched tiles." } },
+        { "stars", new[] { "Sharp stars", "The stars of airless skies as sharp points at your resolution." } },
+        { "tracks", new[] { "Footprints, tracks", "Suits and mechs leave footprints, vehicles leave tracks." } },
+        { "own_body", new[] { "Own body", "Your own legs and feet when you look down." } } };
+    static PresetTile[] presetTiles = new PresetTile[5];
+    static Switch[] gfxSw = new Switch[10];                   // GFX_KEYS' switches (oldBox, hudTick, fxTicks)
+    static bool presetting;                                   // the switches set by a preset: not the player's change
+    static Surface pvCard, igGfxCard;
+    static string pvKey;                                      // what the preview shows (null: the preset in use)
+    static System.Windows.Forms.Timer pvTimer;
+    static Dictionary<Control, string> pvOf = new Dictionary<Control, string>();
+    static Dictionary<string, Image> pvImages = new Dictionary<string, Image>();
+
+    static void BuildGraphics(Surface pg)
+    {
+        const int X = 13;
+        Surface c = Card(pg, "GRAPHICS PRESET", COrange, "Point at one to see it", 18, 16, MW - 36, 106);
+        const int TW = (MW - 36 - 2 * X - 4 * 8) / 5;
+        for (int i = 0; i < 5; i++)
+        {
+            int k = i;
+            presetTiles[i] = new PresetTile { Text = PRESET_NAMES[i], Line = PRESET_LINES[i], Location = new Point(X + i * (TW + 8), 34), Size = new Size(TW, 60) };
+            presetTiles[i].Click += delegate { PickPreset(k); };
+            c.Controls.Add(presetTiles[i]);
+            Hover(presetTiles[i], "preset_" + PRESET_IDS[i]);
+        }
+        // the switches, three columns of four rows; the old school look and the HUD colours lead (the In game page
+        // keeps the old school key and its pixel size)
+        c = Card(pg, "WHAT IT SETS", COrange, "Change one: Custom", 18, 134, MW - 36, 154);
+        string[] order = { "old_school", "hud_colours", "cloud_shadows", "marks", "lights", "tracks", "look_down", "own_body", "cliffs", "stars" };
+        const int SW = (MW - 36 - 2 * X - 2 * 16) / 3;
+        EventHandler changed = delegate { GfxTouched(); SaveOptions(); };
+        for (int i = 0; i < order.Length; i++)
+        {
+            int at = Array.IndexOf(GFX_KEYS, order[i]);
+            Switch s = Row(c, PV_TEXT[order[i]][0], X + (SW + 16) * (i % 3), 32 + 29 * (i / 3), SW, COrange, changed);
+            gfxSw[at] = s;
+            Hover(s, order[i]);
+            if (order[i] == "old_school") oldBox = s;
+            else if (order[i] == "hud_colours") hudTick = s;
+            else fxTicks[Array.IndexOf(FX, order[i])] = s;
+        }
+        c.Controls.Add(new Txt { Text = "Uplink's own extras: none of them is in the game.", F = F11, Ink = CDim,
+            Location = new Point(X + SW + 16, 32 + 29 * 3), Size = new Size(2 * SW + 16, 29) });
+
+        // the preview: a picture of the switch off and on, or of the preset
+        pvCard = new Surface { Location = new Point(18, 300), Size = new Size(MW - 36, 184) };
+        pvCard.Look = PreviewLook;
+        pg.Controls.Add(pvCard);
+        pvTimer = new System.Windows.Forms.Timer { Interval = 220 };
+        pvTimer.Tick += delegate {                            // (the pointer left: what has the keyboard, else the preset)
+            pvTimer.Stop();
+            string k = null;
+            foreach (KeyValuePair<Control, string> kv in pvOf) { Drawn d = kv.Key as Drawn; if (d != null && d.KeyFocus) k = kv.Value; }
+            PreviewShow(k);
+        };
+    }
+
+    static void Hover(Control c, string key)
+    {
+        pvOf[c] = key;
+        c.MouseEnter += delegate { PreviewShow(key); };
+        c.GotFocus += delegate { PreviewShow(key); };
+        c.MouseLeave += delegate { pvTimer.Stop(); pvTimer.Start(); };
+        c.LostFocus += delegate { pvTimer.Stop(); pvTimer.Start(); };
+    }
+
+    static void PreviewShow(string key)
+    {
+        if (pvTimer != null) pvTimer.Stop();
+        if (pvCard == null || pvKey == key) return;
+        pvKey = key;
+        pvCard.Dirty();
+    }
+
+    static void PreviewLook(Graphics g)
+    {
+        float w = MW - 36, h = 184;
+        using (GraphicsPath p = Round(new Rectangle(0, 0, (int)w - 1, (int)h - 1), 7))
+        using (Brush b = new SolidBrush(CPanel))
+        using (Pen l = new Pen(CLine))
+        { g.FillPath(b, p); g.DrawPath(l, p); }
+        string key = pvKey ?? "preset_" + PresetNow();
+        RectangleF all = new RectangleF(13, 32, w - 26, h - 32 - 13);
+        if (key.StartsWith("preset_"))
+        {
+            int i = Array.IndexOf(PRESET_IDS, key.Substring(7));
+            float tw = Spaced(g, PRESET_NAMES[i].ToUpperInvariant(), F10b, COrange, 13, 11, 1.2f);
+            Str(g, PRESET_LINES[i] + (pvKey == null ? "  ·  in use" : ""), F11, CDim, 13 + tw + 10, 10);
+            DrawCover(g, PvImage("preset_" + (i < 4 ? PRESET_IDS[i] : "modern") + ".jpg"), all, i == 4);
+            if (i == 4) StrIn(g, "Your own mix: point at a switch to see what it does.", F125, CText, all, TFMid);
+            return;
+        }
+        string[] t = PV_TEXT[key];
+        float tw2 = Spaced(g, t[0].ToUpperInvariant(), F10b, COrange, 13, 11, 1.2f);
+        Str(g, t[1], F11, CDim, 13 + tw2 + 10, 10);
+        float iw = (all.Width - 10) / 2f;
+        for (int k = 0; k < 2; k++)
+        {
+            RectangleF r = new RectangleF(all.X + k * (iw + 10), all.Y, iw, all.Height);
+            DrawCover(g, PvImage(key + (k == 0 ? "_off.jpg" : "_on.jpg")), r, false);
+            string chip = k == 0 ? "OFF" : "ON";
+            float cw = Spaced(g, chip, F95b, Color.Empty, 0, 0, 1.2f) + 14;
+            using (GraphicsPath p = Round(new RectangleF(r.X + 8, r.Y + 8, cw, 18), 3))
+            using (Brush b = new SolidBrush(Color.FromArgb(214, 8, 17, 15))) g.FillPath(b, p);
+            Spaced(g, chip, F95b, k == 0 ? CSoft : COrange, r.X + 15, r.Y + 11, 1.2f);
+        }
+    }
+
+    // a picture over a place, cut to fill it (not squeezed), corners rounded; dimmed (Custom's) or "no picture"
+    static void DrawCover(Graphics g, Image img, RectangleF r, bool dim)
+    {
+        GraphicsState st = g.Save();
+        using (GraphicsPath p = Round(r, 5))
+        {
+            g.SetClip(p);
+            if (img == null)
+            {
+                using (Brush b = new SolidBrush(Color.FromArgb(10, 20, 18))) g.FillPath(b, p);
+                g.Restore(st);
+                StrIn(g, "No picture", F11, CDim, r, TFMid);
+                return;
+            }
+            float k = Math.Max(r.Width / img.Width, r.Height / img.Height), w = img.Width * k, h = img.Height * k;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            using (System.Drawing.Imaging.ImageAttributes ia = new System.Drawing.Imaging.ImageAttributes())
+            {
+                ia.SetWrapMode(WrapMode.TileFlipXY);                  // (no grey seam at the edges)
+                g.DrawImage(img, Rectangle.Round(new RectangleF(r.X + (r.Width - w) / 2f, r.Y + (r.Height - h) / 2f, w, h)), 0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
+            }
+            if (dim) using (Brush b = new SolidBrush(Color.FromArgb(170, 8, 17, 15))) g.FillPath(b, p);
+            using (Pen l = new Pen(Color.FromArgb(40, 255, 255, 255))) g.DrawPath(l, p);
+        }
+        g.Restore(st);
+    }
+
+    // the preview pictures: Uplink's own (components\uplink\launcher\previews: new pictures come with an Uplink
+    // update), else the copy built into this exe (build.bat: previews\*.jpg)
+    static Image PvImage(string name)
+    {
+        Image img;
+        if (pvImages.TryGetValue(name, out img)) return img;
+        try
+        {
+            string f = Path.Combine(Path.Combine(UplinkDir, "launcher"), Path.Combine("previews", name));
+            if (File.Exists(f)) img = Image.FromStream(new MemoryStream(File.ReadAllBytes(f)));
+        }
+        catch { }
+        try
+        {
+            Stream s = img == null ? typeof(Uplink).Assembly.GetManifestResourceStream("previews." + name) : null;
+            if (s != null) img = Image.FromStream(s);
+        }
+        catch { }
+        pvImages[name] = img;
+        return img;
+    }
+
+    static bool HadGfx()
+    {
+        if (Cfg("old_school") != "" || Cfg("hud_colours") != "") return true;
+        foreach (string f in FX) if (Cfg("fx_" + f) != "") return true;
+        return false;
+    }
+
+    // the preset in use: the one saved; none yet: Custom over an earlier launcher's switches, Modern for a new one
+    static string PresetNow()
+    {
+        string p = Cfg("gfx_preset");
+        return Array.IndexOf(PRESET_IDS, p) >= 0 ? p : HadGfx() ? "custom" : "modern";
+    }
+
+    static void PickPreset(int i)
+    {
+        Set("gfx_preset", PRESET_IDS[i]);
+        if (i < PRESET_VALUES.Length)
+        {
+            presetting = true;
+            for (int j = 0; j < GFX_KEYS.Length; j++) gfxSw[j].Checked = PRESET_VALUES[i][j] == 1;
+            presetting = false;
+        }
+        PresetUi();
+        SaveOptions();
+    }
+
+    // a switch changed by the player: the preset becomes Custom (the switches stay as they are)
+    static void GfxTouched()
+    {
+        if (loading || presetting || PresetNow() == "custom") return;
+        Set("gfx_preset", "custom");
+        PresetUi();
+    }
+
+    static void PresetUi()
+    {
+        string p = PresetNow();
+        for (int i = 0; i < presetTiles.Length; i++)
+            if (presetTiles[i] != null) { presetTiles[i].On = PRESET_IDS[i] == p; presetTiles[i].Invalidate(); }
+        if (pvCard != null && (pvKey == null || pvKey.StartsWith("preset_"))) pvCard.Dirty();
+        if (igGfxCard != null) igGfxCard.Dirty();
     }
 
     // ---- Settings: the window, the mouse, the game's keys, the tools; what is installed; the folder; updates; links
@@ -1312,6 +1558,7 @@ static class Uplink
             if (acts) Cursor = Cursors.Hand;
         }
         protected bool Cue { get { return Focused && ShowFocusCues; } }
+        public bool KeyFocus { get { return Cue; } }          // (focus reached with the keyboard)
         protected float W { get { return Width / K; } }        // (its size as at 100 %: what its drawing counts in)
         protected float H { get { return Height / K; } }
         protected Graphics Begin(PaintEventArgs e)
@@ -1457,6 +1704,33 @@ static class Uplink
             }
             Spaced(g, Stop ? "STOP" : Text, F16b, Enabled ? Color.White : CDim, 19, 17, 1.2f);
             Str(g, Stop ? "Close this session." : Desc, F115, Enabled ? CSoft : Mix(CSoft, CBack, 0.5f), 19, 44);
+        }
+    }
+
+    // a graphics preset: its name and a line under it; the one in use edged in orange, a bar on its left
+    class PresetTile : Drawn
+    {
+        public string Line;
+        public bool On;
+        public PresetTile() : base(true) { }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = Begin(e);
+            RectangleF r = new RectangleF(0.5f, 0.5f, W - 1, H - 1);
+            using (GraphicsPath p = Round(r, 6))
+            {
+                using (Brush b = new SolidBrush(On ? Color.FromArgb(30, 52, 44) : over ? Color.FromArgb(20, 38, 34) : Color.FromArgb(13, 26, 23))) g.FillPath(b, p);
+                if (On)
+                {
+                    GraphicsState st = g.Save();
+                    g.SetClip(p);
+                    using (Brush b = new SolidBrush(COrange)) g.FillRectangle(b, 0, 0, 3, H);
+                    g.Restore(st);
+                }
+                using (Pen l = new Pen(Cue ? Color.White : On ? COrange : over ? Mix(CLine, Color.White, 0.25f) : CLine, On || Cue ? 1.5f : 1f)) g.DrawPath(l, p);
+            }
+            Str(g, Text, F14s, On ? Color.White : over ? Color.White : CText, 12, 9);
+            StrIn(g, Line, F11, On ? CSoft : CDim, new RectangleF(12, 31, W - 18, H - 33), TFWrap);
         }
     }
 
@@ -2168,6 +2442,19 @@ static class Uplink
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
         subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
         for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) != "0";   // (the extras: on unless turned off)
+        // the graphics preset: none saved yet, Custom over an earlier launcher's switches (kept as they are), a new
+        // installation Modern (its values set)
+        if (Array.IndexOf(PRESET_IDS, Cfg("gfx_preset")) < 0)
+        {
+            string p = PresetNow();
+            Set("gfx_preset", p);
+            if (p != "custom")
+            {
+                int pi = Array.IndexOf(PRESET_IDS, p);
+                for (int j = 0; j < GFX_KEYS.Length; j++) gfxSw[j].Checked = PRESET_VALUES[pi][j] == 1;
+            }
+        }
+        PresetUi();
         int cap;
         capValue = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap : 0;
         FillCap();
@@ -2751,6 +3038,7 @@ static class Uplink
         env["TN_FPS"] = Cfg("fps_counter") == "1" ? "1" : "0";
         env["TN_FPS_CAP"] = Cfg("fps_cap") == "" ? "0" : Cfg("fps_cap");
         env["TN_OLDSCHOOL"] = Cfg("old_school") == "1" ? "1" : "0";
+        env["TN_GFX_PRESET"] = PresetNow();                    // (the Esc menu's Graphics page shows it)
         env["TN_NO_PAD"] = Cfg("gamepad") == "1" ? "0" : "1";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
         env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";
@@ -4012,7 +4300,7 @@ static class Uplink
         long stamp, had;
         string st;
         if (!s.TryGetValue("stamp", out st) || !long.TryParse(st, out stamp) || (long.TryParse(Cfg("game_stamp"), out had) && had >= stamp)) return false;
-        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks",
+        string[] allowed = { "mouse", "old_school", "fx_marks", "fx_lights", "fx_cloud_shadows", "fx_look_down", "fx_cliffs", "fx_stars", "fx_tracks", "fx_own_body", "gfx_preset",
             "key_menu", "key_order", "key_photo", "key_oldschool", "key_sharp", "key_shot", "key_fps",
             "hud_colours", "crosshair", "fps_cap", "fps_counter", "window",          // (its Graphics page)
             "subtitles", "invert_y", "gamepad", "shift_run", "order_wheel", "skip_intro" };   // (its Options page)

@@ -22,6 +22,9 @@ const EYE_CLEAR := 0.07                      # a leg piece whose bone passes thi
 # down (the legs fill the picture, as in other games' first person views); "old" the round pieces dressed in the
 # legs' front pictures (legs.gdshader), the eye brought over the hips
 var body_mode := "old" if OS.get_environment("TN_LOOK_DOWN_BODY") == "old" else "model"
+# his legs and feet drawn at all (TN_FX_OWN_BODY, the launcher's "Own body": on unless turned off); off, the view still
+# turns past the game's limit and shows the ground only. Set again live by the Esc menu (uplink_menu.gd)
+var body_on := OS.get_environment("TN_FX_OWN_BODY") != "0"
 const EYE_BACK := 0.0                        # (model) at the lowest: the eye this far behind its place
 const EYE_BACK_STAND := 0.0                  # ... and this much more while he stands (his feet in view)
 const EYE_DOWN := 0.0                       # ... and this much lower (< 0: higher: the knees and feet in view)
@@ -153,7 +156,7 @@ func _process(dt: float) -> void:
 			v.camera.size = size_base               # (back up: the view's own width again)
 		size_set = -1.0
 	if on or shown:
-		_legs(on)
+		_legs(on and body_on)
 	mark.visible = on
 	if on:
 		mark.queue_redraw()

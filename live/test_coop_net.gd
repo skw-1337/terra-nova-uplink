@@ -223,6 +223,28 @@ func _run() -> void:
 	check(old_host.getNumLobbyMembers(old_lobby) == 1, "guest left that lobby", "%d members" % old_host.getNumLobbyMembers(old_lobby))
 	old_host.leaveLobby(old_lobby)
 
+	# --- the same coop protocol but another Uplink release (2.9 here), and a 2.7 host (coop 3, no uplink_version)
+	for case in [["Next host", CoopNet.COOP_VERSION, "2.9.0", "friend is on Uplink 2.9"], ["2.7 host", "3", "", "friend is on Uplink 2.7"]]:
+		guest.version_msg = ""
+		var other := FakeSteam.new(net, case[0])
+		other.steamInitEx()
+		other.createLobby(1, 2)
+		var other_lobby := 0
+		for id in net.lobbies:
+			if net.lobbies[id]["owner"] == other.steam_id:
+				other_lobby = id
+		other.setLobbyData(other_lobby, "coop_version", case[1])
+		if case[2] != "":
+			other.setLobbyData(other_lobby, "uplink_version", case[2])
+		other.invite(gs.steam_id, other_lobby)
+		await until(func(): return guest.version_msg != "", 2.0)
+		check(guest.version_msg.contains(case[3]) and guest.peer == 0 and guest.lobby_id == 0, "%s: the guest is told who runs what" % case[0], guest.version_msg)
+		other.leaveLobby(other_lobby)
+	check(CoopNet.release_name("2.8.0-beta.1", "4") == "Uplink 2.8 beta" and CoopNet.release_name("2.7.1", "") == "Uplink 2.7.1"
+		and CoopNet.release_name("", "3") == "Uplink 2.7", "release names", CoopNet.release_name("2.8.0-beta.1", "4"))
+	check(CoopNet.same_release("2.8.0-beta.1", "2.8.0") and not CoopNet.same_release("2.8.0", "2.9.0") and CoopNet.same_release("", "2.9.0"),
+		"same release: major and minor")
+
 	# --- guests the host must not listen to: one that never says HELLO, one with another version
 	var old_guest := FakeSteam.new(net, "Old guest")
 	old_guest.steamInitEx()
@@ -240,6 +262,10 @@ func _run() -> void:
 		old_guest.sendP2PPacket(hs.steam_id, "R".to_ascii_buffer(), 2, CH_INPUT)
 	await wait(0.6)
 	check(host.peer_hello and not host.peer_ok, "HELLO2: host knows the guest has another version", host.label.text.replace("\n", " "))
+	old_guest.sendP2PPacket(hs.steam_id, ("HELLO" + CoopNet.COOP_VERSION + " 2.9.0").to_ascii_buffer(), 2, CH_INPUT)
+	await wait(0.4)
+	check(host.peer_hello and not host.peer_ok and host.label.text.contains("friend is on Uplink 2.9"), "HELLO with Uplink 2.9: host says who runs what",
+		host.label.text.replace("\n", " "))
 	check(got_input(75, t_old) == 0 and count(resyncs, t_old) == 0, "... and keeps its input and 'R' out of the bridge",
 		"%d input, %d R" % [got_input(75, t_old), count(resyncs, t_old)])
 	old_guest.run_callbacks()

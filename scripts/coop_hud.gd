@@ -79,6 +79,7 @@ var weapon_slot := 0
 var weapon_type := 0
 var heading := 0
 var lock_info := PackedByteArray()     # what the host's bridge says of his target: armour %, beyond range, metres
+var iff := []                          # the units the game marks with coloured brackets: [entity, palette colour]
 var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
@@ -348,8 +349,15 @@ func _process(delta: float) -> void:
 					sound.play_own(LOCK_SEEN, 64)                     # set, 0x262BBF; first drawn, 0x26A309)
 				lock_heard = lock
 				lock_info = PackedByteArray()
-				if lock != 0 and pk.size() >= 7 and pk.slice(pk.size() - 7, pk.size() - 4).get_string_from_ascii() == "LCK":
-					lock_info = pk.slice(pk.size() - 4)                   # (armour %, beyond range, metres: lock_info)
+				var end := pk.size()                                  # (the bridge's trailers, read from the end)
+				iff = []
+				if end >= 4 and pk.slice(end - 4, end - 1).get_string_from_ascii() == "IFF" and end - 4 - 3 * pk[end - 1] >= 52:
+					var n: int = pk[end - 1]
+					end -= 4 + 3 * n
+					for i in n:
+						iff.append([pk.decode_u16(end + 3 * i), pk[end + 3 * i + 2]])
+				if lock != 0 and end >= 7 and pk.slice(end - 7, end - 4).get_string_from_ascii() == "LCK":
+					lock_info = pk.slice(end - 4, end)                    # (armour %, beyond range, metres: lock_info)
 				lock_pos = Vector3(pk.decode_float(16), pk.decode_float(24) - 0.12, pk.decode_float(20))   # Godot: x, up, y
 			last = clock
 			got = true
@@ -875,6 +883,7 @@ func _draw_panel() -> void:
 		var wy := win.position.y + win.size.y * 0.8 if win.size.y > 0 else 200.0
 		_text(notice, 160.0, wy, 10.0, Color(1.0, 0.8, 0.25), true)
 	if not big_map:                                  # the big map covers the 3D view: no marks on it
+		_draw_iff()
 		_draw_lock()
 		_draw_mate()
 	if not cockpit.visible:
@@ -1073,7 +1082,6 @@ func _draw_mate() -> void:
 	if host_pos == Vector3.ZERO or cam == null:
 		return
 	var n := _drawn(host_ent)                  # the suit as drawn (20 views a second); these packets come ~twice a second
-	var top := (n.global_position if n else host_pos) + Vector3(0, 0.72, 0)   # just over his head (a suit stands ~0.6)
 	if cam.is_position_behind(top):
 		return
 	var c := _pixel(cam, top)
@@ -1164,6 +1172,28 @@ func _brackets(cx: float, cy: float, col: Color) -> void:
 		var py: float = corner[1]
 		_gline(px, py, px + corner[2] * aw, py, col)
 		_gline(px, py, px, py + corner[3] * ah, col)
+
+
+# The game's coloured brackets on the units it drew (0x26A188, after its 3D: each unit of its list of boxes but the
+# target, at the box's middle; the colours from the host's bridge, iff_block): his squadmates in their colours, the
+# others once his suit's sensors have them (an enemy in red). Only those in his 3D window
+func _draw_iff() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if iff.is_empty() or cam == null or hud_pal.size() < 256 or root.size.x < 1.0:
+		return
+	for r in iff:
+		var e: int = r[0]
+		if e == lock or e == entity:
+			continue
+		var box := _screen_box(cam, _drawn(e))
+		if box.size == Vector2.ZERO:
+			continue
+		var c := box.get_center()
+		var cx := floorf(c.x * 320.0 / root.size.x)
+		var cy := floorf(c.y * 400.0 / root.size.y)
+		if win.size != Vector2.ZERO and not win.has_point(Vector2(cx, cy)):
+			continue
+		_brackets(cx, cy, hud_pal[r[1]])
 
 
 # a unit's box on the window, as the game keeps each drawn unit's (its list 0x397CA0): its meshes' corners seen

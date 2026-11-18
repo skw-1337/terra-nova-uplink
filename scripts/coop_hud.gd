@@ -1323,6 +1323,15 @@ func _draw_mate() -> void:
 		print("coop: the host's suit (entity %d) is not drawn: %s, in the view %s, own body %s" % [host_ent,
 				"no node" if raw == null else "node visible %s, corpse %s, hidden as his own body %s" % [raw.visible, raw.has_meta("corpse"), raw.has_meta("player_body")],
 				vp.live_ents.has(host_ent) if vp and "live_ents" in vp else "?", vp.get("live_player") if vp else "?"])
+		# (a net under the viewer's own fix: the host's suit still marked as this window's body while the view's body
+		# is another one is shown again)
+		if raw != null and raw.has_meta("player_body") and vp.get("live_player") != host_ent and vp.has_method("_sub_hide"):
+			raw.remove_meta("player_body")
+			vp._sub_hide(raw, false, 1 << 18)             # (the viewer's PLAYER_LAYER)
+			raw.remove_meta("player_body")
+			if vp.get("live_player_node") == raw:
+				vp.set("live_player_node", null)
+			print("coop: the host's suit (entity %d) shown again" % host_ent)
 	var top := (n.global_position if n else host_pos) + Vector3(0, 0.72, 0)   # just over his head (a suit stands ~0.6)
 	if cam.is_position_behind(top):
 		return

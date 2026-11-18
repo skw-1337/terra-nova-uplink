@@ -6476,6 +6476,11 @@ func _live_units(pk: PackedByteArray) -> void:
 	var pn: Node3D = _live_node(body) if body >= 0 else null
 	if body != live_player or pn != live_player_node:
 		var was: Node3D = live_player_node
+		# (the old body made after the view first named it, as an extra below: its node was never kept here, and the
+		# host's suit, watched through until the guest had his own, stayed hidden as "his own body" for the whole
+		# mission: the real sessions of 2026-11-18)
+		if (was == null or not is_instance_valid(was)) and live_player >= 0:
+			was = _live_node(live_player)
 		if was != null and is_instance_valid(was) and was != pn:
 			was.remove_meta("player_body")
 			_sub_hide(was, false, PLAYER_LAYER)
@@ -6629,6 +6634,7 @@ func _live_units(pk: PackedByteArray) -> void:
 			live_extra[idx].set_meta("ct", ct)
 			if idx == body:
 				_sub_hide(live_extra[idx], true, PLAYER_LAYER)
+				live_player_node = live_extra[idx]
 		if live_extra.has(idx):
 			_live_place(live_extra[idx], e, m)
 	if draw_distance and not live_drawn.is_empty() and not free_look and not photo_on:

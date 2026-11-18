@@ -45,6 +45,10 @@ const INDICATOR := 506
 const INDICATOR_AT := Vector2i(211, 144)     # from the 3D window's corner, in the cockpit view (the host's says where)
 const CROSS := 505                            # the game's cursors: the first is the crosshair, its tip at 6, 10
 const CROSS_TIP := Vector2i(6, 10)
+# his crosshair's tip on the middle of the 3D window, where his view looks and his shots go (the bridge aims along his
+# view's middle). The game keeps its own cursor 3 rows lower and aims through it: drawn there, his crosshair sat
+# 0.4-0.5 degrees under his aim (0.25 units at 30, a suit's width at 60)
+const CROSS_ROW := 0
 
 # The small box over the map (the game's region at 146, 226, 26 x 26; its routine 0x265094): RESHLMHI.RES 535, a
 # frame for each weapon type (the game's table at 0x35A9BC)
@@ -1214,10 +1218,10 @@ func _draw_cross() -> void:
 			cross_tex = ImageTexture.create_from_image(img)
 	if cross_tex:
 		var x := int(win.position.x) + int(win.size.x) / 2 - CROSS_TIP.x
-		var y := int(win.position.y) + int(win.size.y) / 2 + 3 - CROSS_TIP.y
+		var y := int(win.position.y) + int(win.size.y) / 2 + CROSS_ROW - CROSS_TIP.y
 		panel.draw_texture_rect(cross_tex, _grect(x, y, x + cross_tex.get_width(), y + cross_tex.get_height()), false)
 		return
-	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + win.size.y * 0.5 + 2.0)
+	var cc := _g(win.position.x + win.size.x / 2.0, win.position.y + win.size.y * 0.5 + CROSS_ROW)
 	for r in [Rect2(-12, -1, 8, 2), Rect2(4, -1, 8, 2), Rect2(-1, -12, 2, 8), Rect2(-1, 4, 2, 8)]:
 		panel.draw_rect(Rect2(cc + r.position, r.size).grow(1), Color(0, 0, 0, 0.6))
 		panel.draw_rect(Rect2(cc + r.position, r.size), Color(0.85, 1.0, 0.85, 0.9))
@@ -1513,7 +1517,7 @@ func pick_units() -> PackedInt32Array:
 		return out
 	var at := Vector2(160.0, 200.0)
 	if win.size != Vector2.ZERO:
-		at = Vector2(win.position.x + win.size.x / 2.0, win.position.y + win.size.y / 2.0 + 3.0)
+		at = Vector2(win.position.x + win.size.x / 2.0, win.position.y + win.size.y / 2.0 + CROSS_ROW)
 	var kx := 320.0 / root.size.x
 	var ky := 400.0 / root.size.y
 	var found := []

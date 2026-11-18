@@ -2281,7 +2281,10 @@ func _gait_place(node: Node3D, now: int) -> void:
 	var hist: Array = st["hist"]
 	var p2: Vector2 = node.get_meta("pkt", Vector2(node.position.x, node.position.z))
 	var ez: float = node.get_meta("ez", node.position.y)
-	st["ez"] = float(node.get_meta("ez_s", ez)) if unit_smooth else ez   # (eased with its place, _unit_smooth)
+	# (eased with its place, _unit_smooth; the view's own body is not eased: its height as the camera's, from the same
+	# packet. Taken from an easing it no longer gets, the co-op guest's body stayed at the height it had when he took
+	# that suit: on the ground under him in a jump, its legs and the camera moving apart)
+	st["ez"] = float(node.get_meta("ez_s", ez)) if unit_smooth and not node.has_meta("player_body") else ez
 	if hist.is_empty() or hist[-1][1] != p2 or hist[-1][2] != ez:
 		if not hist.is_empty() and now - int(hist[-1][0]) > 120:   # moving again: from one game move before
 			hist.assign([[now - 33, hist[-1][1], hist[-1][2]]])
@@ -6411,6 +6414,7 @@ func _live_units(pk: PackedByteArray) -> void:
 	# the view's own body hides (coop: the guest's window changes suit, or watched the host's until it had one: the
 	# old body shows again). A teammate is one of the mission's units (live_nodes, placed once live_off is found),
 	# not only an extra: looked for again each time, else the guest saw his own suit around his eyes
+	body = _coop_body_guard(body)
 	var pn: Node3D = _live_node(body) if body >= 0 else null
 	if body != live_player or pn != live_player_node:
 		var was: Node3D = live_player_node
@@ -6422,6 +6426,10 @@ func _live_units(pk: PackedByteArray) -> void:
 			_sub_hide(pn, true, PLAYER_LAYER)
 		live_player = body
 		live_player_node = pn
+		if pn != null:                                 # (its height eased as another unit's: no longer, _gait_place)
+			for k in ["ez_s", "sm", "sm_done"]:
+				if pn.has_meta(k):
+					pn.remove_meta(k)
 	# the entities, 32 bytes each (index, class, type, active, x, y, z, heading), read in one go as whole numbers and
 	# as decimals. The shots and effects (classes 5 and 6: in a fight, thousands of dust particles) are not put in the
 	# table, where nothing looks for them: their places in the packet are kept, in its order (fx_at), for _live_fx
@@ -6918,6 +6926,27 @@ func _cam_target(p: Vector3, y: float, pt: float) -> void:
 	cam_t = now
 
 
+# The view's own body with its camera. The co-op guest's camera is eased from one view of the host to the next
+# (smooth): his body, placed as each view comes, stepped against it (in the air, 0.1 unit a frame, 0.46 to 0.63 under
+# the eye for 0.49 to 0.53 in the host's window: his legs juddered and the view passed into them). Each frame it is
+# moved as the camera is from the view's place: the two keep the game's own distance, and move together.
+func _own_body_follow() -> void:
+	var n: Node3D = live_player_node
+	if n == null or not is_instance_valid(n):
+		return
+	var off: Vector3 = (camera.position - (cam_to[0] as Vector3)) if smooth and not photo_on else Vector3.ZERO
+	if off.length() > SMOOTH_JUMP:
+		off = Vector3.ZERO
+	var prev: Vector3 = n.get_meta("follow_off", Vector3.ZERO)
+	var at: Vector3 = n.get_meta("follow_at", Vector3(INF, INF, INF))
+	var p := n.position
+	var base := Vector3(p.x - prev.x if p.x == at.x else p.x, p.y - prev.y if p.y == at.y else p.y,
+			p.z - prev.z if p.z == at.z else p.z)        # (a component written since, by a view or the steps: as it is)
+	n.position = base + off
+	n.set_meta("follow_off", off)
+	n.set_meta("follow_at", n.position)
+
+
 func _live_smooth() -> void:
 	var now := _ticks()
 	var a := clampf(float(now - cam_t) / sm_int, 0.0, 1.0)
@@ -7043,6 +7072,37 @@ func _unit_smooth(node: Node3D, now: int) -> void:
 			if node.has_meta("refs_eased") and not bool(node.get_meta("own", false)):
 				node.set_meta("refs", node.get_meta("refs_eased"))
 			_pose_soldier(node, d[2])
+
+
+# The co-op guest's window: the view's own body is his own suit while he has one (his HUD's entity, coop_hud.gd), never
+# the host's. (The real session of 2026-11-18 logged the host's suit hidden as the guest's own body: the guest then
+# saw his own suit drawn around his eyes, and no host.) Watching through the host's eyes (no suit of his own) or his
+# drone, the body the view gives stays.
+var coop_hud_node: Node
+var coop_guard_said := false
+
+func coop_own_suit() -> Vector2i:                 # (his suit or -1, the host's suit or -1)
+	if not guest_win:
+		return Vector2i(-1, -1)
+	if coop_hud_node == null or not is_instance_valid(coop_hud_node):
+		coop_hud_node = null
+		for n in get_children():
+			if "host_ent" in n and "entity" in n and "state" in n:
+				coop_hud_node = n
+		if coop_hud_node == null:
+			return Vector2i(-1, -1)
+	var h: int = coop_hud_node.host_ent if coop_hud_node.host_ent > 0 else -1
+	return Vector2i(coop_hud_node.entity if coop_hud_node.state == 0 and coop_hud_node.entity > 0 else -1, h)
+
+
+func _coop_body_guard(body: int) -> int:
+	var own := coop_own_suit()
+	if own.x > 0 and body > 0 and body != own.x and body == own.y:
+		if not coop_guard_said:
+			coop_guard_said = true
+			print("coop: the view's own body was the host's suit (entity %d): his own (%d) instead" % [body, own.x])
+		return own.x
+	return body
 
 
 func _live_node(idx: int) -> Node3D:
@@ -8795,6 +8855,7 @@ func _process(delta: float) -> void:
 			_photo_update()
 		_dust_update()
 		_gait_update(0.0 if still else delta)
+		_own_body_follow()
 		_waypoint_update(0.0 if still else delta)
 		if hud and not _photo_hides():
 			_compass_update()

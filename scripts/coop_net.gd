@@ -92,6 +92,7 @@ var clock := 0.0
 var mission_t := 0.0
 var msn_want := ""                   # guest: the host's mission last asked of the viewer (loading takes a while)
 var lock_btn: Button                 # host: locks the guest's column on the Mission Outfitting screen (coop_lobby.py)
+var lobby_mission := false           # host: the bridge's lobby state says the mission is on (the lock button hidden)
 var lobby_label: Label               # host: the guest's column / ready, and the lobby chat ('GLB' packets going by)
 var chat_edit: LineEdit
 var guest_locked := false
@@ -247,9 +248,11 @@ func _process(delta: float) -> void:
 				# a lost delta, a moment's beams, a HUD state (10 a second) or a sound (the bridge says the voices still
 				# playing twice a second: a lost end is caught up) breaks nothing; sent reliable, they waited behind the
 				# big reliable messages (the cockpit's picture, keyframes, decor) and came late, more and more so
-				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS" or tag == "GHD" or tag == "SND" or tag == "MUS") and pk.size() <= UNRELIABLE_MAX
+				var fast := (tag == "VDL" or tag == "VDP" or tag == "BMS" or tag == "GHD" or tag == "GMK" or tag == "SND" or tag == "MUS") and pk.size() <= UNRELIABLE_MAX
 				if tag == "GHD" and pk.size() >= 40:
 					guest_pos = Vector3(pk.decode_float(28), pk.decode_float(36) - 0.12, pk.decode_float(32))
+					if pk[3] != 0:                         # (no suit of his: destroyed, flown out in EVAC MODE, the
+						guest_pos = Vector3.ZERO           # host's view: no name over a suit that is gone)
 					guest_ent = pk.decode_u16(8)
 					guest_seen = clock
 				steam.sendP2PPacket(peer, pk, SEND_UNRELIABLE_NO_DELAY if fast else SEND_RELIABLE, CH_VIEW)
@@ -341,7 +344,7 @@ func _read(ch: int) -> void:
 					udp_out.put_packet(data)               # guest input: the bridge validates and uses it
 			elif tag == "PNO" and data.size() >= 11:
 				ping_ms = int(Time.get_ticks_msec() - data.decode_u64(3))
-			elif tag == "GHD" or tag == "GCK" or tag == "GLB" or tag == "SND" or tag == "GEQ" or tag == "MUS":   # HUD, cockpit, lobby, the game's sounds and music, his drone / A.S.F.: to coop_hud.gd
+			elif tag == "GHD" or tag == "GMK" or tag == "GCK" or tag == "GLB" or tag == "SND" or tag == "GEQ" or tag == "MUS":   # HUD, cockpit, lobby, the game's sounds and music, his drone / A.S.F.: to coop_hud.gd
 				hud_out.put_packet(data)                   # HUD packet: to coop_hud.gd as it is (not zlib)
 			elif tag == "HST":                            # where the host's game is: to host_state.gd (host_state.py)
 				if hst_out == null:
@@ -869,6 +872,9 @@ func _lobby_seen(pk: PackedByteArray) -> void:
 		return
 	var show: bool = not bool(j.get("mission", false))
 	chat_edit.visible = show
+	lobby_mission = not show                             # (the lock button belongs to the outfitting screen only:
+	if lock_btn:                                         # it stayed at the top left all through the mission)
+		lock_btn.visible = show and not (steam_box != null and steam_box.visible)
 	if not show:
 		lobby_label.text = ""
 		return
@@ -1096,7 +1102,7 @@ func _steam_buttons(on: bool) -> void:
 			add_child(steam_box)
 	steam_box.visible = on
 	if lock_btn:
-		lock_btn.visible = not on
+		lock_btn.visible = not on and not lobby_mission
 
 
 func _steam_retry() -> void:

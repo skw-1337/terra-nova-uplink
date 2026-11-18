@@ -8055,6 +8055,8 @@ const BEAM_FLASH_NEAR := 2.5                    # how near the eye (units)
 const BEAM_FLASH_LONG := 0.05                   # not a pulsar bolt's bars (0.02 long, a chain of them)
 var beam_hold := maxi(0, int(OS.get_environment("TN_BEAM_HOLD")))
 var beam_flash := []                            # [6/28 entity, beam, msec it came, drawn]
+const GUN_FLASH_ID := 0x10000                   # co-op guest: his gun's beam the bridge adds (coop_gun_flash.py), no
+                                                # entity of the game: drawn once as it comes, like the gun beam above
 
 
 func _beam_flash_note(idx: int) -> void:
@@ -8076,7 +8078,13 @@ func _beam_flashes() -> void:
 	for f in beam_flash:
 		var b: Array = f[1]
 		var cur = beams.get(f[0])
-		if cur != null and (cur[0] as Vector3) == (b[0] as Vector3) and (cur[1] as Vector3) == (b[1] as Vector3):
+		var same: bool = cur != null and (cur[0] as Vector3) == (b[0] as Vector3) and (cur[1] as Vector3) == (b[1] as Vector3)
+		if same and int(f[0]) >= GUN_FLASH_ID:
+			if not f[3] or now - int(f[2]) < beam_hold:   # (sent again while it lasts: drawn once, or held)
+				f[3] = true
+				_live_beam(-1 - keep.size(), b)
+			keep.append(f)
+		elif same:
 			f[3] = true                                 # in this view as it is (_live_beam)
 			keep.append(f)
 		elif not f[3] or now - int(f[2]) < beam_hold:

@@ -3314,6 +3314,15 @@ func _hud_setup() -> void:
 uniform sampler2D pal : filter_nearest;
 uniform vec4 energy = vec4(0.0);   // the energy bar on the game's screen: x0, y0, x1, y1 (none: zeros)
 uniform vec4 armour = vec4(0.0);   // the armour indicator
+uniform sampler2D cvd : filter_nearest;   // colour-blind mode (colour_vision.gd): a palette index's colour instead (alpha 1)
+uniform bool cvd_on = false;
+uniform vec4 cvd_box[32];          // ... only where it marks something: the outline of the game's brackets in the 3D
+uniform int cvd_boxes = 0;         // window (not what they frame: the game's own 3D pixels in the old school look),
+uniform vec4 cvd_area[4];          // the lock's lines and armour bar beside its brackets (kind 1: its green only, 2: the
+uniform int cvd_area_kind[4];      // red only, 3: both),
+uniform int cvd_areas = 0;
+uniform vec4 cvd_map = vec4(0.0);  // the map panel (its dots) and the armour indicator
+uniform vec4 cvd_arm = vec4(0.0);
 const vec3 LIT = vec3(255.0, 165.0, 40.0) / 255.0;
 const vec3 DIM = vec3(170.0, 95.0, 25.0) / 255.0;
 const vec3 BLUE = vec3(135.0, 200.0, 255.0) / 255.0;
@@ -3330,8 +3339,26 @@ void fragment() {
 			c = mix(LIT, DIM, clamp((i - 136.0) / 3.0, 0.0, 1.0));   // the "E" left of them: its two greens, 0x88 and 0x8B
 		}
 	}
+	bool own = false;
 	if (i == 132.0 && inside(p, armour)) {
 		c = BLUE;
+		own = true;
+	}
+	if (cvd_on && !own) {
+		bool mark = inside(p, cvd_map) || inside(p, cvd_arm);
+		for (int k = 0; k < cvd_areas && !mark; k++) {
+			int want = cvd_area_kind[k];
+			mark = inside(p, cvd_area[k]) && (want == 3 || (want == 1 && i == 132.0) || (want == 2 && i == 68.0));
+		}
+		for (int k = 0; k < cvd_boxes && !mark; k++) {
+			vec4 b = cvd_box[k];
+			vec2 q = floor(p);
+			mark = inside(p, b) && (q.x == b.x || q.x == b.z - 1.0 || q.y == b.y || q.y == b.w - 1.0);
+		}
+		vec4 r = texture(cvd, vec2((i + 0.5) / 256.0, 0.5));
+		if (mark && r.a > 0.5) {
+			c = r.rgb;
+		}
 	}
 	COLOR = vec4(c, t.g);
 }"""
@@ -3349,6 +3376,10 @@ void fragment() {
 	hud_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	hud_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(hud_rect)
+	cv_cues = CvCues.new()
+	hud_rect.add_child(cv_cues)
+	cv_cues.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cv_apply()
 	var ml := CanvasLayer.new()                    # the game's screen out of its 3D: over the view and the HUD
 	ml.layer = 10
 	add_child(ml)
@@ -3657,6 +3688,7 @@ func _hud_update() -> void:
 					hud_img.set_data(320, 400, false, Image.FORMAT_RG8, buf)
 					hud_tex.update(hud_img)
 					hud_version += 1
+					cv_scan()
 					if OS.has_environment("TN_DEBUG") and frame % 20 == 0:
 						print("hud image ", frame, " win ", hud_win)
 				hud_parts.clear()
@@ -3667,6 +3699,8 @@ func _hud_update() -> void:
 		hud_pal_img.set_data(256, 1, false, Image.FORMAT_RGB8, last_pal.slice(15, 15 + 768))
 		hud_pal.update(hud_pal_img)
 		var places := last_pal.slice(15 + 768, 15 + 768 + 16)
+		if places.size() == 16:
+			cv_places(places)
 		if hud_colours and places.size() == 16 and places != hud_places:
 			hud_places = places
 			var m := hud_rect.material as ShaderMaterial
@@ -3678,6 +3712,179 @@ func _hud_update() -> void:
 			hud_img.set_data(320, 400, false, Image.FORMAT_RG8, raw)
 			hud_tex.update(hud_img)
 			hud_version += 1
+			cv_scan()
+
+
+# ------------------------------------------------------------------ colour-blind mode (colour_vision.gd)
+# The game's cockpit is its own picture: the HUD's shader draws the colours that mark something (the lock's green,
+# the hostile red) in the mode's colours, only where they mark: the outline of the game's brackets in the 3D window
+# (found in each new picture: in the old school look the window also shows the game's own 3D pixels, whose reds and
+# greens stay), the lock's lines, the map panel and the armour indicator. Each hostile unit's brackets (0x26A188)
+# also get Uplink's triangle over them (CvCues), so that a shape tells it too.
+const ColourVision = preload("res://scripts/colour_vision.gd")
+const MAP_PANEL := Rect2i(112, 256, 96, 124)   # the map panel (118, 264, 84 x 108) and the training suit's 8 lower
+var cv_cues: Control
+var cv_arm := Vector4.ZERO
+
+
+class CvCues extends Control:
+	var cues := PackedVector2Array()     # the triangles' tips, in the game's 320 x 400 screen
+	var col := Color.MAGENTA
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _draw() -> void:
+		var k := (get_parent() as Control).size / Vector2(320.0, 400.0)     # (over the whole game's screen)
+		for c in cues:
+			ColourVision.foe_cue(self, c.x + 0.5, c.y, k, col)
+
+
+# the mode as it is now (at the start, and from the Esc menu)
+func cv_apply() -> void:
+	if hud_rect == null:
+		return
+	var m := hud_rect.material as ShaderMaterial
+	m.set_shader_parameter("cvd", ImageTexture.create_from_image(ColourVision.table_image()))
+	m.set_shader_parameter("cvd_on", ColourVision.on())
+	m.set_shader_parameter("cvd_map", Vector4(MAP_PANEL.position.x, MAP_PANEL.position.y, MAP_PANEL.end.x, MAP_PANEL.end.y))
+	m.set_shader_parameter("cvd_arm", cv_arm)
+	m.set_shader_parameter("cvd_boxes", 0)
+	m.set_shader_parameter("cvd_areas", 0)
+	if cv_cues != null:
+		cv_cues.col = ColourVision.foe_colour()
+		cv_cues.cues = PackedVector2Array()
+		cv_cues.queue_redraw()
+	cv_scan()
+
+
+# the bridge's places (with the palette): the armour indicator's rectangle
+func cv_places(places: PackedByteArray) -> void:
+	var a := Vector4(places.decode_s16(8), places.decode_s16(10), places.decode_s16(12), places.decode_s16(14))
+	if a != cv_arm:
+		cv_arm = a
+		(hud_rect.material as ShaderMaterial).set_shader_parameter("cvd_arm", a)
+
+
+# a new picture of the game: the hostile units' brackets in its 3D window (the game's red, 0x26A380: 11 x 18 pixels
+# of its 400-row screen, corners of 2 or more); the lock's (its green: sized to the unit, found around where the
+# locked unit is), its lines beside them (0x26A7C8: red, from 12 to the right of its middle) and its armour bar under
+func cv_scan() -> void:
+	if cv_cues == null or hud_img == null:
+		return
+	var m := hud_rect.material as ShaderMaterial
+	if not ColourVision.on():
+		if not cv_cues.cues.is_empty():
+			cv_cues.cues = PackedVector2Array()
+			cv_cues.queue_redraw()
+		return
+	var w := Rect2i(hud_win) if hud_win.size.y > 0 else Rect2i(11, 42, 298, 199)
+	var d := hud_img.get_data()
+	var boxes := PackedVector4Array()
+	var areas := PackedVector4Array()
+	var kinds := PackedInt32Array()
+	var cues := PackedVector2Array()
+	for b in _cv_brackets(d, w, ColourVision.FOE):
+		boxes.append(b)
+		cues.append(Vector2(b.x + 5, b.w - 20))
+	var lb := _cv_lock_box(d, w)
+	if lb.size.x > 0:
+		boxes.append(Vector4(lb.position.x, lb.position.y, lb.end.x, lb.end.y))
+		var cy := lb.get_center().y
+		areas.append(Vector4(lb.end.x + 2, lb.position.y - 6, mini(lb.end.x + 100, 320), mini(lb.end.y + 100, w.end.y)))
+		kinds.append(2)                                                                          # its lines (red)
+		areas.append(Vector4(lb.position.x - 4, lb.end.y + 1, lb.end.x + 4, lb.end.y + 8))
+		kinds.append(3)                                                                          # its armour bar
+	m.set_shader_parameter("cvd_box", boxes)
+	m.set_shader_parameter("cvd_boxes", boxes.size())
+	m.set_shader_parameter("cvd_area", areas)
+	m.set_shader_parameter("cvd_area_kind", kinds)
+	m.set_shader_parameter("cvd_areas", areas.size())
+	if cues != cv_cues.cues:
+		cv_cues.cues = cues
+		cv_cues.queue_redraw()
+
+
+# the lock's brackets: the game's green (0x84) around where the unit the game locked is on its screen, as a
+# rectangle (none: size 0)
+func _cv_lock_box(d: PackedByteArray, w: Rect2i) -> Rect2i:
+	var lk := int(order_lock)
+	if lk <= 0 or not live_ents.has(lk) or camera == null:
+		return Rect2i()
+	var e = live_ents[lk]
+	var at := Vector3(e[3], e[5] + 0.2, e[4])
+	if camera.is_position_behind(at):
+		return Rect2i()
+	var c := _order_pixel(at) / get_viewport().get_visible_rect().size * Vector2(320.0, 400.0)
+	var x0 := clampi(int(c.x) - 26, w.position.x, w.end.x - 1)
+	var x1 := clampi(int(c.x) + 27, w.position.x, w.end.x)
+	var y0 := clampi(int(c.y) - 34, w.position.y, w.end.y - 1)
+	var y1 := clampi(int(c.y) + 35, w.position.y, w.end.y)
+	var lo := Vector2i(9999, 9999)
+	var hi := Vector2i(-1, -1)
+	var n := 0
+	for y in range(y0, y1):
+		var o := 2 * (320 * y + x0)
+		for x in range(x0, x1):
+			if d[o] == ColourVision.LOCK and d[o + 1] >= 128:
+				lo = Vector2i(mini(lo.x, x), mini(lo.y, y))
+				hi = Vector2i(maxi(hi.x, x), maxi(hi.y, y))
+				n += 1
+			o += 2
+	if n < 6 or hi.x - lo.x < 4 or hi.y - lo.y < 6:
+		return Rect2i()
+	return Rect2i(lo, hi - lo + Vector2i.ONE)
+
+
+# the game's brackets of palette colour col in the 3D window w (d: the picture's index, alpha pairs), as rectangles.
+# The bridge leaves out a pixel of them here and there (and two brackets can overlap), so each corner is scored: two
+# upright arms 10 apart, 3 of their first 4 pixels there, two more about 17 rows lower, nothing between them halfway
+# down nor between the top arms (what a unit's own pixels in the old school look hardly ever do)
+func _cv_brackets(d: PackedByteArray, w: Rect2i, col: int) -> PackedVector4Array:
+	var out := PackedVector4Array()
+	var from := 2 * 320 * maxi(w.position.y, 1)
+	var stop := 2 * 320 * mini(w.end.y, 400 - 19)
+	while out.size() < 32:
+		var at := d.find(col, from)
+		if at < 0 or at >= stop:
+			break
+		from = at + 1
+		if at & 1 or d[at + 1] < 128:                      # (an index, opaque)
+			continue
+		var x := (at >> 1) % 320
+		var y := (at >> 1) / 320
+		if x < w.position.x or x + 10 >= w.end.x:
+			continue
+		var seen := false                                  # (already found from a pixel above or beside)
+		for b in out:
+			seen = seen or (absf(b.x - x) <= 2.0 and absf(b.y - y) <= 3.0)
+		if seen:
+			continue
+		var o := at
+		if _cv_run(d, o, col, 0, 4) < 3 or _cv_run(d, o + 20, col, 0, 4) < 3:
+			continue
+		if _cv_run(d, o + 6, col, 0, 1) + _cv_run(d, o + 8, col, 0, 1) + _cv_run(d, o + 10, col, 0, 1) + _cv_run(d, o + 12, col, 0, 1) > 1:
+			continue
+		if _cv_run(d, o, col, 6, 5) > 1 or _cv_run(d, o + 20, col, 6, 5) > 1:
+			continue
+		var bot := -1
+		for r in range(18, 12, -1):
+			if _cv_run(d, o, col, r - 3, 4) >= 3 and _cv_run(d, o + 20, col, r - 3, 4) >= 3 and d[o + r * 640] == col:
+				bot = r
+				break
+		if bot > 0:
+			out.append(Vector4(x, y, x + 11, y + bot + 1))
+	return out
+
+
+# how many of the n pixels from row r down (under byte offset o, in the same column) have colour col
+func _cv_run(d: PackedByteArray, o: int, col: int, r: int, n: int) -> int:
+	var k := 0
+	for i in range(r, r + n):
+		var q := o + i * 640
+		if q >= 0 and q < d.size() and d[q] == col:
+			k += 1
+	return k
 
 
 # The row of the game's 320 x 400 screen the view looks at: the middle of its 3D window. The game projects about
@@ -4595,6 +4802,9 @@ const Subtitles = preload("res://scripts/subtitles.gd")
 const SUBS_MIN_MS := 1500                # a line stays at least that long (a one-word answer lasts half a second)
 const SUBS_LATE_MS := 450                # no news of a clip for that long: it is over
 var subs_on := OS.get_environment("TN_SUBTITLES") == "1"
+# their size (the launcher's Settings > Accessibility, the Esc menu's: TN_SUBTITLE_SIZE 0 Normal, 1 Large, 2 Larger)
+const SUBS_SIZES := [1.0, 1.3, 1.6]
+var subs_size := clampi(OS.get_environment("TN_SUBTITLE_SIZE").to_int(), 0, 2)
 var subs := {}                           # squadmate (1-3) -> {n, pilot, text, since, seen, playing, ms, clip, event}
 var subs_view: Subtitles
 
@@ -4645,6 +4855,7 @@ func _subs_update() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	var v := subs_view
 	v.k = vs.y / 1080.0
+	v.big = SUBS_SIZES[clampi(subs_size, 0, 2)]
 	# at the bottom of the game's 3D window (its cockpit's dashboard rises in the middle), far under the crosshair
 	var win := Rect2(hud_win) if hud_win.size.y > 0 else Rect2(11, 42, 298, 199)
 	v.foot = Vector2((win.position.x + win.size.x * 0.5) / 320.0 * vs.x, (win.position.y + win.size.y * 0.89) / 400.0 * vs.y).round()

@@ -14,6 +14,7 @@ extends CanvasLayer
 
 const LGRes = preload("res://scripts/lgres.gd")
 const TNObjects = preload("res://scripts/tn_objects.gd")
+const ColourVision = preload("res://scripts/colour_vision.gd")   # colour-blind mode: the colours that mark something
 # the WEAPON panel's picture for each weapon type: the game's table at 0x35B27A (RESHLMHI.RES, 82 x 104-106, RLE),
 # drawn from the guest's own game files in the game's palette (the cockpit packet's)
 const WEAPON_PIC := [515, 516, 518, 507, 513, 508, 509, 511, 514, 510, 512, 519, 515, 517, 517, 520, 521, 522]
@@ -440,7 +441,7 @@ func _update() -> void:
 	if state != 0:
 		return
 	var f := clampf(float(armour) / float(armour_max), 0.0, 1.0)
-	var col: Color = ok_col if f > 0.5 else (warn_col if f > 0.25 else bad_col)
+	var col: Color = ColourVision.led(0, ok_col) if f > 0.5 else (ColourVision.led(1, warn_col) if f > 0.25 else ColourVision.led(2, bad_col))
 	armour_label.text = "ARMOUR %d%%     ENERGY %d%%" % [int(round(f * 100.0)), energy]
 	armour_label.add_theme_color_override("font_color", col)
 	bar_fill.size.x = 200.0 * f
@@ -706,7 +707,7 @@ func _map_image(size: Vector2i, step: float, centre: Vector2, nbit: int) -> Arra
 			break
 	for m in map_marks:
 		var d: PackedByteArray = m[2]
-		var c: Color = pal[m[1]] if not pal.is_empty() else Color.WHITE
+		var c: Color = ColourVision.idx(pal, m[1]) if not pal.is_empty() else Color.WHITE
 		var kind: int = m[0]
 		if kind == M_NOTEZ:                                  # zoom bits, kind, then the note as an older host sends it
 			if d.size() < 2 or not (d[0] & (1 << nbit)):
@@ -905,6 +906,12 @@ func _weapon_pic(t: int) -> Texture2D:
 
 
 # the host: his Steam name and avatar in the COMM panel (coop_net.gd; "Host" and no picture in local coop)
+# the colour-blind mode changed (the Esc menu): what was drawn in the old colours is drawn again
+func cv_changed() -> void:
+	indicator_tex.clear()
+	map_dirty = true
+
+
 func set_mate(mate: String, face: Image) -> void:
 	mate_name = mate
 	if face:
@@ -1159,14 +1166,14 @@ func _draw_comm_row(i: int, who: Array, o: Vector2) -> void:
 	for c in [[3, 0x82], [2, 0x4D], [1, 0x41], [0, 0x25]]:
 		var k := cats.count(c[0])
 		if k > 0:
-			panel.draw_rect(_grect(x0 + floorf(acc), o.y + 3.0, x0 + 10.0, o.y + 5.0), hud_pal[c[1]])
+			panel.draw_rect(_grect(x0 + floorf(acc), o.y + 3.0, x0 + 10.0, o.y + 5.0), ColourVision.idx(hud_pal, c[1]))
 			acc += k * 2.5
 	var hp: int = squad_health[i] if i < squad_health.size() and squad_health[i] <= 100 else 100
 	var n := 10 * hp / 100
 	if hp > 0 and n < 1:
 		n = 1
 	if n > 0:
-		panel.draw_rect(_grect(x0, o.y + 7.0, x0 + n, o.y + 8.0), hud_pal[0x41 if hp < 50 else (0x4D if hp < 90 else 0x82)])
+		panel.draw_rect(_grect(x0, o.y + 7.0, x0 + n, o.y + 8.0), ColourVision.idx(hud_pal, 0x41 if hp < 50 else (0x4D if hp < 90 else 0x82)))
 
 
 # the COMM panel's "ENTIRE SQUAD" box (0x26cec9, when the squad has two at least): the panel's region from row 85 to
@@ -1249,7 +1256,7 @@ func indicator_texture(lv5: PackedByteArray, own: bool) -> Texture2D:
 					var part := mini((c - 0xB0) >> 4, 4)
 					var lv := mini(lv5[part], 6)
 					on = lv > 0 and (part == 4 or (c & 15) >= 6 - lv)
-					col = (ARMOUR_LIT if own else hud_pal[0x84]) if lv >= 5 else hud_pal[ARMOUR_WARN[lv]]
+					col = (ARMOUR_LIT if own else ColourVision.idx(hud_pal, 0x84)) if lv >= 5 else ColourVision.idx(hud_pal, ARMOUR_WARN[lv])
 				rgba[4 * p] = col.r8
 				rgba[4 * p + 1] = col.g8
 				rgba[4 * p + 2] = col.b8
@@ -1334,8 +1341,8 @@ func _draw_lock() -> void:
 		c = box.get_center()
 	var cx := floorf(c.x * 320.0 / root.size.x)
 	var cy := floorf(c.y * 400.0 / root.size.y)
-	var green: Color = hud_pal[0x84]
-	var red: Color = hud_pal[0x44]
+	var green: Color = ColourVision.idx(hud_pal, 0x84)
+	var red: Color = ColourVision.idx(hud_pal, 0x44)
 	var white: Color = hud_pal[0x1D]
 	_brackets(cx, cy, green)
 	# the armour bar
@@ -1397,7 +1404,9 @@ func _draw_iff() -> void:
 		var cy := floorf(c.y * 400.0 / root.size.y)
 		if win.size != Vector2.ZERO and not win.has_point(Vector2(cx, cy)):
 			continue
-		_brackets(cx, cy, hud_pal[r[1]])
+		_brackets(cx, cy, ColourVision.idx(hud_pal, r[1]))
+		if ColourVision.on() and ColourVision.is_foe(r[1]):
+			ColourVision.foe_cue(panel, cx + 0.5, cy - 11.0, root.size / Vector2(320.0, 400.0), ColourVision.foe_colour())
 
 
 # the lock light, from his game files (the standard, heavy and scout cockpits have the same pictures)

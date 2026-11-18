@@ -535,15 +535,17 @@ static class Uplink
         c.Controls.Add(new Txt { Text = "Screenshot", Em = "to Pictures", Location = new Point(X, y), Size = new Size(140, RH) });
         shotKeyBtn = Key(c, X + IW - 104, y, 104); shotKeyBtn.Click += delegate { AskShotKey(); };
 
-        // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY); what
-        // a squadmate says, written under the crosshair while he speaks (off unless asked; TN_SUBTITLES)
+        // squad orders on one button, held: Uplink's order wheel (off unless asked; TN_ORDER_WHEEL, TN_ORDER_KEY). The
+        // squadmates' subtitles are on the Settings page (Accessibility)
         c = Card(pg, "SQUAD", CBlue, null, 18, 252, MW - 36, 74);
         wheelTick = Row(c, "Order wheel", X, 32, 296, CBlue, save);
         wheelKeyBtn = Key(c, X + 296 - 38 - 92, 32, 92); wheelKeyBtn.Click += delegate { AskOrderKey(); };
         Btn custom = Key(c, X + 296 - 38 - 92 - 8 - 74, 32, 74);
         custom.Text = "Customise"; custom.Line = CBlue; custom.Ink = Color.FromArgb(156, 196, 255);
         custom.Click += delegate { ShowPage(P_WHEEL); };
-        subsTick = Row(c, "Squadmates' subtitles", X + 296 + 16, 32, MW - 36 - 26 - 296 - 16, CBlue, save);
+        Link subsLink = new Link { Text = "Subtitles: Settings > Accessibility", Ink = CBlue, Location = new Point(X + 296 + 26, 37), Size = new Size(230, 18) };
+        subsLink.Click += delegate { ShowPage(P_SETTINGS); ScrollTo(accCard); };
+        c.Controls.Add(subsLink);
 
         // three columns of three rows: every name in full, each switch inside the card
         c = Card(pg, "EXTRAS", COrange, "Uplink's own, not in the game", 18, 342, MW - 36, 133);
@@ -607,7 +609,9 @@ static class Uplink
         ToolTip tip = new ToolTip { AutoPopDelay = 12000 };
         foreach (Control t in new Control[] { aweLed, aweBtn, aweUse }) tip.SetToolTip(t, AWE_TIP);
 
-        c = Card(pg, "UPDATES", COrange, null, 18, 360, CW, 124);
+        int ay = BuildAccessibility(pg, 360) + 12;
+
+        c = Card(pg, "UPDATES", COrange, null, 18, ay, CW, 124);
         verLabel = new LedLine { Text = "Uplink " + VERSION, Location = new Point(X, 30), Size = new Size(IW, 27) };
         c.Controls.Add(verLabel);
         c.Controls.Add(new Txt { Text = "Looked for at each start and each game.", F = F115, Ink = CDim, Location = new Point(X, 54), Size = new Size(IW, 24) });
@@ -615,11 +619,113 @@ static class Uplink
         checkBtn.Click += delegate { Background(delegate { Install(Mode.Play); Status("Up to date.", CGreen); CheckUpdates(); }); };
         Key(c, X + 123 + 9, 84, 123, 28, "What's new").Click += delegate { WhatsNew(); };
 
-        c = Card(pg, "COMMUNITY", CBlue, null, 18 + CW + 12, 360, CW, 124);
+        c = Card(pg, "COMMUNITY", CBlue, null, 18 + CW + 12, ay, CW, 124);
         c.Controls.Add(new Txt { Text = "Questions, co-op partners, bug reports.", F = F115, Ink = CDim, Location = new Point(X, 32), Size = new Size(IW, RH) });
         Key(c, X, 84, 79, 28, "Discord").Click += delegate { Open(DISCORD); };
         Key(c, X + 88, 84, 79, 28, "GitHub").Click += delegate { Open("https://github.com/" + UPLINK_REPO); };
         Key(c, X + 176, 84, 79, 28, "Report a bug").Click += delegate { Report(); };
+        ScrollPage(pg);
+    }
+
+    // ---- Settings > ACCESSIBILITY: the squadmates' subtitles (TN_SUBTITLES; their radio lines, under the crosshair),
+    // their size (TN_SUBTITLE_SIZE 0-2: Normal, Large, Larger) and the colour-blind mode (TN_COLOUR_VISION: protan,
+    // deutan, tritan; none: off), Uplink's colour_vision.gd. All off / Normal unless asked for. The same in Uplink's
+    // Esc menu (Accessibility), at once there, taken over from viewer.cfg as its other settings (AdoptAccessibility).
+    static Seg subSizeSeg;
+    static Surface accCard;
+    static Drop cvBox;
+    static Txt cvNote;
+    static readonly string[] CV_MODES = { "", "protan", "deutan", "tritan" };
+    static readonly string[] CV_NAMES = { "Off", "Protanopia", "Deuteranopia", "Tritanopia" };
+    static readonly string[] CV_NOTES = {
+        "Uplink's marks in the game's colours.",
+        "Red-green (red weak): target green turns cyan, hostile red raspberry, a triangle over hostiles.",
+        "Red-green (green weak): target green turns cyan, hostile red magenta, a triangle over hostiles.",
+        "Blue-yellow: target green turns yellow-green, a triangle over hostile units." };
+
+    // the card at y on the Settings page; returns its bottom
+    static int BuildAccessibility(Surface pg, int y)
+    {
+        const int X = 13, RH = 29, H = 122;
+        EventHandler save = delegate { SaveOptions(); };
+        Surface c = accCard = Card(pg, "ACCESSIBILITY", CBlue, null, 18, y, MW - 36, H);
+        subsTick = Row(c, "Squadmates' subtitles", X, 32, 262, CBlue, save);
+        c.Controls.Add(new Txt { Text = "Subtitle size", Location = new Point(X + 262 + 22, 32), Size = new Size(88, RH) });
+        subSizeSeg = new Seg { Items = new[] { "Normal", "Large", "Larger" }, Text = "Subtitle size", Location = new Point(MW - 36 - 13 - 168, 35), Size = new Size(168, 23) };
+        subSizeSeg.Changed += save;
+        c.Controls.Add(subSizeSeg);
+        c.Controls.Add(new Txt { Text = "Colour-blind mode", Location = new Point(X, 32 + RH), Size = new Size(160, RH) });
+        cvBox = new Drop { Text = "Colour-blind mode", Items = new List<string>(CV_NAMES), Location = new Point(MW - 36 - 13 - 168, 35 + RH), Size = new Size(168, 23) };
+        cvBox.Changed += delegate { CvNote(); SaveOptions(); };
+        c.Controls.Add(cvBox);
+        cvNote = new Txt { Text = CV_NOTES[0], F = F11, Ink = CDim, Location = new Point(X, 32 + 2 * RH + 2), Size = new Size(MW - 36 - 26, 20) };
+        c.Controls.Add(cvNote);
+        return y + H;
+    }
+
+    static void CvNote() { cvNote.Text = CV_NOTES[Math.Max(0, cvBox.Selected)]; cvNote.Invalidate(); }
+
+    static void AccessLoad()
+    {
+        subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
+        int z;
+        subSizeSeg.Selected = int.TryParse(Cfg("subtitle_size"), out z) ? Math.Max(0, Math.Min(2, z)) : 0;
+        cvBox.Selected = Math.Max(0, Array.IndexOf(CV_MODES, Cfg("colour_vision")));
+        CvNote();
+    }
+
+    static void AccessSave()
+    {
+        Set("subtitles", subsTick.Checked ? "1" : "0");
+        Set("subtitle_size", subSizeSeg.Selected.ToString());
+        Set("colour_vision", CV_MODES[Math.Max(0, cvBox.Selected)]);
+    }
+
+    static void AccessEnv(Dictionary<string, string> env)
+    {
+        env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";
+        env["TN_SUBTITLE_SIZE"] = Cfg("subtitle_size") == "" ? "0" : Cfg("subtitle_size");
+        env["TN_COLOUR_VISION"] = Cfg("colour_vision");
+    }
+
+    // the settings of Uplink's Esc menu (Accessibility), as AdoptGameSettings takes the others
+    static void AdoptAccessibility(Dictionary<string, string> s)
+    {
+        string v;
+        if (s.TryGetValue("subtitle_size", out v) && (v == "0" || v == "1" || v == "2")) Set("subtitle_size", v);
+        if (s.TryGetValue("colour_vision", out v) && Array.IndexOf(CV_MODES, v) >= 0) Set("colour_vision", v);
+    }
+
+    // a card of a page that scrolls (ScrollPage) brought into view
+    static void ScrollTo(Control card)
+    {
+        ScrollableControl host = card != null && card.Parent != null ? card.Parent.Parent as ScrollableControl : null;
+        if (host != null) { host.ScrollControlIntoView(card); host.Invalidate(true); }
+    }
+
+    // a page taller than the window: its cards in a panel that scrolls (the mouse wheel, the bar on the right); the
+    // cards keep their places, the bar takes no width from them
+    static void ScrollPage(Surface pg)
+    {
+        int bottom = 0;
+        foreach (Control k in pg.Controls) bottom = Math.Max(bottom, k.Bottom);
+        if (bottom + 16 <= MH) return;
+        Panel host = new Panel { Location = new Point(0, 0), Size = new Size(MW, MH), BackColor = CBack };
+        Surface inner = new Surface { Location = new Point(0, 0), Size = new Size(MW - 18, bottom + 16) };
+        inner.Look = delegate(Graphics g) { g.Clear(CBack); };
+        Control[] all = new Control[pg.Controls.Count];
+        pg.Controls.CopyTo(all, 0);
+        foreach (Control k in all) { pg.Controls.Remove(k); inner.Controls.Add(k); }
+        host.Controls.Add(inner);
+        host.AutoScroll = false;
+        host.HorizontalScroll.Enabled = false;
+        host.HorizontalScroll.Visible = false;
+        host.HorizontalScroll.Maximum = 0;
+        host.AutoScroll = true;
+        host.Scroll += delegate { host.Invalidate(true); };
+        host.MouseWheel += delegate { host.Invalidate(true); };
+        pg.Controls.Add(host);
+        try { SetWindowTheme(host.Handle, "DarkMode_Explorer", null); } catch { }
     }
 
     static void Open(string url) { try { Process.Start(url); } catch { } }
@@ -2166,7 +2272,7 @@ static class Uplink
         introBox.Checked = Cfg("skip_intro") == "1";
         oldBox.Checked = Cfg("old_school") == "1";          // off unless the player turned it on (2.8: new installs start modern)
         wheelTick.Checked = Cfg("order_wheel") == "1";           // (off unless asked for)
-        subsTick.Checked = Cfg("subtitles") == "1";              // (off unless asked for)
+        AccessLoad();
         for (int i = 0; i < FX.Length; i++) fxTicks[i].Checked = Cfg("fx_" + FX[i]) != "0";   // (the extras: on unless turned off)
         int cap;
         capValue = int.TryParse(Cfg("fps_cap"), out cap) && cap > 0 ? cap : 0;
@@ -2195,7 +2301,7 @@ static class Uplink
         Set("skip_intro", introBox.Checked ? "1" : "0");
         Set("old_school", oldBox.Checked ? "1" : "0");
         Set("order_wheel", wheelTick.Checked ? "1" : "0");
-        Set("subtitles", subsTick.Checked ? "1" : "0");
+        AccessSave();
         for (int i = 0; i < FX.Length; i++) Set("fx_" + FX[i], fxTicks[i].Checked ? "1" : "0");
         Set("fps_cap", capValue > 0 ? Math.Max(20, Math.Min(1000, capValue)).ToString() : "0");
         Set("gamepad", padBox.Checked ? "1" : "0");
@@ -2753,7 +2859,7 @@ static class Uplink
         env["TN_OLDSCHOOL"] = Cfg("old_school") == "1" ? "1" : "0";
         env["TN_NO_PAD"] = Cfg("gamepad") == "1" ? "0" : "1";
         env["TN_ORDER_WHEEL"] = Cfg("order_wheel") == "1" ? "1" : "0";
-        env["TN_SUBTITLES"] = Cfg("subtitles") == "1" ? "1" : "0";
+        AccessEnv(env);
         // the music device and whether the AWE32 ROM is there: shown by Uplink's menu (Options), changed there for the
         // game's next start (taken over in AdoptGameSettings, which writes it to the TNPlus.ini files)
         env["TN_MUSIC"] = MUSIC[Music()];
@@ -4023,6 +4129,7 @@ static class Uplink
             if (k.StartsWith("key_") && v != "" && !KeyOk(v.ToUpperInvariant()) && v != "MID" && v != "M4" && v != "M5") continue;
             Set(k, v);
         }
+        AdoptAccessibility(s);
         // the music device (its Options page, for the game's next start): written to the TNPlus.ini files as the
         // Settings page does (only here: Uplink never writes into Terra Nova Plus's own files)
         string mu;

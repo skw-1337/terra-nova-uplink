@@ -6,8 +6,9 @@
 # mission's 3D view the game itself does nothing with Esc alone: its own menu is its Options screen, on O.)
 # Resume; Game menu (solo / host: the game's own menu, its Options screen: sound, detail, abort, exit...); Controls (every
 # key: controls.gd, the same list as the launcher's Controls page); Graphics (the launcher's display settings, at once
-# where Uplink can, else at the next start); Options (the music device or the guest's sound, the subtitles, the mouse,
-# the gamepad, Esc...: the launcher's other settings, as Graphics); Quit (solo / host: the game,
+# where Uplink can, else at the next start); Options (the music device or the guest's sound, the order wheel, the mouse,
+# the gamepad, Esc...: the launcher's other settings, as Graphics); Accessibility (the subtitles, their size, the
+# colour-blind mode: the launcher's Settings > Accessibility, at once); Quit (solo / host: the game,
 # the bridge and Uplink closed, the launcher then as after STOP; a guest of the host is told the host left) or, for the
 # guest, Leave the game (his teammate back to the game's AI on the host, his window closed: his launcher is then as
 # after STOP). Closing the guest's window leaves the same way.
@@ -267,7 +268,7 @@ func _show(p: String) -> void:
 	box.add_child(col)
 	match p:
 		"main":
-			_place(400, 370 if guest else 420)
+			_place(400, 424 if guest else 474)
 			_title(col, "UPLINK", ORANGE if not guest else BLUE)
 			var sub := Label.new()
 			sub.text = "The game goes on meanwhile." if guest else "The game is not paused by this menu."
@@ -280,6 +281,7 @@ func _show(p: String) -> void:
 			_button(col, "Controls", func(): _show("controls"))
 			_button(col, "Graphics", func(): _show("graphics"))
 			_button(col, "Options", func(): _show("options"))
+			_button(col, "Accessibility", func(): _show("access"))
 			if guest:
 				_button(col, "Leave the game", func(): _show("leave"), RED)
 			else:
@@ -320,6 +322,8 @@ func _show(p: String) -> void:
 			no.grab_focus()
 		"options":
 			_options(col)
+		"access":
+			_access(col)
 		"controls":
 			_controls(col)
 
@@ -358,9 +362,6 @@ func _options(col: VBoxContainer) -> void:
 	else:
 		_music(left)
 		_head(left, "SQUAD")
-		_switch(left, "Squadmates' subtitles", bool(v.get("subs_on")), func(on: bool):
-			_set_subs(on)
-			_keep("launcher", "subtitles", "1" if on else "0"))
 		_switch(left, "Order wheel  (next start)", OS.get_environment("TN_ORDER_WHEEL") == "1", func(on: bool):
 			_later("TN_ORDER_WHEEL", "order_wheel", on))
 	_head(right, "CONTROLS")
@@ -383,7 +384,7 @@ func _options(col: VBoxContainer) -> void:
 		_head(right, "START")
 		_switch(right, "Skip the intro videos  (next start)", OS.get_environment("TN_SKIP_INTRO") == "1", func(on: bool):
 			_later("TN_SKIP_INTRO", "skip_intro", on))
-	_note(right, "Each setting is kept for the next games, and the launcher shows it the same. The old school look and Uplink's extras: Graphics.")
+	_note(right, "Each setting is kept for the next games, and the launcher shows it the same. The old school look and Uplink's extras: Graphics. The subtitles: Accessibility.")
 	var back := _button(col, "Back", func(): _show("main"))
 	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 
@@ -423,6 +424,55 @@ func _rom_line(l: Label, i: int) -> void:
 func _later(env: String, key: String, on: bool) -> void:
 	OS.set_environment(env, "1" if on else "0")
 	_keep("launcher", key, "1" if on else "0")
+
+
+# ---------------------------------------------------------------- accessibility
+# The launcher's Settings > Accessibility: the squadmates' subtitles (solo / host: the guest's window shows the host's),
+# their size, the colour-blind mode (colour_vision.gd). All at once; kept in viewer.cfg [launcher] as the others.
+const SUB_SIZES := ["Normal", "Large", "Larger"]
+const CV_NOTES := ["The game's colours.",
+	"Red and green look alike: the target's green turns cyan, hostile red turns raspberry.",
+	"Red and green look alike: the target's green turns cyan, hostile red turns magenta.",
+	"Blue and green look alike: the target's green turns yellow-green.",
+]
+
+func _access(col: VBoxContainer) -> void:
+	_place(860, 470)
+	_title(col, "ACCESSIBILITY", ORANGE)
+	_head(col, "SUBTITLES")
+	if guest:
+		_note(col, "Your squadmates' radio lines show when the host has them on.")
+	else:
+		_switch(col, "Squadmates' subtitles  (their radio lines)", bool(v.get("subs_on")), func(on: bool):
+			_set_subs(on)
+			_keep("launcher", "subtitles", "1" if on else "0"))
+	_seg(col, "Size", SUB_SIZES, clampi(int(v.get("subs_size")), 0, 2), func(i: int):
+		v.subs_size = i
+		OS.set_environment("TN_SUBTITLE_SIZE", str(i))
+		if v.subs_view != null:
+			v.subs_view.big = v.SUBS_SIZES[i]
+			v.subs_view.queue_redraw()
+		_keep("launcher", "subtitle_size", str(i)))
+	_head(col, "COLOUR-BLIND MODE")
+	var cv := preload("res://scripts/colour_vision.gd")
+	var line := Label.new()
+	_seg(col, "Colours", cv.NAMES, maxi(0, cv.MODES.find(cv.mode)), func(i: int):
+		cv.set_mode(cv.MODES[i])
+		if v.has_method("cv_apply"):
+			v.cv_apply()
+		for n in v.get_children():                       # (a guest's HUD: drawn again in the new colours)
+			if n.has_method("cv_changed"):
+				n.cv_changed()
+		line.text = CV_NOTES[i]
+		_keep("launcher", "colour_vision", cv.MODES[i]))
+	line.text = CV_NOTES[maxi(0, cv.MODES.find(cv.mode))]
+	line.autowrap_mode = TextServer.AUTOWRAP_WORD
+	line.add_theme_color_override("font_color", DIM)
+	line.add_theme_font_size_override("font_size", _px(15))
+	col.add_child(line)
+	_note(col, "Only Uplink's marks change: the target, hostile units (also a small triangle over their brackets), the armour and squad levels. Each setting is kept for the next games, and the launcher shows it the same.")
+	var back := _button(col, "Back", func(): _show("main"))
+	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 
 
 # the squadmates' subtitles at once: the viewer shows them or not, the bridge reads them or stops (its 'SUBS')

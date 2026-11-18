@@ -84,21 +84,30 @@ float detail_hash(vec2 p) {
 	return fract(p.x * p.y);
 }
 
-// gradient noise and its slope (x: value around 0.5, yz: slope): no edges along its grid, unlike value noise
-vec2 detail_grad(vec2 p) {
-	float a = detail_hash(p) * 6.2831853;
+// gradient noise and its slope (x: value around 0.5, yz: slope): no edges along its grid, unlike value noise.
+// The grid point's direction from an integer hash of its whole coordinates. (detail_hash of the point as a float, far
+// from the map's origin, came out different for the same point seen from the two cells beside it, the products there
+// above 100000 and rounded differently at each call: the noise jumped along some of its grid lines, straight lines
+// across the ground wherever it moved the cells' uneven edge, owner 18/11.)
+vec2 detail_grad(ivec2 i) {
+	uint h = uint(i.x) * 1597334677u ^ uint(i.y) * 3812015801u;
+	h ^= h >> 16u;
+	h *= 2246822519u;
+	h ^= h >> 13u;
+	float a = float(h >> 8u) * (6.2831853 / 16777216.0);
 	return vec2(cos(a), sin(a));
 }
 
 vec3 detail_noised(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
+	vec2 pf = floor(p);
+	ivec2 i = ivec2(pf);
+	vec2 f = p - pf;
 	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 	vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
 	vec2 ga = detail_grad(i);
-	vec2 gb = detail_grad(i + vec2(1.0, 0.0));
-	vec2 gc = detail_grad(i + vec2(0.0, 1.0));
-	vec2 gd = detail_grad(i + vec2(1.0, 1.0));
+	vec2 gb = detail_grad(i + ivec2(1, 0));
+	vec2 gc = detail_grad(i + ivec2(0, 1));
+	vec2 gd = detail_grad(i + ivec2(1, 1));
 	float va = dot(ga, f);
 	float vb = dot(gb, f - vec2(1.0, 0.0));
 	float vc = dot(gc, f - vec2(0.0, 1.0));
@@ -129,11 +138,11 @@ vec3 tile_px(vec2 uv, float layer, vec2 dx, vec2 dy) {
 	return textureGrad(tiles_lit_soft, vec3((i + 0.5 + fr) / 64.0, layer), dx, dy).rgb;
 }
 
-// a ground cell's tile at a position beyond its edges (mirrored)
-vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
+// a ground cell's tile and its texture coordinates at a position beyond its edges (mirrored), turned as the cell's
+vec2 cell_uv(vec2 cell, vec2 q, inout vec2 dx, inout vec2 dy, out float tile) {
 	cell = clamp(cell, vec2(0.0), vec2(grid_n - 2.0));
 	vec4 t = texture(tilemap, (cell + 0.5) / grid_n);
-	float tile = floor(t.r * 255.0 + 0.5);
+	tile = floor(t.r * 255.0 + 0.5);
 	int rot = int(floor(t.g * 255.0 + 0.5));
 	vec2 f = q - cell;
 	f = 1.0 - abs(1.0 - abs(f));             // beyond the cell: mirrored (continuous at its edge; wrapped, the tile's other side drew lines)
@@ -151,12 +160,34 @@ vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
 		dx = vec2(-dx.y, dx.x);
 		dy = vec2(-dy.y, dy.x);
 	}
+	return uv;
+}
+
+// a ground cell's tile at a position beyond its edges (mirrored)
+vec3 cell_tile(vec2 cell, vec2 q, vec2 dx, vec2 dy, float loff) {
+	float tile;
+	vec2 uv = cell_uv(cell, q, dx, dy, tile);
 	// clamped, not wrapped: uv stays in 0..1 (mirrored above), and a wrapping filter mixed the tile's opposite edge
 	// into its border texels (a thin light line along the cells of two-material tiles)
 	if (per_index) {
 		return tile_px(uv, tile + loff, dx, dy);
 	}
 	return textureGrad(tiles_soft, vec3(uv, tile), dx, dy).rgb;
+}
+
+// The modern look's light: the row (0 = full light, 15 = darkest; with a fraction) of the map's light vl as a smooth
+// slope from one point of the grid to the next, each point exact at its own level's row (light x.5). The game takes
+// floor(vl): its row changes along straight lines across the triangles, a step of brightness at each (old school keeps
+// it); in the modern look they were straight lines over the ground, owner 18/11.
+float light_smooth(float vl) {
+	return clamp(15.0 - (vl - 0.5), 0.0, 15.0);
+}
+
+// a row's brightness, between two rows
+float row_mix(float r) {
+	r = clamp(r, 0.0, 15.0);
+	int r0 = min(int(floor(r)), 15);
+	return mix(light_rows[r0], light_rows[min(r0 + 1, 15)], r - float(r0));
 }
 
 // cliffs (an extra, on unless TN_FX_CLIFFS=0): the tiles are laid on the map from above, one a cell: on a steep
@@ -194,11 +225,19 @@ vec3 cell_mean(vec2 cell) {
 	return textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
 }
 
-// the four cells around the point blended into each other along an uneven edge (no more square tiles), between tiles of
-// the same kind of ground only: where they differ (sand against a concrete pad, a road, a striped line) each keeps its
-// own square as the game draws it (the uneven edge ran a third of a cell into the next one: the sand spilled over the
-// concrete pads, training 2)
-vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff) {
+// two tiles of the same kind of ground (their mean colours close: the snow's, the sand's, the grass's variants, 0.002
+// to 0.044 apart; sand against concrete, a road or a stripe: 0.09 and more): 1, else 0
+float same_kind(vec3 m1, vec3 m2) {
+	return 1.0 - smoothstep(0.06, 0.12, distance(m1, m2));
+}
+
+// the four cells around the point blended into each other along an uneven edge (no more square tiles), each pair of
+// neighbours on its own: tiles of the same kind of ground blend, different ones (sand against a concrete pad, a road, a
+// striped line) meet on the cell's own straight edge as the game draws it (the uneven edge ran a third of a cell into
+// the next one: the sand spilled over the concrete pads, training 2). (One different tile among the four made all four
+// meet on square edges: straight seams between snow and snow wherever a rock tile was near, owner 18/11.)
+// w: the four cells' shares (for the grain).
+vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff, out vec4 w) {
 	vec2 qc = q - 0.5;
 	vec2 c0 = floor(qc);
 	vec2 fb = fract(qc);
@@ -206,17 +245,48 @@ vec3 cells_blend(vec2 q, vec2 dx, vec2 dy, vec3 wp, float loff) {
 	vec3 mb = cell_mean(c0 + vec2(1.0, 0.0));
 	vec3 mc = cell_mean(c0 + vec2(0.0, 1.0));
 	vec3 md = cell_mean(c0 + vec2(1.0, 1.0));
-	float diff = max(max(max(distance(ma, mb), distance(mc, md)), max(distance(ma, mc), distance(mb, md))),
-			max(distance(ma, md), distance(mb, mc)));
-	float same = 1.0 - smoothstep(0.06, 0.12, diff);
-	vec2 jit = (vec2(detail_noised(wp.xz * 0.7).x, detail_noised(wp.xz * 0.7 + 31.7).x) - 0.5) * same;
-	float bw = max((game_colours ? blend_live : blend_width) * same, 0.002);
-	vec2 fw = smoothstep(0.5 - bw, 0.5 + bw, clamp(fb + jit * 0.5, 0.0, 1.0));
+	float sab = same_kind(ma, mb);
+	float scd = same_kind(mc, md);
+	float sac = same_kind(ma, mc);
+	float sbd = same_kind(mb, md);
+	float bw = game_colours ? blend_live : blend_width;
+	// the uneven edge's reach stops short of the cells' centres (where the next four take over: a share left there was
+	// a faint step)
+	vec2 jit = (vec2(detail_noised(wp.xz * 0.7).x, detail_noised(wp.xz * 0.7 + 31.7).x) - 0.5) * 2.0 * clamp(0.5 - bw, 0.0, 0.25);
+	float bab = max(bw * sab, 0.002);
+	float bcd = max(bw * scd, 0.002);
+	float wab = smoothstep(0.5 - bab, 0.5 + bab, fb.x + jit.x * sab);
+	float wcd = smoothstep(0.5 - bcd, 0.5 + bcd, fb.x + jit.x * scd);
+	float sv = mix(sac, sbd, 0.5 * (wab + wcd));
+	float bv = max(bw * sv, 0.002);
+	float wy = smoothstep(0.5 - bv, 0.5 + bv, fb.y + jit.y * sv);
+	w = vec4((1.0 - wab) * (1.0 - wy), wab * (1.0 - wy), (1.0 - wcd) * wy, wcd * wy);
 	vec3 a = cell_tile(c0, q, dx, dy, loff);
 	vec3 b = cell_tile(c0 + vec2(1.0, 0.0), q, dx, dy, loff);
 	vec3 c = cell_tile(c0 + vec2(0.0, 1.0), q, dx, dy, loff);
 	vec3 d = cell_tile(c0 + vec2(1.0, 1.0), q, dx, dy, loff);
-	return mix(mix(a, b, fw.x), mix(c, d, fw.x), fw.y);
+	return mix(mix(a, b, wab), mix(c, d, wcd), wy);
+}
+
+// the grain (the same tile 4 times finer) of the four cells around the point, by their shares: its brightness against
+// the tile's mean (the cell's own only, it changed at every cell edge: a straight line along each up close)
+float cells_grain(vec2 q, vec2 dx, vec2 dy, vec4 w) {
+	vec2 c0 = floor(q - 0.5);
+	float gsum = 0.0;
+	for (int k = 0; k < 4; k++) {
+		float wk = k == 0 ? w.x : (k == 1 ? w.y : (k == 2 ? w.z : w.w));
+		if (wk > 0.001) {
+			vec2 cell = c0 + vec2(float(k & 1), float(k >> 1));
+			vec2 kdx = dx;
+			vec2 kdy = dy;
+			float tile;
+			vec2 uv = cell_uv(cell, q, kdx, kdy, tile);
+			vec3 fine = textureGrad(tiles_wrap, vec3(uv * 4.0, tile), kdx * 4.0, kdy * 4.0).rgb;
+			vec3 avg = textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
+			gsum += wk * clamp(dot(fine, vec3(0.3, 0.59, 0.11)) / max(dot(avg, vec3(0.3, 0.59, 0.11)), 0.02), 0.4, 1.8);
+		}
+	}
+	return gsum;
 }
 
 // the ground more credible without tessellation: wide patches lighter / darker, warmer / cooler (the tiles' pattern
@@ -445,7 +515,19 @@ void fragment() {
 		// texels per screen pixel: the grain and the bump only where a texel covers more than a pixel (finer, they
 		// only added noise that shimmered as the view moved)
 		float tpp = max(length(dFdx(g)), length(dFdy(g))) * 64.0;
-		col = cells_blend(g, dx, dy, wpos, loff);       // cells blended
+		vec4 cw;                             // the four cells' shares
+		float rsm = light_smooth(vl);
+		if (modern && per_index) {
+			// the modern look, tiles lit through the palette's rows: between the rows of the two light levels around
+			// (light_smooth), each texel's colour in both rows mixed (the rows change the hue too: from one row only, the
+			// step stayed as a line of colour)
+			float ra = floor(rsm);
+			vec3 ca = cells_blend(g, dx, dy, wpos, ra * tile_count, cw);
+			vec3 cb = cells_blend(g, dx, dy, wpos, min(ra + 1.0, 15.0) * tile_count, cw);
+			col = mix(ca, cb, rsm - ra);
+		} else {
+			col = cells_blend(g, dx, dy, wpos, loff, cw);   // cells blended
+		}
 		float cliff = 0.0;                   // how much of this pixel is a cliff textured from the side
 		if (cliffs) {
 			float steep = 1.0 - smoothstep(CLIFF_FULL, CLIFF_FROM, n_geo.y);
@@ -479,11 +561,19 @@ void fragment() {
 		}
 		// grain: the same tile 4 times finer modulates the brightness up close (grass blades, dirt streaks); its mips
 		// fade it to nothing further away, so it does not shimmer
-		vec3 fine = modern ? textureGrad(tiles_wrap, vec3(uv * 4.0, tile), du * 4.0, dv * 4.0).rgb   // wrapped: no seams
-				: textureGrad(tiles, vec3(fract(uv * 4.0), tile), du * 4.0, dv * 4.0).rgb;
-		vec3 avg = textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
-		float gain = dot(fine, vec3(0.3, 0.59, 0.11)) / max(dot(avg, vec3(0.3, 0.59, 0.11)), 0.02);
-		col *= mix(1.0, clamp(gain, 0.4, 1.8), GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)) * (1.0 - cliff));   // (the grain is laid from above too)
+		// (modern look: the four cells' grains by their shares, as their colours, cells_grain; wrapped: no seams)
+		float grain_k = GRAIN * (1.0 - smoothstep(0.06, 0.12, tpp)) * (1.0 - cliff);   // (the grain is laid from above too)
+		if (grain_k > 0.0) {
+			float gain;
+			if (modern) {
+				gain = cells_grain(g, dx, dy, cw);
+			} else {
+				vec3 fine = textureGrad(tiles, vec3(fract(uv * 4.0), tile), du * 4.0, dv * 4.0).rgb;
+				vec3 avg = textureLod(tiles, vec3(0.5, 0.5, tile), 6.0).rgb;
+				gain = clamp(dot(fine, vec3(0.3, 0.59, 0.11)) / max(dot(avg, vec3(0.3, 0.59, 0.11)), 0.02), 0.4, 1.8);
+			}
+			col *= mix(1.0, gain, grain_k);
+		}
 		if (has_relief && modern) {          // (modern look only: the game's ground has no light but its levels)
 			col *= texture(relief, (g + 0.5) / grid_n).r + 0.5;
 		}
@@ -572,7 +662,14 @@ void fragment() {
 		if (game_colours) {                  // the game's colours on the screen (its texels in sRGB, through the view)
 			lit = tn_game_colour(tn_haze_srgb(ALBEDO * row_light)) * bump_light;
 		}
-		if (cloud_cs > 0.0) {                // a cloud's soft shadow: the light of cloud_cs more rows, between two rows
+		if (modern) {
+			// the modern look: the map's light as a smooth slope between its rows (light_smooth), plus a cloud's soft
+			// shadow, cloud_cs more rows: against the row the colour above has (tiles through the palette: already the
+			// smooth one; else the row frow, row_light)
+			float l0 = per_index ? row_mix(rsm) : light_rows[frow];
+			float l1 = row_mix(rsm + cloud_cs);
+			lit *= l0 > 0.001 ? clamp(l1 / l0, 0.0, 2.0) : 1.0 - 0.12 * cloud_cs;
+		} else if (cloud_cs > 0.0) {         // a cloud's soft shadow: the light of cloud_cs more rows, between two rows
 			float fr = float(frow) + cloud_cs;
 			int r0 = min(int(floor(fr)), 15);
 			float l1 = mix(light_rows[r0], light_rows[min(r0 + 1, 15)], fract(fr));

@@ -1212,6 +1212,8 @@ class Guest:
                 pk += self.iff_block()                         # (at the very end: read from the end)
             except (OSError, struct.error, IndexError):
                 pass
+            if self.oeil:                                      # the height the game's target camera adds (0x275260)
+                pk += struct.pack('<f', self.i32(self.oeil) / 65536 + 0.1875) + b'TCM'
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
         # the cockpit: every 2 s for 20 s after a teammate is taken (his window may still be starting), then every 15 s
         if time.time() - self.tpl_t > (2.0 if time.time() - self.taken_t < 20.0 else 15.0):

@@ -81,6 +81,18 @@ var heading := 0
 var lock_info := PackedByteArray()     # what the host's bridge says of his target: armour %, beyond range, metres
 var host_gone_t := -100.0              # (the last log line saying the host's suit is not drawn)
 var iff := []                          # the units the game marks with coloured brackets: [entity, palette colour]
+# the lock light (the button beside the COMM panel, 0x264520: RESHLMH?.RES 752, frame 19 with a target, 29 without, at
+# 5, 312 of the screen in the standard cockpit) and his target camera (coop_tcam.gd), which that button turns on
+const LOCK_LIGHT_RES := 752
+const LOCK_LIGHT_ON := 19
+const LOCK_LIGHT_OFF := 29
+const LOCK_LIGHT_AT := Vector2(5, 312)
+const TCAM_TEXT_AT := Vector2(27, 283)    # the panel's title over the camera (read on the game's screen)
+var light_tex := {}                    # frame -> texture (empty frames: not in his files)
+var tcam: Node                         # the target camera (coop_tcam.gd)
+var tcam_on := false                   # the left panel in the game's target camera mode (0x15)
+var tcam_eye := -1.0                   # the height the game adds to that camera (the bridge's 'TCM'; -1: not sent)
+var tcam_text: Control
 var lock_heard := 0                  # (his lock in the last packet: a new one sounds)
 var lock := 0                        # his locked unit (0: none) and its middle, the game's x, y, z
 var lock_pos := Vector3.ZERO
@@ -210,6 +222,15 @@ func _ready() -> void:
 	panel.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST   # the game's pixels (bars, portraits) kept crisp
 	panel.visible = false
 	root.add_child(panel)
+	tcam = preload("res://scripts/coop_tcam.gd").new()
+	add_child(tcam)
+	tcam.setup(root, get_viewport().world_3d)
+	tcam_text = Control.new()
+	tcam_text.set_anchors_preset(Control.PRESET_FULL_RECT)
+	tcam_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tcam_text.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	tcam_text.draw.connect(_draw_tcam_text)
+	root.add_child(tcam_text)
 	# crosshair: four short bars around the centre, dark edge for bright skies
 	cross = Control.new()
 	cross.set_anchors_preset(Control.PRESET_CENTER)
@@ -352,6 +373,9 @@ func _process(delta: float) -> void:
 				lock_info = PackedByteArray()
 				var end := pk.size()                                  # (the bridge's trailers, read from the end)
 				iff = []
+				if end >= 59 and pk.slice(end - 3, end).get_string_from_ascii() == "TCM":
+					tcam_eye = pk.decode_float(end - 7)
+					end -= 7
 				if end >= 4 and pk.slice(end - 4, end - 1).get_string_from_ascii() == "IFF" and end - 4 - 3 * pk[end - 1] >= 52:
 					var n: int = pk[end - 1]
 					end -= 4 + 3 * n
@@ -379,6 +403,7 @@ func _process(delta: float) -> void:
 			_rear_follow()
 		panel.visible = true
 		panel.queue_redraw()
+	_tcam_step()
 
 
 func _update() -> void:
@@ -883,6 +908,8 @@ func _draw_panel() -> void:
 	if notice != "":
 		var wy := win.position.y + win.size.y * 0.8 if win.size.y > 0 else 200.0
 		_text(notice, 160.0, wy, 10.0, Color(1.0, 0.8, 0.25), true)
+	if cockpit.visible:
+		_draw_lock_light()
 	if not big_map:                                  # the big map covers the 3D view: no marks on it
 		_draw_iff()
 		_draw_lock()
@@ -1203,6 +1230,65 @@ func _draw_iff() -> void:
 		if win.size != Vector2.ZERO and not win.has_point(Vector2(cx, cy)):
 			continue
 		_brackets(cx, cy, hud_pal[r[1]])
+
+
+# the lock light, from his game files (the standard, heavy and scout cockpits have the same pictures)
+func _draw_lock_light() -> void:
+	var fr: int = LOCK_LIGHT_ON if lock != 0 else LOCK_LIGHT_OFF
+	if not light_tex.has(fr):
+		light_tex[fr] = null
+		var vp := get_parent()
+		if vp and "data" in vp and hud_pal.size() >= 256:
+			var res = LGRes.open(vp.data.data_dir().path_join("RESHLMHN.RES"))
+			var frames: Array = LGRes.frames(res.data(LOCK_LIGHT_RES)) if res and res.has(LOCK_LIGHT_RES) else []
+			var img: Image = TNObjects._bitmap(frames[fr], hud_pal) if frames.size() > fr else null
+			if img:
+				light_tex[fr] = ImageTexture.create_from_image(img)
+		else:
+			light_tex.erase(fr)                       # (the palette or the files not there yet: later)
+	var tex: Texture2D = light_tex.get(fr)
+	if tex:
+		var at := LOCK_LIGHT_AT + reg_move[0]
+		panel.draw_texture_rect(tex, _grect(at.x, at.y, at.x + tex.get_width(), at.y + tex.get_height()), false)
+
+
+# the lock light clicked (his mouse free, viewer.gd): with a target, the left panel to the target camera and back
+func toggle_target_camera() -> void:
+	if lock != 0:
+		tcam_on = not tcam_on
+
+
+# the button's place on the game's screen (viewer.gd: his click on it)
+func lock_light_rect() -> Rect2:
+	return Rect2(LOCK_LIGHT_AT + reg_move[0], Vector2(11, 22))
+
+
+func _tcam_step() -> void:
+	if lock == 0:
+		tcam_on = false                               # (the game: the target lost, the panel goes back to COMM)
+	var vp := get_parent()
+	var ok: bool = tcam_on and root.visible and cockpit.visible and state == 0 and not big_map and tcam_eye >= 0.0 			and vp != null and "live_ents" in vp and vp.live_ents.has(entity) and vp.live_ents.has(lock)
+	if not ok:
+		tcam.hide_view()
+		tcam_text.queue_redraw()
+		return
+	var me: Array = vp.live_ents[entity]
+	var t: Array = vp.live_ents[lock]
+	tcam.show_view(Vector3(me[3], me[4], me[5]), Vector3(t[3], t[4], t[5]), tcam_eye, reg_move[0],
+			root.size / Vector2(320, 400))
+	tcam_text.queue_redraw()
+
+
+# the panel's title over the target camera, as the game writes it there: "TARGET CAMERA" in its red (0x44) small
+# letters, from x 27, row 283 (the panel at its home place)
+func _draw_tcam_text() -> void:
+	if not tcam.on or hud_pal.size() < 256:
+		return
+	var at := Vector2(TCAM_TEXT_AT) + reg_move[0]
+	var saved := panel
+	panel = tcam_text                                 # (_glyphs draws on panel)
+	_glyphs("TARGET CAMERA", at.x, at.y, hud_pal[0x44])
+	panel = saved
 
 
 # a unit's box on the window, as the game keeps each drawn unit's (its list 0x397CA0): its meshes' corners seen

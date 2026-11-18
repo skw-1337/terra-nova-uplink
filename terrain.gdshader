@@ -329,7 +329,7 @@ void fragment() {
 	float vl = vlight;
 	if (cloud_shadows) {
 		vec3 up = wpos + cloud_sun.xyz * max(cloud_sun.w - wpos.y, 0.0) / cloud_sun.y;   // where the sun's ray meets the ceiling
-		vl -= cloud_rows * smoothstep(0.4, 0.9, texture(cloud_cover, (up.zx + cloud_off) / 256.0).r);
+		vl -= cloud_rows * smoothstep(0.25, 0.85, texture(cloud_cover, (up.zx + cloud_off) / 256.0).r);
 	}
 	int frow = 15 - clamp(int(floor(vl)), 0, 15);           // the row's file row (0 = full light)
 	float row_light = per_index ? 1.0 : light_rows[frow];

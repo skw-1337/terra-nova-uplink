@@ -8443,9 +8443,8 @@ func _cloud_cover(clouds: Texture2D) -> ImageTexture:
 	# patches (its texture's faint grain cast as shadows read as dirt sliding over the ground); nor at night
 	if hi - lo < 0.08 or sat / 65536.0 < 0.04 or sun_to.y < 0.08:
 		return null
-	var grey := false
 	# big soft patches: the cloud texture blurred wide, wrapping round as it tiles (no seam), three passes
-	for pass in 3:
+	for _round in 3:
 		lum = _wrap_blur(lum, 256, 10)
 	var out := PackedByteArray()
 	out.resize(65536)

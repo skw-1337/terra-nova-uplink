@@ -73,7 +73,7 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 					if cy + hh == n - 1:
 						edges.append(range(w + 1).map(func(xx): return hh * (w + 1) + xx))
 					for e in edges:
-						var base := verts.size()
+						var base: int = verts.size()
 						for vi in e:
 							verts.append(verts[vi] - Vector3(0.0, skirt, 0.0))
 							norms.append(norms[vi])
@@ -82,8 +82,8 @@ static func build(parent: Node3D, grid: Dictionary, step: float, origin: Vector2
 						for j in e.size() - 1:
 							var a0: int = e[j]
 							var a1: int = e[j + 1]
-							var b0 := base + j
-							var b1 := base + j + 1
+							var b0: int = base + j
+							var b1: int = base + j + 1
 							for q in [a0, a1, b1, a0, b1, b0, a0, b1, a1, a0, b0, b1]:   # (both ways: seen from either side)
 								idx.append(q)
 				var arr := []

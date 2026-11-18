@@ -2992,6 +2992,16 @@ static partial class Uplink
         catch (Exception e) { Log(what + ": " + e.Message); throw new UpdFail("antivirus", AvText(what)); }
     }
 
+    // the Graphics page's previews as build.bat embeds them (previews\*.jpg as previews.<name>), "" without any
+    static string PreviewRes(string dir)
+    {
+        string pv = Path.Combine(dir, "previews"), res = "";
+        if (!Directory.Exists(pv)) return res;
+        string[] fs = Directory.GetFiles(pv, "*.jpg");
+        Array.Sort(fs, StringComparer.OrdinalIgnoreCase);
+        foreach (string f in fs) res += "/resource:previews\\" + Path.GetFileName(f) + ",previews." + Path.GetFileName(f) + " ";
+        return res;
+    }
     // the launcher of t, from t's sources with its build.bat's line, tested (--selftest: it must start and say its version)
     static string UpdBuildLauncher(string tree, string want)
     {
@@ -3006,10 +3016,12 @@ static partial class Uplink
         {
             Match m = Regex.Match(File.ReadAllText(bat), "(?m)^\"%CSC%\"\\s+(.*?)/out:\"Terra Nova Uplink\\.exe\"\\s+TerraNovaUplink\\.cs\\s*$");
             if (m.Success) args = m.Groups[1].Value + "/out:\"" + exe + "\" TerraNovaUplink.cs";
+            if (args != null) args = args.Replace("%PV%", PreviewRes(dir));          // (build.bat's for loop over previews\*.jpg)
+            if (args != null && Regex.IsMatch(args, "%[A-Za-z_][A-Za-z0-9_]*%")) args = null;   // (another variable: the line below)
         }
         if (args == null)
         {
-            string res = "";
+            string res = PreviewRes(dir);
             foreach (string f in Directory.GetFiles(dir, "bg_*.jpg")) res += "/resource:" + Path.GetFileName(f) + " ";
             args = "/nologo /optimize /target:winexe /platform:anycpu /win32manifest:app.manifest /win32icon:icon.ico /r:System.Windows.Forms.dll /r:System.Drawing.dll " +
                 "/r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll " + res + "/out:\"" + exe + "\" TerraNovaUplink.cs";
@@ -3315,15 +3327,16 @@ static partial class Uplink
     }
     static List<Image> invitePics;
     static List<string> inviteCaps;
+    static string inviteFor;
     static void UpdInviteCheck(bool auto)
     {
         bool due = InviteDue();
         RelChan b = relBeta;
+        if (due && auto && (invitePics == null || inviteFor != b.Version)) UpdPictures(b);   // (in the background: the badge opens it with them too)
         Ui(delegate { UpdBadge(due ? b.V.Line + " beta" : null); });
         if (!due || !auto || Cfg("upd_invite") == b.V.Line) return;
         Set("upd_invite", b.V.Line);
         SaveCfg();
-        UpdPictures(b);
         Ui(delegate { UpdInviteShow(); });
     }
     static void UpdPictures(RelChan b)
@@ -3332,7 +3345,7 @@ static partial class Uplink
         List<string> caps = new List<string>();
         foreach (string[] im in b.Pictures)
         {
-            if (l.Count == 2) break;
+            if (l.Count == 6) break;                          // (the invitation's carousel: six at most)
             try
             {
                 string f = Path.Combine(UpdDir, "cache", im[1] + ".img");
@@ -3348,7 +3361,7 @@ static partial class Uplink
             }
             catch (Exception e) { Log("picture left out: " + e.Message); }
         }
-        invitePics = l; inviteCaps = caps;
+        invitePics = l; inviteCaps = caps; inviteFor = b.Version;
     }
     static void UpdInviteShow()
     {
@@ -3543,76 +3556,181 @@ static partial class Uplink
         }
     }
 
+    // The beta's invitation: the title, the beta's pictures one at a time (arrows, dots, the caption under each), the
+    // changelog by sections in its own scrolling card beside them (never under them), the two buttons. Never larger than
+    // the screen's working area (it shrinks on a small screen at a large scale); drawn at the window's scale.
     class BetaInvite : Form
     {
         RelChan b;
         float z;
-        Font fTag, fTitle, fSub, fHead, fItem, fNote, fCap;
+        Font fTag, fTitle, fSub, fHead, fItem, fNote, fCap, fFoot;
         List<Image> pics; List<string> caps;
-        Rectangle notes;
-        int scroll, contentH;
+        int W, H, cur, scroll, contentH, sepY, hot = -99, dragY = -1, dragScroll;
+        Rectangle pic, capBox, card, notes, bar, left, right;
+        Rectangle[] dots = new Rectangle[0];
         int Z(float v) { return (int)Math.Round(v * z); }
         public BetaInvite(RelChan beta, List<Image> pictures, List<string> captions)
         {
-            b = beta; pics = pictures; caps = captions; z = UpdScale();
+            b = beta; pics = pictures ?? new List<Image>(); caps = captions ?? new List<string>(); z = UpdScale();
             Text = "Uplink " + b.V.Line + " beta";
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterParent; BackColor = CBack; ForeColor = CText; KeyPreview = true; DoubleBuffered = true;
             fTag = UFont(10, true); fTitle = UFont(25, true); fSub = UFont(14, false); fHead = UFont(11, true); fItem = UFont(13, false);
-            fNote = UFont(12, false); fCap = UFont(11, false);
+            fNote = UFont(12, false); fCap = UFont(13, false); fFoot = UFont(12, false);
             Font = UFont(14, true);
-            int W = 600, H = pics.Count > 0 ? 600 : 480;
+            // 920 x 580 at 100 % (640 x 520 without pictures), never more than the working area of the launcher's screen
+            Rectangle wa = Screen.FromPoint(form != null ? new Point(form.Left + form.Width / 2, form.Top + form.Height / 2) : Cursor.Position).WorkingArea;
+            Match tw = Regex.Match(Environment.GetEnvironmentVariable("TN_LAUNCHER_TEST_WORKAREA") ?? "", @"^(\d{3,5})x(\d{3,5})$");
+            if (TestServer != null && tw.Success) wa = new Rectangle(0, 0, int.Parse(tw.Groups[1].Value), int.Parse(tw.Groups[2].Value));   // (checks: a smaller screen)
+            int fw = SystemInformation.FixedFrameBorderSize.Width * 2 + Z(16), fh = SystemInformation.CaptionHeight + SystemInformation.FixedFrameBorderSize.Height * 2 + Z(16);
+            W = Math.Max(600, Math.Min(pics.Count > 0 ? 920 : 640, (int)((wa.Width - fw) / z)));
+            H = Math.Max(440, Math.Min(pics.Count > 0 ? 580 : 520, (int)((wa.Height - fh) / z)));
             ClientSize = new Size(Z(W), Z(H));
-            int pich = pics.Count > 0 ? 150 + 26 : 0;
-            notes = new Rectangle(Z(28), Z(132), Z(W - 56), Z(H - 76 - 16 - 132 - pich));
             UButton yes = new UButton { Primary = true, Text = "Try the beta", Name = "try_beta", Font = Font, Bounds = new Rectangle(Z(W - 28 - 160), Z(H - 58), Z(160), Z(40)) };
             UButton no = new UButton { Text = "Not now", Name = "not_now", Font = Font, Bounds = new Rectangle(Z(W - 28 - 160 - 12 - 116), Z(H - 58), Z(116), Z(40)) };
             yes.Click += delegate { DialogResult = DialogResult.OK; };
             no.Click += delegate { DialogResult = DialogResult.Cancel; };
             Controls.Add(no); Controls.Add(yes);
             Shown += delegate { yes.Focus(); };
-            MouseWheel += delegate(object s, MouseEventArgs e) { ScrollBy(-e.Delta / 120 * Z(36)); };
-            using (Graphics g = CreateGraphics()) contentH = DrawNotes(g, false);
+            MouseWheel += delegate(object s, MouseEventArgs e) { ScrollBy(-e.Delta / 120 * Z(40)); };
+            using (Graphics g = CreateGraphics()) Place(g);
+            int k;                                                 // (checks only: the picture shown first)
+            if (TestServer != null && int.TryParse(Environment.GetEnvironmentVariable("TN_INVITE_PICTURE"), out k) && k >= 0 && k < pics.Count) cur = k;
         }
-        void ScrollBy(int dy) { int max = Math.Max(0, contentH - notes.Height); int s = Math.Max(0, Math.Min(max, scroll + dy)); if (s != scroll) { scroll = s; Invalidate(notes); } }
+        string Sub() { return b.Subtitle ?? "Try the next version before everyone else."; }
+        // where everything goes: the header follows the subtitle's height, the picture takes 58 % of the width (16:9)
+        void Place(Graphics g)
+        {
+            int cw = Z(W - 56), x = Z(28);
+            Size ss = TextRenderer.MeasureText(g, Sub(), fSub, new Size(cw, 1000), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            sepY = Z(90) + ss.Height + Z(14);
+            int top = sepY + Z(18), bottom = Z(H - 76 - 20);
+            if (pics.Count > 0)
+            {
+                int capH = Z(50), pw = (int)(cw * 0.58f), ph = pw * 9 / 16;
+                if (ph > bottom - top - capH) { ph = bottom - top - capH; pw = ph * 16 / 9; }
+                pic = new Rectangle(x, top, pw, ph);
+                int n = pics.Count > 1 ? pics.Count : 0, dw = n > 0 ? n * Z(8) + (n - 1) * Z(7) : 0;
+                capBox = new Rectangle(x, pic.Bottom + Z(12), pw - (n > 0 ? dw + Z(20) : 0), capH - Z(12));
+                dots = new Rectangle[n];
+                for (int i = 0; i < n; i++) dots[i] = new Rectangle(pic.Right - dw + i * Z(15), pic.Bottom + Z(17), Z(8), Z(8));
+                int a = Z(36);
+                left = new Rectangle(pic.X + Z(12), pic.Y + (ph - a) / 2, a, a);
+                right = new Rectangle(pic.Right - Z(12) - a, pic.Y + (ph - a) / 2, a, a);
+                card = new Rectangle(pic.Right + Z(24), top, Z(W - 28) - pic.Right - Z(24), bottom - top);
+            }
+            else card = new Rectangle(x, top, cw, bottom - top);
+            notes = new Rectangle(card.X + Z(18), card.Y + Z(16), card.Width - Z(18 + 22), card.Height - Z(16 + 16));
+            bar = new Rectangle(card.Right - Z(12), card.Y + Z(16), Z(4), card.Height - Z(32));
+            contentH = DrawNotes(g, false);
+        }
+        int MaxScroll() { return Math.Max(0, contentH - notes.Height); }
+        void ScrollBy(int dy) { ScrollTo(scroll + dy); }
+        void ScrollTo(int s) { s = Math.Max(0, Math.Min(MaxScroll(), s)); if (s != scroll) { scroll = s; Invalidate(card); } }
+        void ShowPic(int i) { if (pics.Count == 0) return; cur = (i % pics.Count + pics.Count) % pics.Count; Invalidate(); }
+        Rectangle Thumb()
+        {
+            if (contentH <= notes.Height) return Rectangle.Empty;
+            int th = Math.Max(Z(28), (int)((long)bar.Height * notes.Height / contentH));
+            return new Rectangle(bar.X, bar.Y + (int)((long)(bar.Height - th) * scroll / MaxScroll()), bar.Width, th);
+        }
         protected override bool ProcessCmdKey(ref Message msg, Keys k)
         {
             if (k == Keys.Escape) { DialogResult = DialogResult.Cancel; return true; }
-            if (k == Keys.Down || k == Keys.PageDown) { ScrollBy(k == Keys.Down ? Z(36) : notes.Height - Z(20)); return true; }
-            if (k == Keys.Up || k == Keys.PageUp) { ScrollBy(k == Keys.Up ? -Z(36) : -(notes.Height - Z(20))); return true; }
+            if (k == Keys.Left || k == Keys.Right) { ShowPic(cur + (k == Keys.Right ? 1 : -1)); return true; }
+            if (k == Keys.Down || k == Keys.PageDown) { ScrollBy(k == Keys.Down ? Z(40) : notes.Height - Z(24)); return true; }
+            if (k == Keys.Up || k == Keys.PageUp) { ScrollBy(k == Keys.Up ? -Z(40) : -(notes.Height - Z(24))); return true; }
+            if (k == Keys.Home || k == Keys.End) { ScrollTo(k == Keys.Home ? 0 : MaxScroll()); return true; }
             return base.ProcessCmdKey(ref msg, k);
         }
-        // the changelog by sections; its height (drawn only when draw)
+        // under the mouse: -1 left arrow, -2 right arrow, -3 the picture, -4 the scroll bar's thumb, -5 its track, 0.. a dot
+        int Hit(Point p)
+        {
+            if (pics.Count > 1 && left.Contains(p)) return -1;
+            if (pics.Count > 1 && right.Contains(p)) return -2;
+            for (int i = 0; i < dots.Length; i++) if (Rectangle.Inflate(dots[i], Z(4), Z(6)).Contains(p)) return i;
+            if (pics.Count > 1 && pic.Contains(p)) return -3;
+            Rectangle t = Thumb();
+            if (t != Rectangle.Empty && Rectangle.Inflate(t, Z(6), 0).Contains(p)) return -4;
+            if (t != Rectangle.Empty && Rectangle.Inflate(bar, Z(6), 0).Contains(p)) return -5;
+            return -99;
+        }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (dragY >= 0)
+            {
+                int room = bar.Height - Thumb().Height;
+                if (room > 0) ScrollTo(dragScroll + (int)((long)(e.Y - dragY) * MaxScroll() / room));
+                return;
+            }
+            int h = Hit(e.Location);
+            Cursor = h != -99 ? Cursors.Hand : Cursors.Default;
+            if (h != hot) { hot = h; Invalidate(); }
+        }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); if (hot != -99) { hot = -99; Invalidate(); } }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            int h = Hit(e.Location);
+            if (h == -1) ShowPic(cur - 1);
+            else if (h == -2 || h == -3) ShowPic(cur + 1);
+            else if (h >= 0) ShowPic(h);
+            else if (h == -4) { dragY = e.Y; dragScroll = scroll; Capture = true; Invalidate(card); }
+            else if (h == -5) ScrollBy(e.Y < Thumb().Y ? -(notes.Height - Z(24)) : notes.Height - Z(24));
+        }
+        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); if (dragY >= 0) { dragY = -1; Capture = false; Invalidate(card); } }
+        // the changelog by sections; its height (drawn only when draw). A section with no name: a short note after a line
         int DrawNotes(Graphics g, bool draw)
         {
-            int y = 0, w = notes.Width - Z(14);
+            int y = 0, w = notes.Width;
             TextFormatFlags wrap = TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl | TextFormatFlags.PreserveGraphicsClipping;
             List<KeyValuePair<string, List<string>>> secs = b.Changes.Count > 0 ? b.Changes :
                 new List<KeyValuePair<string, List<string>>> { new KeyValuePair<string, List<string>>("What's new", new List<string> { "See What's new once it is installed." }) };
-            foreach (KeyValuePair<string, List<string>> s in secs)
+            for (int si = 0; si < secs.Count; si++)
             {
+                KeyValuePair<string, List<string>> s = secs[si];
+                if (si > 0) y += Z(14);
+                if (s.Key.Trim() == "")
+                {
+                    if (draw) using (Pen l = new Pen(CLine)) g.DrawLine(l, notes.X, notes.Y + y - scroll, notes.Right, notes.Y + y - scroll);
+                    y += Z(12);
+                    foreach (string it in s.Value)
+                    {
+                        Size nz = TextRenderer.MeasureText(g, it, fNote, new Size(w, 10000), wrap);
+                        if (draw) TextRenderer.DrawText(g, it, fNote, new Rectangle(notes.X, notes.Y + y - scroll, w, nz.Height), CDim, wrap);
+                        y += nz.Height + Z(4);
+                    }
+                    continue;
+                }
                 if (draw) TextRenderer.DrawText(g, s.Key.ToUpperInvariant(), fHead, new Point(notes.X, notes.Y + y - scroll), UOrange, TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
                 y += Z(22);
                 foreach (string it in s.Value)
                 {
-                    Size sz = TextRenderer.MeasureText(g, it, fItem, new Size(w - Z(18), 10000), wrap);
+                    Size sz = TextRenderer.MeasureText(g, it, fItem, new Size(w - Z(16), 10000), wrap);
                     if (draw)
                     {
-                        using (Brush br = new SolidBrush(UOrange)) g.FillRectangle(br, notes.X + Z(2), notes.Y + y - scroll + Z(7), Z(5), Z(5));
-                        TextRenderer.DrawText(g, it, fItem, new Rectangle(notes.X + Z(18), notes.Y + y - scroll, w - Z(18), sz.Height), CText, wrap);
+                        using (Brush br = new SolidBrush(UOrange)) g.FillRectangle(br, notes.X + Z(1), notes.Y + y - scroll + Z(7), Z(4), Z(4));
+                        TextRenderer.DrawText(g, it, fItem, new Rectangle(notes.X + Z(16), notes.Y + y - scroll, w - Z(16), sz.Height), CText, wrap);
                     }
-                    y += sz.Height + Z(6);
+                    y += sz.Height + Z(7);
                 }
-                y += Z(12);
             }
             return y;
+        }
+        static void Chevron(Graphics g, Rectangle r, bool toRight, Color c, float wpx)
+        {
+            float cx = r.X + r.Width / 2f + (toRight ? 1f : -1f) * r.Width * 0.03f, cy = r.Y + r.Height / 2f, s = r.Width * 0.17f, d = toRight ? 1f : -1f;
+            using (Pen p = new Pen(c, wpx) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                g.DrawLines(p, new[] { new PointF(cx - d * s * 0.55f, cy - s), new PointF(cx + d * s * 0.45f, cy), new PointF(cx - d * s * 0.55f, cy + s) });
         }
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            int W = ClientSize.Width, H = ClientSize.Height;
-            using (Brush top = new SolidBrush(UOrange)) g.FillRectangle(top, 0, 0, W, Z(3));
+            int CW = ClientSize.Width, CH = ClientSize.Height;
+            using (Brush top = new SolidBrush(UOrange)) g.FillRectangle(top, 0, 0, CW, Z(3));
             // BETA tag, the title, the subtitle
             string tag = b.V.Full.ToUpperInvariant();       // "2.8 BETA 1"
             Size ts = TextRenderer.MeasureText(g, tag, fTag, new Size(1000, 100), TextFormatFlags.NoPadding);
@@ -3620,46 +3738,64 @@ static partial class Uplink
             using (GraphicsPath p = URound(tr, Z(10))) using (Pen l = new Pen(UOrange, Math.Max(1f, z))) g.DrawPath(l, p);
             TextRenderer.DrawText(g, tag, fTag, Rectangle.Round(tr), UOrange, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             TextRenderer.DrawText(g, b.Title ?? "Uplink " + b.V.Line + " is in beta", fTitle, new Point(Z(26), Z(52)), CText, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, b.Subtitle ?? "Try the next version before everyone else. You can go back to stable at any time.", fSub,
-                new Rectangle(Z(28), Z(90), W - Z(56), Z(36)), CDim, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
-            using (Pen l = new Pen(CLine)) g.DrawLine(l, Z(28), Z(122), W - Z(28), Z(122));
-            // the changelog (scrolls with the wheel and the arrows when it is longer than its place)
+            TextRenderer.DrawText(g, Sub(), fSub, new Rectangle(Z(28), Z(90), CW - Z(56), sepY - Z(90)), CDim, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            using (Pen l = new Pen(CLine)) g.DrawLine(l, Z(28), sepY, CW - Z(28), sepY);
+            // the pictures: one at a time, arrows on its sides, its caption and the dots under it
+            if (pics.Count > 0)
+            {
+                Image im = pics[Math.Min(cur, pics.Count - 1)];
+                float k = Math.Max((float)pic.Width / im.Width, (float)pic.Height / im.Height);
+                RectangleF src = new RectangleF((im.Width - pic.Width / k) / 2, (im.Height - pic.Height / k) / 2, pic.Width / k, pic.Height / k);
+                using (GraphicsPath p = URound(pic, Z(8)))
+                {
+                    GraphicsState s2 = g.Save();
+                    g.SetClip(p);
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.DrawImage(im, pic, src, GraphicsUnit.Pixel);
+                    g.Restore(s2);
+                    using (Pen l = new Pen(UEdge)) g.DrawPath(l, p);
+                }
+                if (pics.Count > 1)
+                    foreach (int side in new[] { -1, -2 })
+                    {
+                        Rectangle r = side == -1 ? left : right;
+                        bool on = hot == side;
+                        using (Brush br = new SolidBrush(Color.FromArgb(on ? 235 : 180, CBack))) g.FillEllipse(br, r);
+                        using (Pen l = new Pen(on ? UOrange : Color.FromArgb(110, CText), Math.Max(1f, z))) g.DrawEllipse(l, r);
+                        Chevron(g, r, side == -2, on ? UOrange : CText, Math.Max(1.5f, 2f * z));
+                    }
+                string cap = cur < caps.Count ? caps[cur] : "";
+                TextRenderer.DrawText(g, cap, fCap, capBox, CText, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.TextBoxControl);
+                for (int i = 0; i < dots.Length; i++)
+                    using (Brush br = new SolidBrush(i == cur ? UOrange : hot == i ? CDim : UEdge)) g.FillEllipse(br, dots[i]);
+            }
+            // the changelog's card (scrolls with the wheel, the arrow keys, Page Up / Down, Home / End and its bar)
+            using (GraphicsPath p = URound(card, Z(8)))
+            {
+                using (Brush br = new SolidBrush(CPanel)) g.FillPath(br, p);
+                using (Pen l = new Pen(CLine)) g.DrawPath(l, p);
+            }
             GraphicsState st = g.Save();
             g.SetClip(notes);
             DrawNotes(g, true);
+            int fade = Z(28);
+            if (scroll > 0)
+                using (LinearGradientBrush lg = new LinearGradientBrush(new Rectangle(notes.X, notes.Y - 1, notes.Width, fade + 2), CPanel, Color.FromArgb(0, CPanel), LinearGradientMode.Vertical))
+                    g.FillRectangle(lg, notes.X, notes.Y, notes.Width, fade);
+            if (scroll < MaxScroll())
+                using (LinearGradientBrush lg = new LinearGradientBrush(new Rectangle(notes.X, notes.Bottom - fade - 1, notes.Width, fade + 2), Color.FromArgb(0, CPanel), CPanel, LinearGradientMode.Vertical))
+                    g.FillRectangle(lg, notes.X, notes.Bottom - fade, notes.Width, fade);
             g.Restore(st);
-            if (contentH > notes.Height)
+            Rectangle th = Thumb();
+            if (th != Rectangle.Empty)
             {
-                float th = Math.Max(Z(24), notes.Height * (float)notes.Height / contentH), ty = notes.Y + (notes.Height - th) * scroll / (contentH - notes.Height);
-                using (Brush sb = new SolidBrush(CLine)) g.FillRectangle(sb, notes.Right - Z(4), notes.Y, Z(3), notes.Height);
-                using (Brush sb = new SolidBrush(CDim)) g.FillRectangle(sb, notes.Right - Z(4), ty, Z(3), th);
-            }
-            // the pictures (at most two, each with its caption)
-            if (pics.Count > 0)
-            {
-                int pw = (W - Z(56) - Z(16)) / 2, ph = Z(150), py = H - Z(76) - Z(16) - ph - Z(26);
-                for (int i = 0; i < pics.Count; i++)
-                {
-                    Rectangle box = new Rectangle(Z(28) + i * (pw + Z(16)), py, pw, ph);
-                    Image im = pics[i];
-                    float k = Math.Max((float)box.Width / im.Width, (float)box.Height / im.Height);
-                    RectangleF src = new RectangleF((im.Width - box.Width / k) / 2, (im.Height - box.Height / k) / 2, box.Width / k, box.Height / k);
-                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    using (GraphicsPath p = URound(box, Z(6)))
-                    {
-                        GraphicsState s2 = g.Save();
-                        g.SetClip(p);
-                        g.DrawImage(im, box, src, GraphicsUnit.Pixel);
-                        g.Restore(s2);
-                        using (Pen l = new Pen(UEdge)) g.DrawPath(l, p);
-                    }
-                    if (i < caps.Count && caps[i] != "")
-                        TextRenderer.DrawText(g, caps[i], fCap, new Rectangle(box.X, box.Bottom + Z(6), box.Width, Z(18)), CDim, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-                }
+                using (Brush sb = new SolidBrush(CLine)) g.FillRectangle(sb, bar);
+                using (Brush sb = new SolidBrush(hot == -4 || dragY >= 0 ? UOrange : CDim)) g.FillRectangle(sb, th);
             }
             // the foot: how to go back, the two buttons (controls)
-            using (Pen l = new Pen(CLine)) g.DrawLine(l, 0, H - Z(76), W, H - Z(76));
-            TextRenderer.DrawText(g, "Back to stable at any time:\nBeta updates, in Settings.", fNote, new Rectangle(Z(28), H - Z(58), Z(250), Z(40)), CDim,
+            using (Pen l = new Pen(CLine)) g.DrawLine(l, 0, CH - Z(76), CW, CH - Z(76));
+            TextRenderer.DrawText(g, "Back to stable at any time:\nBeta updates, in Settings.", fFoot, new Rectangle(Z(28), CH - Z(58), Z(260), Z(40)), CDim,
                 TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
         }
     }

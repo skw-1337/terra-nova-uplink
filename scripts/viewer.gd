@@ -1579,7 +1579,11 @@ func _apply_look() -> void:
 		sm.set_shader_parameter("modern", m)
 
 
-const PITCH_SIGN := 1.0   # a mission record's pitch: nose up for > 0 (not compared with the game yet, MISS16 #20)
+# A mission record's pitch (+22, MISS16's crashed ship #20 and MISS3D #18 only): nose up for > 0. The game draws the
+# model turned by its entity's pitch word (+0x1D, 0x29B3AC), which the record sets (MISS16's wreck: 3072 in memory,
+# 16.9 deg, as in the file); same tilt as the game seen from the south, north and east (audit 65). Kept in live mode
+# too (_live_place): the bridge sends no pitch, the wreck was drawn flat there.
+const PITCH_SIGN := 1.0
 
 
 # team: the mission's side of its group (1 = the player's, anything else the enemy's); pitch: the mission
@@ -1683,6 +1687,7 @@ func _add_object(m: Dictionary, cls: int, sub: int, x: float, y: float, heading:
 		mi.basis = Basis(Vector3.UP, -heading) * Basis(Vector3(0, 0, 1), _ground_pitch(m, x, y, heading, mi.get_meta("half")))
 	elif pitch != 0.0 and TNObjects.is_model(ref) and (cls == 0 or cls == 3 or (cls == 4 and sub != MINE_TYPE)):
 		mi.rotate_object_local(Vector3(0, 0, 1), PITCH_SIGN * pitch)   # (models face +X: their side axis is Z)
+		mi.set_meta("pitch", PITCH_SIGN * pitch)
 	mi.set_meta("lift", lift)
 	world.add_child(mi)
 	if soldier or TNObjects.is_model(ref):         # (sprites take the light at their foot: _foot_light)
@@ -8665,6 +8670,8 @@ func _live_place(node: Node3D, e, m: Dictionary) -> void:
 		node.position = Vector3(e[3], TNData.height_at(m, e[3], e[4]) + float(node.get_meta("lift", 0.0)), e[4])
 	if e[0] != 2 and not (e[0] == 4 and e[1] == MINE_TYPE):
 		node.basis = Basis(Vector3.UP, -e[6])           # (a body tipped over is set back up)
+		if node.has_meta("pitch"):                      # a mission record's pitch (MISS16's wreck): the game keeps it
+			node.basis = node.basis * Basis(Vector3(0, 0, 1), float(node.get_meta("pitch")))
 		return
 	# vehicles and mines pitch with the ground along their heading as the game draws them (its entity has only a
 	# heading): no roll, no easing, worked out again on every draw

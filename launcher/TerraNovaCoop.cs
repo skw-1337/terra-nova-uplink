@@ -5656,6 +5656,11 @@ static partial class Uplink
             try { UpdRollbackCore(); Console.WriteLine("rolled back"); Environment.Exit(0); }
             catch (Exception e) { Log(e.Message); Console.WriteLine(e.Message); Environment.Exit(1); }
         }
+        if (args.Length > 2 && args[1] == "--cooptext")      // checks: the session line said for Uplink's co-op lines
+        {
+            for (int i = 2; i < args.Length; i++) Console.WriteLine(UpdCoopText(args[i]));
+            Environment.Exit(0);
+        }
         // a 2.7 launcher in a folder whose path has accents builds this one as "Terra Nova Uplink.new.exe" but its
         // update.bat can't move it (cmd reads the path in another code page): opened by hand, it takes its place
         string self = Application.ExecutablePath;

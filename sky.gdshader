@@ -104,39 +104,77 @@ vec3 stars_sharp(vec2 px, float el) {
 	return best;
 }
 
+// The haze level as a number: the game's step at each threshold above (a flat bar across the view, then the next row
+// of the haze table: a straight line through the clouds at each of the 7 steps) spread over the span on each side of
+// it, the level i whole at the middle of its own span. Both looks: the colours are still the haze table's rows.
+float haze_level(float r) {
+	const float T[9] = {128.0, 192.0, 256.0, 320.0, 416.0, 512.0, 640.0, 800.0, 960.0};
+	if (r <= T[1]) {
+		return clamp((r - T[0]) / (T[1] - T[0]) + 0.5 - 1.0, 0.0, 7.0);
+	}
+	for (int i = 2; i < 9; i++) {
+		if (r <= T[i]) {
+			return clamp(float(i) - 1.5 + (r - T[i - 1]) / (T[i] - T[i - 1]), 0.0, 7.0);
+		}
+	}
+	return 7.0;
+}
+
+// The last clouds fade into the band (the game: a hard edge at 1024). Over 880 .. 1100 the fade took only 0.6 degrees
+// of the view near the horizon (r grows as 1 / the elevation): a soft straight line under the clouds, worst under
+// the dark storm and ice skies; over 640 .. 1400, in log r, it takes ~2 degrees.
+const float FADE_END = 1400.0;
+float cloud_fade(float r) {
+	return smoothstep(6.4615, 7.2442, log(max(r, 1.0)));       // ln 640 .. ln 1400
+}
+
 vec3 planet_sky(vec3 d, vec3 eye, bool per_row) {
+	vec2 t0 = vec2(d.z, d.x) / max(d.y, 1e-4) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off;
+	vec2 t = tn_ripple(t0);
+	// its mip level from t0, before the ripple: the ripple's jumps from one texel row to the next picked the smallest
+	// mip along each row (here, before any branch: the derivatives of the whole quad)
+	vec2 gx = dFdx(t0);
+	vec2 gy = dFdy(t0);
 	if (d.y <= 0.0) {                     // the game: band 3 down to the ground; where no ground is drawn (beyond
 		// the outer map), the hazed ground instead (bands texel 4), from the horizon down over ~2 degrees
 		return mix(texelFetch(bands, ivec2(3, 0), 0).rgb, texelFetch(bands, ivec2(4, 0), 0).rgb,
 				smoothstep(0.0, 0.035, -d.y));
 	}
-	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
 	float r = ceiling_r(d, per_row);
-	if (r >= 1100.0) {
+	if (r >= FADE_END) {
 		return band_at(bands, r);
 	}
-	float level = 0.0;
-	level += step(192.0, r) + step(256.0, r) + step(320.0, r) + step(416.0, r);
-	level += step(512.0, r) + step(640.0, r) + step(800.0, r);
-	vec2 t = tn_ripple(rel + vec2(eye.z, eye.x) * cloud_par + cloud_off) / 256.0;
-	vec3 c = modern ? texture(levels_soft, vec3(t, level)).rgb : texture(levels, vec3(t, level)).rgb;
-	// the last clouds fade into the band (the game: a hard edge at 1024)
-	return mix(c, band_at(bands, r), smoothstep(880.0, 1100.0, r));
+	float level = haze_level(r);
+	float l0 = floor(level);
+	vec3 t3 = vec3(t / 256.0, l0);
+	vec3 c = modern ? textureGrad(levels_soft, t3, gx / 256.0, gy / 256.0).rgb : textureGrad(levels, t3, gx / 256.0, gy / 256.0).rgb;
+	if (level > l0 + 0.001) {
+		t3.z = min(l0 + 1.0, 7.0);
+		vec3 c1 = modern ? textureGrad(levels_soft, t3, gx / 256.0, gy / 256.0).rgb : textureGrad(levels, t3, gx / 256.0, gy / 256.0).rgb;
+		c = mix(c, c1, level - l0);
+	}
+	return mix(c, band_at(bands, r), cloud_fade(r));
 }
 
 vec3 ir_sky(vec3 d, vec3 eye, bool per_row) {
+	vec2 t0 = vec2(d.z, d.x) / max(d.y, 1e-4) * cloud_px * 1.12 + vec2(eye.z, eye.x) * cloud_par + cloud_off;
+	vec2 t = tn_ripple(t0);
+	vec2 gx = dFdx(t0) / 256.0;
+	vec2 gy = dFdy(t0) / 256.0;
 	if (d.y <= 0.0) {
 		return texelFetch(bands_ir, ivec2(3, 0), 0).rgb;
 	}
-	vec2 rel = vec2(d.z, d.x) / d.y * cloud_px * 1.12;
 	float r = ceiling_r(d, per_row);
-	if (r >= 1024.0) {
-		return texelFetch(bands_ir, ivec2(r >= 6400.0 ? 3 : (r >= 3200.0 ? 2 : (r >= 1200.0 ? 1 : 0)), 0), 0).rgb;
+	if (r >= FADE_END) {
+		return band_at(bands_ir, r);
 	}
-	float level = step(192.0, r) + step(256.0, r) + step(320.0, r) + step(416.0, r);
-	level += step(512.0, r) + step(640.0, r) + step(800.0, r);
-	vec2 t = tn_ripple(rel + vec2(eye.z, eye.x) * cloud_par + cloud_off) / 256.0;
-	return texture(levels_ir, vec3(t, level)).rgb;
+	float level = haze_level(r);
+	float l0 = floor(level);
+	vec3 c = textureGrad(levels_ir, vec3(t / 256.0, l0), gx, gy).rgb;
+	if (level > l0 + 0.001) {
+		c = mix(c, textureGrad(levels_ir, vec3(t / 256.0, min(l0 + 1.0, 7.0)), gx, gy).rgb, level - l0);
+	}
+	return mix(c, band_at(bands_ir, r), cloud_fade(r));
 }
 
 void sky() {

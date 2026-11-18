@@ -15,6 +15,7 @@ from coop_name import NameTag
 from guest_equipment import GuestEquipment
 from coop_aim import GuestAim
 from coop_unit_hits import UnitHits, ON as UNIT_HITS_ON
+import coop_map_split
 # his shots at what his crosshair is on (coop_aim.py; TN_COOP_AIM=0: 30 units along his view, as before), and each
 # shot's aim in the bridge's output (TN_COOP_AIMLOG=1)
 AIM_ON = os.environ.get('TN_COOP_AIM') != '0'
@@ -1466,12 +1467,12 @@ class Guest:
             struct.pack('<H3f', self.lock if lt else 0, *(lt or (0, 0, 0))) + struct.pack('<3f', *(mine or (0, 0, 0))) + \
             struct.pack('<3f', *host) + self.squad_info(me) + struct.pack('<H', me) + self.hud_more()   # (me: the host's
         # entity, his name follows his drawn suit)
-        mb = 0
+        mb, block, head = 0, b'', pk
         if self.gid and self.state == OK:
             try:
-                n0 = len(pk)
-                pk += self.map_block(me)                       # (an older guest window stops reading before it)
-                mb = len(pk) - n0
+                block = self.map_block(me)                     # (an older guest window stops reading before it)
+                pk += block
+                mb = len(block)
             except (OSError, struct.error, IndexError) as ex:
                 if not self.map_said:
                     self.map_said = True
@@ -1487,7 +1488,19 @@ class Guest:
                 pass
             if self.oeil:                                      # the height the game's target camera adds (0x275260)
                 pk += struct.pack('<f', self.i32(self.oeil) / 65536 + 0.1875) + b'TCM'
-        if len(pk) > self.ghd_max:                             # (online, over 1200 bytes it goes reliable: late)
+        whole = len(pk)
+        if block:                                              # (online, over 1200 bytes it goes reliable: late; the
+            self.gmk_seq = (getattr(self, 'gmk_seq', 0) + 1) & 63   # growing map goes to 'GMK', coop_map_split.py)
+            pk, more = coop_map_split.split(head, block, pk[len(head) + len(block):], self.gmk_seq)
+            for m in more:
+                self.s.sendto(m, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))
+            big = max([len(pk)] + [len(m) for m in more])
+            if whole > self.ghd_max or (more and big > getattr(self, 'gmk_max', 0)):
+                self.ghd_max, self.gmk_max = max(whole, self.ghd_max), max(big, getattr(self, 'gmk_max', 0))
+                print('coop: %s HUD %d bytes (map block %d), sent as %d%s' % (
+                    time.strftime('%H:%M:%S'), whole, mb, len(pk),
+                    ' + %d GMK (%s)' % (len(more), ' '.join(str(len(m)) for m in more)) if more else ''), flush=True)
+        elif len(pk) > self.ghd_max:
             self.ghd_max = len(pk)
             print('coop: HUD packet %d bytes (map block %d)' % (len(pk), mb), flush=True)
         self.s.sendto(pk, ('127.0.0.1', REMOTE_VIEW if self.remote else HUD_PORT))

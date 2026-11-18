@@ -346,6 +346,8 @@ func _process(delta: float) -> void:
 			lobby.feed(pk)
 		elif tag == "GEQ":
 			equip.feed(pk)
+		elif tag == "GMK" and pk.size() >= 12:
+			_map_more(pk)
 		elif tag == "SND":
 			if sound == null:
 				sound = preload("res://scripts/coop_sound.gd").new()
@@ -543,9 +545,34 @@ func _preview_avatar(_id: int, size: int, data: PackedByteArray) -> void:
 	set_mate(name, img)
 
 
+# 'GMK' (coop_map_split.py): seq, part, parts, then a map block holding the first marks of his map (and the weapon box's
+# colour tables) when the whole 'GHD' would pass Steam's fast path. The marks of the last seq that came whole are drawn
+# before the 'GHD' ones
+var gmk_marks := []                  # the marks of the last whole 'GMK' set
+var gmk_seq := -1
+var gmk_got := []                    # the parts of the set coming in
+
+func _map_more(pk: PackedByteArray) -> void:
+	if pk[3] != gmk_seq or pk[4] == 0:
+		gmk_seq = pk[3]
+		gmk_got = []
+	if pk[4] != gmk_got.size():
+		return                                               # (a part lost: this set is dropped)
+	var keep := [weapon_state, weapon_ammo]
+	_map_packet(pk, 6, true)
+	weapon_state = keep[0]
+	weapon_ammo = keep[1]
+	if gmk_got.size() == pk[5]:
+		gmk_marks = []
+		for m in gmk_got:
+			gmk_marks += m
+		gmk_got = []
+		gmk_seq = -1
+
+
 # the end of a 'GHD' packet (coop_guest.py map_block): 'M', flags (bit 0: the weapon box's two colour tables follow),
 # his weapon's state and ammunition, the number of marks, then the marks: kind, colour, payload length, payload
-func _map_packet(pk: PackedByteArray, at: int) -> void:
+func _map_packet(pk: PackedByteArray, at: int, more := false) -> void:
 	if at + 6 > pk.size() or pk[at] != 0x4D:
 		return
 	var p := at + 6
@@ -565,6 +592,13 @@ func _map_packet(pk: PackedByteArray, at: int) -> void:
 			break
 		marks.append([pk[p], pk[p + 1], pk.slice(p + 3, p + 3 + pk[p + 2])])
 		p += 3 + pk[p + 2]
+	if more:
+		gmk_got.append(marks)
+		return
+	if pk[at + 1] & 2:                                       # (the first marks came in 'GMK' packets: _map_more)
+		marks = gmk_marks + marks
+	else:
+		gmk_marks = []
 	map_marks = marks
 	map_told = true
 	var mine := Vector2.ZERO

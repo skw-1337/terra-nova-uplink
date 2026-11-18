@@ -5395,6 +5395,12 @@ func _input(event: InputEvent) -> void:
 			pass
 		elif not event.echo:
 			var sc := _play_scancode(event)
+			if guest_win and sc in [0x17, 0x22, 0x30]:      # co-op guest: his own infrared, full view, 360 view
+				if event.pressed:                         # (coop_views.gd; not sent to the host's game)
+					for n in get_children():
+						if n.has_method("view_key"):
+							n.view_key(sc)
+				sc = 0
 			if sc != 0:
 				_key_hold(sc, "", event.pressed)
 				# both Shift keys down, one let go: Windows only tells of the last one let go. The other stayed down
@@ -5532,19 +5538,7 @@ func _live_update() -> void:
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "PHOT":
 			photo_state = q[4]                              # the photo mode's pause, as the bridge has it (_photo_update)
 		elif q.size() == 5 and q.slice(0, 4).get_string_from_ascii() == "IRVW":
-			if ir_on != (q[4] == 1):
-				ir_on = q[4] == 1                           # the game's infrared view (key I)
-				for k in mats:                              # (the suits: unlit in it, _limb_light)
-					if mats[k] is ShaderMaterial and (mats[k] as ShaderMaterial).has_meta("lit"):
-						_limb_light_set(mats[k])
-			var old := oldschool_rect != null and oldschool_rect.visible
-			if ir_rect != null:
-				ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
-			for wm in water_mats:                          # the game draws its water tiles plain in infrared
-				wm.set_shader_parameter("plain", ir_on)
-			if oldschool_rect != null:
-				(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
-			RenderingServer.global_shader_parameter_set("tn_ir", 1.0 if ir_on else 0.0)
+			_ir_set(q[4] == 1)                              # the game's infrared view (key I)
 		elif q.size() >= 5 and q.slice(0, 4).get_string_from_ascii() == "SUBV":
 			_sub_views(q)
 		elif q.size() >= 6 and q.slice(0, 4).get_string_from_ascii() == "FX29" and q.size() == 6 + 5 * q.decode_u16(4):
@@ -6102,6 +6096,24 @@ func _live_units(pk: PackedByteArray) -> void:
 			node.position.y = feet[idx]              # on its feet: the walker's entity is 0.23 to 0.39 above them
 			# as it walks (a suit's: 0.15), so GAME_Z left it floating
 			node.set_meta("feet_off", feet[idx] - float(node.get_meta("ez", feet[idx])))
+
+
+# The game's infrared view on or off (key I): the host's as his bridge reads it ('IRVW'), a co-op guest's his own
+# (coop_views.gd: his key, whatever the host's)
+func _ir_set(on: bool) -> void:
+	if ir_on != on:
+		ir_on = on
+		for k in mats:                              # (the suits: unlit in it, _limb_light)
+			if mats[k] is ShaderMaterial and (mats[k] as ShaderMaterial).has_meta("lit"):
+				_limb_light_set(mats[k])
+	var old := oldschool_rect != null and oldschool_rect.visible
+	if ir_rect != null:
+		ir_rect.visible = ir_on and not old             # (the old school mode reads the view itself: it tints)
+	for wm in water_mats:                          # the game draws its water tiles plain in infrared
+		wm.set_shader_parameter("plain", ir_on)
+	if oldschool_rect != null:
+		(oldschool_rect.material as ShaderMaterial).set_shader_parameter("ir", ir_on)
+	RenderingServer.global_shader_parameter_set("tn_ir", 1.0 if ir_on else 0.0)
 
 
 # The HUD's side views: each one a small viewport sharing the world, its camera where the game puts it (the unit's

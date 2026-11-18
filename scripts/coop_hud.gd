@@ -157,6 +157,7 @@ const REG_HOME: Array[Vector2] = [Vector2(17, 276), Vector2(118, 264), Vector2(2
 var reg_move: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
 var lobby: CanvasLayer               # the Mission Outfitting lobby ('GLB' packets, coop_lobby.gd)
 var sound: Node                      # the game's sounds at his place ('SND' packets, coop_sound.gd)
+var views: Node                      # his own infrared, full view (G) and 360 view (B): coop_views.gd
 
 var ok_col := Color(0.35, 1.0, 0.45)
 var warn_col := Color(1.0, 0.75, 0.25)
@@ -167,6 +168,8 @@ func _ready() -> void:
 	layer = 9
 	lobby = preload("res://scripts/coop_lobby.gd").new()
 	add_child(lobby)
+	views = preload("res://scripts/coop_views.gd").new()
+	add_child(views)
 	udp.bind(HUD_PORT, "127.0.0.1", 1 << 20)
 	font = ThemeDB.fallback_font
 	if "--coop-preview" in OS.get_cmdline_user_args():
@@ -395,7 +398,10 @@ func _update() -> void:
 func _cockpit(pk: PackedByteArray) -> void:
 	# the game's 3D window: the viewer frames its view on it like the host's (off-centre frustum), the crosshair
 	# where that view looks, the window's middle (the viewer's _view_row)
-	win = Rect2(pk.decode_s16(3), pk.decode_s16(5), pk.decode_s16(7), pk.decode_s16(9))
+	var w := Rect2(pk.decode_s16(3), pk.decode_s16(5), pk.decode_s16(7), pk.decode_s16(9))
+	if views and not views.take(w):
+		return                                               # (the host's full view: not his cockpit, coop_views.gd)
+	win = w
 	var vp := get_parent()
 	if vp and "hud_win" in vp:
 		vp.hud_win = Rect2i(win)
@@ -440,6 +446,8 @@ func _cockpit(pk: PackedByteArray) -> void:
 				rgba[i + 1] = c.g8
 				rgba[i + 2] = c.b8
 	cockpit.texture = ImageTexture.create_from_image(Image.create_from_data(320, 400, false, Image.FORMAT_RGBA8, rgba))
+	if views:
+		views.cockpit(raw, rgba, cockpit.texture, win)       # (his own view's picture and window: coop_views.gd)
 	_update()
 
 
@@ -881,41 +889,45 @@ func _draw_panel() -> void:
 		return
 	var vp := get_parent()
 	var looking: bool = big_map or (vp != null and "look_off" in vp and vp.look_off.length() > 0.03)
+	var full: bool = views != null and views.full_on()        # G: the game's full view (coop_views.gd)
+	var around: bool = views != null and views.around_on()    # B: the 360 view's cameras in the three panels
 	if not big_map:
-		_draw_indicator()
+		_draw_indicator(Vector2i(views.FULL_WIN.position) + views.FULL_INDICATOR if full else Vector2i(-1, -1))
 	if not looking:                                  # free look: no crosshair (his aim stays ahead)
 		_draw_cross()
-	# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21);
-	# the game's heading 0 is east and grows towards the south (its map: x to the east, y to the south)
-	var bearing := fposmod(heading / 65536.0 * 360.0 + 90.0, 360.0)
-	var amber := Color(1.0, 0.8, 0.25)
-	for k in 8:
-		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0
-		var x := 161.0 + reg_move[3].x + d * 64.0 / 90.0
-		if x < 38.0 + reg_move[3].x or x > 284.0 + reg_move[3].x:
-			continue
-		if k % 2 == 0:
-			_text(["N", "E", "S", "W"][k / 2], x, 8.0 + reg_move[3].y, 10.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
-		else:
-			panel.draw_rect(_grect(x - 0.5, 11.0 + reg_move[3].y, x + 0.5, 16.0 + reg_move[3].y), Color(0.6, 0.6, 0.8))
-	var cm := reg_move[3]
-	panel.draw_rect(_grect(160.0 + cm.x, 6.0 + cm.y, 162.0 + cm.x, 8.0 + cm.y), amber)
-	panel.draw_rect(_grect(160.0 + cm.x, 20.0 + cm.y, 162.0 + cm.x, 22.0 + cm.y), amber)
+	if full:
+		_draw_compass(views.FULL_WIN.position + views.FULL_COMPASS.position, views.FULL_COMPASS.size.x)
+	else:
+		_draw_compass(REG_HOME[3] + reg_move[3])
 	# the top bars, lit in the game's own led cells (the cockpit packet has them put out), each from its left end as
 	# the game fills them (0x2652f4, 0x26541c: the lit bar, then black from the value to the bar's end): the pilot's
 	# health on the left in the game's reds (its routine 0x2652a0: width x current / max, whole pixels), the energy on
-	# the right from its "E", in orange
+	# the right from its "E", in orange (the full view: its own bars, moved)
 	var f := clampf(float(armour) / float(armour_max), 0.0, 1.0)
 	var lw: int = LEFT_LEDS[LEFT_LEDS.size() - 1][1] - LEFT_LEDS[0][0]
 	var rw: int = RIGHT_LEDS[RIGHT_LEDS.size() - 1][1] - RIGHT_LEDS[0][0]
-	_draw_leds(LEFT_LEDS, 0, lw * clampi(health, 0, health_max) / health_max if health >= 0 else int(round(f * lw)), 0)
-	_draw_leds(RIGHT_LEDS, 0, int(round(clampf(energy / 100.0, 0.0, 1.0) * rw)), 1)
+	var lm: Vector2 = views.full_left if full else Vector2.ZERO
+	var rm: Vector2 = views.full_right if full else Vector2.ZERO
+	_draw_leds(LEFT_LEDS, 0, lw * clampi(health, 0, health_max) / health_max if health >= 0 else int(round(f * lw)), 0,
+			Rect2(BAR_SRC.position + lm, BAR_SRC.size) if full else Rect2())
+	_draw_leds(RIGHT_LEDS, 0, int(round(clampf(energy / 100.0, 0.0, 1.0) * rw)), 1,
+			Rect2(BAR_SRC.position + rm, BAR_SRC.size) if full else Rect2())
+	if full:                                         # the full view: no panels, his weapon in the box at the bottom
+		if big_map:
+			_text("MAP  (M: back)", win.position.x + 16.0, win.position.y + 10.0, 10.0, Color(0.9, 0.9, 1.0))
+			if map_tex:
+				panel.draw_texture_rect(map_tex, _map_box(), false)
+		var fb := _box_pic(weapon_type, 0 if weapon_state in [1, 2] else (1 if weapon_state in [4, 5] else -1), weapon_ammo)
+		if fb and views.full_box.size.x > 0:
+			panel.draw_texture_rect(fb, _grect(views.full_box.position.x, views.full_box.position.y, views.full_box.end.x,
+					views.full_box.end.y), false)
+		return
 	# COMM: his squad as the game lists it, in the game's rows: the host (Steam avatar, else his pilot's portrait),
 	# then his other teammates (their portraits and names from his game files), each with one bar: the game's top
 	# health bar, filled from the left with the pilot's health in red (half the bar when whole), then the suit's
 	# armour in the indicator's light blue (the other half), the rest unlit
 	var rows: Array = squad if not squad.is_empty() else [[0, 100, 255]]
-	for i in rows.size():
+	for i in (0 if around else rows.size()):
 		var y0 := 277.0 + reg_move[0].y + 28.0 * i
 		var x0 := reg_move[0].x
 		var who: Array = rows[i]
@@ -928,20 +940,20 @@ func _draw_panel() -> void:
 		_text(nm.to_upper(), 42.0 + x0, y0 + 2.0, 10.0, Color(1.0, 0.8, 0.2) if i == 0 else Color(0.9, 0.9, 0.95))
 		var hp: float = squad_health[i] / 100.0 if i < squad_health.size() and squad_health[i] <= 100 else 1.0
 		_draw_mini_bar(Rect2(42.0 + x0, y0 + 15.0, 55.0, 9.0), hp, who[1] / 100.0)
-	if status_page:
+	if status_page and not around:
 		_draw_status()
 	# WEAPON: his selected weapon, its picture under the texts where the game puts it
 	var wm := reg_move[2]
-	var wpic := null if status_page else _weapon_pic(weapon_type)
+	var wpic := null if status_page or around else _weapon_pic(weapon_type)
 	if wpic:
 		panel.draw_texture_rect(wpic, _grect(217.0 + wm.x, 264.0 + wm.y, 217.0 + wm.x + wpic.get_width(), 264.0 + wm.y + wpic.get_height()), false)
 	var wn: String = WEAPONS[weapon_type] if weapon_type < WEAPONS.size() else "?"
-	if not status_page:
+	if not status_page and not around:
 		_text(wn.to_upper(), 257.0 + wm.x, 267.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0), true)
 		_text("%d%%" % int(round(f * 100.0)), 219.0 + wm.x, 335.0 + wm.y, 10.0, Color(0.95, 0.95, 1.0))
 		_text("FULLY OPERATIONAL" if f > 0.5 else "DAMAGED", 219.0 + wm.x, 353.0 + wm.y, 10.0,
 			Color(0.95, 0.95, 1.0) if f > 0.5 else Color(1.0, 0.6, 0.2))
-	if map_tex:
+	if map_tex and (big_map or not around):
 		panel.draw_texture_rect(map_tex, _map_box(), false)
 	if big_map:
 		_text("MAP  (M: back)", win.position.x + 16.0, win.position.y + 10.0, 10.0, Color(0.9, 0.9, 1.0))
@@ -950,6 +962,26 @@ func _draw_panel() -> void:
 		var bp := _box_pic(weapon_type, 0 if weapon_state in [1, 2] else (1 if weapon_state in [4, 5] else -1), weapon_ammo)
 		if bp:
 			panel.draw_texture_rect(bp, _grect(BOX.position.x, BOX.position.y, BOX.end.x, BOX.end.y), false)
+
+
+# compass: 64 game pixels for 90 degrees, the heading at the strip's centre (the game's strip: x 33-288, y 6-21 in the
+# cockpit: at, its corner; the full view's strip: 180 wide, its turn in those); the game's heading 0 is east and grows
+# towards the south (its map: x to the east, y to the south)
+func _draw_compass(at: Vector2, width := 256.0) -> void:
+	var cm := at - REG_HOME[3] + Vector2((width - 256.0) / 2.0, 0.0)   # (the strip's middle where the cockpit's is)
+	var bearing := fposmod(heading / 65536.0 * 360.0 + 90.0, 360.0)
+	var amber := Color(1.0, 0.8, 0.25)
+	for k in 8:
+		var d := fposmod(k * 45.0 - bearing + 180.0, 360.0) - 180.0
+		var x := 161.0 + cm.x + d * width / 4.0 / 90.0
+		if x < 161.0 + cm.x - width / 2.0 + 5.0 or x > 161.0 + cm.x + width / 2.0 - 5.0:
+			continue
+		if k % 2 == 0:
+			_text(["N", "E", "S", "W"][k / 2], x, 8.0 + cm.y, 10.0, amber if k == 0 else Color(0.85, 0.85, 1.0), true)
+		else:
+			panel.draw_rect(_grect(x - 0.5, 11.0 + cm.y, x + 0.5, 16.0 + cm.y), Color(0.6, 0.6, 0.8))
+	panel.draw_rect(_grect(160.0 + cm.x, 6.0 + cm.y, 162.0 + cm.x, 8.0 + cm.y), amber)
+	panel.draw_rect(_grect(160.0 + cm.x, 20.0 + cm.y, 162.0 + cm.x, 22.0 + cm.y), amber)
 
 
 # one top bar: its pixels from a to b (counted from its left end) lit, in the game's own led colours (kind 0), the
@@ -1017,7 +1049,7 @@ func _draw_cross() -> void:
 # part colours 0xB0 + 16 k + ring (front, left, right, back; ring 0 the outer one) and 0xF0 (the pilot), a part at
 # level n keeps its n inner rings; its dark outline as it is; a whole part (levels 5-6) in light blue where the game
 # has green, a damaged one in the game's yellow (3-4) or red (1-2)
-func _draw_indicator() -> void:
+func _draw_indicator(place := Vector2i(-1, -1)) -> void:
 	if levels.size() < 5 or hud_pal.is_empty():
 		return
 	var key := levels.hex_encode()
@@ -1052,7 +1084,7 @@ func _draw_indicator() -> void:
 	var t: Texture2D = indicator_tex[key]
 	if t == null:
 		return
-	var at := indicator_at if indicator_at.x >= 0 else Vector2i(win.position) + INDICATOR_AT
+	var at := place if place.x >= 0 else (indicator_at if indicator_at.x >= 0 else Vector2i(win.position) + INDICATOR_AT)
 	panel.draw_texture_rect(t, _grect(at.x, at.y, at.x + t.get_width(), at.y + t.get_height()), false)
 
 
@@ -1242,6 +1274,8 @@ func map_click(at: Vector2, right: bool) -> bool:
 	var box := _map_box()
 	if not cockpit.visible or state != 0 or map_tex == null or not map_told or not box.has_point(at):
 		return false
+	if views != null and not big_map and (views.full_on() or views.around_on()):
+		return false                                          # (no map panel in his full view, nor in his 360 view)
 	var px := (at - box.position) / box.size * Vector2(map_tex.get_size())
 	var w := Vector2(map_from) + Vector2(px.x, px.y / 2.0) * map_step
 	var on_it := own_mark.x != 0.0 and absf(w.x - own_mark.x) <= 2.0 * map_step and absf(w.y - own_mark.y) <= 2.0 * map_step
@@ -1257,6 +1291,11 @@ func _mark_ask() -> void:
 	b.encode_float(1, mark_want.x)
 	b.encode_float(5, mark_want.y)
 	lobby.out.put_packet(b)
+
+
+# his key for one of his own views (the game's command after his key map: I, G, B), from viewer.gd: true if it was
+func view_key(sc: int) -> bool:
+	return views != null and views.key(sc)
 
 
 func toggle_map() -> void:
